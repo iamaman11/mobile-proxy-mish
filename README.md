@@ -1,59 +1,44 @@
-# Mobile Proxy MISH
+# mobile-proxy-mish
 
-Clean successor / PoC repository for a VM-free Android mobile proxy using Cloudflare Mesh as private transport while preserving phone-owned LTE/5G egress.
+Clean VM-free Android mobile-proxy successor built around Cloudflare Mesh and phone-owned cellular egress.
 
-## Current status
-
-**Planning only. No implementation has been accepted yet.**
-
-The canonical planning baseline is:
-
-- #1 — product goal, target architecture candidate, Cloudflare/Android assumptions, complete HTTP + SOCKS5 compatibility requirements, PoC sequence, testing boundaries and unresolved decisions.
-
-Next design work:
-
-- #2 — invariants, natural owners, technology stack, Android process model, security model, release/supply-chain model and measurable DoD.
-
-Reference-only migration material:
-
-- #3 — bounded reusable concepts/files from `iamaman11/mobile-proxy`; not an instruction to copy the predecessor architecture.
-- #4 — external/vendor facts that must be re-verified before implementation.
-
-## Working architecture hypothesis
+## Product path
 
 ```text
 Kameleo / Camoufox
-        |
-        v
+        ↓
 Cloudflare One Client
-        |
-        v
+        ↓
 Cloudflare Mesh
-        |
-        v
+        ↓
 Cloudflare One Agent on Android
-        |
-        v
-Mesh-only ingress
-        |
-        v
-sing-box
-  |- :1080 mixed HTTP/SOCKS5
-  |- :1081 SOCKS5
-  `- :3128 HTTP/CONNECT
-        |
-        v
-cellular-egress owner
-        |
-        v
-Android Network.bindSocket(validated cellular)
-        |
-        v
+        ↓
+product-admitted Mesh listener
+        ↓
+sing-box (:1080 / :1081 / :3128)
+        ↓
+validated Android cellular Network
+        ↓
 LTE/5G Internet
 ```
 
-No VM/VPS is part of the target design.
+This repository is now in bootstrap implementation. No current commit should be interpreted as proof that Mesh, cellular egress, proxy serving, rotation, or physical-device acceptance is complete.
 
-## Design rule
+## Architecture navigation
 
-Do not copy predecessor frameworks or start implementation before #2 defines the ownership/invariant model. Reuse only bounded proven code whose natural owner still exists in this clean architecture.
+- [System and process model](docs/architecture/SYSTEM.md)
+- [Capability ownership](docs/architecture/OWNERSHIP.md)
+- [Allowed dependency graph](docs/architecture/DEPENDENCIES.md)
+- [Contract boundaries](docs/architecture/CONTRACTS.md)
+- [Readiness and acceptance](docs/architecture/ACCEPTANCE.md)
+- [Build, release, and GitHub delivery](docs/architecture/RELEASE.md)
+
+Durable architecture decision history is in GitHub Issue #2 and ADR #5. Physical-tree derivation is Issue #6. Active bootstrap stage is Issue #7.
+
+## Core law
+
+```text
+one fact -> one natural owner -> one write path -> one observation path
+```
+
+The repository is a modular monolith. Capability crates are compile-time ownership boundaries, not separate services or processes.
