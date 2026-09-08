@@ -1,0 +1,20 @@
+/target/
+/.idea/
+/.vscode/
+*.iml
+
+# Android / Gradle
+/android/.gradle/
+/android/.kotlin/
+/android/**/build/
+/android/local.properties
+
+# Signing / credentials
+*.jks
+*.keystore
+*.p12
+*.pem
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,11 @@
+[package]
+name = "mish-sing-box-adapter"
+description = "Explicit sing-box vendor and JSON quarantine boundary"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true

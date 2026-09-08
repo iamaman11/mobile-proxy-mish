@@ -1,0 +1,11 @@
+[package]
+name = "mish-android-ffi"
+description = "Narrow Rust to Kotlin and Android platform boundary"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true

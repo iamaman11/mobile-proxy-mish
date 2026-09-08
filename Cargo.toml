@@ -1,0 +1,28 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/transport",
+    "crates/proxy",
+    "crates/cellular",
+    "crates/rotation",
+    "crates/runtime",
+    "crates/identity",
+    "crates/configuration",
+    "crates/credentials",
+    "crates/readiness",
+    "crates/application",
+    "crates/sing-box-adapter",
+    "crates/android-ffi",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98.1"
+repository = "https://github.com/iamaman11/mobile-proxy-mish"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = "deny"
