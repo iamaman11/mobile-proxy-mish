@@ -4,6 +4,10 @@
 //! It does not own cellular policy; it validates foreign inputs, delegates all state
 //! transitions to `mish-cellular`, and maps the owner's read-only projection to FFI DTOs.
 
+#[cfg(target_os = "android")]
+#[allow(unsafe_code)]
+mod android_explicit_network;
+
 use mish_cellular::{
     CellularAdmissionReason as OwnerAdmissionReason,
     CellularAdmissionSnapshot as OwnerAdmissionSnapshot,
@@ -62,6 +66,51 @@ impl fmt::Display for CellularBridgeError {
 }
 
 impl std::error::Error for CellularBridgeError {}
+
+/// Fail-closed errors for explicit-network socket/DNS operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Error)]
+pub enum CellularNetworkOperationError {
+    NoAdmittedNetwork,
+    InvalidSocketFd,
+    InvalidHostname,
+    NativeSocketBindFailed,
+    NativeDnsLookupFailed,
+    NativeDnsNoResults,
+    NativeAddressConversionFailed,
+    NetworkChangedDuringOperation,
+    UnsupportedPlatform,
+    OwnerUnavailable,
+}
+
+impl fmt::Display for CellularNetworkOperationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::NoAdmittedNetwork => "no cellular network is currently admitted",
+            Self::InvalidSocketFd => "socket file descriptor must be non-negative",
+            Self::InvalidHostname => "hostname must be non-empty and contain no NUL byte",
+            Self::NativeSocketBindFailed => "Android explicit-network socket binding failed",
+            Self::NativeDnsLookupFailed => "Android explicit-network DNS lookup failed",
+            Self::NativeDnsNoResults => "Android explicit-network DNS lookup returned no addresses",
+            Self::NativeAddressConversionFailed => {
+                "Android explicit-network DNS address conversion failed"
+            }
+            Self::NetworkChangedDuringOperation => {
+                "cellular network authority changed during the operation"
+            }
+            Self::UnsupportedPlatform => "explicit-network operation requires Android",
+            Self::OwnerUnavailable => "Cellular Egress owner state is unavailable",
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl std::error::Error for CellularNetworkOperationError {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AdmissionLease {
+    network: NetworkHandle,
+    sequence: ObservationSequence,
+}
 
 /// One runtime-scoped foreign handle to the Cellular Egress natural owner.
 ///
@@ -128,6 +177,40 @@ impl CellularController {
         owner.lost(sequence, network_handle);
         Ok(map_snapshot(owner.admission()))
     }
+
+    /// Binds an existing socket to the exact network currently admitted by the owner.
+    ///
+    /// The caller supplies only the socket fd. It cannot choose or override the Android
+    /// network handle, preventing a second network-selection path outside `mish-cellular`.
+    pub fn bind_socket_to_admitted_network(
+        &self,
+        socket_fd: i32,
+    ) -> Result<(), CellularNetworkOperationError> {
+        if socket_fd < 0 {
+            return Err(CellularNetworkOperationError::InvalidSocketFd);
+        }
+
+        self.execute_admitted_network_operation(|network| {
+            bind_socket_on_platform(network, socket_fd)
+        })
+    }
+
+    /// Resolves a hostname using DNS associated with the exact admitted cellular Network.
+    ///
+    /// Returned values are numeric IP strings; the native adapter explicitly suppresses
+    /// any second reverse-DNS lookup while converting the NDK result list.
+    pub fn resolve_host_on_admitted_network(
+        &self,
+        hostname: String,
+    ) -> Result<Vec<String>, CellularNetworkOperationError> {
+        if hostname.is_empty() || hostname.as_bytes().contains(&0) {
+            return Err(CellularNetworkOperationError::InvalidHostname);
+        }
+
+        self.execute_admitted_network_operation(|network| {
+            resolve_host_on_platform(network, &hostname)
+        })
+    }
 }
 
 impl CellularController {
@@ -136,6 +219,90 @@ impl CellularController {
             .lock()
             .map_err(|_| CellularBridgeError::OwnerUnavailable)
     }
+
+    fn owner_for_operation(
+        &self,
+    ) -> Result<MutexGuard<'_, CellularEgress>, CellularNetworkOperationError> {
+        self.owner
+            .lock()
+            .map_err(|_| CellularNetworkOperationError::OwnerUnavailable)
+    }
+
+    fn current_admission_lease(&self) -> Result<AdmissionLease, CellularNetworkOperationError> {
+        let snapshot = self.owner_for_operation()?.admission();
+        if snapshot.state() != OwnerAdmissionState::Admitted {
+            return Err(CellularNetworkOperationError::NoAdmittedNetwork);
+        }
+
+        let network = snapshot
+            .admitted_network()
+            .ok_or(CellularNetworkOperationError::NoAdmittedNetwork)?;
+        let sequence = snapshot
+            .last_sequence()
+            .ok_or(CellularNetworkOperationError::NoAdmittedNetwork)?;
+
+        Ok(AdmissionLease { network, sequence })
+    }
+
+    fn ensure_admission_lease_current(
+        &self,
+        lease: AdmissionLease,
+    ) -> Result<(), CellularNetworkOperationError> {
+        let snapshot = self.owner_for_operation()?.admission();
+        let unchanged = snapshot.state() == OwnerAdmissionState::Admitted
+            && snapshot.admitted_network() == Some(lease.network)
+            && snapshot.last_sequence() == Some(lease.sequence);
+
+        if unchanged {
+            Ok(())
+        } else {
+            Err(CellularNetworkOperationError::NetworkChangedDuringOperation)
+        }
+    }
+
+    fn execute_admitted_network_operation<T>(
+        &self,
+        operation: impl FnOnce(NetworkHandle) -> Result<T, CellularNetworkOperationError>,
+    ) -> Result<T, CellularNetworkOperationError> {
+        let lease = self.current_admission_lease()?;
+        let result = operation(lease.network)?;
+        self.ensure_admission_lease_current(lease)?;
+        Ok(result)
+    }
+}
+
+#[cfg(target_os = "android")]
+fn bind_socket_on_platform(
+    network: NetworkHandle,
+    socket_fd: i32,
+) -> Result<(), CellularNetworkOperationError> {
+    android_explicit_network::bind_socket(network, socket_fd)
+}
+
+#[cfg(not(target_os = "android"))]
+fn bind_socket_on_platform(
+    network: NetworkHandle,
+    socket_fd: i32,
+) -> Result<(), CellularNetworkOperationError> {
+    let _ = (network, socket_fd);
+    Err(CellularNetworkOperationError::UnsupportedPlatform)
+}
+
+#[cfg(target_os = "android")]
+fn resolve_host_on_platform(
+    network: NetworkHandle,
+    hostname: &str,
+) -> Result<Vec<String>, CellularNetworkOperationError> {
+    android_explicit_network::resolve_host(network, hostname)
+}
+
+#[cfg(not(target_os = "android"))]
+fn resolve_host_on_platform(
+    network: NetworkHandle,
+    hostname: &str,
+) -> Result<Vec<String>, CellularNetworkOperationError> {
+    let _ = (network, hostname);
+    Err(CellularNetworkOperationError::UnsupportedPlatform)
 }
 
 fn map_snapshot(snapshot: OwnerAdmissionSnapshot) -> CellularAdmissionView {
@@ -162,6 +329,7 @@ fn map_snapshot(snapshot: OwnerAdmissionSnapshot) -> CellularAdmissionView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
 
     #[test]
     fn foreign_controller_starts_unknown() {
@@ -222,6 +390,97 @@ mod tests {
         assert_eq!(
             controller.admission_snapshot().expect("snapshot").state,
             CellularAdmissionState::Unknown
+        );
+    }
+
+    #[test]
+    fn explicit_network_operation_is_not_invoked_without_owner_admission() {
+        let controller = CellularController::new();
+        let invoked = Cell::new(false);
+
+        let result = controller.execute_admitted_network_operation(|_| {
+            invoked.set(true);
+            Ok(())
+        });
+
+        assert_eq!(result, Err(CellularNetworkOperationError::NoAdmittedNetwork));
+        assert!(!invoked.get());
+    }
+
+    #[test]
+    fn explicit_network_operation_receives_only_the_owner_admitted_handle() {
+        let controller = CellularController::new();
+        controller
+            .observe_network(1, 42, true, true, true)
+            .expect("valid observation");
+
+        let result = controller.execute_admitted_network_operation(|network| {
+            assert_eq!(network.raw(), 42);
+            Ok("bound")
+        });
+
+        assert_eq!(result, Ok("bound"));
+    }
+
+    #[test]
+    fn explicit_network_operation_rejects_success_after_owner_change() {
+        let controller = CellularController::new();
+        controller
+            .observe_network(1, 42, true, true, true)
+            .expect("valid observation");
+        let controller_for_operation = Arc::clone(&controller);
+
+        let result = controller.execute_admitted_network_operation(|network| {
+            assert_eq!(network.raw(), 42);
+            controller_for_operation
+                .network_lost(2, 42)
+                .expect("loss observation");
+            Ok(())
+        });
+
+        assert_eq!(
+            result,
+            Err(CellularNetworkOperationError::NetworkChangedDuringOperation)
+        );
+    }
+
+    #[test]
+    fn explicit_network_operation_rejects_reobserved_same_handle_as_new_authority() {
+        let controller = CellularController::new();
+        controller
+            .observe_network(1, 42, true, true, true)
+            .expect("valid observation");
+        let controller_for_operation = Arc::clone(&controller);
+
+        let result = controller.execute_admitted_network_operation(|network| {
+            assert_eq!(network.raw(), 42);
+            controller_for_operation
+                .observe_network(2, 42, true, true, true)
+                .expect("fresh observation");
+            Ok(())
+        });
+
+        assert_eq!(
+            result,
+            Err(CellularNetworkOperationError::NetworkChangedDuringOperation)
+        );
+    }
+
+    #[test]
+    fn invalid_public_operation_inputs_fail_before_platform_access() {
+        let controller = CellularController::new();
+
+        assert_eq!(
+            controller.bind_socket_to_admitted_network(-1),
+            Err(CellularNetworkOperationError::InvalidSocketFd)
+        );
+        assert_eq!(
+            controller.resolve_host_on_admitted_network(String::new()),
+            Err(CellularNetworkOperationError::InvalidHostname)
+        );
+        assert_eq!(
+            controller.resolve_host_on_admitted_network("bad\0host".to_owned()),
+            Err(CellularNetworkOperationError::InvalidHostname)
         );
     }
 }
