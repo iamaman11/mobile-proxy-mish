@@ -72,6 +72,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          umask 077
           response="$RUNNER_TEMP/cloudflare-accounts.json"
           trap 'rm -f "$response"' EXIT
 
@@ -108,6 +109,7 @@ jobs:
           R2_STATE_BUCKET: ${{ vars.R2_STATE_BUCKET }}
         run: |
           set -euo pipefail
+          umask 077
           backend="$RUNNER_TEMP/backend.r2.hcl"
           trap 'rm -f "$backend"' EXIT
           cat > "$backend" <<EOF
@@ -130,11 +132,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          umask 077
           address='cloudflare_zero_trust_device_custom_profile.adds'
           response="$RUNNER_TEMP/cloudflare-device-policies.json"
           state_view="$RUNNER_TEMP/cloudflare-adds-state.txt"
-          trap 'rm -f "$response" "$state_view"' EXIT
-          chmod 600 "$response" "$state_view" 2>/dev/null || true
+          import_log="$RUNNER_TEMP/cloudflare-import.log"
+          trap 'rm -f "$response" "$state_view" "$import_log"' EXIT
 
           curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
             "https://api.cloudflare.com/client/v4/accounts/${TF_VAR_cloudflare_account_id}/devices/policies?per_page=100&page=1" \
@@ -207,7 +210,7 @@ jobs:
             -input=false \
             "$address" \
             "$import_id" \
-            >"$RUNNER_TEMP/cloudflare-import.log" 2>&1
+            >"$import_log" 2>&1
 
           terraform -chdir=infra/cloudflare state show -no-color "$address" >"$state_view" 2>/dev/null
           state_id="$(sed -nE 's/^[[:space:]]*id[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$state_view" | head -n1)"
@@ -228,6 +231,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          umask 077
           response="$RUNNER_TEMP/cloudflare-connectivity-settings.json"
           trap 'rm -f "$response"' EXIT
 
@@ -264,23 +268,15 @@ jobs:
             echo '- Required Gateway TCP/UDP proxying is enforced separately by the provider device-settings check.'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Verify adopted state before plan
-        shell: bash
-        run: |
-          set -euo pipefail
-          terraform -chdir=infra/cloudflare state show \
-            cloudflare_zero_trust_device_custom_profile.adds >/dev/null
-
       - name: Provider plan and live read-back assertions
         shell: bash
         run: |
           set -euo pipefail
+          umask 077
           plan_bin="$RUNNER_TEMP/cloudflare.tfplan"
           plan_log="$RUNNER_TEMP/cloudflare-plan.log"
           plan_json="$RUNNER_TEMP/cloudflare-plan.json"
           trap 'rm -f "$plan_bin" "$plan_log" "$plan_json"' EXIT
-          touch "$plan_log" "$plan_json"
-          chmod 600 "$plan_log" "$plan_json"
 
           set +e
           terraform -chdir=infra/cloudflare plan \
