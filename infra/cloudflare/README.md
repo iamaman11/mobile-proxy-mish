@@ -30,15 +30,20 @@ The profile match expression is intentionally supplied as a sensitive runtime va
 
 ## Read-only account assertions
 
-The following existing account-wide settings are read and asserted, not mutated by this stage:
+Provider 5.24.0 exposes `cloudflare_zero_trust_device_settings` as a real data source. CF-1 therefore reads and asserts the existing account-wide facts for:
 
 - unique WARP/device IP assignment;
 - Gateway TCP proxy;
-- Gateway UDP proxy;
-- WARP-to-WARP/off-ramp connectivity;
+- Gateway UDP proxy.
+
+The generated Cloudflare Terraform documentation also describes `cloudflare_zero_trust_connectivity_settings`, but the released 5.24.0 plugin schema does **not** register that data source. Credential-free CI proved this directly during `terraform validate`.
+
+Therefore these two already-confirmed Mesh prerequisites remain bounded supported-UI/bootstrap evidence during CF-1 rather than being faked through a write-capable Terraform resource:
+
+- WARP-to-WARP/off-ramp connectivity (`Allow all Cloudflare One traffic to reach enrolled devices`);
 - ICMP proxy.
 
-The current provider exposes these through `cloudflare_zero_trust_device_settings` and `cloudflare_zero_trust_connectivity_settings`. The latter is the supported provider surface for WARP-to-WARP/off-ramp and ICMP connectivity semantics. CF-1 reads and asserts these settings first; write ownership is deferred until an accepted no-drift provider plan proves the current state and there is a concrete reason to manage the account-wide values.
+No Terraform resource is declared merely to simulate read-only observation. If a later provider version exposes a working read surface, adoption requires a normal reviewed upgrade PR.
 
 ## Provider and Terraform versions
 
