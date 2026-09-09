@@ -4,11 +4,12 @@ The physical lab exists to execute accepted code against real Windows/Android/Cl
 
 ## Threat model
 
-This repository is public. A persistent self-hosted runner has access to local machine state, attached devices and any credentials installed on that host. Therefore untrusted code must never be able to select the physical runner.
+This repository is public. A persistent self-hosted runner has access to local machine state, attached devices and any credentials installed on that host. Terraform configuration is also executable enough to exfiltrate credentials through providers/provisioners. Therefore untrusted code must never be able to select the physical runner or receive Cloudflare provider credentials.
 
 The main threats are:
 
 - untrusted PR code executing on the lab host;
+- untrusted PR Terraform receiving provider/R2 credentials;
 - credentials leaking through logs/artifacts/process environment;
 - Cloudflare provider write authority being reachable from the physical host;
 - a persistent runner retaining stale files between jobs;
@@ -20,10 +21,11 @@ The main threats are:
 Normal repository CI remains GitHub-hosted.
 
 ```text
-pull_request       -> GitHub-hosted only
-push/main CI       -> GitHub-hosted only unless a workflow is explicitly physical
-provider plan/apply-> GitHub-hosted only
-physical evidence  -> dedicated self-hosted Windows lab runner
+pull_request static CI     -> GitHub-hosted, no provider credentials
+push/main CI               -> GitHub-hosted
+credentialed provider plan -> GitHub-hosted, accepted protected main only
+provider apply             -> GitHub-hosted, accepted protected main only
+physical evidence          -> dedicated self-hosted Windows lab runner
 ```
 
 Physical workflows must:
@@ -35,6 +37,8 @@ Physical workflows must:
 - serialize execution where the same device/account is shared;
 - use bounded timeouts and explicit cancellation/failure handling;
 - clean run-generated sensitive temporary files before completion where practical.
+
+Credentialed provider workflows must also reject non-main/unaccepted refs. Pull requests may run only credential-free `terraform fmt`, `terraform validate`, schema/policy checks and other static validation.
 
 ## Host separation
 
@@ -58,7 +62,7 @@ Only credentials materially required for the physical fixture and only when thei
 
 ### Physical runner must not have
 
-- Cloudflare Terraform/apply API token;
+- Cloudflare Terraform plan/apply API token;
 - R2 Terraform-state credentials;
 - broad GitHub write token/PAT;
 - unrelated repository/provider secrets;
@@ -66,7 +70,7 @@ Only credentials materially required for the physical fixture and only when thei
 
 ### Hosted provider jobs
 
-Cloudflare desired-config credentials belong to protected GitHub-hosted provider workflows. Use least privilege and separate read/plan from write/apply authority where practical.
+Cloudflare desired-config credentials belong to protected GitHub-hosted provider workflows running accepted protected `main`. Use least privilege and separate read/plan from write/apply authority where practical. Never expose those credentials to PR-head Terraform execution.
 
 ## Public evidence redaction
 
