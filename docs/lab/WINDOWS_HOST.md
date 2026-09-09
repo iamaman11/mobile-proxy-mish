@@ -50,7 +50,7 @@ A human clone, if one exists, is not evidence identity and is not used by the ph
 Before the versioned bootstrap runs, the machine must provide only:
 
 - 64-bit Windows;
-- an elevated Windows PowerShell console;
+- an elevated native Windows PowerShell process;
 - Microsoft App Installer / `winget`;
 - outbound HTTPS needed to fetch the pinned GitHub runner and build-tool distributions.
 
@@ -78,11 +78,32 @@ The physical runner must not receive or store:
 
 The physical workflow has only `contents: read`, is `workflow_dispatch` only, and its job is gated before runner scheduling to `refs/heads/main` with `github.ref_protected == true`. Pull requests and normal push CI remain GitHub-hosted.
 
+## WSL boundary
+
+WSL may be used only as an **out-of-band secrets-vault client**. It is not a LAB-1 execution environment.
+
+Allowed WSL responsibility:
+
+```text
+vault lookup -> emit one short-lived runner registration token to the native Windows bootstrap token-provider call
+```
+
+WSL must not run or own:
+
+- the LAB-1 bootstrap itself;
+- GitHub Actions runner execution or service state;
+- Android/Rust build steps;
+- ADB checks;
+- host-preflight;
+- LAB-1 evidence generation.
+
+The native Windows bootstrap may invoke `wsl.exe` as a token-provider executable solely to retrieve the short-lived registration token. That does not make WSL part of the LAB-1 execution/evidence path.
+
 ## Versioned bootstrap
 
 `lab/windows/toolchain.json` is the LAB-1 host prerequisite manifest. `lab/windows/bootstrap-windows.ps1` installs/validates the host against it and registers the repository runner.
 
-Bootstrap intentionally requires one short-lived GitHub runner registration token. It does not request a PAT and it never requests Cloudflare/R2/provider credentials.
+Bootstrap requires one short-lived GitHub runner registration token. It does not request a PAT and it never requests Cloudflare/R2/provider credentials.
 
 For an accepted commit `<SHA>`, run the script itself and its manifest from that same immutable commit:
 
@@ -90,12 +111,63 @@ For an accepted commit `<SHA>`, run the script itself and its manifest from that
 $sha = '<SHA>'
 $script = "$env:TEMP\mish-lab-bootstrap.ps1"
 Invoke-WebRequest "https://raw.githubusercontent.com/iamaman11/mobile-proxy-mish/$sha/lab/windows/bootstrap-windows.ps1" -OutFile $script
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script -RepositoryCommit $sha
 ```
 
-Run this once from an **elevated Windows PowerShell** console. The script installs the pinned host toolchain, asks for Android SDK license acceptance where required, then prompts for the short-lived repository runner registration token.
+### Autonomous token provider
 
-Do not paste a PAT, Cloudflare token, R2 key, or any other long-lived secret into that prompt.
+Automation is the preferred path when an approved vault is already available. The bootstrap accepts:
+
+```text
+-RunnerTokenProviderExecutable
+-RunnerTokenProviderArgumentsJson
+```
+
+`RunnerTokenProviderExecutable` must be an absolute native Windows executable path. `RunnerTokenProviderArgumentsJson` is a JSON array of non-secret arguments. The executable is invoked directly, without a shell, only when runner registration is about to occur.
+
+The provider contract is strict:
+
+- stdout must contain exactly one registration token and nothing else;
+- the token must contain no whitespace;
+- provider stderr is suppressed by bootstrap and is never included in an error message;
+- provider nonzero exit fails closed;
+- the captured token is converted to `SecureString` immediately and is not written to disk;
+- provider arguments must contain only vault location/reference information, never the secret value itself.
+
+A WSL-only vault is supported by using the native Windows `wsl.exe` binary as `RunnerTokenProviderExecutable` and passing only the vault lookup command/reference in the JSON argument array. The agent must use the vault's raw/quiet secret-read mode so stdout contains only the token.
+
+Example shape; the vault command itself is environment-specific and must be resolved by the local agent from the approved vault tooling:
+
+```powershell
+$providerArgs = @(
+  '--distribution', '<vault-wsl-distro>',
+  '--exec', '<vault-cli>',
+  '<raw-secret-read-argument>',
+  '<vault-secret-reference>'
+) | ConvertTo-Json -Compress
+
+& $script `
+  -RepositoryCommit $sha `
+  -RunnerTokenProviderExecutable "$env:SystemRoot\System32\wsl.exe" `
+  -RunnerTokenProviderArgumentsJson $providerArgs
+```
+
+The local agent must not stop merely because it lacks an interactive TTY. If the token already exists in the approved vault, it must use this provider contract and complete bootstrap autonomously.
+
+Do not put the registration token in:
+
+- CLI arguments;
+- provider JSON;
+- environment variables;
+- repository files;
+- temporary files;
+- Windows/WSL shell history;
+- logs or reports.
+
+### Interactive fallback
+
+If no autonomous provider is supplied, bootstrap retains `Read-Host -AsSecureString` as a human fallback. This fallback is not the expected path for an autonomous lab agent with approved vault access.
+
+Run bootstrap from an **elevated native Windows PowerShell** process. WSL may participate only in the bounded vault-provider lookup described above.
 
 ## Host-only acceptance workflow
 
