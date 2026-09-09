@@ -41,6 +41,34 @@ impl ObservationSequence {
     }
 }
 
+/// Opaque token for one exact owner-admitted cellular authority generation.
+///
+/// Callers cannot construct this token or choose its network. Platform adapters may
+/// inspect the captured handle only after a natural-owner validation step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CellularNetworkAuthority {
+    network: NetworkHandle,
+    sequence: ObservationSequence,
+}
+
+impl CellularNetworkAuthority {
+    /// Returns the exact ephemeral Android Network captured when the owner issued this
+    /// authority. This does not prove that the authority is still current; consumers
+    /// must validate against the owner immediately before and after bounded effects.
+    pub const fn network_handle(self) -> NetworkHandle {
+        self.network
+    }
+}
+
+/// Fail-closed authority issuance/currentness errors owned by Cellular Egress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellularNetworkAuthorityError {
+    /// No exact cellular network generation is currently admitted.
+    NoAdmittedNetwork,
+    /// The captured authority is no longer the owner's current admitted generation.
+    NetworkChanged,
+}
+
 /// Platform observation presented to the Cellular Egress owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NetworkObservation {
@@ -179,6 +207,47 @@ impl CellularEgress {
     /// Returns the current read-only network-admission projection.
     pub const fn admission(&self) -> CellularAdmissionSnapshot {
         self.admission
+    }
+
+    /// Issues an opaque token for the exact cellular authority currently admitted.
+    ///
+    /// No authority is produced for UNKNOWN/NOT_ADMITTED state. The token captures
+    /// both the network handle and the observation generation so re-observing the same
+    /// raw handle still invalidates older tokens.
+    pub fn admitted_network_authority(
+        &self,
+    ) -> Result<CellularNetworkAuthority, CellularNetworkAuthorityError> {
+        if self.admission.state != CellularAdmissionState::Admitted {
+            return Err(CellularNetworkAuthorityError::NoAdmittedNetwork);
+        }
+
+        let network = self
+            .admission
+            .admitted_network
+            .ok_or(CellularNetworkAuthorityError::NoAdmittedNetwork)?;
+        let sequence = self
+            .admission
+            .last_sequence
+            .ok_or(CellularNetworkAuthorityError::NoAdmittedNetwork)?;
+
+        Ok(CellularNetworkAuthority { network, sequence })
+    }
+
+    /// Verifies that an owner-issued authority is still this owner's exact current
+    /// admitted generation.
+    pub fn validate_network_authority(
+        &self,
+        authority: CellularNetworkAuthority,
+    ) -> Result<(), CellularNetworkAuthorityError> {
+        let unchanged = self.admission.state == CellularAdmissionState::Admitted
+            && self.admission.admitted_network == Some(authority.network)
+            && self.admission.last_sequence == Some(authority.sequence);
+
+        if unchanged {
+            Ok(())
+        } else {
+            Err(CellularNetworkAuthorityError::NetworkChanged)
+        }
     }
 
     /// Applies a fresh capabilities observation.
@@ -397,5 +466,60 @@ mod tests {
         assert_eq!(owner.admission().state(), CellularAdmissionState::Admitted);
         assert_eq!(owner.admission().admitted_network(), Some(handle(11)));
         assert_eq!(owner.admission().last_sequence(), Some(sequence(2)));
+    }
+
+    #[test]
+    fn authority_is_not_issued_without_admission() {
+        let owner = CellularEgress::new();
+
+        assert_eq!(
+            owner.admitted_network_authority(),
+            Err(CellularNetworkAuthorityError::NoAdmittedNetwork)
+        );
+    }
+
+    #[test]
+    fn authority_captures_exact_owner_generation() {
+        let mut owner = CellularEgress::new();
+        owner.observe(observation(1, 42, true, true, true));
+
+        let authority = owner
+            .admitted_network_authority()
+            .expect("admitted authority");
+
+        assert_eq!(authority.network_handle(), handle(42));
+        assert_eq!(owner.validate_network_authority(authority), Ok(()));
+    }
+
+    #[test]
+    fn reobservation_of_same_raw_handle_invalidates_old_authority() {
+        let mut owner = CellularEgress::new();
+        owner.observe(observation(1, 42, true, true, true));
+        let authority = owner
+            .admitted_network_authority()
+            .expect("admitted authority");
+
+        owner.observe(observation(2, 42, true, true, true));
+
+        assert_eq!(
+            owner.validate_network_authority(authority),
+            Err(CellularNetworkAuthorityError::NetworkChanged)
+        );
+    }
+
+    #[test]
+    fn loss_invalidates_existing_authority() {
+        let mut owner = CellularEgress::new();
+        owner.observe(observation(1, 42, true, true, true));
+        let authority = owner
+            .admitted_network_authority()
+            .expect("admitted authority");
+
+        owner.lost(sequence(2), handle(42));
+
+        assert_eq!(
+            owner.validate_network_authority(authority),
+            Err(CellularNetworkAuthorityError::NetworkChanged)
+        );
     }
 }

@@ -1,0 +1,279 @@
+//! Bounded Android exact-network mechanics adapter.
+//!
+//! This crate owns only supported Android/NDK operations for an already owner-issued
+//! cellular authority. It does not select networks, own admission state, or provide
+//! fallback/retry policy.
+
+use mish_cellular::CellularNetworkAuthority;
+use std::fmt;
+
+/// Fail-closed errors for supported Android exact-network mechanics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AndroidNetworkError {
+    InvalidSocketFd,
+    InvalidHostname,
+    NativeSocketBindFailed,
+    NativeDnsLookupFailed,
+    NativeDnsNoResults,
+    NativeAddressConversionFailed,
+    UnsupportedPlatform,
+}
+
+impl fmt::Display for AndroidNetworkError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::InvalidSocketFd => "socket file descriptor must be non-negative",
+            Self::InvalidHostname => "hostname must be non-empty and contain no NUL byte",
+            Self::NativeSocketBindFailed => "Android explicit-network socket binding failed",
+            Self::NativeDnsLookupFailed => "Android explicit-network DNS lookup failed",
+            Self::NativeDnsNoResults => "Android explicit-network DNS lookup returned no addresses",
+            Self::NativeAddressConversionFailed => {
+                "Android explicit-network DNS address conversion failed"
+            }
+            Self::UnsupportedPlatform => "explicit-network operation requires Android",
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl std::error::Error for AndroidNetworkError {}
+
+/// Binds an existing socket to the exact Android Network carried by an owner-issued
+/// cellular authority.
+pub fn bind_socket(
+    authority: CellularNetworkAuthority,
+    socket_fd: i32,
+) -> Result<(), AndroidNetworkError> {
+    if socket_fd < 0 {
+        return Err(AndroidNetworkError::InvalidSocketFd);
+    }
+
+    bind_socket_on_platform(authority, socket_fd)
+}
+
+/// Resolves a hostname using DNS associated with the exact Android Network carried by
+/// an owner-issued cellular authority.
+pub fn resolve_host(
+    authority: CellularNetworkAuthority,
+    hostname: &str,
+) -> Result<Vec<String>, AndroidNetworkError> {
+    if hostname.is_empty() || hostname.as_bytes().contains(&0) {
+        return Err(AndroidNetworkError::InvalidHostname);
+    }
+
+    resolve_host_on_platform(authority, hostname)
+}
+
+#[cfg(target_os = "android")]
+fn bind_socket_on_platform(
+    authority: CellularNetworkAuthority,
+    socket_fd: i32,
+) -> Result<(), AndroidNetworkError> {
+    android::bind_socket(authority, socket_fd)
+}
+
+#[cfg(not(target_os = "android"))]
+fn bind_socket_on_platform(
+    authority: CellularNetworkAuthority,
+    socket_fd: i32,
+) -> Result<(), AndroidNetworkError> {
+    let _ = (authority, socket_fd);
+    Err(AndroidNetworkError::UnsupportedPlatform)
+}
+
+#[cfg(target_os = "android")]
+fn resolve_host_on_platform(
+    authority: CellularNetworkAuthority,
+    hostname: &str,
+) -> Result<Vec<String>, AndroidNetworkError> {
+    android::resolve_host(authority, hostname)
+}
+
+#[cfg(not(target_os = "android"))]
+fn resolve_host_on_platform(
+    authority: CellularNetworkAuthority,
+    hostname: &str,
+) -> Result<Vec<String>, AndroidNetworkError> {
+    let _ = (authority, hostname);
+    Err(AndroidNetworkError::UnsupportedPlatform)
+}
+
+#[cfg(target_os = "android")]
+#[allow(unsafe_code)]
+mod android {
+    use super::{AndroidNetworkError, CellularNetworkAuthority};
+    use std::ffi::{CStr, CString};
+    use std::os::raw::c_char;
+    use std::ptr;
+
+    const NUMERIC_HOST_BUFFER_LEN: usize = 1025;
+
+    pub(super) fn bind_socket(
+        authority: CellularNetworkAuthority,
+        socket_fd: i32,
+    ) -> Result<(), AndroidNetworkError> {
+        let network = authority.network_handle();
+
+        // SAFETY: `network` is captured in an owner-issued opaque authority token and
+        // `socket_fd` has been validated by the safe caller as non-negative. The NDK
+        // call neither takes ownership of the fd nor retains Rust references.
+        let result = unsafe { ndk_sys::android_setsocknetwork(network.raw(), socket_fd) };
+
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(AndroidNetworkError::NativeSocketBindFailed)
+        }
+    }
+
+    pub(super) fn resolve_host(
+        authority: CellularNetworkAuthority,
+        hostname: &str,
+    ) -> Result<Vec<String>, AndroidNetworkError> {
+        let node = CString::new(hostname).map_err(|_| AndroidNetworkError::InvalidHostname)?;
+        let mut raw_results: *mut ndk_sys::addrinfo = ptr::null_mut();
+        let network = authority.network_handle();
+
+        // SAFETY: `node` is a live NUL-terminated C string for the duration of the call;
+        // `raw_results` is a valid out-pointer; null service/hints are explicitly allowed
+        // by android_getaddrinfofornetwork/getaddrinfo semantics. The returned list is
+        // owned by the caller and released below with `freeaddrinfo`.
+        let result = unsafe {
+            ndk_sys::android_getaddrinfofornetwork(
+                network.raw(),
+                node.as_ptr(),
+                ptr::null(),
+                ptr::null(),
+                &mut raw_results,
+            )
+        };
+
+        if result != 0 {
+            return Err(AndroidNetworkError::NativeDnsLookupFailed);
+        }
+        if raw_results.is_null() {
+            return Err(AndroidNetworkError::NativeDnsNoResults);
+        }
+
+        let results = AddrInfoList(raw_results);
+        numeric_hosts(&results)
+    }
+
+    struct AddrInfoList(*mut ndk_sys::addrinfo);
+
+    impl Drop for AddrInfoList {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                // SAFETY: `self.0` is the head returned by a successful
+                // android_getaddrinfofornetwork call and is released exactly once here.
+                unsafe { ndk_sys::freeaddrinfo(self.0) };
+            }
+        }
+    }
+
+    fn numeric_hosts(results: &AddrInfoList) -> Result<Vec<String>, AndroidNetworkError> {
+        let mut addresses = Vec::new();
+        let mut current = results.0;
+
+        while !current.is_null() {
+            // SAFETY: `current` points into the still-live addrinfo list owned by `results`.
+            // We advance only through `ai_next` pointers supplied by that list.
+            let info = unsafe { &*current };
+
+            if !info.ai_addr.is_null() {
+                let mut host = [0 as c_char; NUMERIC_HOST_BUFFER_LEN];
+
+                // SAFETY: `ai_addr`/`ai_addrlen` come from the live addrinfo node.
+                // `host` is a writable buffer of the advertised length; service output is
+                // intentionally omitted. NI_NUMERICHOST prevents a second DNS lookup.
+                let conversion = unsafe {
+                    ndk_sys::getnameinfo(
+                        info.ai_addr,
+                        info.ai_addrlen,
+                        host.as_mut_ptr(),
+                        host.len(),
+                        ptr::null_mut(),
+                        0,
+                        ndk_sys::NI_NUMERICHOST as i32,
+                    )
+                };
+
+                if conversion != 0 {
+                    return Err(AndroidNetworkError::NativeAddressConversionFailed);
+                }
+
+                // SAFETY: successful getnameinfo writes a NUL-terminated host string into
+                // the supplied buffer because the buffer is NI_MAXHOST-sized.
+                let address = unsafe { CStr::from_ptr(host.as_ptr()) }
+                    .to_str()
+                    .map_err(|_| AndroidNetworkError::NativeAddressConversionFailed)?
+                    .to_owned();
+
+                if !addresses.contains(&address) {
+                    addresses.push(address);
+                }
+            }
+
+            current = info.ai_next;
+        }
+
+        if addresses.is_empty() {
+            Err(AndroidNetworkError::NativeDnsNoResults)
+        } else {
+            Ok(addresses)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mish_cellular::{NetworkHandle, NetworkObservation, ObservationSequence};
+
+    fn authority() -> CellularNetworkAuthority {
+        let mut owner = mish_cellular::CellularEgress::new();
+        owner.observe(NetworkObservation::new(
+            ObservationSequence::new(1).expect("test sequence"),
+            NetworkHandle::new(42).expect("test network"),
+            true,
+            true,
+            true,
+        ));
+        owner
+            .admitted_network_authority()
+            .expect("admitted authority")
+    }
+
+    #[test]
+    fn invalid_inputs_fail_before_platform_access() {
+        let authority = authority();
+
+        assert_eq!(
+            bind_socket(authority, -1),
+            Err(AndroidNetworkError::InvalidSocketFd)
+        );
+        assert_eq!(
+            resolve_host(authority, ""),
+            Err(AndroidNetworkError::InvalidHostname)
+        );
+        assert_eq!(
+            resolve_host(authority, "bad\0host"),
+            Err(AndroidNetworkError::InvalidHostname)
+        );
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn supported_operations_fail_closed_off_android() {
+        let authority = authority();
+
+        assert_eq!(
+            bind_socket(authority, 5),
+            Err(AndroidNetworkError::UnsupportedPlatform)
+        );
+        assert_eq!(
+            resolve_host(authority, "example.com"),
+            Err(AndroidNetworkError::UnsupportedPlatform)
+        );
+    }
+}

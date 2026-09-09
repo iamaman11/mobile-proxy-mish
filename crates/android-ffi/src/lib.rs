@@ -4,15 +4,12 @@
 //! It does not own cellular policy; it validates foreign inputs, delegates all state
 //! transitions to `mish-cellular`, and maps the owner's read-only projection to FFI DTOs.
 
-#[cfg(target_os = "android")]
-#[allow(unsafe_code)]
-mod android_explicit_network;
-
+use mish_android_network::AndroidNetworkError;
 use mish_cellular::{
     CellularAdmissionReason as OwnerAdmissionReason,
     CellularAdmissionSnapshot as OwnerAdmissionSnapshot,
-    CellularAdmissionState as OwnerAdmissionState, CellularEgress, NetworkHandle,
-    NetworkObservation, ObservationSequence,
+    CellularAdmissionState as OwnerAdmissionState, CellularEgress, CellularNetworkAuthority,
+    CellularNetworkAuthorityError, NetworkHandle, NetworkObservation, ObservationSequence,
 };
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -106,12 +103,6 @@ impl fmt::Display for CellularNetworkOperationError {
 
 impl std::error::Error for CellularNetworkOperationError {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct AdmissionLease {
-    network: NetworkHandle,
-    sequence: ObservationSequence,
-}
-
 /// One runtime-scoped foreign handle to the Cellular Egress natural owner.
 ///
 /// There is intentionally no global singleton. A later Runtime Lifecycle composition
@@ -130,7 +121,7 @@ pub struct CellularController {
 #[derive(uniffi::Object)]
 pub struct CellularNetworkLease {
     owner: Arc<Mutex<CellularEgress>>,
-    authority: AdmissionLease,
+    authority: CellularNetworkAuthority,
 }
 
 #[uniffi::export]
@@ -197,7 +188,10 @@ impl CellularController {
     pub fn admitted_network_lease(
         &self,
     ) -> Result<Arc<CellularNetworkLease>, CellularNetworkOperationError> {
-        let authority = self.current_admission_lease()?;
+        let authority = self
+            .owner_for_operation()?
+            .admitted_network_authority()
+            .map_err(map_authority_error)?;
         Ok(Arc::new(CellularNetworkLease {
             owner: Arc::clone(&self.owner),
             authority,
@@ -213,7 +207,9 @@ impl CellularNetworkLease {
             return Err(CellularNetworkOperationError::InvalidSocketFd);
         }
 
-        self.execute_operation(|network| bind_socket_on_platform(network, socket_fd))
+        self.execute_operation(|authority| {
+            mish_android_network::bind_socket(authority, socket_fd).map_err(map_android_network_error)
+        })
     }
 
     /// Resolves a hostname using DNS associated with this lease's exact Android Network.
@@ -228,7 +224,10 @@ impl CellularNetworkLease {
             return Err(CellularNetworkOperationError::InvalidHostname);
         }
 
-        self.execute_operation(|network| resolve_host_on_platform(network, &hostname))
+        self.execute_operation(|authority| {
+            mish_android_network::resolve_host(authority, &hostname)
+                .map_err(map_android_network_error)
+        })
     }
 }
 
@@ -246,10 +245,6 @@ impl CellularController {
             .lock()
             .map_err(|_| CellularNetworkOperationError::OwnerUnavailable)
     }
-
-    fn current_admission_lease(&self) -> Result<AdmissionLease, CellularNetworkOperationError> {
-        admission_lease(self.owner_for_operation()?.admission())
-    }
 }
 
 impl CellularNetworkLease {
@@ -262,78 +257,51 @@ impl CellularNetworkLease {
     }
 
     fn ensure_current(&self) -> Result<(), CellularNetworkOperationError> {
-        let snapshot = self.owner_for_operation()?.admission();
-        let unchanged = snapshot.state() == OwnerAdmissionState::Admitted
-            && snapshot.admitted_network() == Some(self.authority.network)
-            && snapshot.last_sequence() == Some(self.authority.sequence);
-
-        if unchanged {
-            Ok(())
-        } else {
-            Err(CellularNetworkOperationError::NetworkChangedDuringOperation)
-        }
+        self.owner_for_operation()?
+            .validate_network_authority(self.authority)
+            .map_err(map_authority_error)
     }
 
     fn execute_operation<T>(
         &self,
-        operation: impl FnOnce(NetworkHandle) -> Result<T, CellularNetworkOperationError>,
+        operation: impl FnOnce(CellularNetworkAuthority) -> Result<T, CellularNetworkOperationError>,
     ) -> Result<T, CellularNetworkOperationError> {
         self.ensure_current()?;
-        let result = operation(self.authority.network)?;
+        let result = operation(self.authority)?;
         self.ensure_current()?;
         Ok(result)
     }
 }
 
-fn admission_lease(
-    snapshot: OwnerAdmissionSnapshot,
-) -> Result<AdmissionLease, CellularNetworkOperationError> {
-    if snapshot.state() != OwnerAdmissionState::Admitted {
-        return Err(CellularNetworkOperationError::NoAdmittedNetwork);
+fn map_authority_error(error: CellularNetworkAuthorityError) -> CellularNetworkOperationError {
+    match error {
+        CellularNetworkAuthorityError::NoAdmittedNetwork => {
+            CellularNetworkOperationError::NoAdmittedNetwork
+        }
+        CellularNetworkAuthorityError::NetworkChanged => {
+            CellularNetworkOperationError::NetworkChangedDuringOperation
+        }
     }
-
-    let network = snapshot
-        .admitted_network()
-        .ok_or(CellularNetworkOperationError::NoAdmittedNetwork)?;
-    let sequence = snapshot
-        .last_sequence()
-        .ok_or(CellularNetworkOperationError::NoAdmittedNetwork)?;
-
-    Ok(AdmissionLease { network, sequence })
 }
 
-#[cfg(target_os = "android")]
-fn bind_socket_on_platform(
-    network: NetworkHandle,
-    socket_fd: i32,
-) -> Result<(), CellularNetworkOperationError> {
-    android_explicit_network::bind_socket(network, socket_fd)
-}
-
-#[cfg(not(target_os = "android"))]
-fn bind_socket_on_platform(
-    network: NetworkHandle,
-    socket_fd: i32,
-) -> Result<(), CellularNetworkOperationError> {
-    let _ = (network, socket_fd);
-    Err(CellularNetworkOperationError::UnsupportedPlatform)
-}
-
-#[cfg(target_os = "android")]
-fn resolve_host_on_platform(
-    network: NetworkHandle,
-    hostname: &str,
-) -> Result<Vec<String>, CellularNetworkOperationError> {
-    android_explicit_network::resolve_host(network, hostname)
-}
-
-#[cfg(not(target_os = "android"))]
-fn resolve_host_on_platform(
-    network: NetworkHandle,
-    hostname: &str,
-) -> Result<Vec<String>, CellularNetworkOperationError> {
-    let _ = (network, hostname);
-    Err(CellularNetworkOperationError::UnsupportedPlatform)
+fn map_android_network_error(error: AndroidNetworkError) -> CellularNetworkOperationError {
+    match error {
+        AndroidNetworkError::InvalidSocketFd => CellularNetworkOperationError::InvalidSocketFd,
+        AndroidNetworkError::InvalidHostname => CellularNetworkOperationError::InvalidHostname,
+        AndroidNetworkError::NativeSocketBindFailed => {
+            CellularNetworkOperationError::NativeSocketBindFailed
+        }
+        AndroidNetworkError::NativeDnsLookupFailed => {
+            CellularNetworkOperationError::NativeDnsLookupFailed
+        }
+        AndroidNetworkError::NativeDnsNoResults => {
+            CellularNetworkOperationError::NativeDnsNoResults
+        }
+        AndroidNetworkError::NativeAddressConversionFailed => {
+            CellularNetworkOperationError::NativeAddressConversionFailed
+        }
+        AndroidNetworkError::UnsupportedPlatform => CellularNetworkOperationError::UnsupportedPlatform,
+    }
 }
 
 fn map_snapshot(snapshot: OwnerAdmissionSnapshot) -> CellularAdmissionView {
@@ -442,8 +410,8 @@ mod tests {
             .expect("valid observation");
         let lease = controller.admitted_network_lease().expect("admitted lease");
 
-        let result = lease.execute_operation(|network| {
-            assert_eq!(network.raw(), 42);
+        let result = lease.execute_operation(|authority| {
+            assert_eq!(authority.network_handle().raw(), 42);
             Ok("bound")
         });
 
@@ -483,8 +451,8 @@ mod tests {
         let lease = controller.admitted_network_lease().expect("admitted lease");
         let controller_for_operation = Arc::clone(&controller);
 
-        let result = lease.execute_operation(|network| {
-            assert_eq!(network.raw(), 42);
+        let result = lease.execute_operation(|authority| {
+            assert_eq!(authority.network_handle().raw(), 42);
             controller_for_operation
                 .network_lost(2, 42)
                 .expect("loss observation");
