@@ -45,6 +45,19 @@ C:\mish-lab\tools\    # pinned machine-level toolchains/caches
 
 A human clone, if one exists, is not evidence identity and is not used by the physical workflow.
 
+## Bootstrap entry prerequisites
+
+Before the versioned bootstrap runs, the machine must provide only:
+
+- 64-bit Windows;
+- an elevated Windows PowerShell console;
+- Microsoft App Installer / `winget`;
+- outbound HTTPS needed to fetch the pinned GitHub runner and build-tool distributions.
+
+The bootstrap then installs or materializes the LAB-1 Git, PowerShell, JDK, Gradle, Android SDK/NDK, Rust, cargo-ndk and ADB prerequisites declared by `toolchain.json`.
+
+No browser/client package is added merely because a later stage may need one. The current LAB-1 host-only preflight has no concrete browser/client consumer; any such prerequisite remains with the first later stage that actually requires it.
+
 ## Security boundary
 
 The runner is repository-scoped and carries the custom label:
@@ -100,7 +113,7 @@ The preflight checks:
 - Windows x64 and dedicated runner work-root identity;
 - `NETWORK SERVICE` execution identity;
 - Git/PowerShell/JDK/Gradle/Rust/cargo-ndk/ADB and Android SDK/NDK prerequisites;
-- **no connected ADB device** during LAB-1;
+- **no ADB device in any state** during LAB-1;
 - Android arm64 Rust cross-build without a phone;
 - Android debug APK assembly without a phone.
 
