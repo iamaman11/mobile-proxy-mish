@@ -33,6 +33,9 @@ Current commits are implementation-stage evidence only. They must not be interpr
 - [Contract boundaries](docs/architecture/CONTRACTS.md)
 - [Readiness and acceptance](docs/architecture/ACCEPTANCE.md)
 - [Build, release, and GitHub delivery](docs/architecture/RELEASE.md)
+- [Managed physical lab plan](docs/lab/PLAN.md)
+- [Physical lab security boundary](docs/lab/SECURITY.md)
+- [Managed lab evidence contract](docs/lab/EVIDENCE.md)
 - [E3 physical cellular protocol](docs/testing/E3_PHYSICAL_CELLULAR.md)
 - [E4 future full-stack protocol](docs/testing/E4_FULL_STACK.md)
 
