@@ -114,7 +114,8 @@ accepted-main guard
  -> initialize dedicated R2 backend
  -> if adds absent from state: discover exact existing adds read-only and import it
  -> if adds already present: keep existing state and continue
- -> assert official Mesh connectivity settings
+ -> assert required Mesh TCP/UDP connectivity settings
+ -> observe ICMP diagnostic state without making it a TCP/UDP acceptance gate
  -> verify adopted state
  -> provider plan/read-back
  -> STOP
@@ -163,9 +164,19 @@ CF-1 requires:
 offramp_warp_enabled == true
 ```
 
-Cloudflare documents `icmp_proxy_enabled` as an optional field. If the account response includes that field, the workflow requires it to be `true`. If Cloudflare omits the field, CF-1 records it as `NOT EXPOSED` rather than converting absence into `false`.
+The provider-backed `cloudflare_zero_trust_device_settings` check separately requires:
 
-ICMP support remains covered by the accepted account/bootstrap evidence and the provider-backed Gateway proxy assertions. This preserves fail-closed behavior for an explicit `icmp_proxy_enabled=false` while avoiding a false failure when the optional field is not emitted.
+```text
+use_zt_virtual_ip == true
+gateway_proxy_enabled == true
+gateway_udp_proxy_enabled == true
+```
+
+These are the fail-closed account-wide prerequisites for the accepted TCP/UDP Mesh dataplane.
+
+`icmp_proxy_enabled` is diagnostic-only for CF-1. Current Cloudflare Mesh documentation distinguishes TCP/UDP proxying from ICMP and describes ICMP as useful/recommended for diagnostic tools such as `ping` and `traceroute`. Therefore the workflow reports ICMP as `ENABLED`, `DISABLED`, or `NOT EXPOSED`, but none of those three observation states alone changes CF-1 TCP/UDP acceptance.
+
+This is not a weakening of the product dataplane contract: the application architecture requires TCP/UDP Mesh transport, while ICMP is not used by the proxy dataplane.
 
 The workflow then runs Terraform provider plan/read-back with `-detailed-exitcode` and reports one of:
 
@@ -185,7 +196,7 @@ Provider 5.24.0 exposes `cloudflare_zero_trust_device_settings` as a real data s
 - Gateway TCP proxy;
 - Gateway UDP proxy.
 
-Cloudflare's official connectivity-settings API additionally asserts WARP-to-WARP/off-ramp connectivity and, when emitted by the account response, verifies that the optional ICMP proxy field is not false.
+Cloudflare's official connectivity-settings API additionally asserts WARP-to-WARP/off-ramp connectivity. The ICMP proxy field is recorded only as diagnostic evidence for this stage.
 
 The generated Cloudflare Terraform documentation describes `cloudflare_zero_trust_connectivity_settings`, but provider 5.24.0 does not register that data source. CF-1 therefore uses the official read-only API rather than introducing a custom provider, `local-exec` PATCH, or a second mutable control path.
 

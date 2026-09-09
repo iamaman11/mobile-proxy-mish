@@ -203,7 +203,7 @@ jobs:
             echo '- Resource adopted into dedicated R2 state.'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Assert Mesh connectivity settings through official Cloudflare API
+      - name: Assert Mesh TCP/UDP connectivity settings through official Cloudflare API
         shell: bash
         run: |
           set -euo pipefail
@@ -218,15 +218,10 @@ jobs:
 
           if ! jq -e '
             .success == true and
-            .result.offramp_warp_enabled == true and
-            (
-              ((.result | has("icmp_proxy_enabled")) == false) or
-              .result.icmp_proxy_enabled == true
-            )
+            .result.offramp_warp_enabled == true
           ' "$response" >/dev/null; then
             offramp="$(jq -r '.result.offramp_warp_enabled // "missing"' "$response")"
-            icmp="$(jq -r 'if (.result | has("icmp_proxy_enabled")) then (.result.icmp_proxy_enabled | tostring) else "not-exposed" end' "$response")"
-            echo "::error::Cloudflare Mesh connectivity invariant failed: WARP-to-WARP=${offramp}, ICMP proxy field=${icmp}. No provider apply is allowed."
+            echo "::error::Cloudflare Mesh connectivity invariant failed: WARP-to-WARP=${offramp}. No provider apply is allowed."
             exit 1
           fi
 
@@ -234,12 +229,18 @@ jobs:
           {
             echo '### Cloudflare Mesh connectivity read-back'
             echo '- WARP-to-WARP/off-ramp: ENABLED'
-            if [[ "$icmp" == 'true' ]]; then
-              echo '- ICMP proxy API field: ENABLED'
-            else
-              echo '- ICMP proxy API field: NOT EXPOSED (optional in the current Cloudflare response)'
-              echo '- CF-1 retains provider Gateway TCP/UDP assertions plus accepted bootstrap evidence; absence is not interpreted as false.'
-            fi
+            case "$icmp" in
+              true)
+                echo '- ICMP proxy API field: ENABLED (diagnostic capability observed)'
+                ;;
+              false)
+                echo '- ICMP proxy API field: DISABLED (diagnostic-only for CF-1; TCP/UDP Mesh acceptance is unaffected)'
+                ;;
+              *)
+                echo '- ICMP proxy API field: NOT EXPOSED (diagnostic-only for CF-1)'
+                ;;
+            esac
+            echo '- Required Gateway TCP/UDP proxying is enforced separately by the provider device-settings check.'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify adopted state before plan
