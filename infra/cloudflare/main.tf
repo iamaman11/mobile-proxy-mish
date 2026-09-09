@@ -45,10 +45,11 @@ resource "cloudflare_zero_trust_device_custom_profile" "adds" {
   }
 }
 
-# These account-wide facts already exist and are required for Mesh. Provider
-# 5.24.0 exposes a read-only device-settings data source for unique virtual IP
-# assignment plus Gateway TCP/UDP proxying, so CF-1 can assert those facts
-# without taking write ownership of the account-wide singleton.
+# These account-wide facts already exist and are required for the accepted
+# TCP/UDP Mesh dataplane. Provider 5.24.0 exposes a read-only device-settings
+# data source for unique virtual IP assignment plus Gateway TCP/UDP proxying,
+# so CF-1 can assert those facts without taking write ownership of the
+# account-wide singleton.
 data "cloudflare_zero_trust_device_settings" "mesh" {
   account_id = var.cloudflare_account_id
 }
@@ -66,11 +67,10 @@ check "mesh_device_settings" {
 
 # WARP-to-WARP/off-ramp connectivity remains a mandatory live account fact and
 # is asserted through Cloudflare's official read-only connectivity-settings API.
-# The same API documents icmp_proxy_enabled as optional and the actual account
-# response may omit it. If Cloudflare returns that field, the hosted verifier
-# requires it to be true; omission is treated as not observable, not false.
-# ICMP support therefore remains backed by the provider Gateway proxy checks
-# above plus the accepted account/bootstrap evidence recorded for CF-1.
+# `icmp_proxy_enabled` is observed only as a diagnostic capability: current
+# Cloudflare Mesh documentation treats ICMP as useful/recommended for ping and
+# traceroute, while the accepted product dataplane requires TCP/UDP. Therefore
+# ICMP true/false/omitted is reported but is not a CF-1 acceptance gate.
 # Provider 5.24.0 still does not register the documented connectivity-settings
 # Terraform data source in its actual plugin schema, so no custom provider or
 # second write path is introduced.
