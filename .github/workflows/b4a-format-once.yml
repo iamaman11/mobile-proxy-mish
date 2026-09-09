@@ -1,0 +1,36 @@
+name: B4a Format Once
+
+on:
+  push:
+    branches: [b4a/cellular-egress-bridge]
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: b4a/cellular-egress-bridge
+          fetch-depth: 0
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal --component rustfmt
+          rustup override set 1.98.1
+      - name: Format and self-retire
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          rm .github/workflows/b4a-format-once.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "one-shot formatter made no changes" >&2
+            exit 1
+          fi
+          git commit -m "B4a: apply pinned rustfmt and retire bootstrap"
+          git push origin HEAD:b4a/cellular-egress-bridge
