@@ -64,10 +64,13 @@ check "mesh_device_settings" {
   }
 }
 
-# WARP-to-WARP/off-ramp connectivity and ICMP proxy are accepted live account
-# facts. Cloudflare's official API exposes them at the Zero Trust connectivity
-# settings endpoint, while the released provider 5.24.0 does not register the
-# documented Terraform data source in its actual plugin schema. The protected
-# accepted-main plan workflow therefore asserts both facts through the official
-# read-only API and fails closed before provider planning if either is disabled.
-# No custom Terraform provider or second write path is introduced.
+# WARP-to-WARP/off-ramp connectivity remains a mandatory live account fact and
+# is asserted through Cloudflare's official read-only connectivity-settings API.
+# The same API documents icmp_proxy_enabled as optional and the actual account
+# response may omit it. If Cloudflare returns that field, the hosted verifier
+# requires it to be true; omission is treated as not observable, not false.
+# ICMP support therefore remains backed by the provider Gateway proxy checks
+# above plus the accepted account/bootstrap evidence recorded for CF-1.
+# Provider 5.24.0 still does not register the documented connectivity-settings
+# Terraform data source in its actual plugin schema, so no custom provider or
+# second write path is introduced.
