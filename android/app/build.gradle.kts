@@ -19,7 +19,6 @@ val generatedJniLibsPath = layout.buildDirectory
     .get()
     .asFile
     .absolutePath
-val uniFfiConfigPath = "$repoRootPath/crates/android-ffi/uniffi.toml"
 
 val hostLibraryName = when {
     System.getProperty("os.name").startsWith("Windows", ignoreCase = true) -> "mish_android_ffi.dll"
@@ -40,6 +39,8 @@ val buildHostUniFfi = tasks.register<Exec>("buildHostUniFfi") {
 val generateUniFfiBindings = tasks.register<Exec>("generateUniFfiBindings") {
     dependsOn(cleanGeneratedUniFfi, buildHostUniFfi)
     workingDir(repoRootPath)
+    // UniFFI 0.32 resolves the crate-local crates/android-ffi/uniffi.toml via cargo
+    // metadata. --config is reserved for the newer global configuration format.
     commandLine(
         "cargo",
         "run",
@@ -50,8 +51,6 @@ val generateUniFfiBindings = tasks.register<Exec>("generateUniFfiBindings") {
         "--locked",
         "--",
         "generate",
-        "--config",
-        uniFfiConfigPath,
         "--library",
         hostLibraryPath,
         "--language",
