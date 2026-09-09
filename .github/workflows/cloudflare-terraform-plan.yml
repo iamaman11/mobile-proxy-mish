@@ -1,0 +1,135 @@
+name: Cloudflare Terraform Plan
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-terraform-provider-state
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Cloudflare Terraform Plan
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: cloudflare-plan
+    env:
+      TF_VERSION: '1.16.2'
+      TF_IN_AUTOMATION: 'true'
+      TF_INPUT: 'false'
+      TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      TF_VAR_windows_profile_match: ${{ secrets.CLOUDFLARE_WINDOWS_PROFILE_MATCH }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    steps:
+      - name: Checkout accepted main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify accepted-main execution boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = 'refs/heads/main'
+          git fetch --no-tags origin main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+
+      - name: Install pinned Terraform
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="https://releases.hashicorp.com/terraform/${TF_VERSION}"
+          asset="terraform_${TF_VERSION}_linux_amd64.zip"
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+            "${base}/${asset}" -o "$RUNNER_TEMP/$asset"
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+            "${base}/terraform_${TF_VERSION}_SHA256SUMS" \
+            -o "$RUNNER_TEMP/terraform_SHA256SUMS"
+          grep " ${asset}$" "$RUNNER_TEMP/terraform_SHA256SUMS" \
+            | (cd "$RUNNER_TEMP" && sha256sum -c -)
+          unzip -q "$RUNNER_TEMP/$asset" -d "$RUNNER_TEMP/terraform-bin"
+          sudo install -m 0755 "$RUNNER_TEMP/terraform-bin/terraform" /usr/local/bin/terraform
+          terraform version | grep -F "Terraform v${TF_VERSION}"
+
+      - name: Validate protected environment inputs
+        shell: bash
+        env:
+          R2_STATE_BUCKET: ${{ vars.R2_STATE_BUCKET }}
+        run: |
+          set -euo pipefail
+          test -n "$TF_VAR_cloudflare_account_id"
+          test -n "$TF_VAR_windows_profile_match"
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$AWS_ACCESS_KEY_ID"
+          test -n "$AWS_SECRET_ACCESS_KEY"
+          test -n "$R2_STATE_BUCKET"
+
+      - name: Initialize dedicated R2 remote state
+        shell: bash
+        env:
+          R2_STATE_BUCKET: ${{ vars.R2_STATE_BUCKET }}
+        run: |
+          set -euo pipefail
+          backend="$RUNNER_TEMP/backend.r2.hcl"
+          cat > "$backend" <<EOF
+          bucket = "$R2_STATE_BUCKET"
+          key    = "mobile-proxy-mish/cloudflare/terraform.tfstate"
+          region = "auto"
+          skip_credentials_validation = true
+          skip_metadata_api_check     = true
+          skip_region_validation      = true
+          skip_requesting_account_id  = true
+          skip_s3_checksum            = true
+          use_path_style              = true
+          endpoints = {
+            s3 = "https://${TF_VAR_cloudflare_account_id}.r2.cloudflarestorage.com"
+          }
+          EOF
+          terraform -chdir=infra/cloudflare init -input=false -backend-config="$backend"
+          rm -f "$backend"
+
+      - name: Require one-time profile adoption first
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! terraform -chdir=infra/cloudflare state show \
+            cloudflare_zero_trust_device_custom_profile.adds >/dev/null 2>&1; then
+            echo '::error::The existing adds profile is not in Terraform state. Run the bounded one-time import procedure from infra/cloudflare/README.md before provider planning.'
+            exit 1
+          fi
+
+      - name: Provider plan and live read-back assertions
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          terraform -chdir=infra/cloudflare plan \
+            -input=false \
+            -detailed-exitcode \
+            -no-color \
+            -out="$RUNNER_TEMP/cloudflare.tfplan"
+          code=$?
+          set -e
+
+          case "$code" in
+            0)
+              echo '### Cloudflare Terraform plan: NO CHANGES' >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            2)
+              echo '### Cloudflare Terraform plan: CHANGES REQUIRE REVIEW' >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo '### Cloudflare Terraform plan: FAILED' >> "$GITHUB_STEP_SUMMARY"
+              exit "$code"
+              ;;
+          esac
+
+          terraform -chdir=infra/cloudflare show -no-color \
+            "$RUNNER_TEMP/cloudflare.tfplan"
+
+          exit 0
