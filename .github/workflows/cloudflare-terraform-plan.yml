@@ -126,22 +126,15 @@ jobs:
           EOF
           terraform -chdir=infra/cloudflare init -input=false -backend-config="$backend"
 
-      - name: Ensure existing adds profile is adopted
+      - name: Verify or adopt exact existing adds profile
         shell: bash
         run: |
           set -euo pipefail
           address='cloudflare_zero_trust_device_custom_profile.adds'
-
-          if terraform -chdir=infra/cloudflare state show "$address" >/dev/null 2>&1; then
-            {
-              echo '### Cloudflare Terraform adoption: ALREADY PRESENT'
-              echo '- Existing adds profile is already present in dedicated R2 state.'
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
           response="$RUNNER_TEMP/cloudflare-device-policies.json"
-          trap 'rm -f "$response"' EXIT
+          state_view="$RUNNER_TEMP/cloudflare-adds-state.txt"
+          trap 'rm -f "$response" "$state_view"' EXIT
+          chmod 600 "$response" "$state_view" 2>/dev/null || true
 
           curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
             "https://api.cloudflare.com/client/v4/accounts/${TF_VAR_cloudflare_account_id}/devices/policies?per_page=100&page=1" \
@@ -150,14 +143,14 @@ jobs:
             -o "$response"
 
           if ! jq -e '.success == true and (.result | type == "array")' "$response" >/dev/null; then
-            echo '::error::Cloudflare device-profile list could not be verified. No import was attempted.'
+            echo '::error::Cloudflare device-profile list could not be verified. No import or plan was attempted.'
             exit 1
           fi
 
           returned="$(jq -r '.result | length' "$response")"
           total="$(jq -r '.result_info.total_count // (.result | length)' "$response")"
           if (( total > returned )); then
-            echo '::error::Cloudflare device-profile response is paginated beyond the bounded first page. No import was attempted.'
+            echo '::error::Cloudflare device-profile response is paginated beyond the bounded first page. No import or plan was attempted.'
             exit 1
           fi
 
@@ -172,7 +165,7 @@ jobs:
           ' "$response")"
 
           if [[ "$match_count" != '1' ]]; then
-            echo "::error::Expected exactly one non-default Cloudflare profile named adds with the protected exact match expression; found ${match_count}. No import was attempted."
+            echo "::error::Expected exactly one non-default Cloudflare profile named adds with the protected exact match expression; found ${match_count}. No import or plan was attempted."
             exit 1
           fi
 
@@ -190,17 +183,45 @@ jobs:
           import_id="${TF_VAR_cloudflare_account_id}/${policy_id}"
           echo "::add-mask::$import_id"
 
+          if terraform -chdir=infra/cloudflare state show -no-color "$address" >"$state_view" 2>/dev/null; then
+            state_id="$(sed -nE 's/^[[:space:]]*id[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$state_view" | head -n1)"
+            if [[ -z "$state_id" ]]; then
+              echo '::error::Adopted Terraform state exists but its resource identity could not be verified. No plan was attempted.'
+              exit 1
+            fi
+            echo "::add-mask::$state_id"
+            if [[ "$state_id" != "$policy_id" ]]; then
+              echo '::error::Adopted Terraform state points to a different Cloudflare profile than the protected exact name + match selector. No plan was attempted.'
+              exit 1
+            fi
+            {
+              echo '### Cloudflare Terraform adoption: ALREADY PRESENT'
+              echo '- Existing adds profile is already present in dedicated R2 state.'
+              echo '- Live exact name + protected match selector re-verified through the Cloudflare API.'
+              echo '- Terraform state identity matches that exact live profile.'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
           terraform -chdir=infra/cloudflare import \
             -input=false \
             "$address" \
-            "$import_id"
+            "$import_id" \
+            >"$RUNNER_TEMP/cloudflare-import.log" 2>&1
 
-          terraform -chdir=infra/cloudflare state show "$address" >/dev/null
+          terraform -chdir=infra/cloudflare state show -no-color "$address" >"$state_view" 2>/dev/null
+          state_id="$(sed -nE 's/^[[:space:]]*id[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$state_view" | head -n1)"
+          if [[ -z "$state_id" || "$state_id" != "$policy_id" ]]; then
+            echo '::error::Terraform import completed but adopted state identity does not match the exact live profile. No plan was attempted.'
+            exit 1
+          fi
+          echo "::add-mask::$state_id"
 
           {
             echo '### Cloudflare Terraform adoption: SUCCESS'
             echo '- Existing adds profile uniquely matched by protected name + match expression.'
             echo '- Resource adopted into dedicated R2 state.'
+            echo '- Adopted state identity matches the exact live profile.'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Assert Mesh TCP/UDP connectivity settings through official Cloudflare API
@@ -254,12 +275,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          plan_bin="$RUNNER_TEMP/cloudflare.tfplan"
+          plan_log="$RUNNER_TEMP/cloudflare-plan.log"
+          plan_json="$RUNNER_TEMP/cloudflare-plan.json"
+          trap 'rm -f "$plan_bin" "$plan_log" "$plan_json"' EXIT
+          touch "$plan_log" "$plan_json"
+          chmod 600 "$plan_log" "$plan_json"
+
           set +e
           terraform -chdir=infra/cloudflare plan \
             -input=false \
             -detailed-exitcode \
             -no-color \
-            -out="$RUNNER_TEMP/cloudflare.tfplan"
+            -out="$plan_bin" \
+            >"$plan_log" 2>&1
           code=$?
           set -e
 
@@ -268,15 +297,28 @@ jobs:
               echo '### Cloudflare Terraform plan: NO CHANGES' >> "$GITHUB_STEP_SUMMARY"
               ;;
             2)
-              echo '### Cloudflare Terraform plan: CHANGES REQUIRE REVIEW' >> "$GITHUB_STEP_SUMMARY"
+              terraform -chdir=infra/cloudflare show -json "$plan_bin" > "$plan_json"
+              {
+                echo '### Cloudflare Terraform plan: CHANGES REQUIRE REVIEW'
+                echo '- Raw plan values and provider identifiers are intentionally not published.'
+                echo '- Safe change summary:'
+                jq -r '
+                  .resource_changes[]
+                  | select(.change.actions != ["no-op"])
+                  | . as $r
+                  | ($r.change.before // {}) as $before
+                  | ($r.change.after // {}) as $after
+                  | ((($before | keys_unsorted) + ($after | keys_unsorted)) | unique) as $keys
+                  | [$keys[] | select($before[.] != $after[.])] as $changed
+                  | "  - \($r.address): actions=\($r.change.actions | join(",")); changed_attributes=\(if ($changed | length) == 0 then "metadata-only-or-nested" else ($changed | join(",")) end)"
+                ' "$plan_json"
+              } >> "$GITHUB_STEP_SUMMARY"
+              echo '::error::Terraform provider plan contains changes requiring review. No apply is allowed.'
+              exit 1
               ;;
             *)
               echo '### Cloudflare Terraform plan: FAILED' >> "$GITHUB_STEP_SUMMARY"
+              echo '::error::Terraform provider plan failed. Raw provider output was kept only in ephemeral runner storage and was not published.'
               exit "$code"
               ;;
           esac
-
-          terraform -chdir=infra/cloudflare show -no-color \
-            "$RUNNER_TEMP/cloudflare.tfplan"
-
-          exit 0
