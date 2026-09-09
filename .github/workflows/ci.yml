@@ -51,6 +51,173 @@ jobs:
             grep -q "$symbol" "$GENERATED"
           done
 
+      - name: Load pinned sing-box release manifest
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import tomllib
+          from pathlib import Path
+
+          data = tomllib.loads(Path("vendor/sing-box/release.toml").read_text())
+          version = data["version"]
+          linux = data["linux_amd64_ci"]
+          android = data["android_arm64"]
+
+          assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version)
+          for artifact in (linux, android):
+              assert artifact["url"].startswith(
+                  f"https://github.com/SagerNet/sing-box/releases/download/v{version}/"
+              )
+              assert re.fullmatch(r"[0-9a-f]{64}", artifact["sha256"])
+              assert artifact["url"].endswith("/" + artifact["asset"])
+
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write(f"SB_VERSION={version}\n")
+              env.write(f"SB_LINUX_ASSET={linux['asset']}\n")
+              env.write(f"SB_LINUX_URL={linux['url']}\n")
+              env.write(f"SB_LINUX_SHA256={linux['sha256']}\n")
+              env.write(f"SB_ANDROID_ASSET={android['asset']}\n")
+              env.write(f"SB_ANDROID_URL={android['url']}\n")
+              env.write(f"SB_ANDROID_SHA256={android['sha256']}\n")
+          PY
+
+      - name: Verify pinned sing-box artifacts and product configuration
+        run: |
+          set -euo pipefail
+          SB_ROOT="$RUNNER_TEMP/sing-box"
+          mkdir -p "$SB_ROOT"
+
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+            "$SB_LINUX_URL" -o "$SB_ROOT/$SB_LINUX_ASSET"
+          echo "$SB_LINUX_SHA256  $SB_ROOT/$SB_LINUX_ASSET" | sha256sum -c -
+
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+            "$SB_ANDROID_URL" -o "$SB_ROOT/$SB_ANDROID_ASSET"
+          echo "$SB_ANDROID_SHA256  $SB_ROOT/$SB_ANDROID_ASSET" | sha256sum -c -
+
+          tar -xzf "$SB_ROOT/$SB_LINUX_ASSET" -C "$SB_ROOT"
+          SB="$SB_ROOT/sing-box-$SB_VERSION-linux-amd64/sing-box"
+          test -x "$SB"
+          "$SB" version | grep -Fq "sing-box version $SB_VERSION"
+
+          PRODUCT_CONFIG="$RUNNER_TEMP/product-sing-box.json"
+          cargo run --quiet --locked -p mish-sing-box-adapter --example render_product_config \
+            > "$PRODUCT_CONFIG"
+          "$SB" check -c "$PRODUCT_CONFIG"
+          if grep -q '"type": "direct"' "$PRODUCT_CONFIG"; then
+            echo "product config must never contain a direct outbound" >&2
+            exit 1
+          fi
+
+          echo "SB=$SB" >> "$GITHUB_ENV"
+          echo "PRODUCT_CONFIG=$PRODUCT_CONFIG" >> "$GITHUB_ENV"
+
+      - name: Exercise hosted sing-box proxy and auth matrix
+        run: |
+          set -euo pipefail
+          FIXTURE_CONFIG="$RUNNER_TEMP/sing-box-egress-fixture.json"
+          HTTP_ROOT="$RUNNER_TEMP/proxy-target"
+          mkdir -p "$HTTP_ROOT"
+          printf 'mish-proxy-ok\n' > "$HTTP_ROOT/probe.txt"
+
+          cat > "$FIXTURE_CONFIG" <<'JSON'
+          {
+            "inbounds": [
+              {
+                "type": "socks",
+                "tag": "fixture-socks-in",
+                "listen": "127.0.0.1",
+                "listen_port": 19080,
+                "users": [
+                  {"username": "ci-egress", "password": "ci-egress-password"}
+                ]
+              }
+            ],
+            "outbounds": [
+              {"type": "direct", "tag": "fixture-direct"}
+            ],
+            "route": {"final": "fixture-direct"}
+          }
+          JSON
+
+          "$SB" check -c "$FIXTURE_CONFIG"
+
+          HTTP_PID=""
+          EGRESS_PID=""
+          PRODUCT_PID=""
+          cleanup() {
+            for pid in "$PRODUCT_PID" "$EGRESS_PID" "$HTTP_PID"; do
+              if [[ -n "$pid" ]]; then
+                kill "$pid" >/dev/null 2>&1 || true
+              fi
+            done
+          }
+          trap cleanup EXIT
+
+          python3 -m http.server 18080 --bind 127.0.0.1 --directory "$HTTP_ROOT" \
+            >"$RUNNER_TEMP/http-target.log" 2>&1 &
+          HTTP_PID=$!
+          "$SB" run -c "$FIXTURE_CONFIG" >"$RUNNER_TEMP/egress-fixture.log" 2>&1 &
+          EGRESS_PID=$!
+          "$SB" run -c "$PRODUCT_CONFIG" >"$RUNNER_TEMP/product-sing-box.log" 2>&1 &
+          PRODUCT_PID=$!
+
+          wait_port() {
+            local port="$1"
+            python3 - "$port" <<'PY'
+          import socket
+          import sys
+          import time
+
+          port = int(sys.argv[1])
+          deadline = time.monotonic() + 10
+          while time.monotonic() < deadline:
+              try:
+                  with socket.create_connection(("127.0.0.1", port), timeout=0.25):
+                      raise SystemExit(0)
+              except OSError:
+                  time.sleep(0.1)
+          raise SystemExit(f"port {port} did not become ready")
+          PY
+          }
+
+          for port in 18080 19080 1080 1081 3128; do
+            wait_port "$port"
+          done
+
+          TARGET="http://127.0.0.1:18080/probe.txt"
+          expect_body() {
+            local body
+            body="$($@)"
+            [[ "$body" == "mish-proxy-ok" ]]
+          }
+          expect_failure() {
+            if "$@" >/dev/null 2>&1; then
+              echo "command unexpectedly succeeded: $*" >&2
+              return 1
+            fi
+          }
+
+          expect_body curl --fail --silent --show-error --max-time 10 --noproxy "" \
+            --proxy http://127.0.0.1:1080 --proxy-user ci-public:ci-public-password "$TARGET"
+          expect_body curl --fail --silent --show-error --max-time 10 --noproxy "" \
+            --proxy socks5h://127.0.0.1:1080 --proxy-user ci-public:ci-public-password "$TARGET"
+          expect_body curl --fail --silent --show-error --max-time 10 --noproxy "" \
+            --proxy socks5h://127.0.0.1:1081 --proxy-user ci-public:ci-public-password "$TARGET"
+          expect_body curl --fail --silent --show-error --max-time 10 --noproxy "" \
+            --proxy http://127.0.0.1:3128 --proxy-user ci-public:ci-public-password "$TARGET"
+          expect_body curl --fail --silent --show-error --max-time 10 --noproxy "" \
+            --proxytunnel --proxy http://127.0.0.1:3128 \
+            --proxy-user ci-public:ci-public-password "$TARGET"
+
+          expect_failure curl --fail --silent --max-time 5 --noproxy "" \
+            --proxy http://127.0.0.1:1080 "$TARGET"
+          expect_failure curl --fail --silent --max-time 5 --noproxy "" \
+            --proxy socks5h://127.0.0.1:1081 --proxy-user wrong:wrong "$TARGET"
+          expect_failure curl --fail --silent --max-time 5 --noproxy "" \
+            --proxy http://127.0.0.1:3128 "$TARGET"
+
   android:
     name: Android Compose Shell
     runs-on: ubuntu-latest
