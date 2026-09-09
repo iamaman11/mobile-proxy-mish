@@ -337,6 +337,10 @@ name = "mish-cellular"
 version = "0.1.0"
 
 [[package]]
+name = "mish-cellular-egress-bridge"
+version = "0.1.0"
+
+[[package]]
 name = "mish-configuration"
 version = "0.1.0"
 
