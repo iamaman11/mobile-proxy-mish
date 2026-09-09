@@ -277,3 +277,22 @@ jobs:
           unzip -l "$APK" | grep -q 'lib/arm64-v8a/libjnidispatch.so'
           readelf -Ws "$NATIVE" | grep -q 'android_setsocknetwork'
           readelf -Ws "$NATIVE" | grep -q 'android_getaddrinfofornetwork'
+
+      - name: Verify Android arm64 cellular connector link path
+        run: |
+          set -euo pipefail
+          cargo ndk -P 23 -t arm64-v8a build \
+            -p mish-runtime \
+            --example android_cellular_connector_link \
+            --release \
+            --locked
+
+          CONNECTOR="target/aarch64-linux-android/release/examples/android_cellular_connector_link"
+          SYMBOLS="$RUNNER_TEMP/android-cellular-connector.symbols"
+          test -x "$CONNECTOR"
+          readelf -Ws "$CONNECTOR" > "$SYMBOLS"
+          grep -Fq 'android_setsocknetwork' "$SYMBOLS"
+          grep -Fq 'android_getaddrinfofornetwork' "$SYMBOLS"
+          grep -Eq '[[:space:]]connect($|@)' "$SYMBOLS"
+          grep -Eq '[[:space:]]poll($|@)' "$SYMBOLS"
+          grep -Eq '[[:space:]]getsockopt($|@)' "$SYMBOLS"

@@ -332,6 +332,7 @@ dependencies = [
 name = "mish-android-network"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "mish-cellular",
  "ndk-sys",
 ]
@@ -375,6 +376,11 @@ version = "0.1.0"
 [[package]]
 name = "mish-runtime"
 version = "0.1.0"
+dependencies = [
+ "mish-android-network",
+ "mish-cellular",
+ "mish-cellular-egress-bridge",
+]
 
 [[package]]
 name = "mish-sing-box-adapter"
