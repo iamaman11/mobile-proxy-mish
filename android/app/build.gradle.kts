@@ -1,3 +1,4 @@
+import org.gradle.api.tasks.Delete
 import org.gradle.api.tasks.Exec
 
 plugins {
@@ -5,28 +6,39 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-val repoRoot = rootProject.projectDir.parentFile
-val generatedUniFfiDir = layout.buildDirectory.dir("generated/uniffi/kotlin").get().asFile
-val generatedJniLibsDir = layout.buildDirectory.dir("generated/rust-jni").get().asFile
+// Resolve task inputs to plain serializable paths during configuration. Gradle task
+// actions must not capture Project/script objects when configuration cache is enabled.
+val repoRootPath = rootProject.projectDir.parentFile.absolutePath
+val generatedUniFfiPath = layout.buildDirectory
+    .dir("generated/uniffi/kotlin")
+    .get()
+    .asFile
+    .absolutePath
+val generatedJniLibsPath = layout.buildDirectory
+    .dir("generated/rust-jni")
+    .get()
+    .asFile
+    .absolutePath
 
 val hostLibraryName = when {
     System.getProperty("os.name").startsWith("Windows", ignoreCase = true) -> "mish_android_ffi.dll"
     System.getProperty("os.name").startsWith("Mac", ignoreCase = true) -> "libmish_android_ffi.dylib"
     else -> "libmish_android_ffi.so"
 }
-val hostLibrary = repoRoot.resolve("target/debug/$hostLibraryName")
+val hostLibraryPath = "$repoRootPath/target/debug/$hostLibraryName"
+
+val cleanGeneratedUniFfi = tasks.register<Delete>("cleanGeneratedUniFfi") {
+    delete(generatedUniFfiPath)
+}
 
 val buildHostUniFfi = tasks.register<Exec>("buildHostUniFfi") {
-    workingDir(repoRoot)
+    workingDir(repoRootPath)
     commandLine("cargo", "build", "-p", "mish-android-ffi", "--locked")
 }
 
 val generateUniFfiBindings = tasks.register<Exec>("generateUniFfiBindings") {
-    dependsOn(buildHostUniFfi)
-    workingDir(repoRoot)
-    doFirst {
-        project.delete(generatedUniFfiDir)
-    }
+    dependsOn(cleanGeneratedUniFfi, buildHostUniFfi)
+    workingDir(repoRootPath)
     commandLine(
         "cargo",
         "run",
@@ -38,24 +50,22 @@ val generateUniFfiBindings = tasks.register<Exec>("generateUniFfiBindings") {
         "--",
         "generate",
         "--library",
-        hostLibrary.absolutePath,
+        hostLibraryPath,
         "--language",
         "kotlin",
         "--out-dir",
-        generatedUniFfiDir.absolutePath,
+        generatedUniFfiPath,
         "--no-format",
     )
 }
 
+val cleanGeneratedJniLibs = tasks.register<Delete>("cleanGeneratedJniLibs") {
+    delete(generatedJniLibsPath)
+}
+
 val buildAndroidUniFfi = tasks.register<Exec>("buildAndroidUniFfi") {
-    dependsOn(generateUniFfiBindings)
-    workingDir(repoRoot)
-    doFirst {
-        check(!System.getenv("ANDROID_NDK_HOME").isNullOrBlank()) {
-            "ANDROID_NDK_HOME must point to the pinned Android NDK before building the Rust Android library"
-        }
-        project.delete(generatedJniLibsDir)
-    }
+    dependsOn(generateUniFfiBindings, cleanGeneratedJniLibs)
+    workingDir(repoRootPath)
     commandLine(
         "cargo",
         "ndk",
@@ -64,7 +74,7 @@ val buildAndroidUniFfi = tasks.register<Exec>("buildAndroidUniFfi") {
         "-t",
         "arm64-v8a",
         "-o",
-        generatedJniLibsDir.absolutePath,
+        generatedJniLibsPath,
         "build",
         "-p",
         "mish-android-ffi",
@@ -95,8 +105,8 @@ android {
     }
 
     sourceSets.getByName("main") {
-        java.srcDir(generatedUniFfiDir)
-        jniLibs.srcDir(generatedJniLibsDir)
+        java.srcDir(generatedUniFfiPath)
+        jniLibs.srcDir(generatedJniLibsPath)
     }
 
     compileOptions {
