@@ -69,6 +69,36 @@ jobs:
           test -n "$AWS_SECRET_ACCESS_KEY"
           test -n "$R2_STATE_BUCKET"
 
+      - name: Assert Mesh connectivity settings through official Cloudflare API
+        shell: bash
+        run: |
+          set -euo pipefail
+          response="$RUNNER_TEMP/cloudflare-connectivity-settings.json"
+          trap 'rm -f "$response"' EXIT
+
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+            "https://api.cloudflare.com/client/v4/accounts/${TF_VAR_cloudflare_account_id}/zerotrust/connectivity_settings" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H 'Accept: application/json' \
+            -o "$response"
+
+          if ! jq -e '
+            .success == true and
+            .result.offramp_warp_enabled == true and
+            .result.icmp_proxy_enabled == true
+          ' "$response" >/dev/null; then
+            offramp="$(jq -r '.result.offramp_warp_enabled // "missing"' "$response")"
+            icmp="$(jq -r '.result.icmp_proxy_enabled // "missing"' "$response")"
+            echo "::error::Cloudflare Mesh connectivity invariant failed: WARP-to-WARP=${offramp}, ICMP proxy=${icmp}. No provider apply is allowed."
+            exit 1
+          fi
+
+          {
+            echo '### Cloudflare Mesh connectivity read-back'
+            echo '- WARP-to-WARP/off-ramp: ENABLED'
+            echo '- ICMP proxy: ENABLED'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Initialize dedicated R2 remote state
         shell: bash
         env:
