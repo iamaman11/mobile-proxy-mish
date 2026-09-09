@@ -93,7 +93,7 @@ fn numeric_hosts(results: &AddrInfoList) -> Result<Vec<String>, CellularNetworkO
                     info.ai_addr,
                     info.ai_addrlen,
                     host.as_mut_ptr(),
-                    host.len() as ndk_sys::socklen_t,
+                    host.len(),
                     ptr::null_mut(),
                     0,
                     ndk_sys::NI_NUMERICHOST as i32,
