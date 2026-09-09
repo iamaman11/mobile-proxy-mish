@@ -65,6 +65,23 @@ jobs:
             }
           }
 
+          $bootstrapText = Get-Content -Raw -LiteralPath 'lab/windows/bootstrap-windows.ps1'
+          foreach ($required in @(
+            'RunnerTokenProviderExecutable',
+            'RunnerTokenProviderArgumentsJson',
+            'Get-RunnerRegistrationSecureToken',
+            'Runner token provider executable must be an absolute Windows path.',
+            'Provider output is intentionally suppressed.',
+            'Read-Host ''GitHub runner registration token'' -AsSecureString'
+          )) {
+            if (-not $bootstrapText.Contains($required)) {
+              throw "LAB-1 autonomous token-source contract drifted: $required"
+            }
+          }
+          if ($bootstrapText -match '(?i)Write-(Host|Output|Verbose|Debug).*plain(Token|ProviderToken)') {
+            throw 'Bootstrap must never write plaintext runner token variables.'
+          }
+
       - name: Validate physical-workflow trust boundary
         shell: pwsh
         run: |
