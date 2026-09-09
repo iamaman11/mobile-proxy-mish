@@ -26,6 +26,8 @@ cloudflare_zero_trust_device_custom_profile.adds
 
 Do not create a duplicate profile. The profile match expression is supplied as a protected runtime secret and is not committed to this public repository.
 
+The protected `match` selector contains operator identity data. Exact `name + match` verification therefore belongs to the hosted read-only Cloudflare API check on every accepted-main run. Terraform keeps the value in configuration for create/import shape but ignores update planning for `match` itself, because Terraform 1.16 sensitivity metadata can otherwise produce a perpetual metadata-only update even when the provider reports the exact same value. The verifier also confirms that the Terraform state resource ID points at the exact profile selected by the protected `name + match` predicate.
+
 ## Provider and Terraform versions
 
 ```text
@@ -112,11 +114,11 @@ accepted-main guard
  -> validate protected environment inputs
  -> resolve exactly one Cloudflare account from protected token scope and mask its ID
  -> initialize dedicated R2 backend
- -> if adds absent from state: discover exact existing adds read-only and import it
- -> if adds already present: keep existing state and continue
+ -> read-only exact adds discovery by name + protected match on every run
+ -> if adds absent from state: import that exact existing profile
+ -> if adds already present: verify state identity points at that exact live profile
  -> assert required Mesh TCP/UDP connectivity settings
  -> observe ICMP diagnostic state without making it a TCP/UDP acceptance gate
- -> verify adopted state
  -> provider plan/read-back
  -> STOP
 ```
@@ -125,15 +127,7 @@ There is no Terraform apply in this workflow.
 
 ### Adoption behavior
 
-The workflow first checks whether:
-
-```text
-cloudflare_zero_trust_device_custom_profile.adds
-```
-
-already exists in remote state.
-
-If absent, it uses the official read-only Cloudflare endpoint:
+The workflow always uses the official read-only Cloudflare endpoint:
 
 ```text
 GET /accounts/{account_id}/devices/policies
@@ -146,9 +140,15 @@ name  == adds
 match == protected CLOUDFLARE_WINDOWS_PROFILE_MATCH
 ```
 
-The discovered `policy_id` is masked ephemeral runtime data. The workflow then performs only `terraform import`, verifies the resource exists in R2 state, and continues to read-only verification. It does not create, update, or delete the Cloudflare profile.
+The discovered `policy_id` is masked ephemeral runtime data.
 
-If discovery is ambiguous, the API response is incomplete/paginated beyond the bounded request, protected inputs are absent, R2 initialization fails, or provider import authority is insufficient, the run fails closed. Do not widen Cloudflare permissions implicitly.
+If Terraform state does not yet contain the resource, the workflow imports exactly that profile and verifies the adopted state identity matches the discovered live profile.
+
+If Terraform state already contains the resource, the workflow does **not** skip selector verification: it re-runs the exact live `name + match` check and fails closed unless the state resource ID points to that same profile.
+
+This makes the read-only API check the natural owner of the protected identity selector and prevents Terraform sensitivity metadata from creating a false provider update path.
+
+If discovery is ambiguous, the API response is incomplete/paginated beyond the bounded request, protected inputs are absent, R2 initialization fails, state identity differs from the selected live profile, or provider import authority is insufficient, the run fails closed. Do not widen Cloudflare permissions implicitly.
 
 ### Provider verification behavior
 
@@ -178,15 +178,19 @@ These are the fail-closed account-wide prerequisites for the accepted TCP/UDP Me
 
 This is not a weakening of the product dataplane contract: the application architecture requires TCP/UDP Mesh transport, while ICMP is not used by the proxy dataplane.
 
-The workflow then runs Terraform provider plan/read-back with `-detailed-exitcode` and reports one of:
+The workflow then runs Terraform provider plan/read-back with `-detailed-exitcode`.
+
+Raw Terraform plan output is never printed to the public Actions log because provider refresh output can contain operator-specific resource IDs and a future drift plan could contain protected values. Raw plan/log/JSON material stays only in ephemeral runner storage and is deleted at job exit.
+
+Public result semantics are intentionally strict:
 
 ```text
-NO CHANGES
-CHANGES REQUIRE REVIEW
-FAILED
+exit 0 -> NO CHANGES -> workflow success
+exit 2 -> CHANGES REQUIRE REVIEW -> safe attribute-name-only summary -> workflow failure
+other  -> FAILED -> workflow failure
 ```
 
-Unexpected changes are a stop condition. They do not authorize apply.
+A green one-click verifier therefore means a genuinely clean provider plan, not merely that Terraform produced a reviewable diff. No plan change authorizes apply.
 
 ## Read-only account assertions
 
@@ -212,10 +216,11 @@ accepted protected main / one-click verify
   -> GitHub-hosted runner installs Terraform 1.16.2
   -> protected cloudflare-plan inputs
   -> masked account resolution from token scope
-  -> read-only profile discovery when adoption is needed
-  -> remote R2 state import when needed
+  -> exact protected selector verification through read-only Cloudflare API
+  -> remote R2 state import only when absent
+  -> state/live identity equality check
   -> official connectivity read-back
-  -> provider plan/read-back
+  -> sanitized provider plan/read-back
   -> NO apply
 
 physical Windows runner
