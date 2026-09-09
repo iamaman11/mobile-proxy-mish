@@ -18,5 +18,8 @@ path = "src/bin/uniffi-bindgen.rs"
 mish-cellular = { path = "../cellular" }
 uniffi = { version = "=0.32.0", features = ["cli"] }
 
+[target.'cfg(target_os = "android")'.dependencies]
+ndk-sys = "=0.6.0+11769913"
+
 [lints]
 workspace = true
