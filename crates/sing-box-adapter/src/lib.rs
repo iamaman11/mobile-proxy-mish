@@ -6,7 +6,7 @@
 use std::{error::Error, fmt, net::IpAddr};
 
 use mish_proxy::{ProxyProtocol, ProxyServingPlan};
-use serde_json::{Value, json};
+use serde_json::json;
 
 pub const CELLULAR_EGRESS_OUTBOUND_TAG: &str = "cellular-egress";
 
@@ -91,7 +91,7 @@ pub fn render_product_config(
                 ProxyProtocol::Mixed => json!({
                     "type": "mixed",
                     "tag": "mixed-in",
-                    "listen": listen,
+                    "listen": listen.as_str(),
                     "listen_port": listener.port,
                     "users": [base_user],
                     "set_system_proxy": false,
@@ -99,14 +99,14 @@ pub fn render_product_config(
                 ProxyProtocol::Socks5 => json!({
                     "type": "socks",
                     "tag": "socks-in",
-                    "listen": listen,
+                    "listen": listen.as_str(),
                     "listen_port": listener.port,
                     "users": [base_user],
                 }),
                 ProxyProtocol::Http => json!({
                     "type": "http",
                     "tag": "http-in",
-                    "listen": listen,
+                    "listen": listen.as_str(),
                     "listen_port": listener.port,
                     "users": [base_user],
                     "set_system_proxy": false,
@@ -123,8 +123,8 @@ pub fn render_product_config(
             "server": egress.address.to_string(),
             "server_port": egress.port,
             "version": "5",
-            "username": egress.username,
-            "password": egress.password,
+            "username": egress.username.as_str(),
+            "password": egress.password.as_str(),
             "network": "tcp",
         }],
         "route": {
