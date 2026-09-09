@@ -42,9 +42,11 @@ jobs:
           cargo build -p mish-android-ffi --locked
           rm -rf target/uniffi-kotlin
           cargo run -p mish-android-ffi --bin uniffi-bindgen --locked -- \
-            generate --config crates/android-ffi/uniffi.toml \
-            --library target/debug/libmish_android_ffi.so \
+            generate --library target/debug/libmish_android_ffi.so \
             --language kotlin --out-dir target/uniffi-kotlin --no-format
+          GENERATED="target/uniffi-kotlin/com/mobileproxymish/ffi/mish_android_ffi.kt"
+          test -f "$GENERATED"
+          grep -q '^package com.mobileproxymish.ffi$' "$GENERATED"
 
   android:
     name: Android Compose Shell
