@@ -47,6 +47,10 @@ jobs:
           GENERATED="target/uniffi-kotlin/com/mobileproxymish/ffi/mish_android_ffi.kt"
           test -f "$GENERATED"
           grep -q '^package com.mobileproxymish.ffi$' "$GENERATED"
+          grep -q 'class CellularNetworkLease' "$GENERATED"
+          grep -q 'fun admittedNetworkLease' "$GENERATED"
+          grep -q 'fun bindSocket' "$GENERATED"
+          grep -q 'fun resolveHost' "$GENERATED"
 
   android:
     name: Android Compose Shell
