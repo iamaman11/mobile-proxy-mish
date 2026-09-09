@@ -174,11 +174,9 @@ mod tests {
     #[test]
     fn wildcard_ipv4_and_ipv6_are_rejected() {
         for address in ["0.0.0.0", "::"] {
-            let error = ProxyServingPlan::canonical(
-                address.parse().expect("valid IP"),
-                credentials(),
-            )
-            .expect_err("wildcard must fail closed");
+            let error =
+                ProxyServingPlan::canonical(address.parse().expect("valid IP"), credentials())
+                    .expect_err("wildcard must fail closed");
             assert_eq!(error, ProxyPolicyError::WildcardListenAddress);
         }
     }
