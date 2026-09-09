@@ -1,0 +1,11 @@
+[package]
+name = "mish-cellular-egress-bridge"
+description = "Loopback-only SOCKS5 adapter into the Cellular Egress capability"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true

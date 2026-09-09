@@ -4,6 +4,7 @@ members = [
     "crates/transport",
     "crates/proxy",
     "crates/cellular",
+    "crates/cellular-egress-bridge",
     "crates/rotation",
     "crates/runtime",
     "crates/identity",
