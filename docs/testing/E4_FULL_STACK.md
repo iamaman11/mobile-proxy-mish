@@ -1,10 +1,29 @@
 # E4 — full external stack acceptance (future execution contract)
 
-E4 is the first evidence domain that proves the intended product path end to end:
+E4 is the first evidence domain that proves the intended product path end to end.
+
+Windows precondition:
 
 ```text
-Windows client
-  -> Cloudflare One Client
+ordinary Windows Internet
+ -> sing-box TUN (default/full-tunnel owner)
+
+Cloudflare Mesh/device destinations only
+ -> Cloudflare One Client
+ -> Traffic only / TunnelOnly
+ -> MASQUE primary transport
+ -> Cloudflare Mesh
+
+Windows DNS
+ -> existing sing-box/system path
+ -> not Cloudflare DNS mode
+```
+
+Selected application path:
+
+```text
+Kameleo / Camoufox
+  -> configured proxy at Android Mesh IP:proxy port
   -> Cloudflare Mesh
   -> Cloudflare One Agent on Android
   -> product-admitted Mesh ingress
@@ -12,8 +31,9 @@ Windows client
   -> Cellular Egress owner
   -> exact cellular DNS/socket path
   -> LTE/5G Internet
-  -> Kameleo / Camoufox compatibility
 ```
+
+Cloudflare Local Proxy / WarpProxy on Windows is not part of this path. Split Tunnel is destination-based and must not be treated as per-process enforcement. Final selected-application fail-closed behavior requires its own Windows enforcement proof.
 
 This document is intentionally an execution contract only. The E4 workflow must not be enabled as an acceptance gate until Proxy Serving and Transport Reachability are implemented. Creating a fake checker earlier would violate `NO_EVIDENCE_ESCALATION`.
 
@@ -37,7 +57,7 @@ vendor version where supported
 actual Mesh endpoint/reachability
 actual TCP proxy flow
 actual proxy authentication behavior
-actual browser-visible public IP
+actual browser-visible public IP classification
 ```
 
 ## Recommended physical lab topology
@@ -46,7 +66,8 @@ actual browser-visible public IP
 GitHub
   -> protected manual/release workflow
   -> self-hosted Windows acceptance runner
-       |- Cloudflare One Client
+       |- sing-box TUN
+       |- Cloudflare One Client (Traffic only / Mesh route owner)
        |- Kameleo
        |- Camoufox
        `- ADB access to physical Android phone
@@ -55,18 +76,24 @@ GitHub
             `- real SIM / LTE/5G + Wi-Fi as required by scenario
 ```
 
-A separate Linux E3 runner is acceptable. E4 may later use a Windows runner because the real external client applications are Windows-side fixtures.
+E3 may be executed through the accepted physical-lab path once its own stage is ready. E4 uses Windows because the real external client applications and the Windows route-ownership proof are part of the fixture.
 
 ## Required E4 scenario matrix
 
 At minimum, the future workflow must prove:
 
 ```text
+Windows route ownership
+  ordinary IPv4 -> sing-box TUN
+  ordinary IPv6 -> controlled policy, no silent physical fallback
+  actual Mesh/device CIDR -> CloudflareWARP
+  Windows DNS remains outside Cloudflare DNS mode
+
 Mesh reachability
-  Windows -> admitted phone Mesh endpoint
+  Windows -> actual Android Mesh IP:proxy port
 
 proxy protocol/auth
-  :1080 mixed HTTP/SOCKS5
+  :1080 mixed HTTP/SOCKS5 where supported by product contract
   :1081 SOCKS5
   :3128 HTTP + HTTPS CONNECT
   correct credentials accepted
@@ -74,20 +101,30 @@ proxy protocol/auth
 
 cellular-only egress
   Wi-Fi connected simultaneously
-  browser/proxy-visible public IP is carrier egress
+  proxy/browser-visible public IP is carrier egress
+  target DNS is resolved through the Android cellular-owned path where required
   cellular loss does not silently continue over Wi-Fi/default/WARP
 
 real clients
-  Kameleo launch/navigation through supported proxy mode
-  Camoufox launch/navigation through supported proxy mode
+  Kameleo launch/navigation through the Android Mesh proxy endpoint
+  Camoufox launch/navigation through the Android Mesh proxy endpoint
+
+selected-app fail-closed
+  proxy unavailable -> no direct fallback
+  Windows Cloudflare unavailable -> no direct fallback
+  sing-box unavailable -> no direct IPv4/IPv6/UDP fallback
+  no direct QUIC/WebRTC path outside the admitted proxy route
 
 recovery
-  One Agent/Mesh reconnect
+  Windows One Client/Mesh reconnect
+  Android One Agent/Mesh reconnect
   cellular reconnect
   product does not restore stale READY
 ```
 
-Load/soak, reboot, rotation and longer recovery scenarios remain later release evidence as defined by A12.
+MASQUE is the primary Cloudflare transport for acceptance. Cloudflare One WireGuard is only a bounded fallback if a concrete MASQUE defect is demonstrated and must receive equivalent route/recovery evidence before use. A separate custom WireGuard mesh/control plane is outside this architecture.
+
+Load/soak, reboot, rotation and longer recovery scenarios remain later release evidence as defined by A12 unless they become necessary to close a concrete E4 finding.
 
 ## GitHub evidence identity
 
@@ -100,13 +137,15 @@ sing-box version + checksum
 Android device model/build (non-secret)
 Cloudflare One Agent version where supported
 Cloudflare One Client version where supported
+Cloudflare service mode + tunnel protocol
+actual Mesh/device CIDR classification (non-secret)
 Kameleo version
 Camoufox version
 scenario/timestamp
 PASS/FAIL + typed failure reason
 ```
 
-Never record IMEI, IMSI, SIM identifiers, passwords, enrollment tokens, Cloudflare account secrets, or proxy credentials.
+Never record IMEI, IMSI, SIM identifiers, passwords, enrollment tokens, Cloudflare account secrets, proxy credentials, or full diagnostic archives.
 
 ## Authority rule
 
