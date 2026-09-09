@@ -2,6 +2,12 @@ name: Cloudflare Terraform Verify
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/cloudflare-terraform-plan.yml'
+      - 'infra/cloudflare/**'
 
 permissions:
   contents: read
