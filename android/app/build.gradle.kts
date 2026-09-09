@@ -19,6 +19,7 @@ val generatedJniLibsPath = layout.buildDirectory
     .get()
     .asFile
     .absolutePath
+val uniFfiConfigPath = "$repoRootPath/crates/android-ffi/uniffi.toml"
 
 val hostLibraryName = when {
     System.getProperty("os.name").startsWith("Windows", ignoreCase = true) -> "mish_android_ffi.dll"
@@ -49,6 +50,8 @@ val generateUniFfiBindings = tasks.register<Exec>("generateUniFfiBindings") {
         "--locked",
         "--",
         "generate",
+        "--config",
+        uniFfiConfigPath,
         "--library",
         hostLibraryPath,
         "--language",
@@ -104,9 +107,11 @@ android {
         compose = true
     }
 
+    // AGP 9 built-in Kotlin only recognizes extra Kotlin directories through the
+    // AndroidSourceSet.kotlin collection; Java source wiring is intentionally not used.
     sourceSets.getByName("main") {
-        java.srcDir(generatedUniFfiPath)
-        jniLibs.srcDir(generatedJniLibsPath)
+        kotlin.directories += generatedUniFfiPath
+        jniLibs.directories += generatedJniLibsPath
     }
 
     compileOptions {
