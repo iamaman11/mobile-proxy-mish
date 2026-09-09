@@ -24,34 +24,9 @@ CF-1 adopts the already-existing Windows custom device profile named `adds` as:
 cloudflare_zero_trust_device_custom_profile.adds
 ```
 
-Do not create a duplicate profile. The profile must be imported into the dedicated remote Terraform state before any apply.
+Do not create a duplicate profile. The existing profile must be adopted into the dedicated remote Terraform state before any provider plan or apply.
 
-The profile match expression is intentionally supplied as a sensitive runtime variable rather than committed to this public repository.
-
-## Read-only account assertions
-
-Provider 5.24.0 exposes `cloudflare_zero_trust_device_settings` as a real data source. CF-1 therefore reads and asserts the existing account-wide facts for:
-
-- unique WARP/device IP assignment;
-- Gateway TCP proxy;
-- Gateway UDP proxy.
-
-Cloudflare's official API also exposes the Zero Trust connectivity settings used by Mesh:
-
-```text
-GET /accounts/{account_id}/zerotrust/connectivity_settings
-```
-
-The protected accepted-main provider-plan workflow uses that official read-only API surface to assert:
-
-- WARP-to-WARP/off-ramp connectivity (`offramp_warp_enabled`);
-- ICMP proxy (`icmp_proxy_enabled`).
-
-If either fact is disabled or cannot be read successfully, the workflow fails closed before provider planning. It emits only normalized ENABLED/failed status, not the raw account response.
-
-The generated Cloudflare Terraform documentation describes `cloudflare_zero_trust_connectivity_settings`, but the released provider 5.24.0 plugin schema does **not** register that data source. Credential-free CI proved this directly during `terraform validate`. Therefore CF-1 does not fake this observation through a write-capable Terraform resource, custom provider, `local-exec` PATCH, or parallel mutable control path.
-
-When a later released provider actually exposes a working native read/write surface, adoption must happen through an ordinary reviewed provider-upgrade PR.
+The profile match expression is intentionally supplied as a protected runtime secret rather than committed to this public repository.
 
 ## Provider and Terraform versions
 
@@ -62,9 +37,9 @@ cloudflare/cloudflare  = 5.24.0
 
 These are exact pins for CF-1. Upgrades require an ordinary reviewed PR.
 
-`infra/cloudflare/.terraform.lock.hcl` is committed dependency-integrity metadata. Its Cloudflare 5.24.0 release hashes are derived from the signed provider release metadata and its Linux/Windows package hashes are re-materialized by `terraform providers lock` in CI. State, backend runtime files and tfvars remain excluded from Git.
+`infra/cloudflare/.terraform.lock.hcl` is committed dependency-integrity metadata. State, backend runtime files and tfvars remain excluded from Git.
 
-## Remote state bootstrap
+## Remote state and protected execution boundary
 
 The CF-1 external bootstrap is materialized:
 
@@ -76,46 +51,13 @@ hosted environment    = cloudflare-plan
 
 Existing application buckets must **not** be reused for Terraform state.
 
-The R2 credentials and Cloudflare provider inputs are stored outside Git in the protected hosted secret/vault boundary. Backend configuration is generated temporarily from `backend.r2.hcl.example`; credential values are never written into that file or committed.
+For CF-1 state adoption and provider planning, the protected GitHub Environment `cloudflare-plan` is the execution-time credential source. A local protected vault is **not required** for this procedure and must not be maintained as a duplicate credential store solely for CF-1.
 
-The remaining state-bootstrap action is the one-time adoption of the existing `adds` profile into this dedicated remote state.
+No provider or R2 credential belongs on the physical Windows runner.
 
-Never place R2 access keys, Cloudflare API tokens, backend credentials, account-specific profile match expressions, or local backend files in Git.
+## Canonical protected inputs
 
-## Existing profile adoption
-
-The existing `adds` profile is imported once; import changes Terraform state only and must not mutate the Cloudflare profile.
-
-From an accepted `main` checkout with the remote backend initialized and the required provider credentials available:
-
-```bash
-terraform -chdir=infra/cloudflare import \
-  cloudflare_zero_trust_device_custom_profile.adds \
-  "$CLOUDFLARE_ACCOUNT_ID/$CLOUDFLARE_ADDS_POLICY_ID"
-```
-
-`CLOUDFLARE_ADDS_POLICY_ID` is a transient runtime value resolved read-only from the existing Cloudflare `adds` profile. It is not a canonical project secret and does not need to be stored in GitHub or the vault after adoption.
-
-After successful import, stop the adoption action. The normal provider plan is a separate accepted-main step through `.github/workflows/cloudflare-terraform-plan.yml`.
-
-If the later plan proposes any unexpected provider change, **do not apply**. Fix the desired configuration in a new PR and repeat from accepted `main`.
-
-The provider-plan workflow is manual, main-only, serialized, and uses the protected `cloudflare-plan` environment. It intentionally refuses to plan until the existing `adds` resource has first been adopted into remote state. It also validates the official connectivity-settings API invariants before the provider plan.
-
-## Canonical external inputs
-
-The project/vault/GitHub Environment names are the canonical names. Operators and agents should look up these names, not Terraform or S3 compatibility aliases:
-
-```text
-CLOUDFLARE_ACCOUNT_ID
-CLOUDFLARE_WINDOWS_PROFILE_MATCH
-CLOUDFLARE_API_TOKEN
-R2_STATE_BUCKET
-R2_ACCESS_KEY_ID
-R2_SECRET_ACCESS_KEY
-```
-
-For the hosted `cloudflare-plan` GitHub Environment these map to:
+The protected `cloudflare-plan` GitHub Environment contains the canonical values under these names:
 
 ```text
 vars.CLOUDFLARE_ACCOUNT_ID
@@ -126,11 +68,20 @@ secrets.R2_ACCESS_KEY_ID
 secrets.R2_SECRET_ACCESS_KEY
 ```
 
+The corresponding project names are:
+
+```text
+CLOUDFLARE_ACCOUNT_ID
+CLOUDFLARE_WINDOWS_PROFILE_MATCH
+CLOUDFLARE_API_TOKEN
+R2_STATE_BUCKET
+R2_ACCESS_KEY_ID
+R2_SECRET_ACCESS_KEY
+```
+
 No canonical project secret is named `TF_VAR_cloudflare_account_id`, `TF_VAR_windows_profile_match`, `AWS_ACCESS_KEY_ID`, or `AWS_SECRET_ACCESS_KEY`.
 
-## Process-only Terraform and R2 aliases
-
-Immediately before invoking Terraform, the canonical values are exposed to the process under the names expected by Terraform and its S3-compatible backend:
+The hosted workflow exposes the canonical values only to its process under the compatibility names expected by Terraform and the standard S3 backend:
 
 ```text
 TF_VAR_cloudflare_account_id  <- CLOUDFLARE_ACCOUNT_ID
@@ -139,19 +90,133 @@ AWS_ACCESS_KEY_ID             <- R2_ACCESS_KEY_ID
 AWS_SECRET_ACCESS_KEY         <- R2_SECRET_ACCESS_KEY
 ```
 
-`TF_VAR_*` is Terraform's standard environment-variable convention for input variables.
-
-`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are **process compatibility names only** used by Terraform's standard `backend "s3"` implementation to authenticate to Cloudflare R2's S3-compatible endpoint. The values are Cloudflare R2 credentials. This project does **not** use an AWS account, AWS S3 bucket, or AWS runtime service for this state path.
-
-The R2 endpoint remains Cloudflare-owned:
+`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are process compatibility names only. Their values are Cloudflare R2 credentials used against Cloudflare R2's S3-compatible endpoint:
 
 ```text
 https://<CLOUDFLARE_ACCOUNT_ID>.r2.cloudflarestorage.com
 ```
 
-These aliases are ephemeral process environment variables. Do not create duplicate vault/GitHub secrets under the alias names.
+This project does **not** use an AWS account, AWS S3 bucket, or AWS runtime service for this state path.
 
-No equivalent provider/R2 secret belongs on the physical Windows runner.
+## One standard operator procedure
+
+`.github/workflows/cloudflare-terraform-plan.yml` is the single protected hosted procedure for CF-1 Terraform state operations and provider planning.
+
+It is:
+
+```text
+manual only
+accepted-main only
+GitHub-hosted only
+protected by environment cloudflare-plan
+serialized by cloudflare-terraform-provider-state
+pinned to Terraform 1.16.2
+NO apply path
+```
+
+The workflow has two explicit operations:
+
+```text
+adopt
+plan
+```
+
+They are intentionally separate bounded actions.
+
+### Operation: adopt
+
+Dispatch the workflow from accepted `main` with:
+
+```text
+operation = adopt
+```
+
+The workflow:
+
+1. verifies it is executing the exact current `main`;
+2. installs and verifies Terraform 1.16.2 on the ephemeral GitHub-hosted runner;
+3. validates all six protected GitHub Environment inputs without printing their values;
+4. initializes the dedicated R2 backend at:
+
+   ```text
+   bucket = mobile-proxy-mish-terraform-state
+   key    = mobile-proxy-mish/cloudflare/terraform.tfstate
+   ```
+
+5. checks whether `cloudflare_zero_trust_device_custom_profile.adds` is already in state;
+6. if absent, uses the official read-only Cloudflare endpoint:
+
+   ```text
+   GET /accounts/{account_id}/devices/policies
+   ```
+
+7. requires exactly one non-default profile whose:
+
+   ```text
+   name  == adds
+   match == protected CLOUDFLARE_WINDOWS_PROFILE_MATCH
+   ```
+
+8. treats its `policy_id` as ephemeral masked runtime data;
+9. executes only:
+
+   ```text
+   terraform import
+   ```
+
+10. verifies the resource is present in remote state and stops.
+
+`adopt` does **not** execute Terraform plan or apply and does not create/update/delete the Cloudflare profile. The only intended mutation is Terraform machinery state in the dedicated R2 bucket.
+
+If the profile is already in state, `adopt` exits successfully without re-importing it.
+
+If discovery is ambiguous, the API response is incomplete/paginated beyond the bounded request, the protected inputs are absent, R2 initialization fails, or provider import authority is insufficient, the workflow fails closed. Do not widen Cloudflare permissions implicitly.
+
+### Operation: plan
+
+Only after successful adoption, dispatch the same workflow again from accepted `main` with:
+
+```text
+operation = plan
+```
+
+The workflow then:
+
+1. initializes the same dedicated R2 state;
+2. asserts the official Cloudflare connectivity facts through:
+
+   ```text
+   GET /accounts/{account_id}/zerotrust/connectivity_settings
+   ```
+
+3. requires the adopted `adds` resource to exist in state;
+4. runs the provider plan/read-back with `-detailed-exitcode`;
+5. reports either:
+
+   ```text
+   NO CHANGES
+   CHANGES REQUIRE REVIEW
+   FAILED
+   ```
+
+Unexpected changes are a stop condition. There is no apply in this workflow.
+
+## Read-only account assertions
+
+Provider 5.24.0 exposes `cloudflare_zero_trust_device_settings` as a real data source. CF-1 reads/asserts the existing account-wide facts for:
+
+- unique WARP/device IP assignment;
+- Gateway TCP proxy;
+- Gateway UDP proxy.
+
+Cloudflare's official connectivity-settings API is additionally used to assert:
+
+- WARP-to-WARP/off-ramp connectivity (`offramp_warp_enabled`);
+- ICMP proxy (`icmp_proxy_enabled`).
+
+If either fact is disabled or unreadable, provider planning fails closed.
+
+The generated Cloudflare Terraform documentation describes `cloudflare_zero_trust_connectivity_settings`, but provider 5.24.0 does not register that data source. CF-1 therefore uses the official read-only API rather than introducing a custom provider, `local-exec` PATCH, or a second mutable control path.
 
 ## Credential boundaries
 
@@ -161,26 +226,33 @@ PR head
   -> NO Cloudflare token
   -> NO R2 credentials
 
-accepted protected main
-  -> official Cloudflare read-only connectivity assertion
-  -> credentialed hosted provider plan/read-back
-  -> remote R2 state
+accepted protected main / operation=adopt
+  -> GitHub-hosted runner installs Terraform 1.16.2
+  -> protected cloudflare-plan inputs
+  -> official read-only profile discovery
+  -> remote R2 state import only
+  -> NO plan / NO apply
 
-protected/manual accepted main
-  -> explicit apply only after reviewed plan
+accepted protected main / operation=plan
+  -> protected cloudflare-plan inputs
+  -> official connectivity read-back
+  -> provider plan/read-back
+  -> remote R2 state
+  -> NO apply
 
 physical Windows runner
   -> NO Cloudflare provider token
   -> NO R2 state credentials
+  -> NO local-vault dependency for CF-1
 ```
 
-The current Cloudflare provider documents `Zero Trust Write` for the custom-profile resource. If the currently configured `Zero Trust Read` token cannot perform a required import/refresh/read operation, fail closed and record the exact permission error. Do not widen permissions implicitly. Any permission change is a separate explicit disposition and does not authorize apply.
-
-The official connectivity-settings GET itself requires only read authority. Apply remains a separate protected operation.
+The current Cloudflare provider documents `Zero Trust Write` for the custom-profile resource. If the currently configured `Zero Trust Read` token cannot perform import/refresh/read, fail closed and record the exact permission error. Any permission change is a separate explicit disposition and does not authorize apply.
 
 ## Forbidden shortcuts
 
 - no provider credentials on pull-request heads;
+- no local vault duplication solely to make CF-1 import work;
+- no local Terraform installation requirement for the CF-1 operator path;
 - no local mutable Cloudflare mirror database;
 - no dashboard/MCP write path left as a permanent peer of Terraform;
 - no custom provider or `local-exec` API mutation to compensate for provider schema gaps;
