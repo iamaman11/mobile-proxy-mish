@@ -1,0 +1,98 @@
+name: LAB Host Static
+
+on:
+  pull_request:
+    paths:
+      - 'lab/windows/**'
+      - 'docs/lab/WINDOWS_HOST.md'
+      - '.github/workflows/lab-host-static.yml'
+      - '.github/workflows/lab-host-preflight.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'lab/windows/**'
+      - 'docs/lab/WINDOWS_HOST.md'
+      - '.github/workflows/lab-host-static.yml'
+      - '.github/workflows/lab-host-preflight.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: LAB Host Static
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate LAB-1 manifest and PowerShell syntax
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $manifest = Get-Content -Raw -LiteralPath 'lab/windows/toolchain.json' | ConvertFrom-Json
+          if ($manifest.schema -ne 'mish.lab.windows-toolchain/v1') {
+            throw 'Unexpected LAB-1 toolchain manifest schema.'
+          }
+          if ($manifest.host.runner_root -ne 'C:\mish-lab\runner') {
+            throw 'Runner root contract drifted.'
+          }
+          if ($manifest.host.runner_custom_label -ne 'mobile-proxy-mish-lab') {
+            throw 'Runner custom label contract drifted.'
+          }
+          if ($manifest.runner.sha256 -notmatch '^[0-9a-f]{64}$') {
+            throw 'Runner SHA-256 is invalid.'
+          }
+
+          foreach ($path in @(
+            'lab/windows/bootstrap-windows.ps1',
+            'lab/windows/host-preflight.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path),
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -ne 0) {
+              $errors | ForEach-Object { Write-Error "${path}: $($_.Message)" }
+              throw "PowerShell parse failed for $path."
+            }
+          }
+
+      - name: Validate physical-workflow trust boundary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $text = Get-Content -Raw -LiteralPath '.github/workflows/lab-host-preflight.yml'
+
+          foreach ($forbidden in @(
+            '(?m)^\s*pull_request\s*:',
+            '(?m)^\s*push\s*:'
+          )) {
+            if ($text -match $forbidden) {
+              throw 'Physical LAB-1 workflow must not be PR- or push-triggered.'
+            }
+          }
+
+          foreach ($required in @(
+            'workflow_dispatch:',
+            "github.ref == 'refs/heads/main'",
+            'github.ref_protected == true',
+            'runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]',
+            'persist-credentials: false',
+            'lab/windows/host-preflight.ps1'
+          )) {
+            if (-not $text.Contains($required)) {
+              throw "Physical LAB-1 workflow is missing required trust-boundary text: $required"
+            }
+          }
+
+          if ($text -match '(?i)CLOUDFLARE_API_TOKEN|R2_ACCESS_KEY|R2_SECRET|terraform\s+apply') {
+            throw 'Physical LAB-1 workflow must not receive provider/R2/apply authority.'
+          }
