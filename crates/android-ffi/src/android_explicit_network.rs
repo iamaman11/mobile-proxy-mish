@@ -1,8 +1,8 @@
 //! Android-only wrapper over the supported NDK explicit-network APIs.
 //!
 //! This module is the single scoped `unsafe` boundary for B2c. It contains no
-//! cellular-selection policy: callers pass only a `NetworkHandle` already admitted
-//! by the Rust natural owner.
+//! cellular-selection policy: callers pass only a `NetworkHandle` captured in an
+//! opaque authority lease issued by the Rust natural owner boundary.
 
 use crate::CellularNetworkOperationError;
 use mish_cellular::NetworkHandle;
@@ -16,9 +16,10 @@ pub(super) fn bind_socket(
     network: NetworkHandle,
     socket_fd: i32,
 ) -> Result<(), CellularNetworkOperationError> {
-    // SAFETY: `network` is a non-zero Android Network handle admitted by the owner,
-    // and `socket_fd` has been validated by the safe caller as a non-negative fd.
-    // The NDK call neither takes ownership of the fd nor retains Rust references.
+    // SAFETY: `network` is a non-zero Android Network handle captured from an owner-issued
+    // admission lease, and `socket_fd` has been validated by the safe caller as a
+    // non-negative fd. The NDK call neither takes ownership of the fd nor retains Rust
+    // references.
     let result = unsafe { ndk_sys::android_setsocknetwork(network.raw(), socket_fd) };
 
     if result == 0 {
