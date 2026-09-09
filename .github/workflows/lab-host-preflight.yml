@@ -1,0 +1,62 @@
+name: LAB Host Preflight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lab-host-preflight
+  cancel-in-progress: false
+
+jobs:
+  host-preflight:
+    name: LAB Host Preflight
+    if: ${{ github.ref == 'refs/heads/main' && github.ref_protected == true }}
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 45
+    steps:
+      - name: Checkout accepted main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          clean: true
+
+      - name: Execute host-only preflight
+        shell: pwsh
+        run: |
+          & './lab/windows/host-preflight.ps1' `
+            -RepositoryRoot '${{ github.workspace }}' `
+            -EvidencePath '${{ runner.temp }}\mish-lab-host-preflight.json'
+
+      - name: Publish redacted run summary
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          $path = '${{ runner.temp }}\mish-lab-host-preflight.json'
+          if (-not (Test-Path -LiteralPath $path)) {
+            "### LAB-1 host preflight`n- Evidence file was not produced." >> $env:GITHUB_STEP_SUMMARY
+            exit 0
+          }
+
+          $evidence = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json
+          @(
+            '### LAB-1 host preflight'
+            "- Result: **$($evidence.result)**"
+            "- Commit: ``$($evidence.git_commit)``"
+            "- Ref: ``$($evidence.git_ref)``"
+            "- Phone absent: ``$($evidence.observations.host.phone_absent)``"
+            "- Android arm64 cross-build target: ``$($evidence.observations.cross_build.target)``"
+            '- Evidence domain: **Windows host/toolchain fixture only**'
+            '- This run does **not** claim E3, Mesh, proxy serving, or product READY.'
+          ) >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload typed LAB-1 evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: lab-host-preflight-evidence
+          path: ${{ runner.temp }}\mish-lab-host-preflight.json
+          if-no-files-found: error
+          retention-days: 30

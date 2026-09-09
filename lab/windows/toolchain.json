@@ -1,0 +1,55 @@
+{
+  "schema": "mish.lab.windows-toolchain/v1",
+  "host": {
+    "architecture": "x64",
+    "runner_root": "C:\\mish-lab\\runner",
+    "tools_root": "C:\\mish-lab\\tools",
+    "runner_custom_label": "mobile-proxy-mish-lab"
+  },
+  "runner": {
+    "version": "2.337.0",
+    "asset": "actions-runner-win-x64-2.337.0.zip",
+    "sha256": "1150692afa94e71f872017e254ea55b6eece1eece3fe7e3a6d4c93d0a1b85cfc"
+  },
+  "git": {
+    "minimum_version": "2.45.0",
+    "winget_id": "Git.Git"
+  },
+  "powershell": {
+    "minimum_version": "7.4.0",
+    "winget_id": "Microsoft.PowerShell"
+  },
+  "java": {
+    "major": 17,
+    "winget_id": "EclipseAdoptium.Temurin.17.JDK"
+  },
+  "gradle": {
+    "version": "9.6.0",
+    "asset": "gradle-9.6.0-bin.zip",
+    "url": "https://services.gradle.org/distributions/gradle-9.6.0-bin.zip",
+    "sha256": "bbaeb2fef8710818cf0e261201dab964c572f92b942812df0c3620d62a529a01"
+  },
+  "rust": {
+    "toolchain": "1.98.1",
+    "target": "aarch64-linux-android",
+    "cargo_ndk": "4.1.2",
+    "rustup_init_url": "https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe",
+    "rustup_init_sha_url": "https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe.sha256"
+  },
+  "android": {
+    "sdk_root": "C:\\mish-lab\\tools\\android-sdk",
+    "commandline_tools_revision": "15859902",
+    "commandline_tools_asset": "commandlinetools-win-15859902_latest.zip",
+    "commandline_tools_url": "https://dl.google.com/android/repository/commandlinetools-win-15859902_latest.zip",
+    "commandline_tools_sha256": "90ae805d20434428bffcb699c290860f19bb5f66a67e6b330067e3de801fb04a",
+    "compile_sdk": 37,
+    "target_sdk": 36,
+    "min_sdk": 23,
+    "ndk": "29.0.14206865",
+    "packages": [
+      "platform-tools",
+      "platforms;android-37",
+      "ndk;29.0.14206865"
+    ]
+  }
+}
