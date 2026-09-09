@@ -4,7 +4,9 @@ param(
     [ValidatePattern('^[0-9a-f]{40}$')]
     [string]$RepositoryCommit,
     [ValidatePattern('^[A-Za-z0-9._-]{0,64}$')]
-    [string]$RunnerName = ''
+    [string]$RunnerName = '',
+    [string]$RunnerTokenProviderExecutable = '',
+    [string]$RunnerTokenProviderArgumentsJson = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -78,6 +80,77 @@ function Refresh-ProcessPath {
     $machine = [Environment]::GetEnvironmentVariable('Path', 'Machine')
     $user = [Environment]::GetEnvironmentVariable('Path', 'User')
     $env:Path = "$machine;$user"
+}
+
+function Get-RunnerRegistrationSecureToken {
+    param(
+        [string]$ProviderExecutable,
+        [string]$ProviderArgumentsJson
+    )
+
+    if ($ProviderArgumentsJson -and -not $ProviderExecutable) {
+        throw 'RunnerTokenProviderArgumentsJson requires RunnerTokenProviderExecutable.'
+    }
+
+    if (-not $ProviderExecutable) {
+        Write-Host ''
+        Write-Host 'Open Settings > Actions > Runners > New self-hosted runner for this repository.'
+        Write-Host 'Paste only its short-lived registration token below.'
+        $interactiveToken = Read-Host 'GitHub runner registration token' -AsSecureString
+        if ($interactiveToken.Length -eq 0) { throw 'Runner registration token is required.' }
+        return $interactiveToken
+    }
+
+    if (-not [IO.Path]::IsPathRooted($ProviderExecutable)) {
+        throw 'Runner token provider executable must be an absolute Windows path.'
+    }
+    if (-not (Test-Path -LiteralPath $ProviderExecutable -PathType Leaf)) {
+        throw 'Runner token provider executable was not found.'
+    }
+
+    $providerArguments = @()
+    if ($ProviderArgumentsJson) {
+        try {
+            $decoded = ConvertFrom-Json -InputObject $ProviderArgumentsJson
+        }
+        catch {
+            throw 'Runner token provider arguments must be a JSON array of strings.'
+        }
+        if ($decoded -is [string]) {
+            throw 'Runner token provider arguments must be a JSON array of strings.'
+        }
+        foreach ($argument in @($decoded)) {
+            if ($null -eq $argument) {
+                throw 'Runner token provider arguments must not contain null.'
+            }
+            $providerArguments += [string]$argument
+        }
+    }
+
+    Write-Host 'Retrieving short-lived GitHub runner registration token from the configured out-of-band provider.'
+    $providerOutput = $null
+    $plainProviderToken = $null
+    try {
+        $providerOutput = @(& $ProviderExecutable @providerArguments 2>$null)
+        $providerExitCode = $LASTEXITCODE
+        if ($providerExitCode -ne 0) {
+            throw "Runner token provider failed with exit code $providerExitCode. Provider output is intentionally suppressed."
+        }
+
+        $plainProviderToken = (($providerOutput | ForEach-Object { [string]$_ }) -join "`n").Trim()
+        if (-not $plainProviderToken) {
+            throw 'Runner token provider returned an empty value.'
+        }
+        if ($plainProviderToken -match '\s') {
+            throw 'Runner token provider must return exactly one token with no surrounding or embedded whitespace.'
+        }
+
+        return ConvertTo-SecureString -String $plainProviderToken -AsPlainText -Force
+    }
+    finally {
+        $plainProviderToken = $null
+        $providerOutput = $null
+    }
 }
 
 Assert-Administrator
@@ -204,10 +277,9 @@ try {
 
     if (-not $RunnerName) { $RunnerName = 'mish-lab-' + $env:COMPUTERNAME.ToLowerInvariant() }
 
-    Write-Host ''
-    Write-Host 'Open Settings > Actions > Runners > New self-hosted runner for this repository.'
-    Write-Host 'Paste only its short-lived registration token below.'
-    $secureToken = Read-Host 'GitHub runner registration token' -AsSecureString
+    $secureToken = Get-RunnerRegistrationSecureToken `
+        -ProviderExecutable $RunnerTokenProviderExecutable `
+        -ProviderArgumentsJson $RunnerTokenProviderArgumentsJson
     if ($secureToken.Length -eq 0) { throw 'Runner registration token is required.' }
 
     $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureToken)
