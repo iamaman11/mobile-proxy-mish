@@ -367,6 +367,10 @@ version = "0.1.0"
 [[package]]
 name = "mish-sing-box-adapter"
 version = "0.1.0"
+dependencies = [
+ "mish-proxy",
+ "serde_json",
+]
 
 [[package]]
 name = "mish-transport"
