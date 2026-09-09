@@ -25,7 +25,17 @@ resource "cloudflare_zero_trust_device_custom_profile" "adds" {
     # Windows Mesh-routing contract. Other pre-existing profile preferences
     # remain provider/live-state facts until a concrete stage assigns them a
     # natural owner. Import + plan must therefore not rewrite them by accident.
+    #
+    # `match` is a protected operator-identity selector. Terraform 1.16 marks
+    # the sensitive input metadata even when the provider reports the exact same
+    # value, which creates a perpetual metadata-only update plan. The hosted
+    # verifier therefore owns exact `name + match` read-back through Cloudflare's
+    # official read-only device-policies API on every run and verifies that the
+    # adopted state ID points at that exact live profile. Terraform must not try
+    # to rewrite this sensitive selector merely to change local sensitivity
+    # metadata.
     ignore_changes = [
+      match,
       allow_updates,
       allowed_to_leave,
       captive_portal,
