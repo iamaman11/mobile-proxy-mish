@@ -51,10 +51,9 @@ The protected `cloudflare-plan` GitHub Environment is the execution-time credent
 
 ## Canonical protected inputs
 
-The protected environment contains:
+The one-click workflow consumes only:
 
 ```text
-vars.CLOUDFLARE_ACCOUNT_ID
 vars.R2_STATE_BUCKET
 secrets.CLOUDFLARE_WINDOWS_PROFILE_MATCH
 secrets.CLOUDFLARE_API_TOKEN
@@ -62,10 +61,11 @@ secrets.R2_ACCESS_KEY_ID
 secrets.R2_SECRET_ACCESS_KEY
 ```
 
-The canonical project names are:
+`CLOUDFLARE_ACCOUNT_ID` is no longer a workflow input. The accepted-main runner resolves the single account authorized by `CLOUDFLARE_API_TOKEN` through the official account-list API, requires exactly one account, masks the returned ID before reuse, and exports it only as the process-local Terraform variable.
+
+The canonical stored project names are therefore:
 
 ```text
-CLOUDFLARE_ACCOUNT_ID
 CLOUDFLARE_WINDOWS_PROFILE_MATCH
 CLOUDFLARE_API_TOKEN
 R2_STATE_BUCKET
@@ -75,22 +75,16 @@ R2_SECRET_ACCESS_KEY
 
 No canonical project secret is named `TF_VAR_cloudflare_account_id`, `TF_VAR_windows_profile_match`, `AWS_ACCESS_KEY_ID`, or `AWS_SECRET_ACCESS_KEY`.
 
-The hosted workflow maps canonical values to process-only compatibility names immediately around Terraform execution:
+The hosted workflow maps protected values to process-only compatibility names immediately around Terraform execution:
 
 ```text
-TF_VAR_cloudflare_account_id  <- CLOUDFLARE_ACCOUNT_ID
+TF_VAR_cloudflare_account_id  <- masked account resolved from CLOUDFLARE_API_TOKEN scope
 TF_VAR_windows_profile_match  <- CLOUDFLARE_WINDOWS_PROFILE_MATCH
 AWS_ACCESS_KEY_ID             <- R2_ACCESS_KEY_ID
 AWS_SECRET_ACCESS_KEY         <- R2_SECRET_ACCESS_KEY
 ```
 
-The `AWS_*` names are only the standard S3-backend compatibility interface. Their values are Cloudflare R2 credentials used against:
-
-```text
-https://<CLOUDFLARE_ACCOUNT_ID>.r2.cloudflarestorage.com
-```
-
-This project does not use an AWS account, AWS S3 bucket, or AWS runtime service for this state path.
+The `AWS_*` names are only the standard S3-backend compatibility interface. Their values are Cloudflare R2 credentials used against the masked account-specific Cloudflare R2 S3 endpoint. This project does not use an AWS account, AWS S3 bucket, or AWS runtime service for this state path.
 
 ## One-click operator procedure
 
@@ -116,6 +110,7 @@ A single run performs the safe CF-1 sequence:
 accepted-main guard
  -> install/verify Terraform 1.16.2
  -> validate protected environment inputs
+ -> resolve exactly one Cloudflare account from protected token scope and mask its ID
  -> initialize dedicated R2 backend
  -> if adds absent from state: discover exact existing adds read-only and import it
  -> if adds already present: keep existing state and continue
@@ -156,13 +151,23 @@ If discovery is ambiguous, the API response is incomplete/paginated beyond the b
 
 ### Provider verification behavior
 
-After adoption is confirmed, the same run asserts the official connectivity facts through:
+After adoption is confirmed, the same run reads:
 
 ```text
 GET /accounts/{account_id}/zerotrust/connectivity_settings
 ```
 
-It requires WARP-to-WARP/off-ramp and ICMP proxy to be enabled, then runs Terraform provider plan/read-back with `-detailed-exitcode` and reports one of:
+CF-1 requires:
+
+```text
+offramp_warp_enabled == true
+```
+
+Cloudflare documents `icmp_proxy_enabled` as an optional field. If the account response includes that field, the workflow requires it to be `true`. If Cloudflare omits the field, CF-1 records it as `NOT EXPOSED` rather than converting absence into `false`.
+
+ICMP support remains covered by the accepted account/bootstrap evidence and the provider-backed Gateway proxy assertions. This preserves fail-closed behavior for an explicit `icmp_proxy_enabled=false` while avoiding a false failure when the optional field is not emitted.
+
+The workflow then runs Terraform provider plan/read-back with `-detailed-exitcode` and reports one of:
 
 ```text
 NO CHANGES
@@ -180,10 +185,7 @@ Provider 5.24.0 exposes `cloudflare_zero_trust_device_settings` as a real data s
 - Gateway TCP proxy;
 - Gateway UDP proxy.
 
-Cloudflare's official connectivity-settings API additionally asserts:
-
-- WARP-to-WARP/off-ramp connectivity (`offramp_warp_enabled`);
-- ICMP proxy (`icmp_proxy_enabled`).
+Cloudflare's official connectivity-settings API additionally asserts WARP-to-WARP/off-ramp connectivity and, when emitted by the account response, verifies that the optional ICMP proxy field is not false.
 
 The generated Cloudflare Terraform documentation describes `cloudflare_zero_trust_connectivity_settings`, but provider 5.24.0 does not register that data source. CF-1 therefore uses the official read-only API rather than introducing a custom provider, `local-exec` PATCH, or a second mutable control path.
 
@@ -198,6 +200,7 @@ PR head
 accepted protected main / one-click verify
   -> GitHub-hosted runner installs Terraform 1.16.2
   -> protected cloudflare-plan inputs
+  -> masked account resolution from token scope
   -> read-only profile discovery when adoption is needed
   -> remote R2 state import when needed
   -> official connectivity read-back
@@ -210,7 +213,7 @@ physical Windows runner
   -> NO local-vault dependency for CF-1
 ```
 
-Provider v5.24.0 import for `cloudflare_zero_trust_device_custom_profile` accepts `<account_id>/<policy_id>` and reads the existing resource during ImportState. If the configured `Zero Trust Read` token cannot perform the required discovery/import/read-back, fail closed and record the exact permission error. Any permission change is a separate explicit disposition and does not authorize apply.
+Provider v5.24.0 import for `cloudflare_zero_trust_device_custom_profile` accepts `<account_id>/<policy_id>` and reads the existing resource during ImportState. If the configured `Zero Trust Read` token cannot perform required account resolution, discovery, import, or read-back, fail closed and record the exact permission error. Any permission change is a separate explicit disposition and does not authorize apply.
 
 ## Forbidden shortcuts
 
