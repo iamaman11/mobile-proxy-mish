@@ -208,11 +208,7 @@ impl CellularEgress {
     /// Applies a platform `onLost`-equivalent event.
     ///
     /// Losing an old superseded handle cannot evict a newer admitted cellular network.
-    pub fn lost(
-        &mut self,
-        sequence: ObservationSequence,
-        handle: NetworkHandle,
-    ) -> ApplyResult {
+    pub fn lost(&mut self, sequence: ObservationSequence, handle: NetworkHandle) -> ApplyResult {
         if self.is_stale(sequence) {
             return ApplyResult::IgnoredStale(self.snapshot);
         }
@@ -320,10 +316,7 @@ mod tests {
         owner.lost(sequence(2), handle(11));
 
         assert_eq!(owner.snapshot().state(), CellularState::NotReady);
-        assert_eq!(
-            owner.snapshot().reason(),
-            Some(CellularReason::NetworkLost)
-        );
+        assert_eq!(owner.snapshot().reason(), Some(CellularReason::NetworkLost));
         assert_eq!(owner.snapshot().admitted_network(), None);
     }
 
