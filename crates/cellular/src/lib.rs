@@ -3,6 +3,9 @@
 //! Owns validated cellular selection policy, cellular-scoped DNS semantics, socket
 //! binding policy, and public-egress observations. Android platform objects do not
 //! cross this boundary; the owner receives only typed ephemeral observations.
+//!
+//! This B2a slice models **network admission only**. A validated Android `Network`
+//! is not yet proof that socket binding, DNS, or public Internet egress are working.
 
 /// Opaque Android network identity for the lifetime of a runtime observation.
 ///
@@ -66,33 +69,36 @@ impl NetworkObservation {
         }
     }
 
-    const fn rejection_reason(self) -> Option<CellularReason> {
+    const fn rejection_reason(self) -> Option<CellularAdmissionReason> {
         if !self.is_cellular {
-            Some(CellularReason::NotCellular)
+            Some(CellularAdmissionReason::NotCellular)
         } else if !self.has_internet {
-            Some(CellularReason::MissingInternetCapability)
+            Some(CellularAdmissionReason::MissingInternetCapability)
         } else if !self.is_validated {
-            Some(CellularReason::NotValidated)
+            Some(CellularAdmissionReason::NotValidated)
         } else {
             None
         }
     }
 }
 
-/// Owner-level readiness for the cellular egress capability only.
+/// Admission state for the currently observed Android network candidate.
+///
+/// `Admitted` means only that Android currently reports a cellular network with
+/// `INTERNET + VALIDATED`. It does not claim complete Cellular Egress readiness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CellularState {
+pub enum CellularAdmissionState {
     /// No fresh owner observation exists yet.
     Unknown,
-    /// A fresh observation proves that cellular egress is not currently admissible.
-    NotReady,
-    /// A fresh validated cellular network is admitted.
-    Ready,
+    /// A fresh observation proves that no network is currently admissible.
+    NotAdmitted,
+    /// A fresh Android observation satisfies the cellular admission predicate.
+    Admitted,
 }
 
-/// Stable reason codes emitted by the Cellular Egress owner.
+/// Stable reason codes for cellular network admission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CellularReason {
+pub enum CellularAdmissionReason {
     /// Startup/restart has not produced a fresh network observation yet.
     NoObservation,
     /// The observed candidate was not a cellular transport.
@@ -105,27 +111,27 @@ pub enum CellularReason {
     NetworkLost,
 }
 
-/// Read-only projection of facts owned by Cellular Egress.
+/// Read-only projection of the Cellular Egress owner's network-admission fact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CellularSnapshot {
-    state: CellularState,
-    reason: Option<CellularReason>,
+pub struct CellularAdmissionSnapshot {
+    state: CellularAdmissionState,
+    reason: Option<CellularAdmissionReason>,
     admitted_network: Option<NetworkHandle>,
     last_sequence: Option<ObservationSequence>,
 }
 
-impl CellularSnapshot {
-    /// Current capability state.
-    pub const fn state(self) -> CellularState {
+impl CellularAdmissionSnapshot {
+    /// Current network-admission state.
+    pub const fn state(self) -> CellularAdmissionState {
         self.state
     }
 
-    /// Typed reason when state is not ready/known.
-    pub const fn reason(self) -> Option<CellularReason> {
+    /// Typed reason when no network is admitted or no fresh observation exists.
+    pub const fn reason(self) -> Option<CellularAdmissionReason> {
         self.reason
     }
 
-    /// Current admitted ephemeral network, when ready.
+    /// Current admitted ephemeral network, when one exists.
     pub const fn admitted_network(self) -> Option<NetworkHandle> {
         self.admitted_network
     }
@@ -140,15 +146,15 @@ impl CellularSnapshot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplyResult {
     /// The event was newer than the current owner state and was applied.
-    Applied(CellularSnapshot),
+    Applied(CellularAdmissionSnapshot),
     /// The event was stale/reordered and therefore could not mutate owner state.
-    IgnoredStale(CellularSnapshot),
+    IgnoredStale(CellularAdmissionSnapshot),
 }
 
 /// Single natural owner of admitted cellular-network state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CellularEgress {
-    snapshot: CellularSnapshot,
+    admission: CellularAdmissionSnapshot,
 }
 
 impl Default for CellularEgress {
@@ -161,18 +167,18 @@ impl CellularEgress {
     /// Creates an owner with no fresh runtime observation.
     pub const fn new() -> Self {
         Self {
-            snapshot: CellularSnapshot {
-                state: CellularState::Unknown,
-                reason: Some(CellularReason::NoObservation),
+            admission: CellularAdmissionSnapshot {
+                state: CellularAdmissionState::Unknown,
+                reason: Some(CellularAdmissionReason::NoObservation),
                 admitted_network: None,
                 last_sequence: None,
             },
         }
     }
 
-    /// Returns the current read-only owner projection.
-    pub const fn snapshot(&self) -> CellularSnapshot {
-        self.snapshot
+    /// Returns the current read-only network-admission projection.
+    pub const fn admission(&self) -> CellularAdmissionSnapshot {
+        self.admission
     }
 
     /// Applies a fresh capabilities observation.
@@ -182,27 +188,27 @@ impl CellularEgress {
     /// validated cellular network.
     pub fn observe(&mut self, observation: NetworkObservation) -> ApplyResult {
         if self.is_stale(observation.sequence) {
-            return ApplyResult::IgnoredStale(self.snapshot);
+            return ApplyResult::IgnoredStale(self.admission);
         }
 
-        self.snapshot.last_sequence = Some(observation.sequence);
+        self.admission.last_sequence = Some(observation.sequence);
 
         if let Some(reason) = observation.rejection_reason() {
-            let invalidates_current = self.snapshot.admitted_network.is_none()
-                || self.snapshot.admitted_network == Some(observation.handle);
+            let invalidates_current = self.admission.admitted_network.is_none()
+                || self.admission.admitted_network == Some(observation.handle);
 
             if invalidates_current {
-                self.snapshot.state = CellularState::NotReady;
-                self.snapshot.reason = Some(reason);
-                self.snapshot.admitted_network = None;
+                self.admission.state = CellularAdmissionState::NotAdmitted;
+                self.admission.reason = Some(reason);
+                self.admission.admitted_network = None;
             }
         } else {
-            self.snapshot.state = CellularState::Ready;
-            self.snapshot.reason = None;
-            self.snapshot.admitted_network = Some(observation.handle);
+            self.admission.state = CellularAdmissionState::Admitted;
+            self.admission.reason = None;
+            self.admission.admitted_network = Some(observation.handle);
         }
 
-        ApplyResult::Applied(self.snapshot)
+        ApplyResult::Applied(self.admission)
     }
 
     /// Applies a platform `onLost`-equivalent event.
@@ -210,25 +216,25 @@ impl CellularEgress {
     /// Losing an old superseded handle cannot evict a newer admitted cellular network.
     pub fn lost(&mut self, sequence: ObservationSequence, handle: NetworkHandle) -> ApplyResult {
         if self.is_stale(sequence) {
-            return ApplyResult::IgnoredStale(self.snapshot);
+            return ApplyResult::IgnoredStale(self.admission);
         }
 
-        self.snapshot.last_sequence = Some(sequence);
+        self.admission.last_sequence = Some(sequence);
 
-        if self.snapshot.admitted_network == Some(handle) {
-            self.snapshot.state = CellularState::NotReady;
-            self.snapshot.reason = Some(CellularReason::NetworkLost);
-            self.snapshot.admitted_network = None;
-        } else if self.snapshot.state == CellularState::Unknown {
-            self.snapshot.state = CellularState::NotReady;
-            self.snapshot.reason = Some(CellularReason::NetworkLost);
+        if self.admission.admitted_network == Some(handle) {
+            self.admission.state = CellularAdmissionState::NotAdmitted;
+            self.admission.reason = Some(CellularAdmissionReason::NetworkLost);
+            self.admission.admitted_network = None;
+        } else if self.admission.state == CellularAdmissionState::Unknown {
+            self.admission.state = CellularAdmissionState::NotAdmitted;
+            self.admission.reason = Some(CellularAdmissionReason::NetworkLost);
         }
 
-        ApplyResult::Applied(self.snapshot)
+        ApplyResult::Applied(self.admission)
     }
 
     fn is_stale(&self, sequence: ObservationSequence) -> bool {
-        matches!(self.snapshot.last_sequence, Some(last) if sequence <= last)
+        matches!(self.admission.last_sequence, Some(last) if sequence <= last)
     }
 }
 
@@ -264,12 +270,12 @@ mod tests {
     fn starts_unknown_without_a_fresh_observation() {
         let owner = CellularEgress::new();
 
-        assert_eq!(owner.snapshot().state(), CellularState::Unknown);
+        assert_eq!(owner.admission().state(), CellularAdmissionState::Unknown);
         assert_eq!(
-            owner.snapshot().reason(),
-            Some(CellularReason::NoObservation)
+            owner.admission().reason(),
+            Some(CellularAdmissionReason::NoObservation)
         );
-        assert_eq!(owner.snapshot().admitted_network(), None);
+        assert_eq!(owner.admission().admitted_network(), None);
     }
 
     #[test]
@@ -278,9 +284,9 @@ mod tests {
 
         owner.observe(observation(1, 11, true, true, true));
 
-        assert_eq!(owner.snapshot().state(), CellularState::Ready);
-        assert_eq!(owner.snapshot().reason(), None);
-        assert_eq!(owner.snapshot().admitted_network(), Some(handle(11)));
+        assert_eq!(owner.admission().state(), CellularAdmissionState::Admitted);
+        assert_eq!(owner.admission().reason(), None);
+        assert_eq!(owner.admission().admitted_network(), Some(handle(11)));
     }
 
     #[test]
@@ -289,12 +295,15 @@ mod tests {
 
         owner.observe(observation(1, 11, true, true, false));
 
-        assert_eq!(owner.snapshot().state(), CellularState::NotReady);
         assert_eq!(
-            owner.snapshot().reason(),
-            Some(CellularReason::NotValidated)
+            owner.admission().state(),
+            CellularAdmissionState::NotAdmitted
         );
-        assert_eq!(owner.snapshot().admitted_network(), None);
+        assert_eq!(
+            owner.admission().reason(),
+            Some(CellularAdmissionReason::NotValidated)
+        );
+        assert_eq!(owner.admission().admitted_network(), None);
     }
 
     #[test]
@@ -303,9 +312,15 @@ mod tests {
 
         owner.observe(observation(1, 11, false, true, true));
 
-        assert_eq!(owner.snapshot().state(), CellularState::NotReady);
-        assert_eq!(owner.snapshot().reason(), Some(CellularReason::NotCellular));
-        assert_eq!(owner.snapshot().admitted_network(), None);
+        assert_eq!(
+            owner.admission().state(),
+            CellularAdmissionState::NotAdmitted
+        );
+        assert_eq!(
+            owner.admission().reason(),
+            Some(CellularAdmissionReason::NotCellular)
+        );
+        assert_eq!(owner.admission().admitted_network(), None);
     }
 
     #[test]
@@ -315,9 +330,15 @@ mod tests {
 
         owner.lost(sequence(2), handle(11));
 
-        assert_eq!(owner.snapshot().state(), CellularState::NotReady);
-        assert_eq!(owner.snapshot().reason(), Some(CellularReason::NetworkLost));
-        assert_eq!(owner.snapshot().admitted_network(), None);
+        assert_eq!(
+            owner.admission().state(),
+            CellularAdmissionState::NotAdmitted
+        );
+        assert_eq!(
+            owner.admission().reason(),
+            Some(CellularAdmissionReason::NetworkLost)
+        );
+        assert_eq!(owner.admission().admitted_network(), None);
     }
 
     #[test]
@@ -328,8 +349,8 @@ mod tests {
 
         owner.lost(sequence(3), handle(11));
 
-        assert_eq!(owner.snapshot().state(), CellularState::Ready);
-        assert_eq!(owner.snapshot().admitted_network(), Some(handle(22)));
+        assert_eq!(owner.admission().state(), CellularAdmissionState::Admitted);
+        assert_eq!(owner.admission().admitted_network(), Some(handle(22)));
     }
 
     #[test]
@@ -341,8 +362,11 @@ mod tests {
         let result = owner.observe(observation(2, 11, true, true, true));
 
         assert!(matches!(result, ApplyResult::IgnoredStale(_)));
-        assert_eq!(owner.snapshot().state(), CellularState::NotReady);
-        assert_eq!(owner.snapshot().admitted_network(), None);
+        assert_eq!(
+            owner.admission().state(),
+            CellularAdmissionState::NotAdmitted
+        );
+        assert_eq!(owner.admission().admitted_network(), None);
     }
 
     #[test]
@@ -352,12 +376,15 @@ mod tests {
 
         owner.observe(observation(2, 11, true, true, false));
 
-        assert_eq!(owner.snapshot().state(), CellularState::NotReady);
         assert_eq!(
-            owner.snapshot().reason(),
-            Some(CellularReason::NotValidated)
+            owner.admission().state(),
+            CellularAdmissionState::NotAdmitted
         );
-        assert_eq!(owner.snapshot().admitted_network(), None);
+        assert_eq!(
+            owner.admission().reason(),
+            Some(CellularAdmissionReason::NotValidated)
+        );
+        assert_eq!(owner.admission().admitted_network(), None);
     }
 
     #[test]
@@ -367,8 +394,8 @@ mod tests {
 
         owner.observe(observation(2, 22, false, true, true));
 
-        assert_eq!(owner.snapshot().state(), CellularState::Ready);
-        assert_eq!(owner.snapshot().admitted_network(), Some(handle(11)));
-        assert_eq!(owner.snapshot().last_sequence(), Some(sequence(2)));
+        assert_eq!(owner.admission().state(), CellularAdmissionState::Admitted);
+        assert_eq!(owner.admission().admitted_network(), Some(handle(11)));
+        assert_eq!(owner.admission().last_sequence(), Some(sequence(2)));
     }
 }
