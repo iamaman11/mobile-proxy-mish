@@ -208,7 +208,8 @@ impl CellularNetworkLease {
         }
 
         self.execute_operation(|authority| {
-            mish_android_network::bind_socket(authority, socket_fd).map_err(map_android_network_error)
+            mish_android_network::bind_socket(authority, socket_fd)
+                .map_err(map_android_network_error)
         })
     }
 
@@ -300,7 +301,9 @@ fn map_android_network_error(error: AndroidNetworkError) -> CellularNetworkOpera
         AndroidNetworkError::NativeAddressConversionFailed => {
             CellularNetworkOperationError::NativeAddressConversionFailed
         }
-        AndroidNetworkError::UnsupportedPlatform => CellularNetworkOperationError::UnsupportedPlatform,
+        AndroidNetworkError::UnsupportedPlatform => {
+            CellularNetworkOperationError::UnsupportedPlatform
+        }
     }
 }
 
