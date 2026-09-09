@@ -14,6 +14,9 @@ mish-cellular = { path = "../cellular" }
 # Cargo version requirements ignore SemVer build metadata; Cargo.lock pins the
 # resolved ndk-sys artifact (0.6.0+11769913) and checksum deterministically.
 ndk-sys = "=0.6.0"
+# Already present in the workspace lock through transitive dependencies; used here
+# only for Android socket/connect syscalls inside the single unsafe platform edge.
+libc = "=0.2.189"
 
 [lints]
 workspace = true
