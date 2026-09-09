@@ -7,5 +7,9 @@ rust-version.workspace = true
 repository.workspace = true
 publish = false
 
+[dependencies]
+mish-proxy = { path = "../proxy" }
+serde_json = "=1.0.151"
+
 [lints]
 workspace = true
