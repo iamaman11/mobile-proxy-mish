@@ -126,7 +126,7 @@ impl ResolverWorker {
         hostname: &str,
         deadline: Instant,
     ) -> Result<Vec<IpAddr>, OutboundConnectError> {
-        let remaining = remaining(deadline)?;
+        let initial_remaining = remaining(deadline)?;
         let (response, result) = mpsc::sync_channel(1);
         let request = ResolveRequest {
             authority,
@@ -142,8 +142,8 @@ impl ResolverWorker {
             }
         }
 
-        let remaining = remaining(deadline)?.min(remaining);
-        match result.recv_timeout(remaining) {
+        let wait = remaining(deadline)?.min(initial_remaining);
+        match result.recv_timeout(wait) {
             Ok(result) => result,
             Err(RecvTimeoutError::Timeout) | Err(RecvTimeoutError::Disconnected) => {
                 Err(OutboundConnectError::Unavailable)
