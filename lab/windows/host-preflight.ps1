@@ -178,9 +178,11 @@ try {
     if ($LASTEXITCODE -ne 0) {
         Stop-Lab -Category 'HOST_PREREQUISITE_MISSING' -Message 'adb device enumeration failed.'
     }
-    $connectedDevices = @($adbDevices | Where-Object { $_ -match '^\S+\s+device\s*$' })
-    if ($connectedDevices.Count -ne 0) {
-        Stop-Lab -Category 'OBSERVATION_CONTRADICTION' -Message 'An ADB device is connected during pre-phone LAB-1.'
+    # Any row with a serial + state means a device is physically represented to ADB.
+    # Do not log the row: the public evidence records only the boolean absence invariant.
+    $adbDeviceRows = @($adbDevices | Where-Object { $_ -match '^\S+\s+\S+\s*$' })
+    if ($adbDeviceRows.Count -ne 0) {
+        Stop-Lab -Category 'OBSERVATION_CONTRADICTION' -Message 'An ADB device is present during pre-phone LAB-1.'
     }
 
     Push-Location $RepositoryRoot
