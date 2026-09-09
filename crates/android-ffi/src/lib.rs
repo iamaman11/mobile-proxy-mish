@@ -440,9 +440,7 @@ mod tests {
         controller
             .observe_network(1, 42, true, true, true)
             .expect("valid observation");
-        let lease = controller
-            .admitted_network_lease()
-            .expect("admitted lease");
+        let lease = controller.admitted_network_lease().expect("admitted lease");
 
         let result = lease.execute_operation(|network| {
             assert_eq!(network.raw(), 42);
@@ -458,9 +456,7 @@ mod tests {
         controller
             .observe_network(1, 42, true, true, true)
             .expect("valid observation");
-        let lease = controller
-            .admitted_network_lease()
-            .expect("admitted lease");
+        let lease = controller.admitted_network_lease().expect("admitted lease");
         controller
             .observe_network(2, 42, true, true, true)
             .expect("fresh observation");
@@ -484,9 +480,7 @@ mod tests {
         controller
             .observe_network(1, 42, true, true, true)
             .expect("valid observation");
-        let lease = controller
-            .admitted_network_lease()
-            .expect("admitted lease");
+        let lease = controller.admitted_network_lease().expect("admitted lease");
         let controller_for_operation = Arc::clone(&controller);
 
         let result = lease.execute_operation(|network| {
@@ -509,9 +503,7 @@ mod tests {
         controller
             .observe_network(1, 42, true, true, true)
             .expect("valid observation");
-        let lease = controller
-            .admitted_network_lease()
-            .expect("admitted lease");
+        let lease = controller.admitted_network_lease().expect("admitted lease");
 
         assert_eq!(
             lease.bind_socket(-1),
