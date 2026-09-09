@@ -1,0 +1,38 @@
+name: B2c one-shot rustfmt
+
+on:
+  push:
+    branches: [b2/native-explicit-network]
+    paths:
+      - .github/workflows/b2c-rustfmt-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  format-and-retire:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: b2/native-explicit-network
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Install pinned rustfmt
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal --component rustfmt
+          rustup override set 1.98.1
+
+      - name: Format and retire one-shot workflow
+        run: |
+          cargo fmt --all
+          git rm .github/workflows/b2c-rustfmt-once.yml
+          git add crates/android-ffi/src/lib.rs
+          git diff --cached --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m 'B2c: apply rustfmt to authority lease tests'
+          git push origin HEAD:b2/native-explicit-network
