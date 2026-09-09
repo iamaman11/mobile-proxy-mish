@@ -62,8 +62,8 @@ fn resolve_domain(
     authority: CellularNetworkAuthority,
     domain: &str,
 ) -> Result<Vec<IpAddr>, OutboundConnectError> {
-    let numeric = mish_android_network::resolve_host(authority, domain)
-        .map_err(map_android_network_error)?;
+    let numeric =
+        mish_android_network::resolve_host(authority, domain).map_err(map_android_network_error)?;
 
     numeric
         .into_iter()
@@ -82,14 +82,8 @@ fn connect_host_with<T>(
     owner: &Arc<Mutex<CellularEgress>>,
     host: &TargetHost,
     port: u16,
-    resolve: impl FnOnce(
-        CellularNetworkAuthority,
-        &str,
-    ) -> Result<Vec<IpAddr>, OutboundConnectError>,
-    connect: impl FnOnce(
-        CellularNetworkAuthority,
-        SocketAddr,
-    ) -> Result<T, OutboundConnectError>,
+    resolve: impl FnOnce(CellularNetworkAuthority, &str) -> Result<Vec<IpAddr>, OutboundConnectError>,
+    connect: impl FnOnce(CellularNetworkAuthority, SocketAddr) -> Result<T, OutboundConnectError>,
 ) -> Result<T, OutboundConnectError> {
     if port == 0 {
         return Err(OutboundConnectError::Rejected);
