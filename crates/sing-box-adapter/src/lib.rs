@@ -213,30 +213,15 @@ mod tests {
             Err(SingBoxAdapterError::EgressNotLoopback)
         ));
         assert!(matches!(
-            PrivateSocks5Endpoint::new(
-                IpAddr::V4(Ipv4Addr::LOCALHOST),
-                0,
-                "user",
-                "secret",
-            ),
+            PrivateSocks5Endpoint::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0, "user", "secret",),
             Err(SingBoxAdapterError::EgressPortZero)
         ));
         assert!(matches!(
-            PrivateSocks5Endpoint::new(
-                IpAddr::V4(Ipv4Addr::LOCALHOST),
-                19080,
-                "",
-                "secret",
-            ),
+            PrivateSocks5Endpoint::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 19080, "", "secret",),
             Err(SingBoxAdapterError::EmptyEgressUsername)
         ));
         assert!(matches!(
-            PrivateSocks5Endpoint::new(
-                IpAddr::V4(Ipv4Addr::LOCALHOST),
-                19080,
-                "user",
-                "",
-            ),
+            PrivateSocks5Endpoint::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 19080, "user", "",),
             Err(SingBoxAdapterError::EmptyEgressPassword)
         ));
     }
