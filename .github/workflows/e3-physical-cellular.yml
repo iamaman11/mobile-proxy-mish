@@ -1,0 +1,219 @@
+name: E3 Physical Cellular
+
+on:
+  workflow_dispatch:
+    inputs:
+      device_serial:
+        description: "ADB serial of the physical rooted Android device"
+        required: true
+        type: string
+      scenario:
+        description: "Physical scenario to execute"
+        required: true
+        default: full-root-toggle
+        type: choice
+        options:
+          - full-root-toggle
+          - positive-only
+          - negative-only
+      e3_host:
+        description: "Plain-HTTP endpoint host that returns the caller public IP as a bare body"
+        required: true
+        default: checkip.amazonaws.com
+        type: string
+      e3_port:
+        description: "Plain-HTTP endpoint port"
+        required: true
+        default: "80"
+        type: string
+      e3_path:
+        description: "Plain-HTTP endpoint path (safe URL-path characters only)"
+        required: true
+        default: "/"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e3-physical-cellular
+  cancel-in-progress: false
+
+jobs:
+  physical-cellular:
+    name: E3 Physical Cellular
+    runs-on: [self-hosted, linux, mobile-proxy-mish-e3]
+    timeout-minutes: 45
+    env:
+      ADB_SERIAL: ${{ inputs.device_serial }}
+      E3_SCENARIO: ${{ inputs.scenario }}
+      E3_HOST: ${{ inputs.e3_host }}
+      E3_PORT: ${{ inputs.e3_port }}
+      E3_PATH: ${{ inputs.e3_path }}
+
+    steps:
+      - name: Checkout exact requested ref
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up pinned Gradle
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          gradle-version: '9.6.0'
+
+      - name: Validate runner and physical-device preconditions
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v adb >/dev/null
+          command -v rustup >/dev/null
+          command -v cargo >/dev/null
+          [[ "$E3_HOST" =~ ^[A-Za-z0-9.-]+$ ]]
+          [[ "$E3_PORT" =~ ^[0-9]{1,5}$ ]]
+          (( E3_PORT >= 1 && E3_PORT <= 65535 ))
+          [[ "$E3_PATH" =~ ^/[A-Za-z0-9._~/%-]*$ ]]
+
+          adb -s "$ADB_SERIAL" get-state | grep -qx device
+          MODEL="$(adb -s "$ADB_SERIAL" shell getprop ro.product.model | tr -d '\r')"
+          ANDROID="$(adb -s "$ADB_SERIAL" shell getprop ro.build.version.release | tr -d '\r')"
+          FINGERPRINT="$(adb -s "$ADB_SERIAL" shell getprop ro.build.fingerprint | tr -d '\r')"
+
+          test -n "$MODEL"
+          test -n "$ANDROID"
+          test -n "$FINGERPRINT"
+
+          if [[ "$E3_SCENARIO" == "full-root-toggle" ]]; then
+            adb -s "$ADB_SERIAL" shell su -c id | tr -d '\r' | grep -q 'uid=0'
+          fi
+
+          {
+            echo "### E3 physical cellular run"
+            echo "- Commit: \`$GITHUB_SHA\`"
+            echo "- Scenario: \`$E3_SCENARIO\`"
+            echo "- Device model: \`$MODEL\`"
+            echo "- Android: \`$ANDROID\`"
+            echo "- Build fingerprint: \`$FINGERPRINT\`"
+            echo "- Echo endpoint: \`$E3_HOST:$E3_PORT$E3_PATH\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install pinned Rust Android tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.98.1 --profile minimal
+          rustup override set 1.98.1
+          rustup target add aarch64-linux-android
+          cargo install cargo-ndk --version 4.1.2 --locked
+
+      - name: Install pinned Android NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:?Android SDK root is not configured}}"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          NDK_PATH="$SDK_ROOT/ndk/29.0.14206865"
+          test -x "$SDKMANAGER"
+          "$SDKMANAGER" "ndk;29.0.14206865"
+          test -d "$NDK_PATH"
+          echo "ANDROID_NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$NDK_PATH" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK=$NDK_PATH" >> "$GITHUB_ENV"
+
+      - name: Build exact app and instrumentation APKs
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --no-daemon -p android :app:assembleDebug :app:assembleDebugAndroidTest
+
+          APP_APK="android/app/build/outputs/apk/debug/app-debug.apk"
+          TEST_APK="android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"
+          test -f "$APP_APK"
+          test -f "$TEST_APK"
+
+          APP_SHA256="$(sha256sum "$APP_APK" | awk '{print $1}')"
+          TEST_SHA256="$(sha256sum "$TEST_APK" | awk '{print $1}')"
+          echo "APP_APK=$APP_APK" >> "$GITHUB_ENV"
+          echo "TEST_APK=$TEST_APK" >> "$GITHUB_ENV"
+          echo "APP_SHA256=$APP_SHA256" >> "$GITHUB_ENV"
+          echo "TEST_SHA256=$TEST_SHA256" >> "$GITHUB_ENV"
+
+          {
+            echo "- App APK SHA-256: \`$APP_SHA256\`"
+            echo "- Test APK SHA-256: \`$TEST_SHA256\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install exact APKs on physical phone
+        shell: bash
+        run: |
+          set -euo pipefail
+          adb -s "$ADB_SERIAL" install -r "$APP_APK"
+          adb -s "$ADB_SERIAL" install -r -t "$TEST_APK"
+
+      - name: Execute E3 physical ceremony
+        shell: bash
+        run: |
+          set -euo pipefail
+          TEST_CLASS="com.mobileproxymish.app.cellular.CellularE3InstrumentedTest"
+          TEST_COMPONENT="com.mobileproxymish.app.test/androidx.test.runner.AndroidJUnitRunner"
+
+          run_case() {
+            local mode="$1"
+            local output
+            set +e
+            output="$(adb -s "$ADB_SERIAL" shell am instrument -w -r \
+              -e class "$TEST_CLASS" \
+              -e e3Mode "$mode" \
+              -e e3Host "$E3_HOST" \
+              -e e3Port "$E3_PORT" \
+              -e e3Path "$E3_PATH" \
+              "$TEST_COMPONENT" 2>&1)"
+            local status=$?
+            set -e
+            printf '%s\n' "$output"
+            if (( status != 0 )) || ! grep -q 'OK (1 test)' <<<"$output"; then
+              echo "E3 $mode instrumentation failed" >&2
+              return 1
+            fi
+            grep 'E3_EVIDENCE' <<<"$output" || true
+          }
+
+          restore_mobile_data() {
+            if [[ "$E3_SCENARIO" == "full-root-toggle" ]]; then
+              adb -s "$ADB_SERIAL" shell su -c "svc data enable" >/dev/null 2>&1 || true
+            fi
+          }
+          trap restore_mobile_data EXIT
+
+          case "$E3_SCENARIO" in
+            full-root-toggle)
+              adb -s "$ADB_SERIAL" shell su -c "svc data enable"
+              run_case positive
+              adb -s "$ADB_SERIAL" shell su -c "svc data disable"
+              run_case negative
+              adb -s "$ADB_SERIAL" shell su -c "svc data enable"
+              run_case positive
+              ;;
+            positive-only)
+              run_case positive
+              ;;
+            negative-only)
+              run_case negative
+              ;;
+            *)
+              echo "unsupported scenario: $E3_SCENARIO" >&2
+              exit 2
+              ;;
+          esac
+
+          {
+            echo "- Result: **PASS**"
+            echo "- Evidence domain: **E3 physical Android + real carrier**"
+            echo "- This run does not claim Mesh, sing-box, proxy serving, E4, or product READY."
+          } >> "$GITHUB_STEP_SUMMARY"
