@@ -53,7 +53,7 @@ The protected `cloudflare-plan` GitHub Environment is the execution-time credent
 
 ## Canonical protected inputs
 
-The one-click workflow consumes only:
+The verifier consumes only:
 
 ```text
 vars.R2_STATE_BUCKET
@@ -88,14 +88,20 @@ AWS_SECRET_ACCESS_KEY         <- R2_SECRET_ACCESS_KEY
 
 The `AWS_*` names are only the standard S3-backend compatibility interface. Their values are Cloudflare R2 credentials used against the masked account-specific Cloudflare R2 S3 endpoint. This project does not use an AWS account, AWS S3 bucket, or AWS runtime service for this state path.
 
-## One-click operator procedure
+## Single hosted verification procedure
 
 `.github/workflows/cloudflare-terraform-plan.yml` is the single protected hosted operator path for CF-1 state adoption and provider verification.
 
-It is:
+It has two triggers for the same job and the same serialized state owner:
 
 ```text
 manual workflow_dispatch with NO user inputs
+automatic push to main only when this workflow or infra/cloudflare/** changes
+```
+
+Both triggers are:
+
+```text
 accepted-main only
 GitHub-hosted only
 protected by environment cloudflare-plan
@@ -104,9 +110,11 @@ pinned to Terraform 1.16.2
 NO apply path
 ```
 
-The operator does not choose a branch, operation, account ID, token, bucket, profile match, or Terraform version. The default branch is `main`; the workflow additionally fails closed unless the checked-out ref is the exact current `main`.
+The manual operator path remains one-click: the operator does not choose a branch, operation, account ID, token, bucket, profile match, or Terraform version. The automatic trigger exists so an accepted Cloudflare IaC change proves its own provider read-back immediately after merge instead of requiring another manual click. There is still only one verifier job, one credential source, one R2 state owner and one execution contract.
 
-A single run performs the safe CF-1 sequence:
+Every run additionally fails closed unless the checked-out ref is the exact current `main`.
+
+A run performs the safe CF-1 sequence:
 
 ```text
 accepted-main guard
@@ -180,7 +188,7 @@ This is not a weakening of the product dataplane contract: the application archi
 
 The workflow then runs Terraform provider plan/read-back with `-detailed-exitcode`.
 
-Raw Terraform plan output is never printed to the public Actions log because provider refresh output can contain operator-specific resource IDs and a future drift plan could contain protected values. Raw plan/log/JSON material stays only in ephemeral runner storage and is deleted at job exit.
+Raw Terraform plan output is never printed to the public Actions log because provider refresh output can contain operator-specific resource IDs and a future drift plan could contain protected values. Raw plan/log/JSON material stays only in ephemeral runner storage with restrictive permissions and is deleted at job exit.
 
 Public result semantics are intentionally strict:
 
@@ -190,7 +198,7 @@ exit 2 -> CHANGES REQUIRE REVIEW -> safe attribute-name-only summary -> workflow
 other  -> FAILED -> workflow failure
 ```
 
-A green one-click verifier therefore means a genuinely clean provider plan, not merely that Terraform produced a reviewable diff. No plan change authorizes apply.
+A green verifier therefore means a genuinely clean provider plan, not merely that Terraform produced a reviewable diff. No plan change authorizes apply.
 
 ## Read-only account assertions
 
@@ -212,8 +220,9 @@ PR head
   -> NO Cloudflare token
   -> NO R2 credentials
 
-accepted protected main / one-click verify
-  -> GitHub-hosted runner installs Terraform 1.16.2
+accepted protected main / hosted verifier
+  -> manual one-click OR path-filtered automatic push trigger
+  -> same GitHub-hosted runner job
   -> protected cloudflare-plan inputs
   -> masked account resolution from token scope
   -> exact protected selector verification through read-only Cloudflare API
