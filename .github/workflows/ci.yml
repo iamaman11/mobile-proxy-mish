@@ -76,10 +76,13 @@ jobs:
         run: |
           SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:?Android SDK root is not configured}}"
           SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          NDK_PATH="$SDK_ROOT/ndk/29.0.14206865"
           test -x "$SDKMANAGER"
-          yes | "$SDKMANAGER" --licenses >/dev/null
           "$SDKMANAGER" "ndk;29.0.14206865"
-          echo "ANDROID_NDK_HOME=$SDK_ROOT/ndk/29.0.14206865" >> "$GITHUB_ENV"
+          test -d "$NDK_PATH"
+          echo "ANDROID_NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$NDK_PATH" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK=$NDK_PATH" >> "$GITHUB_ENV"
 
       - name: Lint, unit test, and assemble Android shell
         run: gradle --no-daemon -p android :app:lintDebug :app:testDebugUnitTest :app:assembleDebug
