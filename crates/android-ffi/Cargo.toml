@@ -15,13 +15,9 @@ name = "uniffi-bindgen"
 path = "src/bin/uniffi-bindgen.rs"
 
 [dependencies]
+mish-android-network = { path = "../android-network" }
 mish-cellular = { path = "../cellular" }
 uniffi = { version = "=0.32.0", features = ["cli"] }
-
-[target.'cfg(target_os = "android")'.dependencies]
-# Cargo version requirements ignore SemVer build metadata; Cargo.lock pins the
-# resolved ndk-sys artifact (0.6.0+11769913) and checksum deterministically.
-ndk-sys = "=0.6.0"
 
 [lints]
 workspace = true

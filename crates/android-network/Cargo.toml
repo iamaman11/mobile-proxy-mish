@@ -1,0 +1,19 @@
+[package]
+name = "mish-android-network"
+description = "Bounded Android exact-network NDK mechanics adapter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+mish-cellular = { path = "../cellular" }
+
+[target.'cfg(target_os = "android")'.dependencies]
+# Cargo version requirements ignore SemVer build metadata; Cargo.lock pins the
+# resolved ndk-sys artifact (0.6.0+11769913) and checksum deterministically.
+ndk-sys = "=0.6.0"
+
+[lints]
+workspace = true
