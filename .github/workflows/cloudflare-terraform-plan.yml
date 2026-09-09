@@ -1,7 +1,16 @@
-name: Cloudflare Terraform Plan
+name: Cloudflare Terraform State And Plan
 
 on:
   workflow_dispatch:
+    inputs:
+      operation:
+        description: Bounded Terraform operation to execute from accepted main
+        required: true
+        default: plan
+        type: choice
+        options:
+          - adopt
+          - plan
 
 permissions:
   contents: read
@@ -11,8 +20,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  plan:
-    name: Cloudflare Terraform Plan
+  terraform:
+    name: Cloudflare Terraform (${{ inputs.operation }})
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: cloudflare-plan
@@ -36,6 +45,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_REF" = 'refs/heads/main'
+          test '${{ inputs.operation }}' = 'adopt' -o '${{ inputs.operation }}' = 'plan'
           git fetch --no-tags origin main
           test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
 
@@ -68,8 +78,111 @@ jobs:
           test -n "$AWS_ACCESS_KEY_ID"
           test -n "$AWS_SECRET_ACCESS_KEY"
           test -n "$R2_STATE_BUCKET"
+          test "$R2_STATE_BUCKET" = 'mobile-proxy-mish-terraform-state'
+
+      - name: Initialize dedicated R2 remote state
+        shell: bash
+        env:
+          R2_STATE_BUCKET: ${{ vars.R2_STATE_BUCKET }}
+        run: |
+          set -euo pipefail
+          backend="$RUNNER_TEMP/backend.r2.hcl"
+          trap 'rm -f "$backend"' EXIT
+          cat > "$backend" <<EOF
+          bucket = "$R2_STATE_BUCKET"
+          key    = "mobile-proxy-mish/cloudflare/terraform.tfstate"
+          region = "auto"
+          skip_credentials_validation = true
+          skip_metadata_api_check     = true
+          skip_region_validation      = true
+          skip_requesting_account_id  = true
+          skip_s3_checksum            = true
+          use_path_style              = true
+          endpoints = {
+            s3 = "https://${TF_VAR_cloudflare_account_id}.r2.cloudflarestorage.com"
+          }
+          EOF
+          terraform -chdir=infra/cloudflare init -input=false -backend-config="$backend"
+
+      - name: Adopt existing adds profile into remote state
+        if: inputs.operation == 'adopt'
+        shell: bash
+        run: |
+          set -euo pipefail
+          address='cloudflare_zero_trust_device_custom_profile.adds'
+
+          if terraform -chdir=infra/cloudflare state show "$address" >/dev/null 2>&1; then
+            echo '### Cloudflare Terraform adoption: ALREADY PRESENT' >> "$GITHUB_STEP_SUMMARY"
+            echo '- Existing adds profile is already present in dedicated R2 state.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          response="$RUNNER_TEMP/cloudflare-device-policies.json"
+          trap 'rm -f "$response"' EXIT
+
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+            "https://api.cloudflare.com/client/v4/accounts/${TF_VAR_cloudflare_account_id}/devices/policies?per_page=100&page=1" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H 'Accept: application/json' \
+            -o "$response"
+
+          if ! jq -e '.success == true and (.result | type == "array")' "$response" >/dev/null; then
+            echo '::error::Cloudflare device-profile list could not be verified. No import was attempted.'
+            exit 1
+          fi
+
+          returned="$(jq -r '.result | length' "$response")"
+          total="$(jq -r '.result_info.total_count // (.result | length)' "$response")"
+          if (( total > returned )); then
+            echo '::error::Cloudflare device-profile response is paginated beyond the bounded first page. No import was attempted.'
+            exit 1
+          fi
+
+          match_count="$(jq -r --arg expected "$TF_VAR_windows_profile_match" '
+            [.result[] |
+              select(
+                .name == "adds" and
+                .match == $expected and
+                ((.default // false) == false)
+              )
+            ] | length
+          ' "$response")"
+
+          if [[ "$match_count" != '1' ]]; then
+            echo "::error::Expected exactly one non-default Cloudflare profile named adds with the protected exact match expression; found ${match_count}. No import was attempted."
+            exit 1
+          fi
+
+          policy_id="$(jq -r --arg expected "$TF_VAR_windows_profile_match" '
+            [.result[] |
+              select(
+                .name == "adds" and
+                .match == $expected and
+                ((.default // false) == false)
+              )
+            ][0].policy_id // empty
+          ' "$response")"
+          test -n "$policy_id"
+          echo "::add-mask::$policy_id"
+          import_id="${TF_VAR_cloudflare_account_id}/${policy_id}"
+          echo "::add-mask::$import_id"
+
+          terraform -chdir=infra/cloudflare import \
+            -input=false \
+            "$address" \
+            "$import_id"
+
+          terraform -chdir=infra/cloudflare state show "$address" >/dev/null
+
+          {
+            echo '### Cloudflare Terraform adoption: SUCCESS'
+            echo '- Existing adds profile uniquely matched by protected name + match expression.'
+            echo '- Resource adopted into dedicated R2 state.'
+            echo '- No Terraform plan or apply executed in this operation.'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Assert Mesh connectivity settings through official Cloudflare API
+        if: inputs.operation == 'plan'
         shell: bash
         run: |
           set -euo pipefail
@@ -99,41 +212,19 @@ jobs:
             echo '- ICMP proxy: ENABLED'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Initialize dedicated R2 remote state
-        shell: bash
-        env:
-          R2_STATE_BUCKET: ${{ vars.R2_STATE_BUCKET }}
-        run: |
-          set -euo pipefail
-          backend="$RUNNER_TEMP/backend.r2.hcl"
-          cat > "$backend" <<EOF
-          bucket = "$R2_STATE_BUCKET"
-          key    = "mobile-proxy-mish/cloudflare/terraform.tfstate"
-          region = "auto"
-          skip_credentials_validation = true
-          skip_metadata_api_check     = true
-          skip_region_validation      = true
-          skip_requesting_account_id  = true
-          skip_s3_checksum            = true
-          use_path_style              = true
-          endpoints = {
-            s3 = "https://${TF_VAR_cloudflare_account_id}.r2.cloudflarestorage.com"
-          }
-          EOF
-          terraform -chdir=infra/cloudflare init -input=false -backend-config="$backend"
-          rm -f "$backend"
-
-      - name: Require one-time profile adoption first
+      - name: Require profile adoption before plan
+        if: inputs.operation == 'plan'
         shell: bash
         run: |
           set -euo pipefail
           if ! terraform -chdir=infra/cloudflare state show \
             cloudflare_zero_trust_device_custom_profile.adds >/dev/null 2>&1; then
-            echo '::error::The existing adds profile is not in Terraform state. Run the bounded one-time import procedure from infra/cloudflare/README.md before provider planning.'
+            echo '::error::The existing adds profile is not in Terraform state. Dispatch this workflow from accepted main with operation=adopt first.'
             exit 1
           fi
 
       - name: Provider plan and live read-back assertions
+        if: inputs.operation == 'plan'
         shell: bash
         run: |
           set -euo pipefail
