@@ -14,24 +14,58 @@ use mish_cellular_egress_bridge::{
 };
 use std::fmt;
 use std::net::{IpAddr, SocketAddr, TcpStream};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
+
+/// Configuration rejected before the runtime connector can perform any network effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellularConnectorConfigError {
+    ZeroOperationTimeout,
+    ResolverWorkerUnavailable,
+}
+
+impl fmt::Display for CellularConnectorConfigError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::ZeroOperationTimeout => "cellular connector operation timeout must be non-zero",
+            Self::ResolverWorkerUnavailable => "cellular DNS resolver worker could not start",
+        })
+    }
+}
+
+impl std::error::Error for CellularConnectorConfigError {}
 
 /// Concrete runtime-composition adapter from the bridge's outbound port to one shared
 /// Cellular Egress natural owner plus the bounded Android exact-network mechanics.
 ///
-/// The connector does not create or mutate admission state. Runtime composition passes
-/// the same owner instance that receives Android observations, so every CONNECT obtains
-/// a fresh owner-issued authority generation and fails closed when that generation is
-/// stale or unavailable.
+/// Runtime Lifecycle supplies one explicit timeout budget. Each CONNECT converts that
+/// budget to one absolute deadline shared by DNS and socket connect so nested adapters
+/// cannot silently extend the externally visible operation indefinitely.
 #[derive(Clone)]
 pub struct AndroidCellularOutboundConnector {
     owner: Arc<Mutex<CellularEgress>>,
+    operation_timeout: Duration,
+    resolver: Arc<ResolverWorker>,
 }
 
 impl AndroidCellularOutboundConnector {
-    /// Wires the connector to an existing runtime-scoped Cellular Egress owner.
-    pub fn new(owner: Arc<Mutex<CellularEgress>>) -> Self {
-        Self { owner }
+    /// Wires the connector to an existing runtime-scoped Cellular Egress owner and an
+    /// owner-defined operation timeout. No hidden default timeout is invented here.
+    pub fn new(
+        owner: Arc<Mutex<CellularEgress>>,
+        operation_timeout: Duration,
+    ) -> Result<Self, CellularConnectorConfigError> {
+        if operation_timeout.is_zero() {
+            return Err(CellularConnectorConfigError::ZeroOperationTimeout);
+        }
+        let resolver = ResolverWorker::spawn()?;
+        Ok(Self {
+            owner,
+            operation_timeout,
+            resolver: Arc::new(resolver),
+        })
     }
 }
 
@@ -39,32 +73,110 @@ impl fmt::Debug for AndroidCellularOutboundConnector {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("AndroidCellularOutboundConnector")
+            .field("operation_timeout", &self.operation_timeout)
             .finish_non_exhaustive()
     }
 }
 
 impl CellularOutboundConnector for AndroidCellularOutboundConnector {
     fn connect(&self, target: &ConnectTarget) -> Result<TcpStream, OutboundConnectError> {
+        let deadline = Instant::now()
+            .checked_add(self.operation_timeout)
+            .ok_or(OutboundConnectError::Rejected)?;
         connect_host_with(
             &self.owner,
             target.host(),
             target.port(),
-            resolve_domain,
-            |authority, address| {
-                mish_android_network::connect_tcp(authority, address)
+            deadline,
+            |authority, domain, deadline| self.resolver.resolve(authority, domain, deadline),
+            |authority, address, deadline| {
+                mish_android_network::connect_tcp_until(authority, address, deadline)
                     .map_err(map_android_connect_error)
             },
         )
     }
 }
 
-fn resolve_domain(
+struct ResolveRequest {
+    authority: CellularNetworkAuthority,
+    hostname: Box<str>,
+    deadline: Instant,
+    response: SyncSender<Result<Vec<IpAddr>, OutboundConnectError>>,
+}
+
+struct ResolverWorker {
+    requests: SyncSender<ResolveRequest>,
+}
+
+impl ResolverWorker {
+    fn spawn() -> Result<Self, CellularConnectorConfigError> {
+        // Capacity one is intentional: one request may wait behind the single in-flight
+        // blocking Android resolver operation, but there is no unbounded DNS work queue.
+        let (requests, receiver) = mpsc::sync_channel(1);
+        thread::Builder::new()
+            .name("mish-cellular-dns".into())
+            .spawn(move || resolver_worker_loop(receiver))
+            .map_err(|_| CellularConnectorConfigError::ResolverWorkerUnavailable)?;
+        Ok(Self { requests })
+    }
+
+    fn resolve(
+        &self,
+        authority: CellularNetworkAuthority,
+        hostname: &str,
+        deadline: Instant,
+    ) -> Result<Vec<IpAddr>, OutboundConnectError> {
+        let remaining = remaining(deadline)?;
+        let (response, result) = mpsc::sync_channel(1);
+        let request = ResolveRequest {
+            authority,
+            hostname: hostname.into(),
+            deadline,
+            response,
+        };
+
+        match self.requests.try_send(request) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
+                return Err(OutboundConnectError::Unavailable);
+            }
+        }
+
+        let remaining = remaining(deadline)?.min(remaining);
+        match result.recv_timeout(remaining) {
+            Ok(result) => result,
+            Err(RecvTimeoutError::Timeout) | Err(RecvTimeoutError::Disconnected) => {
+                Err(OutboundConnectError::Unavailable)
+            }
+        }
+    }
+}
+
+fn resolver_worker_loop(receiver: Receiver<ResolveRequest>) {
+    while let Ok(request) = receiver.recv() {
+        if Instant::now() >= request.deadline {
+            let _ = request.response.send(Err(OutboundConnectError::Unavailable));
+            continue;
+        }
+
+        let result = resolve_domain_blocking(request.authority, &request.hostname);
+        // A result that arrives after the owner deadline is discarded as stale. The
+        // getaddrinfo operation is read-only; no late connect effect can be dispatched.
+        let result = if Instant::now() < request.deadline {
+            result
+        } else {
+            Err(OutboundConnectError::Unavailable)
+        };
+        let _ = request.response.send(result);
+    }
+}
+
+fn resolve_domain_blocking(
     authority: CellularNetworkAuthority,
     domain: &str,
 ) -> Result<Vec<IpAddr>, OutboundConnectError> {
     let numeric =
         mish_android_network::resolve_host(authority, domain).map_err(map_android_network_error)?;
-
     numeric
         .into_iter()
         .map(|address| {
@@ -82,12 +194,22 @@ fn connect_host_with<T>(
     owner: &Arc<Mutex<CellularEgress>>,
     host: &TargetHost,
     port: u16,
-    resolve: impl FnOnce(CellularNetworkAuthority, &str) -> Result<Vec<IpAddr>, OutboundConnectError>,
-    connect: impl FnOnce(CellularNetworkAuthority, SocketAddr) -> Result<T, OutboundConnectError>,
+    deadline: Instant,
+    resolve: impl FnOnce(
+        CellularNetworkAuthority,
+        &str,
+        Instant,
+    ) -> Result<Vec<IpAddr>, OutboundConnectError>,
+    connect: impl FnOnce(
+        CellularNetworkAuthority,
+        SocketAddr,
+        Instant,
+    ) -> Result<T, OutboundConnectError>,
 ) -> Result<T, OutboundConnectError> {
     if port == 0 {
         return Err(OutboundConnectError::Rejected);
     }
+    ensure_deadline(deadline)?;
 
     let authority = issue_authority(owner)?;
 
@@ -95,7 +217,9 @@ fn connect_host_with<T>(
         TargetHost::Ipv4(address) => IpAddr::V4(*address),
         TargetHost::Ipv6(address) => IpAddr::V6(*address),
         TargetHost::Domain(domain) => {
-            let addresses = resolve(authority, domain)?;
+            ensure_deadline(deadline)?;
+            let addresses = resolve(authority, domain, deadline)?;
+            ensure_deadline(deadline)?;
             validate_authority(owner, authority)?;
             addresses
                 .into_iter()
@@ -104,12 +228,25 @@ fn connect_host_with<T>(
         }
     };
 
-    // This is intentionally one connect attempt. Runtime Lifecycle owns any later
-    // recovery decision; the connector has no hidden retry/address-fallback stack.
+    // Exactly one address/connect attempt is dispatched. Runtime Lifecycle owns any
+    // later recovery decision; this adapter has no retry or address-fallback stack.
+    ensure_deadline(deadline)?;
     validate_authority(owner, authority)?;
-    let stream = connect(authority, SocketAddr::new(address, port))?;
+    let stream = connect(authority, SocketAddr::new(address, port), deadline)?;
+    ensure_deadline(deadline)?;
     validate_authority(owner, authority)?;
     Ok(stream)
+}
+
+fn remaining(deadline: Instant) -> Result<Duration, OutboundConnectError> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|duration| !duration.is_zero())
+        .ok_or(OutboundConnectError::Unavailable)
+}
+
+fn ensure_deadline(deadline: Instant) -> Result<(), OutboundConnectError> {
+    remaining(deadline).map(|_| ())
 }
 
 fn issue_authority(
@@ -155,10 +292,13 @@ fn map_android_network_error(error: AndroidNetworkError) -> OutboundConnectError
 
 fn map_android_connect_error(error: AndroidConnectError) -> OutboundConnectError {
     match error {
-        AndroidConnectError::UnsupportedPlatform => OutboundConnectError::Unavailable,
+        AndroidConnectError::DeadlineExceeded | AndroidConnectError::UnsupportedPlatform => {
+            OutboundConnectError::Unavailable
+        }
         AndroidConnectError::NativeSocketCreateFailed
         | AndroidConnectError::NativeSocketBindFailed
-        | AndroidConnectError::NativeConnectFailed => OutboundConnectError::Failed,
+        | AndroidConnectError::NativeConnectFailed
+        | AndroidConnectError::NativeSocketModeFailed => OutboundConnectError::Failed,
     }
 }
 
@@ -189,6 +329,46 @@ mod tests {
         Arc::new(Mutex::new(owner))
     }
 
+    fn deadline() -> Instant {
+        Instant::now() + Duration::from_secs(5)
+    }
+
+    #[test]
+    fn zero_timeout_is_rejected_at_composition_boundary() {
+        let result = AndroidCellularOutboundConnector::new(admitted_owner(), Duration::ZERO);
+        assert!(matches!(
+            result,
+            Err(CellularConnectorConfigError::ZeroOperationTimeout)
+        ));
+    }
+
+    #[test]
+    fn expired_deadline_prevents_all_owner_and_platform_effects() {
+        let owner = admitted_owner();
+        let resolved = Cell::new(false);
+        let connected = Cell::new(false);
+        let expired = Instant::now() - Duration::from_millis(1);
+
+        let result = connect_host_with(
+            &owner,
+            &TargetHost::Domain("example.invalid".into()),
+            443,
+            expired,
+            |_, _, _| {
+                resolved.set(true);
+                Ok(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)])
+            },
+            |_, _, _| {
+                connected.set(true);
+                Ok(())
+            },
+        );
+
+        assert_eq!(result, Err(OutboundConnectError::Unavailable));
+        assert!(!resolved.get());
+        assert!(!connected.get());
+    }
+
     #[test]
     fn unavailable_owner_prevents_all_platform_effects() {
         let owner = Arc::new(Mutex::new(CellularEgress::new()));
@@ -199,11 +379,12 @@ mod tests {
             &owner,
             &TargetHost::Domain("example.invalid".into()),
             443,
-            |_, _| {
+            deadline(),
+            |_, _, _| {
                 resolved.set(true);
                 Ok(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)])
             },
-            |_, _| {
+            |_, _, _| {
                 connected.set(true);
                 Ok(())
             },
@@ -223,17 +404,20 @@ mod tests {
             let owner = admitted_owner();
             let calls = Cell::new(0_u8);
             let observed = Cell::new(None::<SocketAddr>);
+            let expected_deadline = deadline();
 
             let result = connect_host_with(
                 &owner,
                 &host,
                 8443,
-                |_, _| -> Result<Vec<IpAddr>, OutboundConnectError> {
+                expected_deadline,
+                |_, _, _| -> Result<Vec<IpAddr>, OutboundConnectError> {
                     panic!("numeric target must never invoke DNS")
                 },
-                |_, address| {
+                |_, address, received_deadline| {
                     calls.set(calls.get() + 1);
                     observed.set(Some(address));
+                    assert_eq!(received_deadline, expected_deadline);
                     Ok(())
                 },
             );
@@ -245,11 +429,11 @@ mod tests {
     }
 
     #[test]
-    fn domain_dns_and_connect_use_same_authority_and_first_address_only() {
+    fn domain_dns_and_connect_share_authority_and_deadline() {
         let owner = admitted_owner();
         let dns_authority = Cell::new(None::<CellularNetworkAuthority>);
         let connect_authority = Cell::new(None::<CellularNetworkAuthority>);
-        let connect_calls = Cell::new(0_u8);
+        let expected_deadline = deadline();
         let first = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 20));
         let second = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 21));
 
@@ -257,21 +441,22 @@ mod tests {
             &owner,
             &TargetHost::Domain("example.invalid".into()),
             443,
-            |authority, domain| {
+            expected_deadline,
+            |authority, domain, received_deadline| {
                 assert_eq!(domain, "example.invalid");
+                assert_eq!(received_deadline, expected_deadline);
                 dns_authority.set(Some(authority));
                 Ok(vec![first, second])
             },
-            |authority, address| {
+            |authority, address, received_deadline| {
+                assert_eq!(received_deadline, expected_deadline);
                 connect_authority.set(Some(authority));
-                connect_calls.set(connect_calls.get() + 1);
                 assert_eq!(address, SocketAddr::new(first, 443));
                 Ok(())
             },
         );
 
         assert_eq!(result, Ok(()));
-        assert_eq!(connect_calls.get(), 1);
         assert_eq!(dns_authority.get(), connect_authority.get());
     }
 
@@ -285,14 +470,15 @@ mod tests {
             &owner,
             &TargetHost::Domain("example.invalid".into()),
             443,
-            move |_, _| {
+            deadline(),
+            move |_, _, _| {
                 owner_during_dns
                     .lock()
                     .expect("owner mutex")
                     .lost(sequence(2), handle(42));
                 Ok(vec![IpAddr::V4(Ipv4Addr::new(203, 0, 113, 20))])
             },
-            |_, _| {
+            |_, _, _| {
                 connected.set(true);
                 Ok(())
             },
@@ -311,10 +497,11 @@ mod tests {
             &owner,
             &TargetHost::Ipv4(Ipv4Addr::new(203, 0, 113, 20)),
             443,
-            |_, _| -> Result<Vec<IpAddr>, OutboundConnectError> {
+            deadline(),
+            |_, _, _| -> Result<Vec<IpAddr>, OutboundConnectError> {
                 panic!("numeric target must never invoke DNS")
             },
-            move |_, _| {
+            move |_, _, _| {
                 owner_during_connect
                     .lock()
                     .expect("owner mutex")
@@ -335,10 +522,11 @@ mod tests {
             &owner,
             &TargetHost::Ipv4(Ipv4Addr::LOCALHOST),
             0,
-            |_, _| -> Result<Vec<IpAddr>, OutboundConnectError> {
+            deadline(),
+            |_, _, _| -> Result<Vec<IpAddr>, OutboundConnectError> {
                 panic!("zero port must fail before DNS")
             },
-            |_, _| {
+            |_, _, _| {
                 connected.set(true);
                 Ok(())
             },

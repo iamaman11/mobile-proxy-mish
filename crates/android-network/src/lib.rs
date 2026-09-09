@@ -7,8 +7,9 @@
 use mish_cellular::CellularNetworkAuthority;
 use std::fmt;
 use std::net::{SocketAddr, TcpStream};
+use std::time::Instant;
 
-/// Fail-closed errors for the existing explicit-network bind/DNS mechanics.
+/// Fail-closed errors for supported Android exact-network bind/DNS mechanics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AndroidNetworkError {
     InvalidSocketFd,
@@ -39,25 +40,25 @@ impl fmt::Display for AndroidNetworkError {
 
 impl std::error::Error for AndroidNetworkError {}
 
-/// Fail-closed errors for the concrete Android TCP connect mechanic.
-///
-/// This type is deliberately separate from [`AndroidNetworkError`] so adding B4b-2
-/// socket creation/connect effects does not expand the existing bind/DNS UniFFI error
-/// contract consumed by Android instrumentation.
+/// Fail-closed errors for the deadline-bounded Android TCP connect mechanic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AndroidConnectError {
+    DeadlineExceeded,
     NativeSocketCreateFailed,
     NativeSocketBindFailed,
     NativeConnectFailed,
+    NativeSocketModeFailed,
     UnsupportedPlatform,
 }
 
 impl fmt::Display for AndroidConnectError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let message = match self {
+            Self::DeadlineExceeded => "Android exact-network TCP connect deadline exceeded",
             Self::NativeSocketCreateFailed => "Android TCP socket creation failed",
             Self::NativeSocketBindFailed => "Android explicit-network socket binding failed",
             Self::NativeConnectFailed => "Android exact-network TCP connect failed",
+            Self::NativeSocketModeFailed => "Android TCP socket blocking-mode transition failed",
             Self::UnsupportedPlatform => "exact-network TCP connect requires Android",
         };
         formatter.write_str(message)
@@ -81,6 +82,11 @@ pub fn bind_socket(
 
 /// Resolves a hostname using DNS associated with the exact Android Network carried by
 /// an owner-issued cellular authority.
+///
+/// The call preserves Android's native `getAllByName`/getaddrinfo semantics, including
+/// platform address ordering and resolver behavior. Runtime Lifecycle places this
+/// blocking platform operation behind one bounded resolver worker so it cannot extend a
+/// public CONNECT operation past its owner-defined deadline.
 pub fn resolve_host(
     authority: CellularNetworkAuthority,
     hostname: &str,
@@ -92,16 +98,26 @@ pub fn resolve_host(
     resolve_host_on_platform(authority, hostname)
 }
 
-/// Creates one TCP socket, binds it to the exact Android Network carried by the
-/// owner-issued authority, and only then invokes `connect(2)` for the numeric target.
+/// Creates one nonblocking TCP socket, binds it to the exact Android Network, and then
+/// performs exactly one deadline-bounded `connect(2)` attempt for a numeric target.
 ///
-/// DNS is deliberately absent from this API. Domain resolution must happen separately
-/// through [`resolve_host`] with the same authority generation.
-pub fn connect_tcp(
+/// DNS is deliberately absent from this API. Domain resolution remains a separate
+/// exact-network operation using the same owner-issued authority.
+pub fn connect_tcp_until(
     authority: CellularNetworkAuthority,
     address: SocketAddr,
+    deadline: Instant,
 ) -> Result<TcpStream, AndroidConnectError> {
-    connect_tcp_on_platform(authority, address)
+    ensure_before_deadline(deadline)?;
+    connect_tcp_until_on_platform(authority, address, deadline)
+}
+
+fn ensure_before_deadline(deadline: Instant) -> Result<(), AndroidConnectError> {
+    if Instant::now() < deadline {
+        Ok(())
+    } else {
+        Err(AndroidConnectError::DeadlineExceeded)
+    }
 }
 
 #[cfg(target_os = "android")]
@@ -139,48 +155,35 @@ fn resolve_host_on_platform(
 }
 
 #[cfg(target_os = "android")]
-fn connect_tcp_on_platform(
+fn connect_tcp_until_on_platform(
     authority: CellularNetworkAuthority,
     address: SocketAddr,
+    deadline: Instant,
 ) -> Result<TcpStream, AndroidConnectError> {
-    android::connect_tcp(authority, address)
+    android::connect_tcp_until(authority, address, deadline)
 }
 
 #[cfg(not(target_os = "android"))]
-fn connect_tcp_on_platform(
+fn connect_tcp_until_on_platform(
     authority: CellularNetworkAuthority,
     address: SocketAddr,
+    deadline: Instant,
 ) -> Result<TcpStream, AndroidConnectError> {
-    let _ = (authority, address);
+    let _ = (authority, address, deadline);
     Err(AndroidConnectError::UnsupportedPlatform)
-}
-
-/// Small private sequencing primitive used by the Android implementation and direct
-/// deterministic tests. This is not a provider/plugin boundary: production has one
-/// concrete Android implementation.
-#[cfg(any(target_os = "android", test))]
-fn create_bind_connect<T, E>(
-    create: impl FnOnce() -> Result<T, E>,
-    bind: impl FnOnce(&T) -> Result<(), E>,
-    connect: impl FnOnce(&T) -> Result<(), E>,
-) -> Result<T, E> {
-    let socket = create()?;
-    bind(&socket)?;
-    connect(&socket)?;
-    Ok(socket)
 }
 
 #[cfg(target_os = "android")]
 #[allow(unsafe_code)]
 mod android {
     use super::{
-        AndroidConnectError, AndroidNetworkError, CellularNetworkAuthority, SocketAddr, TcpStream,
-        create_bind_connect,
+        AndroidConnectError, AndroidNetworkError, CellularNetworkAuthority, Instant, SocketAddr,
+        TcpStream,
     };
     use std::ffi::{CStr, CString};
     use std::mem;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-    use std::os::raw::c_char;
+    use std::os::raw::{c_char, c_int, c_void};
     use std::ptr;
 
     const NUMERIC_HOST_BUFFER_LEN: usize = 1025;
@@ -229,22 +232,17 @@ mod android {
         numeric_hosts(&results)
     }
 
-    pub(super) fn connect_tcp(
+    pub(super) fn connect_tcp_until(
         authority: CellularNetworkAuthority,
         address: SocketAddr,
+        deadline: Instant,
     ) -> Result<TcpStream, AndroidConnectError> {
-        let socket = create_bind_connect(
-            || create_socket(address),
-            |socket| {
-                if bind_socket_fd_raw(authority, socket.as_raw_fd()) {
-                    Ok(())
-                } else {
-                    Err(AndroidConnectError::NativeSocketBindFailed)
-                }
-            },
-            |socket| connect_socket(socket.as_raw_fd(), address),
-        )?;
-
+        let socket = create_socket(address)?;
+        if !bind_socket_fd_raw(authority, socket.as_raw_fd()) {
+            return Err(AndroidConnectError::NativeSocketBindFailed);
+        }
+        connect_socket_until(socket.as_raw_fd(), address, deadline)?;
+        restore_blocking(socket.as_raw_fd())?;
         Ok(TcpStream::from(socket))
     }
 
@@ -268,7 +266,7 @@ mod android {
         let raw_fd = unsafe {
             libc::socket(
                 domain,
-                libc::SOCK_STREAM | libc::SOCK_CLOEXEC,
+                libc::SOCK_STREAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
                 libc::IPPROTO_TCP,
             )
         };
@@ -281,8 +279,45 @@ mod android {
         Ok(unsafe { OwnedFd::from_raw_fd(raw_fd) })
     }
 
-    fn connect_socket(socket_fd: i32, address: SocketAddr) -> Result<(), AndroidConnectError> {
-        let result = match address {
+    fn connect_socket_until(
+        socket_fd: c_int,
+        address: SocketAddr,
+        deadline: Instant,
+    ) -> Result<(), AndroidConnectError> {
+        super::ensure_before_deadline(deadline)?;
+        let result = raw_connect(socket_fd, address);
+        if result == 0 {
+            return Ok(());
+        }
+
+        let error = std::io::Error::last_os_error().raw_os_error();
+        if error != Some(libc::EINPROGRESS) && error != Some(libc::EALREADY) {
+            return Err(AndroidConnectError::NativeConnectFailed);
+        }
+
+        poll_writable_until(socket_fd, deadline)?;
+
+        let mut socket_error: c_int = 0;
+        let mut length = mem::size_of::<c_int>() as libc::socklen_t;
+        // SAFETY: `socket_error` and `length` are valid writable buffers for SO_ERROR.
+        let result = unsafe {
+            libc::getsockopt(
+                socket_fd,
+                libc::SOL_SOCKET,
+                libc::SO_ERROR,
+                (&mut socket_error as *mut c_int).cast::<c_void>(),
+                &mut length,
+            )
+        };
+        if result != 0 || socket_error != 0 {
+            return Err(AndroidConnectError::NativeConnectFailed);
+        }
+
+        Ok(())
+    }
+
+    fn raw_connect(socket_fd: c_int, address: SocketAddr) -> c_int {
+        match address {
             SocketAddr::V4(address) => {
                 let raw = libc::sockaddr_in {
                     sin_family: libc::AF_INET as libc::sa_family_t,
@@ -324,13 +359,60 @@ mod android {
                     )
                 }
             }
-        };
-
-        if result == 0 {
-            Ok(())
-        } else {
-            Err(AndroidConnectError::NativeConnectFailed)
         }
+    }
+
+    fn poll_writable_until(
+        socket_fd: c_int,
+        deadline: Instant,
+    ) -> Result<(), AndroidConnectError> {
+        loop {
+            let timeout = poll_timeout_ms(deadline)?;
+            let mut poll_fd = libc::pollfd {
+                fd: socket_fd,
+                events: libc::POLLOUT,
+                revents: 0,
+            };
+
+            // SAFETY: `poll_fd` points to one initialized pollfd and remains valid for
+            // the duration of this synchronous call.
+            let result = unsafe { libc::poll(&mut poll_fd, 1, timeout) };
+            if result > 0 {
+                return Ok(());
+            }
+            if result == 0 {
+                return Err(AndroidConnectError::DeadlineExceeded);
+            }
+            if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+                return Err(AndroidConnectError::NativeConnectFailed);
+            }
+        }
+    }
+
+    fn poll_timeout_ms(deadline: Instant) -> Result<c_int, AndroidConnectError> {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .ok_or(AndroidConnectError::DeadlineExceeded)?;
+        let millis = remaining.as_millis();
+        if millis == 0 {
+            return Ok(1);
+        }
+        Ok(millis.min(i32::MAX as u128) as c_int)
+    }
+
+    fn restore_blocking(socket_fd: c_int) -> Result<(), AndroidConnectError> {
+        // SAFETY: fcntl operates on the live socket fd and uses integer flags only.
+        let flags = unsafe { libc::fcntl(socket_fd, libc::F_GETFL) };
+        if flags < 0 {
+            return Err(AndroidConnectError::NativeSocketModeFailed);
+        }
+
+        // SAFETY: same live fd; clearing O_NONBLOCK preserves all unrelated flags.
+        let result = unsafe { libc::fcntl(socket_fd, libc::F_SETFL, flags & !libc::O_NONBLOCK) };
+        if result < 0 {
+            return Err(AndroidConnectError::NativeSocketModeFailed);
+        }
+        Ok(())
     }
 
     struct AddrInfoList(*mut ndk_sys::addrinfo);
@@ -403,7 +485,8 @@ mod android {
 mod tests {
     use super::*;
     use mish_cellular::{NetworkHandle, NetworkObservation, ObservationSequence};
-    use std::cell::RefCell;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    use std::time::Duration;
 
     fn authority() -> CellularNetworkAuthority {
         let mut owner = mish_cellular::CellularEgress::new();
@@ -437,11 +520,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn expired_connect_deadline_fails_before_platform_access() {
+        let authority = authority();
+        let expired = Instant::now() - Duration::from_millis(1);
+        let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 443);
+
+        assert_eq!(
+            connect_tcp_until(authority, address, expired),
+            Err(AndroidConnectError::DeadlineExceeded)
+        );
+    }
+
     #[cfg(not(target_os = "android"))]
     #[test]
     fn supported_operations_fail_closed_off_android() {
         let authority = authority();
-        let address = "127.0.0.1:443".parse().expect("test address");
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let address = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 443);
 
         assert_eq!(
             bind_socket(authority, 5),
@@ -452,57 +548,8 @@ mod tests {
             Err(AndroidNetworkError::UnsupportedPlatform)
         );
         assert!(matches!(
-            connect_tcp(authority, address),
+            connect_tcp_until(authority, address, deadline),
             Err(AndroidConnectError::UnsupportedPlatform)
         ));
-    }
-
-    #[test]
-    fn socket_sequence_is_create_then_bind_then_connect() {
-        let events = RefCell::new(Vec::new());
-
-        let socket = create_bind_connect(
-            || {
-                events.borrow_mut().push("create");
-                Ok::<_, &'static str>(17)
-            },
-            |fd| {
-                assert_eq!(*fd, 17);
-                events.borrow_mut().push("bind");
-                Ok(())
-            },
-            |fd| {
-                assert_eq!(*fd, 17);
-                events.borrow_mut().push("connect");
-                Ok(())
-            },
-        )
-        .expect("sequence succeeds");
-
-        assert_eq!(socket, 17);
-        assert_eq!(*events.borrow(), ["create", "bind", "connect"]);
-    }
-
-    #[test]
-    fn bind_failure_prevents_connect_without_retry() {
-        let events = RefCell::new(Vec::new());
-
-        let result = create_bind_connect(
-            || {
-                events.borrow_mut().push("create");
-                Ok::<_, &'static str>(17)
-            },
-            |_| {
-                events.borrow_mut().push("bind");
-                Err("bind failed")
-            },
-            |_| {
-                events.borrow_mut().push("connect");
-                Ok(())
-            },
-        );
-
-        assert_eq!(result, Err("bind failed"));
-        assert_eq!(*events.borrow(), ["create", "bind"]);
     }
 }
