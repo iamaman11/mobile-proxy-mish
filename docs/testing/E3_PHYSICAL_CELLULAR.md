@@ -17,7 +17,7 @@ validated cellular -> owner ADMITTED
 owner lease -> network-scoped DNS
 same lease -> exact socket bind
 bound socket -> Internet
-IP echo -> bare public carrier IP
+IP echo -> valid public IP literal observed on-device
 
 negative:
 Wi-Fi remains validated
@@ -53,7 +53,8 @@ Runner prerequisites:
 - USB access to the target phone;
 - the target phone has authorized USB debugging;
 - for `full-root-toggle`, `adb shell su -c id` must yield root;
-- the phone is `arm64-v8a` for the current support envelope;
+- Android API level is at least 23;
+- the phone ABI is `arm64-v8a` for the current support envelope;
 - Wi-Fi is connected to a validated Internet network before the workflow starts;
 - a real SIM/mobile-data subscription is available.
 
@@ -61,11 +62,14 @@ Cloudflare One Agent is **not required** for B2 E3. If it happens to be installe
 
 ## GitHub workflow
 
-Run:
+Run the workflow only from accepted `main`:
 
 ```text
 Actions -> E3 Physical Cellular -> Run workflow
+branch/ref -> main
 ```
+
+The workflow itself rejects a non-`main` ref so a feature-branch run cannot be mistaken for accepted E3 evidence.
 
 Inputs:
 
@@ -78,7 +82,7 @@ Inputs:
 
 Default endpoint is `checkip.amazonaws.com:80/`. The endpoint is a test fixture, not a product dependency and not a readiness authority.
 
-The path input intentionally accepts only a narrow safe character set because workflow inputs are passed through `adb shell`.
+The serial/host/path inputs intentionally accept narrow safe character sets because workflow inputs cross the local `adb` / remote-shell boundary.
 
 ## What the instrumentation test actually proves
 
@@ -106,16 +110,19 @@ For the negative case it requires validated Wi-Fi to remain present while valida
 The workflow records in the GitHub Actions job summary:
 
 ```text
-Git commit
+Git commit + refs/heads/main
 scenario
 non-secret device model
-Android version
+Android version/API
 Android build fingerprint
+ABI
 app APK SHA-256
 test APK SHA-256
 test echo endpoint
 PASS/FAIL
 ```
+
+The actual carrier public-IP value is validated on-device but intentionally not persisted to public GitHub workflow logs/summary. A failure diagnostic also redacts a `public_ip=` evidence token before printing.
 
 Do not add IMEI, IMSI, SIM number, account credentials, proxy credentials, Cloudflare tokens, or other secrets to evidence.
 
