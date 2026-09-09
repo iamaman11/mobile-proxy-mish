@@ -7,7 +7,7 @@
 //! `CellularOutboundConnector` port. It does not add an accept loop, retry policy,
 //! supervisor, or second cellular state machine.
 
-use mish_android_network::AndroidNetworkError;
+use mish_android_network::{AndroidConnectError, AndroidNetworkError};
 use mish_cellular::{CellularEgress, CellularNetworkAuthority, CellularNetworkAuthorityError};
 use mish_cellular_egress_bridge::{
     CellularOutboundConnector, ConnectTarget, OutboundConnectError, TargetHost,
@@ -52,7 +52,7 @@ impl CellularOutboundConnector for AndroidCellularOutboundConnector {
             |authority, domain| resolve_domain(authority, domain),
             |authority, address| {
                 mish_android_network::connect_tcp(authority, address)
-                    .map_err(map_android_network_error)
+                    .map_err(map_android_connect_error)
             },
         )
     }
@@ -149,9 +149,16 @@ fn map_android_network_error(error: AndroidNetworkError) -> OutboundConnectError
         AndroidNetworkError::NativeSocketBindFailed
         | AndroidNetworkError::NativeDnsLookupFailed
         | AndroidNetworkError::NativeDnsNoResults
-        | AndroidNetworkError::NativeAddressConversionFailed
-        | AndroidNetworkError::NativeSocketCreateFailed
-        | AndroidNetworkError::NativeConnectFailed => OutboundConnectError::Failed,
+        | AndroidNetworkError::NativeAddressConversionFailed => OutboundConnectError::Failed,
+    }
+}
+
+fn map_android_connect_error(error: AndroidConnectError) -> OutboundConnectError {
+    match error {
+        AndroidConnectError::UnsupportedPlatform => OutboundConnectError::Unavailable,
+        AndroidConnectError::NativeSocketCreateFailed
+        | AndroidConnectError::NativeSocketBindFailed
+        | AndroidConnectError::NativeConnectFailed => OutboundConnectError::Failed,
     }
 }
 
