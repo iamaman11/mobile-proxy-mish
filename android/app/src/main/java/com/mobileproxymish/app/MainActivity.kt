@@ -34,7 +34,17 @@ class MainActivity : ComponentActivity() {
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
                         Text(text = state.title, style = MaterialTheme.typography.headlineMedium)
-                        Text(text = state.status, style = MaterialTheme.typography.bodyMedium)
+                        Text(text = state.overallStatus, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            text = "Cellular admission: ${state.cellularState}",
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                        state.cellularReasonCode?.let { reason ->
+                            Text(
+                                text = "Reason: $reason",
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                        }
                     }
                 }
             }
