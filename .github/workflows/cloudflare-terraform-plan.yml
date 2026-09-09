@@ -1,16 +1,7 @@
-name: Cloudflare Terraform State And Plan
+name: Cloudflare Terraform Verify
 
 on:
   workflow_dispatch:
-    inputs:
-      operation:
-        description: Bounded Terraform operation to execute from accepted main
-        required: true
-        default: plan
-        type: choice
-        options:
-          - adopt
-          - plan
 
 permissions:
   contents: read
@@ -20,8 +11,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  terraform:
-    name: Cloudflare Terraform (${{ inputs.operation }})
+  verify:
+    name: Cloudflare Terraform Verify
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: cloudflare-plan
@@ -45,7 +36,6 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_REF" = 'refs/heads/main'
-          test '${{ inputs.operation }}' = 'adopt' -o '${{ inputs.operation }}' = 'plan'
           git fetch --no-tags origin main
           test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
 
@@ -104,16 +94,17 @@ jobs:
           EOF
           terraform -chdir=infra/cloudflare init -input=false -backend-config="$backend"
 
-      - name: Adopt existing adds profile into remote state
-        if: inputs.operation == 'adopt'
+      - name: Ensure existing adds profile is adopted
         shell: bash
         run: |
           set -euo pipefail
           address='cloudflare_zero_trust_device_custom_profile.adds'
 
           if terraform -chdir=infra/cloudflare state show "$address" >/dev/null 2>&1; then
-            echo '### Cloudflare Terraform adoption: ALREADY PRESENT' >> "$GITHUB_STEP_SUMMARY"
-            echo '- Existing adds profile is already present in dedicated R2 state.' >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo '### Cloudflare Terraform adoption: ALREADY PRESENT'
+              echo '- Existing adds profile is already present in dedicated R2 state.'
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
@@ -178,11 +169,9 @@ jobs:
             echo '### Cloudflare Terraform adoption: SUCCESS'
             echo '- Existing adds profile uniquely matched by protected name + match expression.'
             echo '- Resource adopted into dedicated R2 state.'
-            echo '- No Terraform plan or apply executed in this operation.'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Assert Mesh connectivity settings through official Cloudflare API
-        if: inputs.operation == 'plan'
         shell: bash
         run: |
           set -euo pipefail
@@ -212,19 +201,14 @@ jobs:
             echo '- ICMP proxy: ENABLED'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Require profile adoption before plan
-        if: inputs.operation == 'plan'
+      - name: Verify adopted state before plan
         shell: bash
         run: |
           set -euo pipefail
-          if ! terraform -chdir=infra/cloudflare state show \
-            cloudflare_zero_trust_device_custom_profile.adds >/dev/null 2>&1; then
-            echo '::error::The existing adds profile is not in Terraform state. Dispatch this workflow from accepted main with operation=adopt first.'
-            exit 1
-          fi
+          terraform -chdir=infra/cloudflare state show \
+            cloudflare_zero_trust_device_custom_profile.adds >/dev/null
 
       - name: Provider plan and live read-back assertions
-        if: inputs.operation == 'plan'
         shell: bash
         run: |
           set -euo pipefail
