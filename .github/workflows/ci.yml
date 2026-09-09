@@ -288,7 +288,11 @@ jobs:
             --locked
 
           CONNECTOR="target/aarch64-linux-android/release/examples/android_cellular_connector_link"
+          SYMBOLS="$RUNNER_TEMP/android-cellular-connector.symbols"
           test -x "$CONNECTOR"
-          readelf -Ws "$CONNECTOR" | grep -q 'android_setsocknetwork'
-          readelf -Ws "$CONNECTOR" | grep -q 'android_getaddrinfofornetwork'
-          readelf -Ws "$CONNECTOR" | grep -Eq '[[:space:]]connect($|@)'
+          readelf -Ws "$CONNECTOR" > "$SYMBOLS"
+          grep -Fq 'android_setsocknetwork' "$SYMBOLS"
+          grep -Fq 'android_getaddrinfofornetwork' "$SYMBOLS"
+          grep -Eq '[[:space:]]connect($|@)' "$SYMBOLS"
+          grep -Eq '[[:space:]]poll($|@)' "$SYMBOLS"
+          grep -Eq '[[:space:]]getsockopt($|@)' "$SYMBOLS"
