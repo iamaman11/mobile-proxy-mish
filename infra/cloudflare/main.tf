@@ -45,14 +45,11 @@ resource "cloudflare_zero_trust_device_custom_profile" "adds" {
   }
 }
 
-# These account-wide facts already exist and are required for Mesh. CF-1 reads
-# and asserts them, but does not claim write ownership before the first
-# credentialed no-drift plan proves the provider mapping and current state.
+# These account-wide facts already exist and are required for Mesh. Provider
+# 5.24.0 exposes a read-only device-settings data source for unique virtual IP
+# assignment plus Gateway TCP/UDP proxying, so CF-1 can assert those facts
+# without taking write ownership of the account-wide singleton.
 data "cloudflare_zero_trust_device_settings" "mesh" {
-  account_id = var.cloudflare_account_id
-}
-
-data "cloudflare_zero_trust_connectivity_settings" "mesh" {
   account_id = var.cloudflare_account_id
 }
 
@@ -67,12 +64,8 @@ check "mesh_device_settings" {
   }
 }
 
-check "mesh_connectivity_settings" {
-  assert {
-    condition = (
-      data.cloudflare_zero_trust_connectivity_settings.mesh.offramp_warp_enabled &&
-      data.cloudflare_zero_trust_connectivity_settings.mesh.icmp_proxy_enabled
-    )
-    error_message = "Cloudflare Mesh requires WARP-to-WARP off-ramp connectivity and ICMP proxying."
-  }
-}
+# WARP-to-WARP/off-ramp connectivity and ICMP proxy are accepted live account
+# facts, but the released Cloudflare provider 5.24.0 does not expose the
+# documented connectivity-settings data source in its actual plugin schema.
+# They therefore remain bounded supported-UI/bootstrap evidence during CF-1;
+# no Terraform resource is declared merely to simulate a read-only observation.
