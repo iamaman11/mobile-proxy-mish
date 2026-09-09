@@ -24,6 +24,14 @@ E4  Windows -> Mesh -> Android -> cellular -> Kameleo/Camoufox
 
 Hosted CI may compile an instrumentation APK and prove native linkage, but that remains E1/E2. E3 exists only after the versioned physical workflow/procedure executes on a real phone and the run is linked to the stage owner.
 
+Managed physical-lab execution must follow:
+
+- `docs/lab/PLAN.md` — single execution path and stage sequence;
+- `docs/lab/SECURITY.md` — self-hosted runner/provider/device trust boundary;
+- `docs/lab/EVIDENCE.md` — typed/redacted run evidence contract.
+
+Lab evidence is immutable per-run evidence only. It never becomes a mutable runtime readiness owner or a second current-status database.
+
 Versioned execution protocols:
 
 - `docs/testing/E3_PHYSICAL_CELLULAR.md` — real phone/carrier same-network DNS/socket proof and fail-closed cellular-loss ceremony;
