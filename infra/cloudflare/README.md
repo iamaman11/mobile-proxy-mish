@@ -26,6 +26,8 @@ cloudflare_zero_trust_device_custom_profile.adds
 
 Do not create a duplicate profile. The profile match expression is supplied as a protected runtime secret and is not committed to this public repository.
 
+The protected `match` selector contains operator identity data. Exact `name + match` verification therefore belongs to the hosted read-only Cloudflare API check on every accepted-main run. Terraform keeps the value in configuration for create/import shape but ignores update planning for `match` itself, because Terraform 1.16 sensitivity metadata can otherwise produce a perpetual metadata-only update even when the provider reports the exact same value. The verifier also confirms that the Terraform state resource ID points at the exact profile selected by the protected `name + match` predicate.
+
 ## Provider and Terraform versions
 
 ```text
@@ -51,7 +53,7 @@ The protected `cloudflare-plan` GitHub Environment is the execution-time credent
 
 ## Canonical protected inputs
 
-The one-click workflow consumes only:
+The verifier consumes only:
 
 ```text
 vars.R2_STATE_BUCKET
@@ -86,14 +88,20 @@ AWS_SECRET_ACCESS_KEY         <- R2_SECRET_ACCESS_KEY
 
 The `AWS_*` names are only the standard S3-backend compatibility interface. Their values are Cloudflare R2 credentials used against the masked account-specific Cloudflare R2 S3 endpoint. This project does not use an AWS account, AWS S3 bucket, or AWS runtime service for this state path.
 
-## One-click operator procedure
+## Single hosted verification procedure
 
 `.github/workflows/cloudflare-terraform-plan.yml` is the single protected hosted operator path for CF-1 state adoption and provider verification.
 
-It is:
+It has two triggers for the same job and the same serialized state owner:
 
 ```text
 manual workflow_dispatch with NO user inputs
+automatic push to main only when this workflow or infra/cloudflare/** changes
+```
+
+Both triggers are:
+
+```text
 accepted-main only
 GitHub-hosted only
 protected by environment cloudflare-plan
@@ -102,9 +110,11 @@ pinned to Terraform 1.16.2
 NO apply path
 ```
 
-The operator does not choose a branch, operation, account ID, token, bucket, profile match, or Terraform version. The default branch is `main`; the workflow additionally fails closed unless the checked-out ref is the exact current `main`.
+The manual operator path remains one-click: the operator does not choose a branch, operation, account ID, token, bucket, profile match, or Terraform version. The automatic trigger exists so an accepted Cloudflare IaC change proves its own provider read-back immediately after merge instead of requiring another manual click. There is still only one verifier job, one credential source, one R2 state owner and one execution contract.
 
-A single run performs the safe CF-1 sequence:
+Every run additionally fails closed unless the checked-out ref is the exact current `main`.
+
+A run performs the safe CF-1 sequence:
 
 ```text
 accepted-main guard
@@ -112,11 +122,11 @@ accepted-main guard
  -> validate protected environment inputs
  -> resolve exactly one Cloudflare account from protected token scope and mask its ID
  -> initialize dedicated R2 backend
- -> if adds absent from state: discover exact existing adds read-only and import it
- -> if adds already present: keep existing state and continue
+ -> read-only exact adds discovery by name + protected match on every run
+ -> if adds absent from state: import that exact existing profile
+ -> if adds already present: verify state identity points at that exact live profile
  -> assert required Mesh TCP/UDP connectivity settings
  -> observe ICMP diagnostic state without making it a TCP/UDP acceptance gate
- -> verify adopted state
  -> provider plan/read-back
  -> STOP
 ```
@@ -125,15 +135,7 @@ There is no Terraform apply in this workflow.
 
 ### Adoption behavior
 
-The workflow first checks whether:
-
-```text
-cloudflare_zero_trust_device_custom_profile.adds
-```
-
-already exists in remote state.
-
-If absent, it uses the official read-only Cloudflare endpoint:
+The workflow always uses the official read-only Cloudflare endpoint:
 
 ```text
 GET /accounts/{account_id}/devices/policies
@@ -146,9 +148,15 @@ name  == adds
 match == protected CLOUDFLARE_WINDOWS_PROFILE_MATCH
 ```
 
-The discovered `policy_id` is masked ephemeral runtime data. The workflow then performs only `terraform import`, verifies the resource exists in R2 state, and continues to read-only verification. It does not create, update, or delete the Cloudflare profile.
+The discovered `policy_id` is masked ephemeral runtime data.
 
-If discovery is ambiguous, the API response is incomplete/paginated beyond the bounded request, protected inputs are absent, R2 initialization fails, or provider import authority is insufficient, the run fails closed. Do not widen Cloudflare permissions implicitly.
+If Terraform state does not yet contain the resource, the workflow imports exactly that profile and verifies the adopted state identity matches the discovered live profile.
+
+If Terraform state already contains the resource, the workflow does **not** skip selector verification: it re-runs the exact live `name + match` check and fails closed unless the state resource ID points to that same profile.
+
+This makes the read-only API check the natural owner of the protected identity selector and prevents Terraform sensitivity metadata from creating a false provider update path.
+
+If discovery is ambiguous, the API response is incomplete/paginated beyond the bounded request, protected inputs are absent, R2 initialization fails, state identity differs from the selected live profile, or provider import authority is insufficient, the run fails closed. Do not widen Cloudflare permissions implicitly.
 
 ### Provider verification behavior
 
@@ -178,15 +186,19 @@ These are the fail-closed account-wide prerequisites for the accepted TCP/UDP Me
 
 This is not a weakening of the product dataplane contract: the application architecture requires TCP/UDP Mesh transport, while ICMP is not used by the proxy dataplane.
 
-The workflow then runs Terraform provider plan/read-back with `-detailed-exitcode` and reports one of:
+The workflow then runs Terraform provider plan/read-back with `-detailed-exitcode`.
+
+Raw Terraform plan output is never printed to the public Actions log because provider refresh output can contain operator-specific resource IDs and a future drift plan could contain protected values. Raw plan/log/JSON material stays only in ephemeral runner storage with restrictive permissions and is deleted at job exit.
+
+Public result semantics are intentionally strict:
 
 ```text
-NO CHANGES
-CHANGES REQUIRE REVIEW
-FAILED
+exit 0 -> NO CHANGES -> workflow success
+exit 2 -> CHANGES REQUIRE REVIEW -> safe attribute-name-only summary -> workflow failure
+other  -> FAILED -> workflow failure
 ```
 
-Unexpected changes are a stop condition. They do not authorize apply.
+A green verifier therefore means a genuinely clean provider plan, not merely that Terraform produced a reviewable diff. No plan change authorizes apply.
 
 ## Read-only account assertions
 
@@ -208,14 +220,16 @@ PR head
   -> NO Cloudflare token
   -> NO R2 credentials
 
-accepted protected main / one-click verify
-  -> GitHub-hosted runner installs Terraform 1.16.2
+accepted protected main / hosted verifier
+  -> manual one-click OR path-filtered automatic push trigger
+  -> same GitHub-hosted runner job
   -> protected cloudflare-plan inputs
   -> masked account resolution from token scope
-  -> read-only profile discovery when adoption is needed
-  -> remote R2 state import when needed
+  -> exact protected selector verification through read-only Cloudflare API
+  -> remote R2 state import only when absent
+  -> state/live identity equality check
   -> official connectivity read-back
-  -> provider plan/read-back
+  -> sanitized provider plan/read-back
   -> NO apply
 
 physical Windows runner
