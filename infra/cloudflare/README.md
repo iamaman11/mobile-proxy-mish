@@ -36,14 +36,22 @@ Provider 5.24.0 exposes `cloudflare_zero_trust_device_settings` as a real data s
 - Gateway TCP proxy;
 - Gateway UDP proxy.
 
-The generated Cloudflare Terraform documentation also describes `cloudflare_zero_trust_connectivity_settings`, but the released 5.24.0 plugin schema does **not** register that data source. Credential-free CI proved this directly during `terraform validate`.
+Cloudflare's official API also exposes the Zero Trust connectivity settings used by Mesh:
 
-Therefore these two already-confirmed Mesh prerequisites remain bounded supported-UI/bootstrap evidence during CF-1 rather than being faked through a write-capable Terraform resource:
+```text
+GET /accounts/{account_id}/zerotrust/connectivity_settings
+```
 
-- WARP-to-WARP/off-ramp connectivity (`Allow all Cloudflare One traffic to reach enrolled devices`);
-- ICMP proxy.
+The protected accepted-main provider-plan workflow uses that official read-only API surface to assert:
 
-No Terraform resource is declared merely to simulate read-only observation. If a later provider version exposes a working read surface, adoption requires a normal reviewed upgrade PR.
+- WARP-to-WARP/off-ramp connectivity (`offramp_warp_enabled`);
+- ICMP proxy (`icmp_proxy_enabled`).
+
+If either fact is disabled or cannot be read successfully, the workflow fails closed before provider planning. It emits only normalized ENABLED/failed status, not the raw account response.
+
+The generated Cloudflare Terraform documentation describes `cloudflare_zero_trust_connectivity_settings`, but the released provider 5.24.0 plugin schema does **not** register that data source. Credential-free CI proved this directly during `terraform validate`. Therefore CF-1 does not fake this observation through a write-capable Terraform resource, custom provider, `local-exec` PATCH, or parallel mutable control path.
+
+When a later released provider actually exposes a working native read/write surface, adoption must happen through an ordinary reviewed provider-upgrade PR.
 
 ## Provider and Terraform versions
 
@@ -89,7 +97,7 @@ terraform -chdir=infra/cloudflare plan
 
 If the plan proposes any unexpected provider change, **do not apply**. Fix the desired configuration in a new PR and repeat from accepted `main`.
 
-The repository also defines `.github/workflows/cloudflare-terraform-plan.yml`. It is manual, main-only, serialized, and uses the protected `cloudflare-plan` environment. It intentionally refuses to plan until the existing `adds` resource has first been adopted into remote state.
+The repository also defines `.github/workflows/cloudflare-terraform-plan.yml`. It is manual, main-only, serialized, and uses the protected `cloudflare-plan` environment. It intentionally refuses to plan until the existing `adds` resource has first been adopted into remote state. It also validates the official connectivity-settings API invariants before the provider plan.
 
 ## Runtime inputs
 
@@ -138,6 +146,7 @@ PR head
   -> NO R2 credentials
 
 accepted protected main
+  -> official Cloudflare read-only connectivity assertion
   -> credentialed hosted provider plan/read-back
   -> remote R2 state
 
@@ -149,13 +158,14 @@ physical Windows runner
   -> NO R2 state credentials
 ```
 
-The current Cloudflare provider documents `Zero Trust Write` for the custom-profile resource. If a genuinely read-only provider token cannot perform Terraform refresh/plan for this resource, the hosted plan credential may require that permission; this does not authorize apply. Apply remains a separate protected operation.
+The current Cloudflare provider documents `Zero Trust Write` for the custom-profile resource. If a genuinely read-only provider token cannot perform Terraform refresh/plan for this resource, the hosted plan credential may require that permission; this does not authorize apply. The official connectivity-settings GET itself requires only read authority. Apply remains a separate protected operation.
 
 ## Forbidden shortcuts
 
 - no provider credentials on pull-request heads;
 - no local mutable Cloudflare mirror database;
 - no dashboard/MCP write path left as a permanent peer of Terraform;
+- no custom provider or `local-exec` API mutation to compensate for provider schema gaps;
 - no duplicate `adds` profile;
 - no reuse of application R2 buckets for Terraform state;
 - no provider/R2 credentials on the physical lab runner;
