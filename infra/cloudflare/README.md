@@ -1,0 +1,172 @@
+# Cloudflare IaC boundary
+
+This directory is the repository-owned desired-configuration path for the bounded Cloudflare Zero Trust/Mesh configuration used by `mobile-proxy-mish`.
+
+It does **not** make Terraform the live runtime authority. Cloudflare remains the provider authority; Terraform state is deployment machinery only.
+
+## Accepted Windows contract
+
+```text
+ordinary Windows Internet -> sing-box TUN
+Mesh/device CIDR           -> Cloudflare One Traffic only / TunnelOnly
+primary Cloudflare tunnel  -> MASQUE
+Windows DNS                -> existing sing-box/system path
+Cloudflare Local Proxy     -> not product dataplane
+```
+
+The current account-verified Mesh/device range is `100.96.0.0/12`.
+
+## Managed resource
+
+CF-1 adopts the already-existing Windows custom device profile named `adds` as:
+
+```text
+cloudflare_zero_trust_device_custom_profile.adds
+```
+
+Do not create a duplicate profile. The profile must be imported into the dedicated remote Terraform state before any apply.
+
+The profile match expression is intentionally supplied as a sensitive runtime variable rather than committed to this public repository.
+
+## Read-only account assertions
+
+Provider 5.24.0 exposes `cloudflare_zero_trust_device_settings` as a real data source. CF-1 therefore reads and asserts the existing account-wide facts for:
+
+- unique WARP/device IP assignment;
+- Gateway TCP proxy;
+- Gateway UDP proxy.
+
+Cloudflare's official API also exposes the Zero Trust connectivity settings used by Mesh:
+
+```text
+GET /accounts/{account_id}/zerotrust/connectivity_settings
+```
+
+The protected accepted-main provider-plan workflow uses that official read-only API surface to assert:
+
+- WARP-to-WARP/off-ramp connectivity (`offramp_warp_enabled`);
+- ICMP proxy (`icmp_proxy_enabled`).
+
+If either fact is disabled or cannot be read successfully, the workflow fails closed before provider planning. It emits only normalized ENABLED/failed status, not the raw account response.
+
+The generated Cloudflare Terraform documentation describes `cloudflare_zero_trust_connectivity_settings`, but the released provider 5.24.0 plugin schema does **not** register that data source. Credential-free CI proved this directly during `terraform validate`. Therefore CF-1 does not fake this observation through a write-capable Terraform resource, custom provider, `local-exec` PATCH, or parallel mutable control path.
+
+When a later released provider actually exposes a working native read/write surface, adoption must happen through an ordinary reviewed provider-upgrade PR.
+
+## Provider and Terraform versions
+
+```text
+Terraform             = 1.16.2
+cloudflare/cloudflare  = 5.24.0
+```
+
+These are exact pins for CF-1. Upgrades require an ordinary reviewed PR.
+
+`infra/cloudflare/.terraform.lock.hcl` is committed dependency-integrity metadata. Its Cloudflare 5.24.0 release hashes are derived from the signed provider release metadata and its Linux/Windows package hashes are re-materialized by `terraform providers lock` in CI. State, backend runtime files and tfvars remain excluded from Git.
+
+## Remote state bootstrap
+
+A dedicated R2 bucket does not yet exist. Existing application buckets must **not** be reused for Terraform state.
+
+One bounded bootstrap action is required:
+
+1. Create a dedicated R2 bucket for this repository's Terraform state.
+2. Create bucket-scoped R2 credentials with Object Read & Write only.
+3. Store the R2 credentials only in the protected GitHub hosted environment used for provider plan/state operations.
+4. Copy `backend.r2.hcl.example` outside Git, replace placeholders, and initialize the S3-compatible R2 backend.
+
+Never place R2 access keys, Cloudflare API tokens, backend credentials, or local backend files in Git.
+
+## Existing profile adoption
+
+The existing `adds` profile is imported once; import changes Terraform state only and must not mutate the Cloudflare profile.
+
+From an accepted `main` checkout with the remote backend initialized and the required provider credentials available:
+
+```bash
+terraform -chdir=infra/cloudflare import \
+  cloudflare_zero_trust_device_custom_profile.adds \
+  "$CLOUDFLARE_ACCOUNT_ID/$CLOUDFLARE_ADDS_POLICY_ID"
+```
+
+Then run a normal plan immediately.
+
+```bash
+terraform -chdir=infra/cloudflare plan
+```
+
+If the plan proposes any unexpected provider change, **do not apply**. Fix the desired configuration in a new PR and repeat from accepted `main`.
+
+The repository also defines `.github/workflows/cloudflare-terraform-plan.yml`. It is manual, main-only, serialized, and uses the protected `cloudflare-plan` environment. It intentionally refuses to plan until the existing `adds` resource has first been adopted into remote state. It also validates the official connectivity-settings API invariants before the provider plan.
+
+## Runtime inputs
+
+Required inputs are supplied outside Git:
+
+```text
+TF_VAR_cloudflare_account_id
+TF_VAR_windows_profile_match
+CLOUDFLARE_API_TOKEN
+```
+
+The one-time import additionally requires:
+
+```text
+CLOUDFLARE_ADDS_POLICY_ID
+```
+
+R2 backend initialization uses:
+
+```text
+AWS_ACCESS_KEY_ID
+AWS_SECRET_ACCESS_KEY
+```
+
+plus a non-secret backend configuration derived from `backend.r2.hcl.example`.
+
+For the hosted provider-plan workflow, configure the protected `cloudflare-plan` GitHub Environment with:
+
+```text
+vars.CLOUDFLARE_ACCOUNT_ID
+vars.R2_STATE_BUCKET
+secrets.CLOUDFLARE_WINDOWS_PROFILE_MATCH
+secrets.CLOUDFLARE_API_TOKEN
+secrets.R2_ACCESS_KEY_ID
+secrets.R2_SECRET_ACCESS_KEY
+```
+
+No equivalent provider/R2 secret belongs on the physical Windows runner.
+
+## Credential boundaries
+
+```text
+PR head
+  -> terraform fmt/lock/init -backend=false/validate only
+  -> NO Cloudflare token
+  -> NO R2 credentials
+
+accepted protected main
+  -> official Cloudflare read-only connectivity assertion
+  -> credentialed hosted provider plan/read-back
+  -> remote R2 state
+
+protected/manual accepted main
+  -> explicit apply only after reviewed plan
+
+physical Windows runner
+  -> NO Cloudflare provider token
+  -> NO R2 state credentials
+```
+
+The current Cloudflare provider documents `Zero Trust Write` for the custom-profile resource. If a genuinely read-only provider token cannot perform Terraform refresh/plan for this resource, the hosted plan credential may require that permission; this does not authorize apply. The official connectivity-settings GET itself requires only read authority. Apply remains a separate protected operation.
+
+## Forbidden shortcuts
+
+- no provider credentials on pull-request heads;
+- no local mutable Cloudflare mirror database;
+- no dashboard/MCP write path left as a permanent peer of Terraform;
+- no custom provider or `local-exec` API mutation to compensate for provider schema gaps;
+- no duplicate `adds` profile;
+- no reuse of application R2 buckets for Terraform state;
+- no provider/R2 credentials on the physical lab runner;
+- no Android, Mesh TCP, E3 or E4 acceptance claim from this IaC stage.

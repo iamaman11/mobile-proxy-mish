@@ -133,6 +133,33 @@ connect/power rooted arm64 Android
 
 Cloudflare One Agent/Mesh is not required to satisfy #10 E3 cellular proof. Android Mesh enrollment belongs to the later Transport/Mesh physical stage after the cellular E3 gate unless a concrete vendor prerequisite forces an earlier supported setup step.
 
+## Later Android Mesh/transport gate
+
+When the later Transport/Mesh stage is reached, the Android-side ownership is already constrained and must not be reinvented:
+
+```text
+Cloudflare One Agent
+  = the only Android VPN/VpnService owner
+
+sing-box on Android
+  = proxy/server only
+  = NO TUN / NO VpnService
+
+Cloudflare Mesh
+  = private ingress transport only
+
+MISH Cellular Egress
+  = only owner of proxy-target public DNS/socket creation
+  = exact cellular Network-scoped DNS
+  = bind the same exact cellular Network before connect
+```
+
+The physical acceptance must prove that Mesh ingress may remain available over Wi-Fi while proxy Internet egress is cellular-only. With Wi-Fi/Mesh still available and cellular lost/not admitted, the proxy request must fail closed; Wi-Fi/default/WARP/Cloudflare Internet fallback is forbidden. On cellular recovery a fresh authority generation is required before new target DNS/socket operations.
+
+Android `Traffic and DNS` system-DNS behavior does not change this ownership: ordinary Android traffic may use the vendor-owned system DNS path, but MISH proxy target DNS must use the exact cellular Network authority rather than the Android default/system resolver.
+
+These are stable architecture constraints, not a new roadmap stage. The actual Android One Agent profile, Mesh reachability and cellular/VpnService interaction remain physical evidence and must not be claimed before the phone exists.
+
 ## Non-negotiable constraints
 
 ```text
@@ -142,6 +169,7 @@ NO_MUTABLE_LAB_STATUS_DB
 NO_UNTRUSTED_REF_ON_PHYSICAL_RUNNER
 NO_PROVIDER_CREDENTIAL_ON_UNTRUSTED_REF
 NO_PROVIDER_APPLY_SECRET_ON_PHYSICAL_RUNNER
+NO_SECOND_ANDROID_VPN
 NO_DEFAULT_WIFI_WARP_FALLBACK
 NO_EVIDENCE_ESCALATION
 NO_SECRET_OR_DEVICE_IDENTIFIER_PERSISTENCE

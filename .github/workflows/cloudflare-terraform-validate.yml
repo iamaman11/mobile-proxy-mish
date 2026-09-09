@@ -1,0 +1,91 @@
+name: Cloudflare Terraform Static
+
+on:
+  pull_request:
+    paths:
+      - 'infra/cloudflare/**'
+      - '.github/workflows/cloudflare-terraform-validate.yml'
+      - '.gitignore'
+  push:
+    branches: [main]
+    paths:
+      - 'infra/cloudflare/**'
+      - '.github/workflows/cloudflare-terraform-validate.yml'
+      - '.gitignore'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-terraform-static-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Cloudflare Terraform Static
+    runs-on: ubuntu-latest
+    env:
+      TF_VERSION: '1.16.2'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Terraform
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="https://releases.hashicorp.com/terraform/${TF_VERSION}"
+          asset="terraform_${TF_VERSION}_linux_amd64.zip"
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+            "${base}/${asset}" -o "$RUNNER_TEMP/$asset"
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+            "${base}/terraform_${TF_VERSION}_SHA256SUMS" \
+            -o "$RUNNER_TEMP/terraform_SHA256SUMS"
+          grep " ${asset}$" "$RUNNER_TEMP/terraform_SHA256SUMS" \
+            | (cd "$RUNNER_TEMP" && sha256sum -c -)
+          unzip -q "$RUNNER_TEMP/$asset" -d "$RUNNER_TEMP/terraform-bin"
+          sudo install -m 0755 "$RUNNER_TEMP/terraform-bin/terraform" /usr/local/bin/terraform
+          terraform version | grep -F "Terraform v${TF_VERSION}"
+
+      - name: Terraform format
+        run: terraform fmt -check -recursive infra/cloudflare
+
+      - name: Verify Cloudflare provider dependency lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp infra/cloudflare/.terraform.lock.hcl "$RUNNER_TEMP/terraform.lock.before"
+          terraform -chdir=infra/cloudflare providers lock \
+            -platform=linux_amd64 \
+            -platform=windows_amd64
+          if ! cmp -s "$RUNNER_TEMP/terraform.lock.before" infra/cloudflare/.terraform.lock.hcl; then
+            echo 'Provider dependency lock is stale or incomplete.' >&2
+            diff -u "$RUNNER_TEMP/terraform.lock.before" infra/cloudflare/.terraform.lock.hcl || true
+            exit 1
+          fi
+
+      - name: Terraform init without backend or credentials
+        env:
+          CLOUDFLARE_API_TOKEN: ''
+          AWS_ACCESS_KEY_ID: ''
+          AWS_SECRET_ACCESS_KEY: ''
+        run: terraform -chdir=infra/cloudflare init -backend=false -input=false -lockfile=readonly
+
+      - name: Terraform validate
+        env:
+          CLOUDFLARE_API_TOKEN: ''
+          AWS_ACCESS_KEY_ID: ''
+          AWS_SECRET_ACCESS_KEY: ''
+        run: terraform -chdir=infra/cloudflare validate
+
+      - name: Reject committed Terraform state or credential files
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git ls-files | grep -E '(^|/)(\.terraform/|terraform\.tfstate($|\.)|[^/]*\.tfvars$|backend\.r2\.hcl$)'; then
+            echo 'Terraform runtime state/credential-bearing files must not be committed.' >&2
+            exit 1
+          fi

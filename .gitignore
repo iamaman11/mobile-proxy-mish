@@ -9,6 +9,14 @@
 /android/**/build/
 /android/local.properties
 
+# Terraform runtime/state/credentials
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+backend.r2.hcl
+
 # Signing / credentials
 *.jks
 *.keystore
