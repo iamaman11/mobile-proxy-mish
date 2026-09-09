@@ -49,7 +49,7 @@ impl CellularOutboundConnector for AndroidCellularOutboundConnector {
             &self.owner,
             target.host(),
             target.port(),
-            |authority, domain| resolve_domain(authority, domain),
+            resolve_domain,
             |authority, address| {
                 mish_android_network::connect_tcp(authority, address)
                     .map_err(map_android_connect_error)
