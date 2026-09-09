@@ -7,5 +7,10 @@ rust-version.workspace = true
 repository.workspace = true
 publish = false
 
+[dependencies]
+mish-android-network = { path = "../android-network" }
+mish-cellular = { path = "../cellular" }
+mish-cellular-egress-bridge = { path = "../cellular-egress-bridge" }
+
 [lints]
 workspace = true
