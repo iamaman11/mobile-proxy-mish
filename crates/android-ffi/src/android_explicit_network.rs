@@ -32,8 +32,8 @@ pub(super) fn resolve_host(
     network: NetworkHandle,
     hostname: &str,
 ) -> Result<Vec<String>, CellularNetworkOperationError> {
-    let node = CString::new(hostname)
-        .map_err(|_| CellularNetworkOperationError::InvalidHostname)?;
+    let node =
+        CString::new(hostname).map_err(|_| CellularNetworkOperationError::InvalidHostname)?;
     let mut raw_results: *mut ndk_sys::addrinfo = ptr::null_mut();
 
     // SAFETY: `node` is a live NUL-terminated C string for the duration of the call;
@@ -73,9 +73,7 @@ impl Drop for AddrInfoList {
     }
 }
 
-fn numeric_hosts(
-    results: &AddrInfoList,
-) -> Result<Vec<String>, CellularNetworkOperationError> {
+fn numeric_hosts(results: &AddrInfoList) -> Result<Vec<String>, CellularNetworkOperationError> {
     let mut addresses = Vec::new();
     let mut current = results.0;
 
