@@ -1,11 +1,16 @@
 package com.mobileproxymish.app
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MainUiStateTest {
     @Test
     fun bootstrapStateDoesNotClaimReadiness() {
-        assertTrue(MainUiState().status.contains("not implemented"))
+        val state = MainUiState()
+
+        assertTrue(state.overallStatus.contains("not implemented"))
+        assertEquals("Unknown", state.cellularState)
+        assertEquals("cellular.no_observation", state.cellularReasonCode)
     }
 }
