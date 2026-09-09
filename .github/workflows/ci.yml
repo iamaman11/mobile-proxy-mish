@@ -90,14 +90,21 @@ jobs:
           echo "ANDROID_NDK_ROOT=$NDK_PATH" >> "$GITHUB_ENV"
           echo "ANDROID_NDK=$NDK_PATH" >> "$GITHUB_ENV"
 
-      - name: Lint, unit test, and assemble Android shell
-        run: gradle --no-daemon -p android :app:lintDebug :app:testDebugUnitTest :app:assembleDebug
+      - name: Lint, unit test, and assemble Android shell + physical test APK
+        run: |
+          gradle --no-daemon -p android \
+            :app:lintDebug \
+            :app:testDebugUnitTest \
+            :app:assembleDebug \
+            :app:assembleDebugAndroidTest
 
       - name: Verify packaged native runtime and explicit-network linkage
         run: |
           APK="android/app/build/outputs/apk/debug/app-debug.apk"
+          TEST_APK="android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"
           NATIVE="android/app/build/generated/rust-jni/arm64-v8a/libmish_android_ffi.so"
           test -f "$APK"
+          test -f "$TEST_APK"
           test -f "$NATIVE"
           unzip -l "$APK" | grep -q 'lib/arm64-v8a/libmish_android_ffi.so'
           unzip -l "$APK" | grep -q 'lib/arm64-v8a/libjnidispatch.so'

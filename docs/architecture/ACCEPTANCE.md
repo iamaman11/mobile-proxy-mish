@@ -22,6 +22,13 @@ E4  Windows -> Mesh -> Android -> cellular -> Kameleo/Camoufox
 
 `NO_EVIDENCE_ESCALATION`: weaker evidence cannot close a stronger physical claim.
 
-B1 proves only bootstrap E1/build obligations. It does not claim E3/E4 or product readiness.
+Hosted CI may compile an instrumentation APK and prove native linkage, but that remains E1/E2. E3 exists only after the versioned physical workflow/procedure executes on a real phone and the run is linked to the stage owner.
+
+Versioned execution protocols:
+
+- `docs/testing/E3_PHYSICAL_CELLULAR.md` — real phone/carrier same-network DNS/socket proof and fail-closed cellular-loss ceremony;
+- `docs/testing/E4_FULL_STACK.md` — future Windows/Cloudflare/Mesh/sing-box/Kameleo/Camoufox full-stack contract.
+
+External vendor applications are acceptance fixtures, not product artifacts or runtime-state authorities. Their supported boundary behavior is observed; hidden APIs/UI scraping/repackaging are not accepted evidence paths.
 
 Release acceptance later includes cellular-only egress with Wi-Fi simultaneously connected, fail-closed behavior, Mesh-only exposure, the full :1080/:1081/:3128 protocol/auth matrix, rotation crash/reconciliation, reboot/churn/Doze, Kameleo/Camoufox, load, and soak.
