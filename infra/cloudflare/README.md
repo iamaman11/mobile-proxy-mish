@@ -38,12 +38,12 @@ The following existing account-wide settings are read and asserted, not mutated 
 - WARP-to-WARP/off-ramp connectivity;
 - ICMP proxy.
 
-The provider exposes these through `cloudflare_zero_trust_device_settings` and `cloudflare_zero_trust_connectivity_settings`. A future stage may take write ownership only after an accepted no-drift provider plan proves the exact mapping and there is a concrete need to manage those settings.
+The current provider exposes these through `cloudflare_zero_trust_device_settings` and `cloudflare_zero_trust_connectivity_settings`. The latter is the supported provider surface for WARP-to-WARP/off-ramp and ICMP connectivity semantics. CF-1 reads and asserts these settings first; write ownership is deferred until an accepted no-drift provider plan proves the current state and there is a concrete reason to manage the account-wide values.
 
 ## Provider and Terraform versions
 
 ```text
-Terraform             = 1.16.1
+Terraform             = 1.16.2
 cloudflare/cloudflare  = 5.24.0
 ```
 
@@ -82,6 +82,8 @@ terraform -chdir=infra/cloudflare plan
 
 If the plan proposes any unexpected provider change, **do not apply**. Fix the desired configuration in a new PR and repeat from accepted `main`.
 
+The repository also defines `.github/workflows/cloudflare-terraform-plan.yml`. It is manual, main-only, serialized, and uses the protected `cloudflare-plan` environment. It intentionally refuses to plan until the existing `adds` resource has first been adopted into remote state.
+
 ## Runtime inputs
 
 Required inputs are supplied outside Git:
@@ -106,6 +108,19 @@ AWS_SECRET_ACCESS_KEY
 ```
 
 plus a non-secret backend configuration derived from `backend.r2.hcl.example`.
+
+For the hosted provider-plan workflow, configure the protected `cloudflare-plan` GitHub Environment with:
+
+```text
+vars.CLOUDFLARE_ACCOUNT_ID
+vars.R2_STATE_BUCKET
+secrets.CLOUDFLARE_WINDOWS_PROFILE_MATCH
+secrets.CLOUDFLARE_API_TOKEN
+secrets.R2_ACCESS_KEY_ID
+secrets.R2_SECRET_ACCESS_KEY
+```
+
+No equivalent provider/R2 secret belongs on the physical Windows runner.
 
 ## Credential boundaries
 
