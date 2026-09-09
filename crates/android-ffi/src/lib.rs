@@ -403,7 +403,10 @@ mod tests {
             Ok(())
         });
 
-        assert_eq!(result, Err(CellularNetworkOperationError::NoAdmittedNetwork));
+        assert_eq!(
+            result,
+            Err(CellularNetworkOperationError::NoAdmittedNetwork)
+        );
         assert!(!invoked.get());
     }
 
