@@ -256,10 +256,13 @@ impl BridgeListener {
         credentials: BridgeCredentials,
     ) -> Result<Self, BridgeBindError> {
         if !address.is_loopback() {
-            return Err(BridgeBindError::Config(BridgeConfigError::NonLoopbackAddress));
+            return Err(BridgeBindError::Config(
+                BridgeConfigError::NonLoopbackAddress,
+            ));
         }
 
-        let listener = TcpListener::bind(SocketAddr::new(address, port)).map_err(BridgeBindError::Io)?;
+        let listener =
+            TcpListener::bind(SocketAddr::new(address, port)).map_err(BridgeBindError::Io)?;
         Ok(Self {
             listener,
             credentials,
@@ -289,12 +292,18 @@ impl BridgeListener {
         let upstream = match connector.connect(&target) {
             Ok(stream) => stream,
             Err(error) => {
-                write_reply(&mut client, outbound_reply_code(error), unspecified_bind_addr())?;
+                write_reply(
+                    &mut client,
+                    outbound_reply_code(error),
+                    unspecified_bind_addr(),
+                )?;
                 return Err(SessionError::Outbound(error));
             }
         };
 
-        let bound = upstream.local_addr().unwrap_or_else(|_| unspecified_bind_addr());
+        let bound = upstream
+            .local_addr()
+            .unwrap_or_else(|_| unspecified_bind_addr());
         write_reply(&mut client, REPLY_SUCCEEDED, bound)?;
         relay_bidirectional(client, upstream).map_err(SessionError::Io)
     }
@@ -437,21 +446,36 @@ fn read_connect_request(stream: &mut TcpStream) -> Result<ConnectTarget, Session
             let mut length = [0_u8; 1];
             stream.read_exact(&mut length)?;
             if length[0] == 0 {
-                write_reply(stream, REPLY_ADDRESS_TYPE_NOT_SUPPORTED, unspecified_bind_addr())?;
+                write_reply(
+                    stream,
+                    REPLY_ADDRESS_TYPE_NOT_SUPPORTED,
+                    unspecified_bind_addr(),
+                )?;
                 return Err(ProtocolError::InvalidDomain.into());
             }
 
             let mut bytes = vec![0_u8; usize::from(length[0])];
             stream.read_exact(&mut bytes)?;
             let domain = std::str::from_utf8(&bytes).map_err(|_| ProtocolError::InvalidDomain)?;
-            if domain.bytes().any(|byte| byte == 0 || byte.is_ascii_control()) {
-                write_reply(stream, REPLY_ADDRESS_TYPE_NOT_SUPPORTED, unspecified_bind_addr())?;
+            if domain
+                .bytes()
+                .any(|byte| byte == 0 || byte.is_ascii_control())
+            {
+                write_reply(
+                    stream,
+                    REPLY_ADDRESS_TYPE_NOT_SUPPORTED,
+                    unspecified_bind_addr(),
+                )?;
                 return Err(ProtocolError::InvalidDomain.into());
             }
             TargetHost::Domain(domain.to_owned().into_boxed_str())
         }
         _ => {
-            write_reply(stream, REPLY_ADDRESS_TYPE_NOT_SUPPORTED, unspecified_bind_addr())?;
+            write_reply(
+                stream,
+                REPLY_ADDRESS_TYPE_NOT_SUPPORTED,
+                unspecified_bind_addr(),
+            )?;
             return Err(ProtocolError::AddressNotSupported.into());
         }
     };
@@ -587,7 +611,10 @@ mod tests {
 
     fn spawn_bridge(
         connector: Arc<RecordingConnector>,
-    ) -> (SocketAddr, thread::JoinHandle<Result<RelayStats, SessionError>>) {
+    ) -> (
+        SocketAddr,
+        thread::JoinHandle<Result<RelayStats, SessionError>>,
+    ) {
         let bridge = Arc::new(
             BridgeListener::bind(IpAddr::V4(Ipv4Addr::LOCALHOST), 0, credentials())
                 .expect("bridge bind"),
@@ -669,25 +696,19 @@ mod tests {
 
     #[test]
     fn non_loopback_bind_is_rejected_before_os_bind() {
-        let result = BridgeListener::bind(
-            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-            0,
-            credentials(),
-        );
+        let result = BridgeListener::bind(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0, credentials());
         assert!(matches!(
             result,
-            Err(BridgeBindError::Config(BridgeConfigError::NonLoopbackAddress))
+            Err(BridgeBindError::Config(
+                BridgeConfigError::NonLoopbackAddress
+            ))
         ));
     }
 
     #[test]
     fn port_zero_uses_an_os_assigned_loopback_port() {
-        let bridge = BridgeListener::bind(
-            IpAddr::V4(Ipv4Addr::LOCALHOST),
-            0,
-            credentials(),
-        )
-        .expect("bridge bind");
+        let bridge = BridgeListener::bind(IpAddr::V4(Ipv4Addr::LOCALHOST), 0, credentials())
+            .expect("bridge bind");
         let address = bridge.local_addr().expect("bound address");
         assert!(address.ip().is_loopback());
         assert_ne!(address.port(), 0);
@@ -740,7 +761,9 @@ mod tests {
 
     #[test]
     fn domain_is_preserved_for_connector_without_bridge_dns() {
-        let connector = Arc::new(RecordingConnector::failure(OutboundConnectError::Unavailable));
+        let connector = Arc::new(RecordingConnector::failure(
+            OutboundConnectError::Unavailable,
+        ));
         let (bridge_address, bridge_thread) = spawn_bridge(Arc::clone(&connector));
         let mut client = connect_and_authenticate(bridge_address);
         let domain = b"example.invalid";
@@ -842,7 +865,9 @@ mod tests {
             .write_all(&[SOCKS_VERSION, 1, 0x00])
             .expect("write unsupported greeting");
         let mut reply = [0_u8; 2];
-        client.read_exact(&mut reply).expect("read method rejection");
+        client
+            .read_exact(&mut reply)
+            .expect("read method rejection");
         assert_eq!(reply, [SOCKS_VERSION, NO_ACCEPTABLE_METHODS]);
 
         assert!(matches!(
@@ -858,7 +883,10 @@ mod tests {
     fn bind_and_udp_associate_are_rejected_before_connector_invocation() {
         for (command, expected) in [
             (BIND_COMMAND, ProtocolError::BindNotSupported),
-            (UDP_ASSOCIATE_COMMAND, ProtocolError::UdpAssociateNotSupported),
+            (
+                UDP_ASSOCIATE_COMMAND,
+                ProtocolError::UdpAssociateNotSupported,
+            ),
         ] {
             let connector = Arc::new(RecordingConnector::failure(OutboundConnectError::Failed));
             let (bridge_address, bridge_thread) = spawn_bridge(Arc::clone(&connector));
@@ -892,13 +920,7 @@ mod tests {
         let (bridge_address, bridge_thread) = spawn_bridge(Arc::clone(&connector));
         let mut client = connect_and_authenticate(bridge_address);
         client
-            .write_all(&[
-                SOCKS_VERSION,
-                CONNECT_COMMAND,
-                0,
-                DOMAIN_ADDRESS_TYPE,
-                0,
-            ])
+            .write_all(&[SOCKS_VERSION, CONNECT_COMMAND, 0, DOMAIN_ADDRESS_TYPE, 0])
             .expect("write malformed domain");
 
         assert_eq!(read_reply(&mut client), REPLY_ADDRESS_TYPE_NOT_SUPPORTED);
