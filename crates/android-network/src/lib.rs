@@ -120,6 +120,20 @@ fn ensure_before_deadline(deadline: Instant) -> Result<(), AndroidConnectError> 
     }
 }
 
+/// Production sequencing primitive: a connect effect cannot be dispatched until the
+/// exact-network bind effect has succeeded. Tests exercise this same primitive directly.
+#[cfg(any(target_os = "android", test))]
+fn create_bind_connect<T, E>(
+    create: impl FnOnce() -> Result<T, E>,
+    bind: impl FnOnce(&T) -> Result<(), E>,
+    connect: impl FnOnce(&T) -> Result<(), E>,
+) -> Result<T, E> {
+    let socket = create()?;
+    bind(&socket)?;
+    connect(&socket)?;
+    Ok(socket)
+}
+
 #[cfg(target_os = "android")]
 fn bind_socket_on_platform(
     authority: CellularNetworkAuthority,
@@ -178,7 +192,7 @@ fn connect_tcp_until_on_platform(
 mod android {
     use super::{
         AndroidConnectError, AndroidNetworkError, CellularNetworkAuthority, Instant, SocketAddr,
-        TcpStream,
+        TcpStream, create_bind_connect,
     };
     use std::ffi::{CStr, CString};
     use std::mem;
@@ -237,11 +251,17 @@ mod android {
         address: SocketAddr,
         deadline: Instant,
     ) -> Result<TcpStream, AndroidConnectError> {
-        let socket = create_socket(address)?;
-        if !bind_socket_fd_raw(authority, socket.as_raw_fd()) {
-            return Err(AndroidConnectError::NativeSocketBindFailed);
-        }
-        connect_socket_until(socket.as_raw_fd(), address, deadline)?;
+        let socket = create_bind_connect(
+            || create_socket(address),
+            |socket| {
+                if bind_socket_fd_raw(authority, socket.as_raw_fd()) {
+                    Ok(())
+                } else {
+                    Err(AndroidConnectError::NativeSocketBindFailed)
+                }
+            },
+            |socket| connect_socket_until(socket.as_raw_fd(), address, deadline),
+        )?;
         restore_blocking(socket.as_raw_fd())?;
         Ok(TcpStream::from(socket))
     }
@@ -482,6 +502,7 @@ mod android {
 mod tests {
     use super::*;
     use mish_cellular::{NetworkHandle, NetworkObservation, ObservationSequence};
+    use std::cell::RefCell;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
     use std::time::Duration;
 
@@ -523,10 +544,10 @@ mod tests {
         let expired = Instant::now() - Duration::from_millis(1);
         let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 443);
 
-        assert_eq!(
+        assert!(matches!(
             connect_tcp_until(authority, address, expired),
             Err(AndroidConnectError::DeadlineExceeded)
-        );
+        ));
     }
 
     #[cfg(not(target_os = "android"))]
@@ -548,5 +569,54 @@ mod tests {
             connect_tcp_until(authority, address, deadline),
             Err(AndroidConnectError::UnsupportedPlatform)
         ));
+    }
+
+    #[test]
+    fn socket_sequence_is_create_then_bind_then_connect() {
+        let events = RefCell::new(Vec::new());
+
+        let socket = create_bind_connect(
+            || {
+                events.borrow_mut().push("create");
+                Ok::<_, &'static str>(17)
+            },
+            |fd| {
+                assert_eq!(*fd, 17);
+                events.borrow_mut().push("bind");
+                Ok(())
+            },
+            |fd| {
+                assert_eq!(*fd, 17);
+                events.borrow_mut().push("connect");
+                Ok(())
+            },
+        )
+        .expect("sequence succeeds");
+
+        assert_eq!(socket, 17);
+        assert_eq!(*events.borrow(), ["create", "bind", "connect"]);
+    }
+
+    #[test]
+    fn bind_failure_prevents_connect_without_retry() {
+        let events = RefCell::new(Vec::new());
+
+        let result = create_bind_connect(
+            || {
+                events.borrow_mut().push("create");
+                Ok::<_, &'static str>(17)
+            },
+            |_| {
+                events.borrow_mut().push("bind");
+                Err("bind failed")
+            },
+            |_| {
+                events.borrow_mut().push("connect");
+                Ok(())
+            },
+        );
+
+        assert_eq!(result, Err("bind failed"));
+        assert_eq!(*events.borrow(), ["create", "bind"]);
     }
 }
