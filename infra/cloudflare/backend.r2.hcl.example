@@ -1,0 +1,18 @@
+# Copy outside the repository and replace placeholders before terraform init.
+# Credentials are supplied via AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY and
+# must never be written into this file or Git.
+
+bucket = "replace-with-dedicated-mish-terraform-state-bucket"
+key    = "mobile-proxy-mish/cloudflare/terraform.tfstate"
+region = "auto"
+
+skip_credentials_validation = true
+skip_metadata_api_check     = true
+skip_region_validation      = true
+skip_requesting_account_id  = true
+skip_s3_checksum            = true
+use_path_style              = true
+
+endpoints = {
+  s3 = "https://replace-with-cloudflare-account-id.r2.cloudflarestorage.com"
+}
