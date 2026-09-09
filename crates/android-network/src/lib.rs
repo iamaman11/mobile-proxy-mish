@@ -8,7 +8,7 @@ use mish_cellular::CellularNetworkAuthority;
 use std::fmt;
 use std::net::{SocketAddr, TcpStream};
 
-/// Fail-closed errors for supported Android exact-network mechanics.
+/// Fail-closed errors for the existing explicit-network bind/DNS mechanics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AndroidNetworkError {
     InvalidSocketFd,
@@ -17,8 +17,6 @@ pub enum AndroidNetworkError {
     NativeDnsLookupFailed,
     NativeDnsNoResults,
     NativeAddressConversionFailed,
-    NativeSocketCreateFailed,
-    NativeConnectFailed,
     UnsupportedPlatform,
 }
 
@@ -33,8 +31,6 @@ impl fmt::Display for AndroidNetworkError {
             Self::NativeAddressConversionFailed => {
                 "Android explicit-network DNS address conversion failed"
             }
-            Self::NativeSocketCreateFailed => "Android TCP socket creation failed",
-            Self::NativeConnectFailed => "Android exact-network TCP connect failed",
             Self::UnsupportedPlatform => "explicit-network operation requires Android",
         };
         formatter.write_str(message)
@@ -42,6 +38,33 @@ impl fmt::Display for AndroidNetworkError {
 }
 
 impl std::error::Error for AndroidNetworkError {}
+
+/// Fail-closed errors for the concrete Android TCP connect mechanic.
+///
+/// This type is deliberately separate from [`AndroidNetworkError`] so adding B4b-2
+/// socket creation/connect effects does not expand the existing bind/DNS UniFFI error
+/// contract consumed by Android instrumentation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AndroidConnectError {
+    NativeSocketCreateFailed,
+    NativeSocketBindFailed,
+    NativeConnectFailed,
+    UnsupportedPlatform,
+}
+
+impl fmt::Display for AndroidConnectError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::NativeSocketCreateFailed => "Android TCP socket creation failed",
+            Self::NativeSocketBindFailed => "Android explicit-network socket binding failed",
+            Self::NativeConnectFailed => "Android exact-network TCP connect failed",
+            Self::UnsupportedPlatform => "exact-network TCP connect requires Android",
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl std::error::Error for AndroidConnectError {}
 
 /// Binds an existing socket to the exact Android Network carried by an owner-issued
 /// cellular authority.
@@ -77,7 +100,7 @@ pub fn resolve_host(
 pub fn connect_tcp(
     authority: CellularNetworkAuthority,
     address: SocketAddr,
-) -> Result<TcpStream, AndroidNetworkError> {
+) -> Result<TcpStream, AndroidConnectError> {
     connect_tcp_on_platform(authority, address)
 }
 
@@ -119,7 +142,7 @@ fn resolve_host_on_platform(
 fn connect_tcp_on_platform(
     authority: CellularNetworkAuthority,
     address: SocketAddr,
-) -> Result<TcpStream, AndroidNetworkError> {
+) -> Result<TcpStream, AndroidConnectError> {
     android::connect_tcp(authority, address)
 }
 
@@ -127,9 +150,9 @@ fn connect_tcp_on_platform(
 fn connect_tcp_on_platform(
     authority: CellularNetworkAuthority,
     address: SocketAddr,
-) -> Result<TcpStream, AndroidNetworkError> {
+) -> Result<TcpStream, AndroidConnectError> {
     let _ = (authority, address);
-    Err(AndroidNetworkError::UnsupportedPlatform)
+    Err(AndroidConnectError::UnsupportedPlatform)
 }
 
 /// Small private sequencing primitive used by the Android implementation and direct
@@ -151,7 +174,8 @@ fn create_bind_connect<T, E>(
 #[allow(unsafe_code)]
 mod android {
     use super::{
-        AndroidNetworkError, CellularNetworkAuthority, SocketAddr, TcpStream, create_bind_connect,
+        AndroidConnectError, AndroidNetworkError, CellularNetworkAuthority, SocketAddr, TcpStream,
+        create_bind_connect,
     };
     use std::ffi::{CStr, CString};
     use std::mem;
@@ -165,7 +189,11 @@ mod android {
         authority: CellularNetworkAuthority,
         socket_fd: i32,
     ) -> Result<(), AndroidNetworkError> {
-        bind_socket_fd(authority, socket_fd)
+        if bind_socket_fd_raw(authority, socket_fd) {
+            Ok(())
+        } else {
+            Err(AndroidNetworkError::NativeSocketBindFailed)
+        }
     }
 
     pub(super) fn resolve_host(
@@ -204,35 +232,32 @@ mod android {
     pub(super) fn connect_tcp(
         authority: CellularNetworkAuthority,
         address: SocketAddr,
-    ) -> Result<TcpStream, AndroidNetworkError> {
+    ) -> Result<TcpStream, AndroidConnectError> {
         let socket = create_bind_connect(
             || create_socket(address),
-            |socket| bind_socket_fd(authority, socket.as_raw_fd()),
+            |socket| {
+                if bind_socket_fd_raw(authority, socket.as_raw_fd()) {
+                    Ok(())
+                } else {
+                    Err(AndroidConnectError::NativeSocketBindFailed)
+                }
+            },
             |socket| connect_socket(socket.as_raw_fd(), address),
         )?;
 
         Ok(TcpStream::from(socket))
     }
 
-    fn bind_socket_fd(
-        authority: CellularNetworkAuthority,
-        socket_fd: i32,
-    ) -> Result<(), AndroidNetworkError> {
+    fn bind_socket_fd_raw(authority: CellularNetworkAuthority, socket_fd: i32) -> bool {
         let network = authority.network_handle();
 
         // SAFETY: `network` is captured in an owner-issued opaque authority token and
         // `socket_fd` has been validated/created by the safe caller. The NDK call neither
         // takes ownership of the fd nor retains Rust references.
-        let result = unsafe { ndk_sys::android_setsocknetwork(network.raw(), socket_fd) };
-
-        if result == 0 {
-            Ok(())
-        } else {
-            Err(AndroidNetworkError::NativeSocketBindFailed)
-        }
+        unsafe { ndk_sys::android_setsocknetwork(network.raw(), socket_fd) == 0 }
     }
 
-    fn create_socket(address: SocketAddr) -> Result<OwnedFd, AndroidNetworkError> {
+    fn create_socket(address: SocketAddr) -> Result<OwnedFd, AndroidConnectError> {
         let domain = match address {
             SocketAddr::V4(_) => libc::AF_INET,
             SocketAddr::V6(_) => libc::AF_INET6,
@@ -248,7 +273,7 @@ mod android {
             )
         };
         if raw_fd < 0 {
-            return Err(AndroidNetworkError::NativeSocketCreateFailed);
+            return Err(AndroidConnectError::NativeSocketCreateFailed);
         }
 
         // SAFETY: `raw_fd` is a fresh successful result from `socket(2)` and has not
@@ -256,7 +281,7 @@ mod android {
         Ok(unsafe { OwnedFd::from_raw_fd(raw_fd) })
     }
 
-    fn connect_socket(socket_fd: i32, address: SocketAddr) -> Result<(), AndroidNetworkError> {
+    fn connect_socket(socket_fd: i32, address: SocketAddr) -> Result<(), AndroidConnectError> {
         let result = match address {
             SocketAddr::V4(address) => {
                 let raw = libc::sockaddr_in {
@@ -304,7 +329,7 @@ mod android {
         if result == 0 {
             Ok(())
         } else {
-            Err(AndroidNetworkError::NativeConnectFailed)
+            Err(AndroidConnectError::NativeConnectFailed)
         }
     }
 
@@ -428,7 +453,7 @@ mod tests {
         );
         assert!(matches!(
             connect_tcp(authority, address),
-            Err(AndroidNetworkError::UnsupportedPlatform)
+            Err(AndroidConnectError::UnsupportedPlatform)
         ));
     }
 
