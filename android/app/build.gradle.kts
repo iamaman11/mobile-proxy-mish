@@ -69,7 +69,7 @@ val buildAndroidUniFfi = tasks.register<Exec>("buildAndroidUniFfi") {
     commandLine(
         "cargo",
         "ndk",
-        "-p",
+        "-P",
         "23",
         "-t",
         "arm64-v8a",
