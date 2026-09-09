@@ -189,7 +189,7 @@ jobs:
           TARGET="http://127.0.0.1:18080/probe.txt"
           expect_body() {
             local body
-            body="$($@)"
+            body="$("$@")"
             [[ "$body" == "mish-proxy-ok" ]]
           }
           expect_failure() {
