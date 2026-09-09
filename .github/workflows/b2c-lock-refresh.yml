@@ -1,0 +1,38 @@
+name: B2c one-shot lock refresh
+
+on:
+  push:
+    branches: [b2/native-explicit-network]
+    paths:
+      - crates/android-ffi/Cargo.toml
+      - .github/workflows/b2c-lock-refresh.yml
+
+permissions:
+  contents: write
+
+jobs:
+  refresh-lock:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: b2/native-explicit-network
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal
+          rustup override set 1.98.1
+
+      - name: Refresh lock and retire this one-shot workflow
+        run: |
+          cargo generate-lockfile
+          git rm .github/workflows/b2c-lock-refresh.yml
+          git add Cargo.lock
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m 'B2c: refresh Cargo.lock and retire one-shot generator'
+          git push origin HEAD:b2/native-explicit-network
