@@ -31,12 +31,15 @@ jobs:
       # Temporary branch-only bootstrap step. It is removed before merge after the
       # exact Cargo.lock bytes are committed, so protected main keeps --locked CI.
       - name: Resolve B2b lockfile bootstrap
-        run: |
-          cargo generate-lockfile
-          echo 'B2B_CARGO_LOCK_BASE64_BEGIN'
-          base64 -w0 Cargo.lock
-          echo
-          echo 'B2B_CARGO_LOCK_BASE64_END'
+        run: cargo generate-lockfile
+
+      - name: Upload bootstrap Cargo.lock
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: b2b-cargo-lock
+          path: Cargo.lock
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Format
         run: cargo fmt --all --check
