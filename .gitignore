@@ -16,7 +16,6 @@
 *.tfvars
 *.tfvars.json
 backend.r2.hcl
-.terraform.lock.hcl
 
 # Signing / credentials
 *.jks
