@@ -6,6 +6,7 @@
 
 use mish_cellular::CellularNetworkAuthority;
 use std::fmt;
+use std::net::{SocketAddr, TcpStream};
 
 /// Fail-closed errors for supported Android exact-network mechanics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,6 +17,8 @@ pub enum AndroidNetworkError {
     NativeDnsLookupFailed,
     NativeDnsNoResults,
     NativeAddressConversionFailed,
+    NativeSocketCreateFailed,
+    NativeConnectFailed,
     UnsupportedPlatform,
 }
 
@@ -30,6 +33,8 @@ impl fmt::Display for AndroidNetworkError {
             Self::NativeAddressConversionFailed => {
                 "Android explicit-network DNS address conversion failed"
             }
+            Self::NativeSocketCreateFailed => "Android TCP socket creation failed",
+            Self::NativeConnectFailed => "Android exact-network TCP connect failed",
             Self::UnsupportedPlatform => "explicit-network operation requires Android",
         };
         formatter.write_str(message)
@@ -62,6 +67,18 @@ pub fn resolve_host(
     }
 
     resolve_host_on_platform(authority, hostname)
+}
+
+/// Creates one TCP socket, binds it to the exact Android Network carried by the
+/// owner-issued authority, and only then invokes `connect(2)` for the numeric target.
+///
+/// DNS is deliberately absent from this API. Domain resolution must happen separately
+/// through [`resolve_host`] with the same authority generation.
+pub fn connect_tcp(
+    authority: CellularNetworkAuthority,
+    address: SocketAddr,
+) -> Result<TcpStream, AndroidNetworkError> {
+    connect_tcp_on_platform(authority, address)
 }
 
 #[cfg(target_os = "android")]
@@ -99,10 +116,46 @@ fn resolve_host_on_platform(
 }
 
 #[cfg(target_os = "android")]
+fn connect_tcp_on_platform(
+    authority: CellularNetworkAuthority,
+    address: SocketAddr,
+) -> Result<TcpStream, AndroidNetworkError> {
+    android::connect_tcp(authority, address)
+}
+
+#[cfg(not(target_os = "android"))]
+fn connect_tcp_on_platform(
+    authority: CellularNetworkAuthority,
+    address: SocketAddr,
+) -> Result<TcpStream, AndroidNetworkError> {
+    let _ = (authority, address);
+    Err(AndroidNetworkError::UnsupportedPlatform)
+}
+
+/// Small private sequencing primitive used by the Android implementation and direct
+/// deterministic tests. This is not a provider/plugin boundary: production has one
+/// concrete Android implementation.
+#[cfg(any(target_os = "android", test))]
+fn create_bind_connect<T, E>(
+    create: impl FnOnce() -> Result<T, E>,
+    bind: impl FnOnce(&T) -> Result<(), E>,
+    connect: impl FnOnce(&T) -> Result<(), E>,
+) -> Result<T, E> {
+    let socket = create()?;
+    bind(&socket)?;
+    connect(&socket)?;
+    Ok(socket)
+}
+
+#[cfg(target_os = "android")]
 #[allow(unsafe_code)]
 mod android {
-    use super::{AndroidNetworkError, CellularNetworkAuthority};
+    use super::{
+        AndroidNetworkError, CellularNetworkAuthority, SocketAddr, TcpStream, create_bind_connect,
+    };
     use std::ffi::{CStr, CString};
+    use std::mem;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::os::raw::c_char;
     use std::ptr;
 
@@ -112,18 +165,7 @@ mod android {
         authority: CellularNetworkAuthority,
         socket_fd: i32,
     ) -> Result<(), AndroidNetworkError> {
-        let network = authority.network_handle();
-
-        // SAFETY: `network` is captured in an owner-issued opaque authority token and
-        // `socket_fd` has been validated by the safe caller as non-negative. The NDK
-        // call neither takes ownership of the fd nor retains Rust references.
-        let result = unsafe { ndk_sys::android_setsocknetwork(network.raw(), socket_fd) };
-
-        if result == 0 {
-            Ok(())
-        } else {
-            Err(AndroidNetworkError::NativeSocketBindFailed)
-        }
+        bind_socket_fd(authority, socket_fd)
     }
 
     pub(super) fn resolve_host(
@@ -157,6 +199,113 @@ mod android {
 
         let results = AddrInfoList(raw_results);
         numeric_hosts(&results)
+    }
+
+    pub(super) fn connect_tcp(
+        authority: CellularNetworkAuthority,
+        address: SocketAddr,
+    ) -> Result<TcpStream, AndroidNetworkError> {
+        let socket = create_bind_connect(
+            || create_socket(address),
+            |socket| bind_socket_fd(authority, socket.as_raw_fd()),
+            |socket| connect_socket(socket.as_raw_fd(), address),
+        )?;
+
+        Ok(TcpStream::from(socket))
+    }
+
+    fn bind_socket_fd(
+        authority: CellularNetworkAuthority,
+        socket_fd: i32,
+    ) -> Result<(), AndroidNetworkError> {
+        let network = authority.network_handle();
+
+        // SAFETY: `network` is captured in an owner-issued opaque authority token and
+        // `socket_fd` has been validated/created by the safe caller. The NDK call neither
+        // takes ownership of the fd nor retains Rust references.
+        let result = unsafe { ndk_sys::android_setsocknetwork(network.raw(), socket_fd) };
+
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(AndroidNetworkError::NativeSocketBindFailed)
+        }
+    }
+
+    fn create_socket(address: SocketAddr) -> Result<OwnedFd, AndroidNetworkError> {
+        let domain = match address {
+            SocketAddr::V4(_) => libc::AF_INET,
+            SocketAddr::V6(_) => libc::AF_INET6,
+        };
+
+        // SAFETY: `socket` has no pointer arguments. On success it returns one owned fd;
+        // that ownership is immediately transferred into `OwnedFd` exactly once.
+        let raw_fd = unsafe {
+            libc::socket(
+                domain,
+                libc::SOCK_STREAM | libc::SOCK_CLOEXEC,
+                libc::IPPROTO_TCP,
+            )
+        };
+        if raw_fd < 0 {
+            return Err(AndroidNetworkError::NativeSocketCreateFailed);
+        }
+
+        // SAFETY: `raw_fd` is a fresh successful result from `socket(2)` and has not
+        // been wrapped or closed elsewhere. `OwnedFd` closes it on every later failure.
+        Ok(unsafe { OwnedFd::from_raw_fd(raw_fd) })
+    }
+
+    fn connect_socket(socket_fd: i32, address: SocketAddr) -> Result<(), AndroidNetworkError> {
+        let result = match address {
+            SocketAddr::V4(address) => {
+                let raw = libc::sockaddr_in {
+                    sin_family: libc::AF_INET as libc::sa_family_t,
+                    sin_port: address.port().to_be(),
+                    sin_addr: libc::in_addr {
+                        s_addr: u32::from_ne_bytes(address.ip().octets()),
+                    },
+                    sin_zero: [0; 8],
+                };
+
+                // SAFETY: `raw` is a fully initialized IPv4 sockaddr whose pointer and
+                // exact length remain valid for the duration of the synchronous call.
+                unsafe {
+                    libc::connect(
+                        socket_fd,
+                        (&raw as *const libc::sockaddr_in).cast::<libc::sockaddr>(),
+                        mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+                    )
+                }
+            }
+            SocketAddr::V6(address) => {
+                let raw = libc::sockaddr_in6 {
+                    sin6_family: libc::AF_INET6 as libc::sa_family_t,
+                    sin6_port: address.port().to_be(),
+                    sin6_flowinfo: address.flowinfo().to_be(),
+                    sin6_addr: libc::in6_addr {
+                        s6_addr: address.ip().octets(),
+                    },
+                    sin6_scope_id: address.scope_id(),
+                };
+
+                // SAFETY: `raw` is a fully initialized IPv6 sockaddr whose pointer and
+                // exact length remain valid for the duration of the synchronous call.
+                unsafe {
+                    libc::connect(
+                        socket_fd,
+                        (&raw as *const libc::sockaddr_in6).cast::<libc::sockaddr>(),
+                        mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t,
+                    )
+                }
+            }
+        };
+
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(AndroidNetworkError::NativeConnectFailed)
+        }
     }
 
     struct AddrInfoList(*mut ndk_sys::addrinfo);
@@ -229,6 +378,7 @@ mod android {
 mod tests {
     use super::*;
     use mish_cellular::{NetworkHandle, NetworkObservation, ObservationSequence};
+    use std::cell::RefCell;
 
     fn authority() -> CellularNetworkAuthority {
         let mut owner = mish_cellular::CellularEgress::new();
@@ -266,6 +416,7 @@ mod tests {
     #[test]
     fn supported_operations_fail_closed_off_android() {
         let authority = authority();
+        let address = "127.0.0.1:443".parse().expect("test address");
 
         assert_eq!(
             bind_socket(authority, 5),
@@ -275,5 +426,58 @@ mod tests {
             resolve_host(authority, "example.com"),
             Err(AndroidNetworkError::UnsupportedPlatform)
         );
+        assert!(matches!(
+            connect_tcp(authority, address),
+            Err(AndroidNetworkError::UnsupportedPlatform)
+        ));
+    }
+
+    #[test]
+    fn socket_sequence_is_create_then_bind_then_connect() {
+        let events = RefCell::new(Vec::new());
+
+        let socket = create_bind_connect(
+            || {
+                events.borrow_mut().push("create");
+                Ok::<_, &'static str>(17)
+            },
+            |fd| {
+                assert_eq!(*fd, 17);
+                events.borrow_mut().push("bind");
+                Ok(())
+            },
+            |fd| {
+                assert_eq!(*fd, 17);
+                events.borrow_mut().push("connect");
+                Ok(())
+            },
+        )
+        .expect("sequence succeeds");
+
+        assert_eq!(socket, 17);
+        assert_eq!(*events.borrow(), ["create", "bind", "connect"]);
+    }
+
+    #[test]
+    fn bind_failure_prevents_connect_without_retry() {
+        let events = RefCell::new(Vec::new());
+
+        let result = create_bind_connect(
+            || {
+                events.borrow_mut().push("create");
+                Ok::<_, &'static str>(17)
+            },
+            |_| {
+                events.borrow_mut().push("bind");
+                Err("bind failed")
+            },
+            |_| {
+                events.borrow_mut().push("connect");
+                Ok(())
+            },
+        );
+
+        assert_eq!(result, Err("bind failed"));
+        assert_eq!(*events.borrow(), ["create", "bind"]);
     }
 }
