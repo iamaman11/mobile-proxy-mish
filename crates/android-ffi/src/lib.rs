@@ -95,7 +95,7 @@ impl fmt::Display for CellularNetworkOperationError {
                 "Android explicit-network DNS address conversion failed"
             }
             Self::NetworkChangedDuringOperation => {
-                "cellular network authority changed during the operation"
+                "cellular network authority changed since this lease was issued"
             }
             Self::UnsupportedPlatform => "explicit-network operation requires Android",
             Self::OwnerUnavailable => "Cellular Egress owner state is unavailable",
@@ -118,7 +118,19 @@ struct AdmissionLease {
 /// step will own the lifetime of this object and the Android observer as one generation.
 #[derive(uniffi::Object)]
 pub struct CellularController {
-    owner: Mutex<CellularEgress>,
+    owner: Arc<Mutex<CellularEgress>>,
+}
+
+/// Opaque capability token for one exact owner-admitted cellular authority generation.
+///
+/// The network handle is deliberately not exposed. DNS and socket binding performed
+/// through the same lease are therefore coupled to the same `(NetworkHandle, sequence)`.
+/// A fresh owner observation invalidates the lease, even when Android reuses the same
+/// raw handle value.
+#[derive(uniffi::Object)]
+pub struct CellularNetworkLease {
+    owner: Arc<Mutex<CellularEgress>>,
+    authority: AdmissionLease,
 }
 
 #[uniffi::export]
@@ -126,7 +138,7 @@ impl CellularController {
     #[uniffi::constructor]
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
-            owner: Mutex::new(CellularEgress::new()),
+            owner: Arc::new(Mutex::new(CellularEgress::new())),
         })
     }
 
@@ -178,28 +190,37 @@ impl CellularController {
         Ok(map_snapshot(owner.admission()))
     }
 
-    /// Binds an existing socket to the exact network currently admitted by the owner.
+    /// Issues an opaque lease for the exact cellular authority currently admitted.
     ///
-    /// The caller supplies only the socket fd. It cannot choose or override the Android
-    /// network handle, preventing a second network-selection path outside `mish-cellular`.
-    pub fn bind_socket_to_admitted_network(
+    /// No lease is produced for UNKNOWN/NOT_ADMITTED state, and callers cannot choose
+    /// or override the Android network handle carried by the lease.
+    pub fn admitted_network_lease(
         &self,
-        socket_fd: i32,
-    ) -> Result<(), CellularNetworkOperationError> {
+    ) -> Result<Arc<CellularNetworkLease>, CellularNetworkOperationError> {
+        let authority = self.current_admission_lease()?;
+        Ok(Arc::new(CellularNetworkLease {
+            owner: Arc::clone(&self.owner),
+            authority,
+        }))
+    }
+}
+
+#[uniffi::export]
+impl CellularNetworkLease {
+    /// Binds an existing socket to this lease's exact owner-admitted Android Network.
+    pub fn bind_socket(&self, socket_fd: i32) -> Result<(), CellularNetworkOperationError> {
         if socket_fd < 0 {
             return Err(CellularNetworkOperationError::InvalidSocketFd);
         }
 
-        self.execute_admitted_network_operation(|network| {
-            bind_socket_on_platform(network, socket_fd)
-        })
+        self.execute_operation(|network| bind_socket_on_platform(network, socket_fd))
     }
 
-    /// Resolves a hostname using DNS associated with the exact admitted cellular Network.
+    /// Resolves a hostname using DNS associated with this lease's exact Android Network.
     ///
     /// Returned values are numeric IP strings; the native adapter explicitly suppresses
     /// any second reverse-DNS lookup while converting the NDK result list.
-    pub fn resolve_host_on_admitted_network(
+    pub fn resolve_host(
         &self,
         hostname: String,
     ) -> Result<Vec<String>, CellularNetworkOperationError> {
@@ -207,9 +228,7 @@ impl CellularController {
             return Err(CellularNetworkOperationError::InvalidHostname);
         }
 
-        self.execute_admitted_network_operation(|network| {
-            resolve_host_on_platform(network, &hostname)
-        })
+        self.execute_operation(|network| resolve_host_on_platform(network, &hostname))
     }
 }
 
@@ -229,29 +248,24 @@ impl CellularController {
     }
 
     fn current_admission_lease(&self) -> Result<AdmissionLease, CellularNetworkOperationError> {
-        let snapshot = self.owner_for_operation()?.admission();
-        if snapshot.state() != OwnerAdmissionState::Admitted {
-            return Err(CellularNetworkOperationError::NoAdmittedNetwork);
-        }
+        admission_lease(self.owner_for_operation()?.admission())
+    }
+}
 
-        let network = snapshot
-            .admitted_network()
-            .ok_or(CellularNetworkOperationError::NoAdmittedNetwork)?;
-        let sequence = snapshot
-            .last_sequence()
-            .ok_or(CellularNetworkOperationError::NoAdmittedNetwork)?;
-
-        Ok(AdmissionLease { network, sequence })
+impl CellularNetworkLease {
+    fn owner_for_operation(
+        &self,
+    ) -> Result<MutexGuard<'_, CellularEgress>, CellularNetworkOperationError> {
+        self.owner
+            .lock()
+            .map_err(|_| CellularNetworkOperationError::OwnerUnavailable)
     }
 
-    fn ensure_admission_lease_current(
-        &self,
-        lease: AdmissionLease,
-    ) -> Result<(), CellularNetworkOperationError> {
+    fn ensure_current(&self) -> Result<(), CellularNetworkOperationError> {
         let snapshot = self.owner_for_operation()?.admission();
         let unchanged = snapshot.state() == OwnerAdmissionState::Admitted
-            && snapshot.admitted_network() == Some(lease.network)
-            && snapshot.last_sequence() == Some(lease.sequence);
+            && snapshot.admitted_network() == Some(self.authority.network)
+            && snapshot.last_sequence() == Some(self.authority.sequence);
 
         if unchanged {
             Ok(())
@@ -260,15 +274,32 @@ impl CellularController {
         }
     }
 
-    fn execute_admitted_network_operation<T>(
+    fn execute_operation<T>(
         &self,
         operation: impl FnOnce(NetworkHandle) -> Result<T, CellularNetworkOperationError>,
     ) -> Result<T, CellularNetworkOperationError> {
-        let lease = self.current_admission_lease()?;
-        let result = operation(lease.network)?;
-        self.ensure_admission_lease_current(lease)?;
+        self.ensure_current()?;
+        let result = operation(self.authority.network)?;
+        self.ensure_current()?;
         Ok(result)
     }
+}
+
+fn admission_lease(
+    snapshot: OwnerAdmissionSnapshot,
+) -> Result<AdmissionLease, CellularNetworkOperationError> {
+    if snapshot.state() != OwnerAdmissionState::Admitted {
+        return Err(CellularNetworkOperationError::NoAdmittedNetwork);
+    }
+
+    let network = snapshot
+        .admitted_network()
+        .ok_or(CellularNetworkOperationError::NoAdmittedNetwork)?;
+    let sequence = snapshot
+        .last_sequence()
+        .ok_or(CellularNetworkOperationError::NoAdmittedNetwork)?;
+
+    Ok(AdmissionLease { network, sequence })
 }
 
 #[cfg(target_os = "android")]
@@ -394,30 +425,26 @@ mod tests {
     }
 
     #[test]
-    fn explicit_network_operation_is_not_invoked_without_owner_admission() {
+    fn lease_is_not_issued_without_owner_admission() {
         let controller = CellularController::new();
-        let invoked = Cell::new(false);
 
-        let result = controller.execute_admitted_network_operation(|_| {
-            invoked.set(true);
-            Ok(())
-        });
-
-        assert_eq!(
-            result,
+        assert!(matches!(
+            controller.admitted_network_lease(),
             Err(CellularNetworkOperationError::NoAdmittedNetwork)
-        );
-        assert!(!invoked.get());
+        ));
     }
 
     #[test]
-    fn explicit_network_operation_receives_only_the_owner_admitted_handle() {
+    fn lease_operation_receives_only_the_captured_owner_handle() {
         let controller = CellularController::new();
         controller
             .observe_network(1, 42, true, true, true)
             .expect("valid observation");
+        let lease = controller
+            .admitted_network_lease()
+            .expect("admitted lease");
 
-        let result = controller.execute_admitted_network_operation(|network| {
+        let result = lease.execute_operation(|network| {
             assert_eq!(network.raw(), 42);
             Ok("bound")
         });
@@ -426,14 +453,43 @@ mod tests {
     }
 
     #[test]
-    fn explicit_network_operation_rejects_success_after_owner_change() {
+    fn stale_lease_refuses_operation_before_platform_invocation() {
         let controller = CellularController::new();
         controller
             .observe_network(1, 42, true, true, true)
             .expect("valid observation");
+        let lease = controller
+            .admitted_network_lease()
+            .expect("admitted lease");
+        controller
+            .observe_network(2, 42, true, true, true)
+            .expect("fresh observation");
+        let invoked = Cell::new(false);
+
+        let result = lease.execute_operation(|_| {
+            invoked.set(true);
+            Ok(())
+        });
+
+        assert_eq!(
+            result,
+            Err(CellularNetworkOperationError::NetworkChangedDuringOperation)
+        );
+        assert!(!invoked.get());
+    }
+
+    #[test]
+    fn lease_rejects_success_when_owner_changes_during_operation() {
+        let controller = CellularController::new();
+        controller
+            .observe_network(1, 42, true, true, true)
+            .expect("valid observation");
+        let lease = controller
+            .admitted_network_lease()
+            .expect("admitted lease");
         let controller_for_operation = Arc::clone(&controller);
 
-        let result = controller.execute_admitted_network_operation(|network| {
+        let result = lease.execute_operation(|network| {
             assert_eq!(network.raw(), 42);
             controller_for_operation
                 .network_lost(2, 42)
@@ -448,41 +504,25 @@ mod tests {
     }
 
     #[test]
-    fn explicit_network_operation_rejects_reobserved_same_handle_as_new_authority() {
+    fn invalid_lease_operation_inputs_fail_before_platform_access() {
         let controller = CellularController::new();
         controller
             .observe_network(1, 42, true, true, true)
             .expect("valid observation");
-        let controller_for_operation = Arc::clone(&controller);
-
-        let result = controller.execute_admitted_network_operation(|network| {
-            assert_eq!(network.raw(), 42);
-            controller_for_operation
-                .observe_network(2, 42, true, true, true)
-                .expect("fresh observation");
-            Ok(())
-        });
+        let lease = controller
+            .admitted_network_lease()
+            .expect("admitted lease");
 
         assert_eq!(
-            result,
-            Err(CellularNetworkOperationError::NetworkChangedDuringOperation)
-        );
-    }
-
-    #[test]
-    fn invalid_public_operation_inputs_fail_before_platform_access() {
-        let controller = CellularController::new();
-
-        assert_eq!(
-            controller.bind_socket_to_admitted_network(-1),
+            lease.bind_socket(-1),
             Err(CellularNetworkOperationError::InvalidSocketFd)
         );
         assert_eq!(
-            controller.resolve_host_on_admitted_network(String::new()),
+            lease.resolve_host(String::new()),
             Err(CellularNetworkOperationError::InvalidHostname)
         );
         assert_eq!(
-            controller.resolve_host_on_admitted_network("bad\0host".to_owned()),
+            lease.resolve_host("bad\0host".to_owned()),
             Err(CellularNetworkOperationError::InvalidHostname)
         );
     }
