@@ -89,9 +89,20 @@ short-lived branch -> PR -> required hosted CI -> squash merge -> accepted main
 
 ### Cloudflare supported desired configuration
 
+Because Terraform configuration can execute providers/provisioners, Cloudflare credentials are never exposed to an untrusted PR head in this public repository.
+
 ```text
-Git change -> hosted terraform validate/plan -> review -> protected apply -> fresh provider read-back -> GitHub evidence
+PR -> hosted terraform fmt/validate with NO provider credentials
+ -> review
+ -> squash merge to accepted main
+ -> credentialed hosted terraform plan on that exact accepted main
+ -> inspect immutable plan evidence
+ -> protected/manual apply from the same accepted main identity
+ -> fresh provider read-back
+ -> GitHub evidence
 ```
+
+A credentialed plan is intentionally post-merge. If it reveals an unexpected provider delta, do not apply; correct desired config in a new PR and repeat.
 
 One-time provider bootstrap steps that cannot yet be represented safely as IaC must be explicitly documented as bootstrap exceptions. They must not silently remain a permanent parallel dashboard write path.
 
@@ -129,10 +140,11 @@ ONE_FACT_ONE_OWNER
 NO_SECOND_CONTROL_PLANE
 NO_MUTABLE_LAB_STATUS_DB
 NO_UNTRUSTED_REF_ON_PHYSICAL_RUNNER
+NO_PROVIDER_CREDENTIAL_ON_UNTRUSTED_REF
 NO_PROVIDER_APPLY_SECRET_ON_PHYSICAL_RUNNER
 NO_DEFAULT_WIFI_WARP_FALLBACK
 NO_EVIDENCE_ESCALATION
 NO_SECRET_OR_DEVICE_IDENTIFIER_PERSISTENCE
 ```
 
-The repository is public. Physical workflows therefore require a stricter trust boundary than ordinary hosted PR CI.
+The repository is public. Physical and provider workflows therefore require stricter trust boundaries than ordinary hosted PR CI.
