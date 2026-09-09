@@ -362,10 +362,7 @@ mod android {
         }
     }
 
-    fn poll_writable_until(
-        socket_fd: c_int,
-        deadline: Instant,
-    ) -> Result<(), AndroidConnectError> {
+    fn poll_writable_until(socket_fd: c_int, deadline: Instant) -> Result<(), AndroidConnectError> {
         loop {
             let timeout = poll_timeout_ms(deadline)?;
             let mut poll_fd = libc::pollfd {

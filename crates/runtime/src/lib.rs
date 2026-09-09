@@ -155,7 +155,9 @@ impl ResolverWorker {
 fn resolver_worker_loop(receiver: Receiver<ResolveRequest>) {
     while let Ok(request) = receiver.recv() {
         if Instant::now() >= request.deadline {
-            let _ = request.response.send(Err(OutboundConnectError::Unavailable));
+            let _ = request
+                .response
+                .send(Err(OutboundConnectError::Unavailable));
             continue;
         }
 
