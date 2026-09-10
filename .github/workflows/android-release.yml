@@ -680,3 +680,8 @@ jobs:
             echo '- E3 harness signing certificate: **same as product APK**'
             echo '- Physical Windows release build/signing: **NO**'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove materialized signing key
+        if: ${{ always() }}
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/mish-android-release.keystore"
