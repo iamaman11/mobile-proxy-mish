@@ -28,22 +28,30 @@ class FailedReservationContractTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def write_valid(self):
-        self.runs.write_text(json.dumps({"workflow_runs": [{
-            "id": self.run_id,
-            "head_branch": self.tag,
-            "head_sha": self.sha,
-            "event": "workflow_dispatch",
-            "status": "completed",
-            "conclusion": "failure",
-            "actor": {"login": "github-actions[bot]"},
-        }]}), encoding="utf-8")
-        self.jobs.write_text(json.dumps({"jobs": [{
-            "id": self.job_id,
-            "run_id": self.run_id,
-            "name": "Publish immutable Android RC",
-            "status": "completed",
-            "conclusion": "failure",
-        }]}), encoding="utf-8")
+        self.runs.write_text(json.dumps({
+            "total_count": 1,
+            "workflow_runs": [{
+                "id": self.run_id,
+                "name": "Android Release Candidate",
+                "path": ".github/workflows/android-release.yml",
+                "head_branch": self.tag,
+                "head_sha": self.sha,
+                "event": "workflow_dispatch",
+                "status": "completed",
+                "conclusion": "failure",
+                "actor": {"login": "github-actions[bot]"},
+            }],
+        }), encoding="utf-8")
+        self.jobs.write_text(json.dumps({
+            "total_count": 1,
+            "jobs": [{
+                "id": self.job_id,
+                "run_id": self.run_id,
+                "name": "Publish immutable Android RC",
+                "status": "completed",
+                "conclusion": "failure",
+            }],
+        }), encoding="utf-8")
 
     def verify(self):
         return MODULE.verify(tag=self.tag, tag_sha=self.sha, runs_path=self.runs, jobs_path=self.jobs)
@@ -75,8 +83,15 @@ class FailedReservationContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "exactly one"):
             self.verify()
 
+    def test_wrong_workflow_path_fails_closed(self):
+        data = json.loads(self.runs.read_text())
+        data["workflow_runs"][0]["path"] = ".github/workflows/not-the-owner.yml"
+        self.runs.write_text(json.dumps(data), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            self.verify()
+
     def test_missing_failed_publish_job_fails_closed(self):
-        self.jobs.write_text(json.dumps({"jobs": []}), encoding="utf-8")
+        self.jobs.write_text(json.dumps({"total_count": 0, "jobs": []}), encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "failed Publish"):
             self.verify()
 
@@ -85,8 +100,16 @@ class FailedReservationContractTests(unittest.TestCase):
         duplicate = dict(data["workflow_runs"][0])
         duplicate["id"] = 9999
         data["workflow_runs"].append(duplicate)
+        data["total_count"] = 2
         self.runs.write_text(json.dumps(data), encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "exactly one"):
+            self.verify()
+
+    def test_truncated_run_evidence_fails_closed(self):
+        data = json.loads(self.runs.read_text())
+        data["total_count"] = 2
+        self.runs.write_text(json.dumps(data), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "complete"):
             self.verify()
 
     def test_noncanonical_tag_fails_closed(self):
