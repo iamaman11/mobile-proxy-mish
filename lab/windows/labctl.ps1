@@ -18,6 +18,7 @@ param(
     [long]$HarnessRunId,
     [long]$HarnessArtifactId,
     [string]$ExpectedHarnessZipSha256,
+    [string]$ExpectedTestApkSha256,
     [string]$HarnessDirectory,
     [string]$RunMetadataPath,
     [string]$ArtifactMetadataPath,
@@ -57,8 +58,8 @@ try {
         Import-Module (Join-Path $PSScriptRoot 'E3Harness.psm1') -Force
         switch ($Action) {
             'verify' {
-                foreach ($value in @($VerificationReceipt, $ExpectedHarnessZipSha256, $HarnessDirectory, $ReceiptPath)) {
-                    if (-not $value) { throw 'MISH_LABCTL_FAILURE|INPUT_INVALID|E3 verify requires release verification, exact harness identity, directory, and receipt path.' }
+                foreach ($value in @($VerificationReceipt, $ExpectedHarnessZipSha256, $ExpectedTestApkSha256, $HarnessDirectory, $ReceiptPath)) {
+                    if (-not $value) { throw 'MISH_LABCTL_FAILURE|INPUT_INVALID|E3 verify requires release verification, exact harness identity/digests, directory, and receipt path.' }
                 }
                 if ($HarnessRunId -le 0 -or $HarnessArtifactId -le 0) { throw 'MISH_LABCTL_FAILURE|INPUT_INVALID|E3 verify requires positive run/artifact IDs.' }
                 $result = Invoke-E3Domain -Action verify `
@@ -66,6 +67,7 @@ try {
                     -HarnessRunId $HarnessRunId `
                     -HarnessArtifactId $HarnessArtifactId `
                     -ExpectedHarnessZipSha256 $ExpectedHarnessZipSha256 `
+                    -ExpectedTestApkSha256 $ExpectedTestApkSha256 `
                     -HarnessDirectory $HarnessDirectory `
                     -ReceiptPath $ReceiptPath `
                     -RunMetadataPath $RunMetadataPath `
