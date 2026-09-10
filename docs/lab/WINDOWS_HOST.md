@@ -8,8 +8,9 @@ LAB-1 creates one Windows x64 physical execution fixture:
 
 ```text
 accepted protected main
- -> manual LAB Host Preflight workflow
+ -> versioned Windows bootstrap
  -> repository-scoped self-hosted Windows runner
+ -> manual LAB Host Preflight workflow
  -> versioned host-preflight script
  -> typed/redacted GitHub evidence
 ```
@@ -51,10 +52,10 @@ Before the versioned bootstrap runs, the machine must provide only:
 
 - 64-bit Windows;
 - an elevated native Windows PowerShell process;
-- Microsoft App Installer / `winget`;
-- outbound HTTPS needed to fetch the pinned GitHub runner and build-tool distributions.
+- Microsoft App Installer / `winget` for the remaining WinGet-owned host prerequisites;
+- outbound HTTPS needed to fetch pinned distributions.
 
-The bootstrap then installs or materializes the LAB-1 Git, PowerShell, JDK, Gradle, Android SDK/NDK, Rust, cargo-ndk and ADB prerequisites declared by `toolchain.json`.
+The bootstrap materializes the LAB-1 Git, JDK, PowerShell, Gradle, Android SDK/NDK, Rust, cargo-ndk and ADB prerequisites declared by `toolchain.json`.
 
 No browser/client package is added merely because a later stage may need one. The current LAB-1 host-only preflight has no concrete browser/client consumer; any such prerequisite remains with the first later stage that actually requires it.
 
@@ -101,11 +102,9 @@ The native Windows bootstrap may invoke `wsl.exe` as a token-provider executable
 
 ## Versioned bootstrap
 
-`lab/windows/toolchain.json` is the LAB-1 host prerequisite manifest. `lab/windows/bootstrap-windows.ps1` installs/validates the host against it and registers the repository runner.
+`lab/windows/toolchain.json` is the LAB-1 host prerequisite manifest. `lab/windows/bootstrap-windows.ps1` installs/validates the host against it and registers or validates the repository runner.
 
-Bootstrap requires one short-lived GitHub runner registration token. It does not request a PAT and it never requests Cloudflare/R2/provider credentials.
-
-For an accepted commit `<SHA>`, run the script itself and its manifest from that same immutable commit:
+For an accepted commit `<SHA>`, run the script and manifest from the same immutable commit:
 
 ```powershell
 $sha = '<SHA>'
@@ -113,83 +112,116 @@ $script = "$env:TEMP\mish-lab-bootstrap.ps1"
 Invoke-WebRequest "https://raw.githubusercontent.com/iamaman11/mobile-proxy-mish/$sha/lab/windows/bootstrap-windows.ps1" -OutFile $script
 ```
 
-### Bootstrap rerun and package postconditions
+### WinGet-owned prerequisites
 
-LAB-1 bootstrap is expected to survive a bounded retry after a partial host-toolchain installation. For the WinGet-owned Git, PowerShell and Temurin JDK prerequisites, installed Windows capability is the authoritative postcondition; a raw WinGet process exit code is not sufficient by itself to decide installed state.
-
-The bootstrap therefore follows this rule for each of those prerequisites:
+Git and Temurin JDK use capability-based WinGet materialization. Installed capability is the authoritative postcondition; a raw WinGet process exit code alone does not define success.
 
 ```text
 capability already satisfies toolchain.json
- -> skip winget entirely
+ -> skip winget
 
 capability missing
  -> invoke pinned package id through winget
- -> refresh native Windows PATH/state
- -> verify the real capability again
-    -> satisfied: continue, even if installer transport returned nonzero
-    -> not satisfied: fail closed and report decimal + hexadecimal exit code
+ -> refresh Windows PATH/state
+ -> verify the real capability
+    -> satisfied: continue
+    -> not satisfied: fail closed with decimal + hexadecimal exit code
 ```
 
-A broken WinGet source configuration is **not** treated as success. It is tolerated only when no WinGet call is needed because the required capability already exists, or when the requested installation actually materialized the required capability despite the transport exit status. Otherwise bootstrap fails with the exact exit code and unsatisfied postcondition.
+A broken WinGet source configuration is not treated as success when the required postcondition remains absent.
 
-`LAB Host Static` executes the bootstrap's deterministic package-idempotency self-test on GitHub-hosted Windows. The self-test proves that an already-ready dependency does not invoke WinGet, a nonzero installer status is accepted only when its postcondition became true, and a nonzero status with a missing postcondition remains fail-closed.
+### LAB-owned portable PowerShell
+
+PowerShell is deliberately **not** owned by WinGet/MSIX for LAB-1. A per-user MSIX can be visible to the interactive bootstrap user but invisible to the `NETWORK SERVICE` runner, so it is not a valid LAB service capability.
+
+`toolchain.json` therefore pins an official x64 portable PowerShell ZIP with exact version, release URL and SHA-256. Bootstrap expands it under:
+
+```text
+C:\mish-lab\tools\powershell-<version>\pwsh.exe
+```
+
+and:
+
+- validates the exact executable version;
+- adds that directory to machine PATH;
+- grants the existing LAB tools ACL to `NETWORK SERVICE`;
+- leaves unrelated user-scoped PowerShell/MSIX installations untouched;
+- restarts the configured runner service so future runner processes inherit current machine state.
+
+The physical workflow does not depend on ambient service PATH to start acceptance. It begins with built-in Windows PowerShell, reads `toolchain.json`, and launches the exact LAB-owned `pwsh.exe` by absolute path. The host-preflight then requires that `pwsh` resolves back to the same LAB-owned executable and that its version equals the exact manifest pin.
+
+This gives one clear service capability owner:
+
+```text
+lab/windows/toolchain.json
+ -> pinned portable PowerShell artifact
+ -> C:\mish-lab\tools\powershell-<version>\pwsh.exe
+ -> NETWORK SERVICE physical execution
+```
+
+### Bounded bootstrap retry and existing runner reuse
+
+Bootstrap is expected to survive bounded retries after partial host materialization.
+
+If `.runner` and `.service` are both absent, bootstrap performs normal repository runner registration and retrieves one short-lived registration token.
+
+If `.runner` and `.service` are both present, bootstrap:
+
+1. reads the existing service marker;
+2. verifies the Windows service exists;
+3. verifies service identity is `NT AUTHORITY\NETWORK SERVICE`;
+4. preserves the existing repository runner registration;
+5. skips token retrieval and registration;
+6. refreshes the host/toolchain as needed;
+7. restarts the service so it inherits the accepted machine environment.
+
+If exactly one of `.runner` / `.service` exists, or the referenced service/identity disagrees, bootstrap fails closed. It does not silently repair, replace, or register a second runner.
+
+This means a host-toolchain repair after successful registration does not require another registration token and does not create a second runner.
+
+### Hosted static proofs
+
+`LAB Host Static` validates the bootstrap and physical-workflow contracts on GitHub-hosted Windows. Among other checks it verifies:
+
+- PowerShell manifest version/asset/URL/SHA shape;
+- the exact pinned PowerShell asset and digest against upstream GitHub release metadata;
+- Android platform coordinate against live Google repository metadata;
+- PowerShell syntax;
+- WinGet postcondition/idempotency self-test;
+- portable PowerShell exact-version self-test;
+- existing-runner reuse/token-skip contract;
+- physical workflow independence from `shell: pwsh` / service PATH;
+- physical trust boundary and provider-secret exclusions.
+
+Hosted static success proves repository-side contract only. Physical LAB-1 remains incomplete until the accepted-main physical preflight passes.
 
 ### Autonomous token provider
 
-Automation is the preferred path when an approved vault is already available. The bootstrap accepts:
+Automation is the preferred registration path when an approved vault is available. Bootstrap accepts:
 
 ```text
 -RunnerTokenProviderExecutable
 -RunnerTokenProviderArgumentsJson
 ```
 
-`RunnerTokenProviderExecutable` must be an absolute native Windows executable path. `RunnerTokenProviderArgumentsJson` is a JSON array of non-secret arguments. The executable is invoked directly, without a shell, only when runner registration is about to occur.
+`RunnerTokenProviderExecutable` must be an absolute native Windows executable path. `RunnerTokenProviderArgumentsJson` is a JSON array of non-secret arguments. The provider is invoked only when a new runner registration is actually required.
 
 The provider contract is strict:
 
-- stdout must contain exactly one registration token and nothing else;
-- the token must contain no whitespace;
-- provider stderr is suppressed by bootstrap and is never included in an error message;
+- stdout contains exactly one registration token and nothing else;
+- the token contains no whitespace;
+- provider stderr is suppressed and is never included in an error message;
 - provider nonzero exit fails closed;
 - the captured token is converted to `SecureString` immediately and is not written to disk;
-- provider arguments must contain only vault location/reference information, never the secret value itself.
+- provider arguments contain only vault location/reference information, never the secret value.
 
-A WSL-only vault is supported by using the native Windows `wsl.exe` binary as `RunnerTokenProviderExecutable` and passing only the vault lookup command/reference in the JSON argument array. The agent must use the vault's raw/quiet secret-read mode so stdout contains only the token.
+A WSL-only vault is supported by using native Windows `wsl.exe` as `RunnerTokenProviderExecutable` and passing only the vault lookup command/reference in the JSON argument array.
 
-Example shape; the vault command itself is environment-specific and must be resolved by the local agent from the approved vault tooling:
-
-```powershell
-$providerArgs = @(
-  '--distribution', '<vault-wsl-distro>',
-  '--exec', '<vault-cli>',
-  '<raw-secret-read-argument>',
-  '<vault-secret-reference>'
-) | ConvertTo-Json -Compress
-
-& $script `
-  -RepositoryCommit $sha `
-  -RunnerTokenProviderExecutable "$env:SystemRoot\System32\wsl.exe" `
-  -RunnerTokenProviderArgumentsJson $providerArgs
-```
-
-The local agent must not stop merely because it lacks an interactive TTY. If the token already exists in the approved vault, it must use this provider contract and complete bootstrap autonomously.
-
-Do not put the registration token in:
-
-- CLI arguments;
-- provider JSON;
-- environment variables;
-- repository files;
-- temporary files;
-- Windows/WSL shell history;
-- logs or reports.
+If an accepted runner is already configured, the provider is not invoked at all.
 
 ### Interactive fallback
 
-If no autonomous provider is supplied, bootstrap retains `Read-Host -AsSecureString` as a human fallback. This fallback is not the expected path for an autonomous lab agent with approved vault access.
-
-Run bootstrap from an **elevated native Windows PowerShell** process. WSL may participate only in the bounded vault-provider lookup described above.
+If a new runner registration is required and no autonomous provider is supplied, bootstrap retains `Read-Host -AsSecureString` as a human fallback. This fallback is not the expected path for an autonomous lab agent with approved vault access.
 
 ## Host-only acceptance workflow
 
@@ -206,11 +238,12 @@ The preflight checks:
 - exact repository/ref/commit identity;
 - Windows x64 and dedicated runner work-root identity;
 - `NETWORK SERVICE` execution identity;
-- Git/PowerShell/JDK/Gradle/Rust/cargo-ndk/ADB and Android SDK/NDK prerequisites;
-- **no ADB device in any state** during LAB-1;
+- exact LAB-owned portable PowerShell identity/version;
+- Git/JDK/Gradle/Rust/cargo-ndk/ADB and Android SDK/NDK prerequisites;
+- no ADB device in any state during LAB-1;
 - Android arm64 Rust cross-build without a phone;
 - Android debug APK assembly without a phone.
 
 It writes `mish.lab.evidence/v1` JSON and uploads it as `lab-host-preflight-evidence`. The artifact contains no runner token, provider credential, device identifier, or public IP.
 
-A green hosted static workflow proves only repository syntax/trust-boundary checks. LAB-1 is not accepted until a green physical `LAB Host Preflight` run exists on accepted `main`.
+LAB-1 is accepted only after a green physical `LAB Host Preflight` run exists on the current accepted protected `main`.

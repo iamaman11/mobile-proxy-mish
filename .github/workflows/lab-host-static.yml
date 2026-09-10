@@ -48,6 +48,22 @@ jobs:
             throw 'Runner SHA-256 is invalid.'
           }
 
+          if ([string]$manifest.powershell.version -notmatch '^\d+\.\d+\.\d+$') {
+            throw 'Portable PowerShell exact version is invalid.'
+          }
+          $expectedPowerShellAsset = 'PowerShell-{0}-win-x64.zip' -f [string]$manifest.powershell.version
+          if ([string]$manifest.powershell.asset -ne $expectedPowerShellAsset) {
+            throw 'Portable PowerShell asset does not match the exact version/x64 contract.'
+          }
+          $expectedPowerShellUrl = 'https://github.com/PowerShell/PowerShell/releases/download/v{0}/{1}' -f `
+            [string]$manifest.powershell.version, [string]$manifest.powershell.asset
+          if ([string]$manifest.powershell.url -ne $expectedPowerShellUrl) {
+            throw 'Portable PowerShell URL does not match the official release coordinate.'
+          }
+          if ([string]$manifest.powershell.sha256 -notmatch '^[0-9a-f]{64}$') {
+            throw 'Portable PowerShell SHA-256 is invalid.'
+          }
+
           $expectedPlatformDir = 'android-{0}.{1}' -f [int]$manifest.android.compile_sdk, [int]$manifest.android.compile_sdk_minor
           if ([string]$manifest.android.platform_dir -ne $expectedPlatformDir) {
             throw 'Android platform directory does not match compile SDK + minor API.'
@@ -95,7 +111,12 @@ jobs:
             'Read-Host ''GitHub runner registration token'' -AsSecureString',
             'Ensure-WingetPackage',
             'required capability postcondition is not satisfied',
-            'Bootstrap winget idempotency self-test passed.'
+            'Ensure-PortablePowerShell',
+            'Get-ConfiguredRunnerService',
+            'Existing repository runner registration detected',
+            'skipping token retrieval',
+            'Restart-Service',
+            'Bootstrap host dependency self-test passed.'
           )) {
             if (-not $bootstrapText.Contains($required)) {
               throw "LAB-1 bootstrap contract drifted: $required"
@@ -103,6 +124,31 @@ jobs:
           }
           if ($bootstrapText -match '(?i)Write-(Host|Output|Verbose|Debug).*plain(Token|ProviderToken)') {
             throw 'Bootstrap must never write plaintext runner token variables.'
+          }
+          if ($bootstrapText -match 'manifest\.powershell\.winget_id') {
+            throw 'LAB-1 must not use WinGet/MSIX as the PowerShell service capability owner.'
+          }
+
+      - name: Verify pinned PowerShell artifact metadata upstream
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $manifest = Get-Content -Raw -LiteralPath 'lab/windows/toolchain.json' | ConvertFrom-Json
+          $version = [string]$manifest.powershell.version
+          $assetName = [string]$manifest.powershell.asset
+          $releaseUri = "https://api.github.com/repos/PowerShell/PowerShell/releases/tags/v$version"
+          $headers = @{ 'User-Agent' = 'mobile-proxy-mish-lab-static' }
+          $release = Invoke-RestMethod -Headers $headers -Uri $releaseUri
+          $asset = @($release.assets | Where-Object { $_.name -eq $assetName })
+          if ($asset.Count -ne 1) {
+            throw "Pinned PowerShell asset is absent or ambiguous upstream: $assetName"
+          }
+          if ([string]$asset[0].browser_download_url -ne [string]$manifest.powershell.url) {
+            throw 'Pinned PowerShell release URL disagrees with upstream metadata.'
+          }
+          $expectedDigest = 'sha256:' + ([string]$manifest.powershell.sha256).ToLowerInvariant()
+          if ([string]$asset[0].digest -ne $expectedDigest) {
+            throw "Pinned PowerShell SHA-256 disagrees with upstream asset digest: $($asset[0].digest)"
           }
 
       - name: Verify pinned Android platform exists upstream
@@ -124,7 +170,7 @@ jobs:
             throw "Pinned Android SDK package is absent from live Google repository metadata: $package"
           }
 
-      - name: Exercise bootstrap winget idempotency contract
+      - name: Exercise bootstrap host dependency idempotency contract
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -134,10 +180,10 @@ jobs:
             -RepositoryCommit $dummySha `
             -SelfTest
           if ($LASTEXITCODE -ne 0) {
-            throw "Bootstrap winget self-test failed with exit code $LASTEXITCODE."
+            throw "Bootstrap host dependency self-test failed with exit code $LASTEXITCODE."
           }
 
-      - name: Validate physical-workflow trust boundary
+      - name: Validate physical-workflow trust and launcher boundary
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -145,10 +191,11 @@ jobs:
 
           foreach ($forbidden in @(
             '(?m)^\s*pull_request\s*:',
-            '(?m)^\s*push\s*:'
+            '(?m)^\s*push\s*:',
+            '(?m)^\s*shell:\s*pwsh\s*$'
           )) {
             if ($text -match $forbidden) {
-              throw 'Physical LAB-1 workflow must not be PR- or push-triggered.'
+              throw 'Physical LAB-1 workflow violates trigger or service-PATH independence.'
             }
           }
 
@@ -158,10 +205,13 @@ jobs:
             'github.ref_protected == true',
             'runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]',
             'persist-credentials: false',
-            'lab/windows/host-preflight.ps1'
+            'shell: powershell',
+            '(''powershell-'' + [string]$manifest.powershell.version)',
+            'Join-Path $powerShellHome ''pwsh.exe''',
+            '-File ''./lab/windows/host-preflight.ps1'''
           )) {
             if (-not $text.Contains($required)) {
-              throw "Physical LAB-1 workflow is missing required trust-boundary text: $required"
+              throw "Physical LAB-1 workflow is missing required trust/launcher text: $required"
             }
           }
 

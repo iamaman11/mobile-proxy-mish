@@ -113,6 +113,8 @@ try {
     $cargoHome = Join-Path $toolsRoot 'cargo'
     $rustupHome = Join-Path $toolsRoot 'rustup'
     $gradleHome = Join-Path $toolsRoot ('gradle-' + [string]$manifest.gradle.version)
+    $powerShellHome = Join-Path $toolsRoot ('powershell-' + [string]$manifest.powershell.version)
+    $powerShellExe = Join-Path $powerShellHome 'pwsh.exe'
     $sdkRoot = [string]$manifest.android.sdk_root
 
     $env:CARGO_HOME = $cargoHome
@@ -122,23 +124,31 @@ try {
     $env:ANDROID_NDK_HOME = Join-Path $sdkRoot ('ndk\' + [string]$manifest.android.ndk)
     $env:ANDROID_NDK_ROOT = $env:ANDROID_NDK_HOME
     $env:ANDROID_NDK = $env:ANDROID_NDK_HOME
-    $env:Path = "$(Join-Path $cargoHome 'bin');$(Join-Path $gradleHome 'bin');$(Join-Path $sdkRoot 'platform-tools');$(Join-Path $sdkRoot 'cmdline-tools\latest\bin');$env:Path"
+    $env:Path = "$powerShellHome;$(Join-Path $cargoHome 'bin');$(Join-Path $gradleHome 'bin');$(Join-Path $sdkRoot 'platform-tools');$(Join-Path $sdkRoot 'cmdline-tools\latest\bin');$env:Path"
+
+    if (-not (Test-Path -LiteralPath $powerShellExe -PathType Leaf)) {
+        Stop-Lab -Category 'HOST_PREREQUISITE_MISSING' -Message 'Pinned LAB-owned PowerShell executable is unavailable.'
+    }
 
     $gradlePath = Require-Command 'gradle'
     $rustcPath = Require-Command 'rustc'
     $cargoPath = Require-Command 'cargo'
     $adbPath = Require-Command 'adb'
     $javaPath = Require-Command 'java'
-    $null = Require-Command 'pwsh'
+    $pwshPath = Require-Command 'pwsh'
+
+    if ([IO.Path]::GetFullPath($pwshPath) -ine [IO.Path]::GetFullPath($powerShellExe)) {
+        Stop-Lab -Category 'IDENTITY_MISMATCH' -Message 'PowerShell resolved outside the LAB-owned portable toolchain.'
+    }
 
     $gitVersion = Read-Version ((& $gitPath --version 2>&1 | Out-String).Trim())
     if ($gitVersion -lt [version]([string]$manifest.git.minimum_version)) {
         Stop-Lab -Category 'HOST_PREREQUISITE_MISSING' -Message 'Git is older than the LAB-1 minimum.'
     }
 
-    $psVersion = $PSVersionTable.PSVersion
-    if ($psVersion -lt [version]([string]$manifest.powershell.minimum_version)) {
-        Stop-Lab -Category 'HOST_PREREQUISITE_MISSING' -Message 'PowerShell is older than the LAB-1 minimum.'
+    $psVersion = [version]$PSVersionTable.PSVersion.ToString()
+    if ($psVersion -ne [version]([string]$manifest.powershell.version)) {
+        Stop-Lab -Category 'HOST_PREREQUISITE_MISSING' -Message 'PowerShell version does not match the LAB-1 exact pin.'
     }
 
     $javaText = (& $javaPath -version 2>&1 | Out-String)
@@ -165,15 +175,17 @@ try {
     $sdkManager = Join-Path $sdkRoot 'cmdline-tools\latest\bin\sdkmanager.bat'
     $ndkPath = Join-Path $sdkRoot ('ndk\' + [string]$manifest.android.ndk)
     $expectedPlatformDir = 'android-{0}.{1}' -f [int]$manifest.android.compile_sdk, [int]$manifest.android.compile_sdk_minor
-    $platformDir = [string]$manifest.android.platform_dir
-    $platformPackage = [string]$manifest.android.platform_package
-    if ($platformDir -ne $expectedPlatformDir -or $platformPackage -ne ('platforms;' + $expectedPlatformDir)) {
-        Stop-Lab -Category 'IDENTITY_MISMATCH' -Message 'Android platform manifest coordinate is inconsistent.'
+    if ([string]$manifest.android.platform_dir -ne $expectedPlatformDir) {
+        Stop-Lab -Category 'IDENTITY_MISMATCH' -Message 'Android platform directory does not match compile SDK + minor API.'
     }
-    if (-not (@($manifest.android.packages | ForEach-Object { [string]$_ }) -contains $platformPackage)) {
-        Stop-Lab -Category 'IDENTITY_MISMATCH' -Message 'Android platform package is missing from the install set.'
+    if ([string]$manifest.android.platform_package -ne ('platforms;' + $expectedPlatformDir)) {
+        Stop-Lab -Category 'IDENTITY_MISMATCH' -Message 'Android platform package does not match compile SDK + minor API.'
     }
-    $platformPath = Join-Path $sdkRoot ('platforms\' + $platformDir)
+    $sdkPackages = @($manifest.android.packages | ForEach-Object { [string]$_ })
+    if (-not ($sdkPackages -contains [string]$manifest.android.platform_package)) {
+        Stop-Lab -Category 'IDENTITY_MISMATCH' -Message 'Android platform package is missing from the manifest install set.'
+    }
+    $platformPath = Join-Path $sdkRoot ('platforms\' + [string]$manifest.android.platform_dir)
     if (-not (Test-Path -LiteralPath $sdkManager) -or -not (Test-Path -LiteralPath $ndkPath) -or -not (Test-Path -LiteralPath $platformPath)) {
         Stop-Lab -Category 'HOST_PREREQUISITE_MISSING' -Message 'Pinned Android SDK/NDK components are incomplete.'
     }
@@ -187,8 +199,6 @@ try {
     if ($LASTEXITCODE -ne 0) {
         Stop-Lab -Category 'HOST_PREREQUISITE_MISSING' -Message 'adb device enumeration failed.'
     }
-    # Any row with a serial + state means a device is physically represented to ADB.
-    # Do not log the row: the public evidence records only the boolean absence invariant.
     $adbDeviceRows = @($adbDevices | Where-Object { $_ -match '^\S+\s+\S+\s*$' })
     if ($adbDeviceRows.Count -ne 0) {
         Stop-Lab -Category 'OBSERVATION_CONTRADICTION' -Message 'An ADB device is present during pre-phone LAB-1.'

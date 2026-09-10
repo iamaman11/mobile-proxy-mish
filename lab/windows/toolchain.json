@@ -16,8 +16,10 @@
     "winget_id": "Git.Git"
   },
   "powershell": {
-    "minimum_version": "7.4.0",
-    "winget_id": "Microsoft.PowerShell"
+    "version": "7.6.6",
+    "asset": "PowerShell-7.6.6-win-x64.zip",
+    "url": "https://github.com/PowerShell/PowerShell/releases/download/v7.6.6/PowerShell-7.6.6-win-x64.zip",
+    "sha256": "02fe458be20493fbdf43f61ea20610b811ee6c738ab1676c61b9cfcd1a33c860"
   },
   "java": {
     "major": 17,

@@ -24,15 +24,26 @@ jobs:
           clean: true
 
       - name: Execute host-only preflight
-        shell: pwsh
+        shell: powershell
         run: |
-          & './lab/windows/host-preflight.ps1' `
+          $ErrorActionPreference = 'Stop'
+          $manifest = Get-Content -Raw -LiteralPath './lab/windows/toolchain.json' | ConvertFrom-Json
+          $powerShellHome = Join-Path ([string]$manifest.host.tools_root) ('powershell-' + [string]$manifest.powershell.version)
+          $powerShellExe = Join-Path $powerShellHome 'pwsh.exe'
+          if (-not (Test-Path -LiteralPath $powerShellExe -PathType Leaf)) {
+            throw "Pinned LAB PowerShell executable is absent: $powerShellExe"
+          }
+          $env:Path = "$powerShellHome;$env:Path"
+          & $powerShellExe -NoLogo -NoProfile -NonInteractive -File './lab/windows/host-preflight.ps1' `
             -RepositoryRoot '${{ github.workspace }}' `
             -EvidencePath '${{ runner.temp }}\mish-lab-host-preflight.json'
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
 
       - name: Publish redacted run summary
         if: ${{ always() }}
-        shell: pwsh
+        shell: powershell
         run: |
           $path = '${{ runner.temp }}\mish-lab-host-preflight.json'
           if (-not (Test-Path -LiteralPath $path)) {
