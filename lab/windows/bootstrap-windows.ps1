@@ -91,16 +91,6 @@ function Test-GitCapability {
     catch { return $false }
 }
 
-function Test-PowerShellCapability {
-    param([Parameter(Mandatory)][version]$MinimumVersion)
-    $command = Get-Command pwsh.exe -ErrorAction SilentlyContinue
-    if (-not $command) { return $false }
-    $text = (& $command.Source -NoLogo -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion.ToString()' 2>$null | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0 -or -not $text) { return $false }
-    try { return ([version]$text -ge $MinimumVersion) }
-    catch { return $false }
-}
-
 function Get-JdkPath {
     param([Parameter(Mandatory)][int]$Major)
     $root = 'C:\Program Files\Eclipse Adoptium'
@@ -119,6 +109,52 @@ function Get-JdkPath {
 function Test-JavaCapability {
     param([Parameter(Mandatory)][int]$Major)
     return [bool](Get-JdkPath -Major $Major)
+}
+
+function Test-PortablePowerShellCapability {
+    param(
+        [Parameter(Mandatory)][string]$Executable,
+        [Parameter(Mandatory)][version]$ExpectedVersion
+    )
+    if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) { return $false }
+    $text = (& $Executable -NoLogo -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion.ToString()' 2>$null | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or -not $text) { return $false }
+    try { return ([version]$text -eq $ExpectedVersion) }
+    catch { return $false }
+}
+
+function Ensure-PortablePowerShell {
+    param(
+        [Parameter(Mandatory)]$Manifest,
+        [Parameter(Mandatory)][string]$ToolsRoot,
+        [Parameter(Mandatory)][string]$TempRoot
+    )
+    $version = [version]([string]$Manifest.version)
+    $home = Join-Path $ToolsRoot ('powershell-' + $version.ToString())
+    $exe = Join-Path $home 'pwsh.exe'
+
+    if (Test-PortablePowerShellCapability -Executable $exe -ExpectedVersion $version) {
+        Write-Host "Portable PowerShell $version already satisfies the LAB-1 service-visible requirement."
+        Add-MachinePath -PathEntry $home
+        return $exe
+    }
+
+    if (Test-Path -LiteralPath $home) {
+        Remove-Item -Recurse -Force -LiteralPath $home
+    }
+    New-Item -ItemType Directory -Force -Path $home | Out-Null
+
+    $archive = Join-Path $TempRoot ([string]$Manifest.asset)
+    Get-RemoteFile -Uri ([string]$Manifest.url) -OutFile $archive -Sha256 ([string]$Manifest.sha256)
+    Expand-Archive -LiteralPath $archive -DestinationPath $home -Force
+
+    if (-not (Test-PortablePowerShellCapability -Executable $exe -ExpectedVersion $version)) {
+        throw "Pinned portable PowerShell $version did not satisfy its exact execution postcondition."
+    }
+
+    Add-MachinePath -PathEntry $home
+    Write-Host "Pinned portable PowerShell $version materialized for LAB-1 service execution."
+    return $exe
 }
 
 function Ensure-WingetPackage {
@@ -144,8 +180,6 @@ function Ensure-WingetPackage {
         --accept-package-agreements --accept-source-agreements --disable-interactivity
     $exitCode = [int]$LASTEXITCODE
 
-    # WinGet/installer exit status is transport evidence, not the installed-state owner.
-    # Refresh machine PATH and verify the actual capability before deciding success/failure.
     Refresh-ProcessPath
     if (& $ReadyScript) {
         if ($exitCode -ne 0) {
@@ -158,8 +192,8 @@ function Ensure-WingetPackage {
     throw "winget failed to materialize $CapabilityName ($Id): exit code $exitCode ($hex); required capability postcondition is not satisfied."
 }
 
-function Invoke-WingetPackageSelfTest {
-    $root = Join-Path $env:TEMP ('mish-lab-winget-selftest-' + [guid]::NewGuid().ToString('N'))
+function Invoke-HostDependencySelfTest {
+    $root = Join-Path $env:TEMP ('mish-lab-host-selftest-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Force -Path $root | Out-Null
     try {
         $skipMarker = Join-Path $root 'skip-invoked.txt'
@@ -172,7 +206,7 @@ function Invoke-WingetPackageSelfTest {
         Ensure-WingetPackage -Id 'SelfTest.Skip' -CapabilityName 'self-test ready capability' `
             -ReadyScript { $true } -WingetPath $skipWinget
         if (Test-Path -LiteralPath $skipMarker) {
-            throw 'Winget self-test failed: a ready capability still invoked winget.'
+            throw 'Host dependency self-test failed: a ready capability still invoked winget.'
         }
 
         $postMarker = Join-Path $root 'postcondition.txt'
@@ -185,7 +219,7 @@ function Invoke-WingetPackageSelfTest {
         Ensure-WingetPackage -Id 'SelfTest.Postcondition' -CapabilityName 'self-test materialized capability' `
             -ReadyScript { Test-Path -LiteralPath $postMarker } -WingetPath $postWinget
         if (-not (Test-Path -LiteralPath $postMarker)) {
-            throw 'Winget self-test failed: postcondition marker was not materialized.'
+            throw 'Host dependency self-test failed: postcondition marker was not materialized.'
         }
 
         $failWinget = Join-Path $root 'fail-winget.cmd'
@@ -205,10 +239,19 @@ function Invoke-WingetPackageSelfTest {
             $failedAsExpected = $true
         }
         if (-not $failedAsExpected) {
-            throw 'Winget self-test failed: missing capability did not fail closed.'
+            throw 'Host dependency self-test failed: missing capability did not fail closed.'
         }
 
-        Write-Host 'Bootstrap winget idempotency self-test passed.'
+        $fakePwsh = Join-Path $root 'pwsh.cmd'
+        Set-Content -Encoding Ascii -LiteralPath $fakePwsh -Value @('@echo off', 'echo 7.6.6', 'exit /b 0')
+        if (-not (Test-PortablePowerShellCapability -Executable $fakePwsh -ExpectedVersion ([version]'7.6.6'))) {
+            throw 'Host dependency self-test failed: exact portable PowerShell version was rejected.'
+        }
+        if (Test-PortablePowerShellCapability -Executable $fakePwsh -ExpectedVersion ([version]'7.6.5')) {
+            throw 'Host dependency self-test failed: wrong portable PowerShell version was accepted.'
+        }
+
+        Write-Host 'Bootstrap host dependency self-test passed.'
     }
     finally {
         Remove-Item -Recurse -Force -LiteralPath $root -ErrorAction SilentlyContinue
@@ -286,8 +329,32 @@ function Get-RunnerRegistrationSecureToken {
     }
 }
 
+function Get-ConfiguredRunnerService {
+    param([Parameter(Mandatory)][string]$RunnerRoot)
+
+    $runnerConfig = Join-Path $RunnerRoot '.runner'
+    $serviceFile = Join-Path $RunnerRoot '.service'
+    $hasConfig = Test-Path -LiteralPath $runnerConfig -PathType Leaf
+    $hasService = Test-Path -LiteralPath $serviceFile -PathType Leaf
+
+    if ($hasConfig -xor $hasService) {
+        throw 'Runner configuration markers are inconsistent; refusing implicit repair or replacement.'
+    }
+    if (-not $hasConfig) { return $null }
+
+    $serviceName = (Get-Content -Raw -LiteralPath $serviceFile).Trim()
+    if (-not $serviceName) { throw 'Runner service marker is empty.' }
+    $escaped = $serviceName.Replace("'", "''")
+    $service = Get-CimInstance Win32_Service -Filter ("Name='" + $escaped + "'")
+    if (-not $service) { throw 'Configured runner service was not found.' }
+    if ($service.StartName -ine 'NT AUTHORITY\NETWORK SERVICE') {
+        throw 'Runner service identity is not NetworkService.'
+    }
+    return $service
+}
+
 if ($SelfTest) {
-    Invoke-WingetPackageSelfTest
+    Invoke-HostDependencySelfTest
     exit 0
 }
 
@@ -320,10 +387,11 @@ try {
 
     Ensure-WingetPackage -Id ([string]$manifest.git.winget_id) -CapabilityName 'Git' `
         -ReadyScript { Test-GitCapability -MinimumVersion ([version]([string]$manifest.git.minimum_version)) }
-    Ensure-WingetPackage -Id ([string]$manifest.powershell.winget_id) -CapabilityName 'PowerShell' `
-        -ReadyScript { Test-PowerShellCapability -MinimumVersion ([version]([string]$manifest.powershell.minimum_version)) }
     Ensure-WingetPackage -Id ([string]$manifest.java.winget_id) -CapabilityName 'Temurin JDK' `
         -ReadyScript { Test-JavaCapability -Major ([int]$manifest.java.major) }
+    Refresh-ProcessPath
+
+    $powerShellExe = Ensure-PortablePowerShell -Manifest $manifest.powershell -ToolsRoot $toolsRoot -TempRoot $tempRoot
     Refresh-ProcessPath
 
     $jdkPath = Get-JdkPath -Major ([int]$manifest.java.major)
@@ -375,19 +443,26 @@ try {
         throw 'rustup-init SHA-256 verification failed.'
     }
 
-    Invoke-NativeChecked -FilePath $rustupInit -Arguments @(
-        '-y', '--no-modify-path', '--profile', 'minimal', '--default-toolchain', ([string]$manifest.rust.toolchain)
-    )
+    $rustup = Join-Path $cargoHome 'bin\rustup.exe'
+    $cargo = Join-Path $cargoHome 'bin\cargo.exe'
+    if (-not (Test-Path -LiteralPath $rustup -PathType Leaf)) {
+        Invoke-NativeChecked -FilePath $rustupInit -Arguments @(
+            '-y', '--no-modify-path', '--profile', 'minimal', '--default-toolchain', ([string]$manifest.rust.toolchain)
+        )
+    }
     Refresh-ProcessPath
     $env:RUSTUP_HOME = $rustupHome
     $env:CARGO_HOME = $cargoHome
     $env:Path = "$(Join-Path $cargoHome 'bin');$env:Path"
-    $rustup = Join-Path $cargoHome 'bin\rustup.exe'
-    $cargo = Join-Path $cargoHome 'bin\cargo.exe'
-    Invoke-NativeChecked -FilePath $rustup -Arguments @('target', 'add', ([string]$manifest.rust.target))
-    Invoke-NativeChecked -FilePath $cargo -Arguments @(
-        ('+' + [string]$manifest.rust.toolchain), 'install', 'cargo-ndk', '--version', ([string]$manifest.rust.cargo_ndk), '--locked'
-    )
+    Invoke-NativeChecked -FilePath $rustup -Arguments @('toolchain', 'install', ([string]$manifest.rust.toolchain), '--profile', 'minimal')
+    Invoke-NativeChecked -FilePath $rustup -Arguments @('target', 'add', ([string]$manifest.rust.target), '--toolchain', ([string]$manifest.rust.toolchain))
+
+    $cargoNdkText = (& $cargo ('+' + [string]$manifest.rust.toolchain) ndk --version 2>$null | Out-String)
+    if ($LASTEXITCODE -ne 0 -or $cargoNdkText -notmatch ([regex]::Escape([string]$manifest.rust.cargo_ndk))) {
+        Invoke-NativeChecked -FilePath $cargo -Arguments @(
+            ('+' + [string]$manifest.rust.toolchain), 'install', 'cargo-ndk', '--version', ([string]$manifest.rust.cargo_ndk), '--locked'
+        )
+    }
 
     Refresh-ProcessPath
     $env:JAVA_HOME = $jdkPath
@@ -396,69 +471,84 @@ try {
     $env:RUSTUP_HOME = $rustupHome
     $env:CARGO_HOME = $cargoHome
 
-    # The runner service uses the built-in NetworkService identity. The runner itself
-    # grants runner/_work ACLs. Only the tool access required by this fixture is added.
     & icacls.exe $toolsRoot /grant '*S-1-5-20:(OI)(CI)RX' /T /C | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Failed to grant NetworkService read/execute access to tools root.' }
     & icacls.exe $cargoHome /grant '*S-1-5-20:(OI)(CI)M' /T /C | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Failed to grant NetworkService modify access to Cargo home.' }
 
-    $runnerConfig = Join-Path $runnerRoot '.runner'
-    if (Test-Path -LiteralPath $runnerConfig) {
-        throw 'Runner root is already configured. Refusing implicit replacement.'
+    $service = Get-ConfiguredRunnerService -RunnerRoot $runnerRoot
+    if ($service) {
+        Write-Host "Existing repository runner registration detected; preserving service $($service.Name) and skipping token retrieval."
     }
-
-    $runnerAsset = [string]$manifest.runner.asset
-    $runnerZip = Join-Path $tempRoot $runnerAsset
-    $runnerUri = "https://github.com/actions/runner/releases/download/v$($manifest.runner.version)/$runnerAsset"
-    Get-RemoteFile -Uri $runnerUri -OutFile $runnerZip -Sha256 ([string]$manifest.runner.sha256)
-    Expand-Archive -LiteralPath $runnerZip -DestinationPath $runnerRoot -Force
-
-    if (-not $RunnerName) { $RunnerName = 'mish-lab-' + $env:COMPUTERNAME.ToLowerInvariant() }
-
-    $secureToken = Get-RunnerRegistrationSecureToken `
-        -ProviderExecutable $RunnerTokenProviderExecutable `
-        -ProviderArgumentsJson $RunnerTokenProviderArgumentsJson
-    if ($secureToken.Length -eq 0) { throw 'Runner registration token is required.' }
-
-    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureToken)
-    try {
-        $plainToken = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
-        Push-Location $runnerRoot
-        try {
-            Invoke-NativeChecked -FilePath (Join-Path $runnerRoot 'config.cmd') -Arguments @(
-                '--unattended',
-                '--url', 'https://github.com/iamaman11/mobile-proxy-mish',
-                '--token', $plainToken,
-                '--name', $RunnerName,
-                '--labels', ([string]$manifest.host.runner_custom_label),
-                '--work', '_work',
-                '--runasservice',
-                '--windowslogonaccount', 'NT AUTHORITY\NETWORK SERVICE',
-                '--disableupdate'
-            )
+    else {
+        $runnerAsset = [string]$manifest.runner.asset
+        $runnerConfigCmd = Join-Path $runnerRoot 'config.cmd'
+        if (-not (Test-Path -LiteralPath $runnerConfigCmd -PathType Leaf)) {
+            $runnerZip = Join-Path $tempRoot $runnerAsset
+            $runnerUri = "https://github.com/actions/runner/releases/download/v$($manifest.runner.version)/$runnerAsset"
+            Get-RemoteFile -Uri $runnerUri -OutFile $runnerZip -Sha256 ([string]$manifest.runner.sha256)
+            Expand-Archive -LiteralPath $runnerZip -DestinationPath $runnerRoot -Force
         }
-        finally { Pop-Location }
-    }
-    finally {
-        if ($bstr -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+
+        if (-not $RunnerName) { $RunnerName = 'mish-lab-' + $env:COMPUTERNAME.ToLowerInvariant() }
+        $secureToken = Get-RunnerRegistrationSecureToken `
+            -ProviderExecutable $RunnerTokenProviderExecutable `
+            -ProviderArgumentsJson $RunnerTokenProviderArgumentsJson
+        if ($secureToken.Length -eq 0) { throw 'Runner registration token is required.' }
+
+        $bstr = [IntPtr]::Zero
         $plainToken = $null
-        $secureToken.Dispose()
+        try {
+            $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureToken)
+            $plainToken = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+            Push-Location $runnerRoot
+            try {
+                Invoke-NativeChecked -FilePath $runnerConfigCmd -Arguments @(
+                    '--unattended',
+                    '--url', 'https://github.com/iamaman11/mobile-proxy-mish',
+                    '--token', $plainToken,
+                    '--name', $RunnerName,
+                    '--labels', ([string]$manifest.host.runner_custom_label),
+                    '--work', '_work',
+                    '--runasservice',
+                    '--windowslogonaccount', 'NT AUTHORITY\NETWORK SERVICE',
+                    '--disableupdate'
+                )
+            }
+            finally { Pop-Location }
+        }
+        finally {
+            if ($bstr -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+            $plainToken = $null
+            if ($secureToken) { $secureToken.Dispose() }
+        }
+
+        $service = Get-ConfiguredRunnerService -RunnerRoot $runnerRoot
+        if (-not $service) { throw 'Runner registration completed without a valid Windows service.' }
     }
 
-    $serviceFile = Join-Path $runnerRoot '.service'
-    if (-not (Test-Path -LiteralPath $serviceFile)) { throw 'Runner service marker was not created.' }
-    $serviceName = (Get-Content -Raw -LiteralPath $serviceFile).Trim()
-    $service = Get-CimInstance Win32_Service -Filter ("Name='" + $serviceName.Replace("'", "''") + "'")
-    if (-not $service) { throw 'Configured runner service was not found.' }
-    if ($service.StartName -ine 'NT AUTHORITY\NETWORK SERVICE') { throw 'Runner service identity is not NetworkService.' }
-    if ((Get-Service -Name $serviceName).Status -ne 'Running') { Start-Service -Name $serviceName }
+    $serviceName = [string]$service.Name
+    $controller = Get-Service -Name $serviceName
+    if ($controller.Status -eq 'Running') {
+        Restart-Service -Name $serviceName -Force
+    }
+    else {
+        Start-Service -Name $serviceName
+    }
+    $controller = Get-Service -Name $serviceName
+    $controller.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Running, [TimeSpan]::FromSeconds(30))
+
+    if (-not (Test-PortablePowerShellCapability -Executable $powerShellExe -ExpectedVersion ([version]([string]$manifest.powershell.version)))) {
+        throw 'LAB-owned portable PowerShell failed its final bootstrap execution postcondition.'
+    }
 
     Write-Host ''
     Write-Host 'LAB-1 Windows bootstrap completed.'
     Write-Host "Runner root: $runnerRoot"
+    Write-Host "PowerShell: $powerShellExe"
     Write-Host "Custom label: $($manifest.host.runner_custom_label)"
     Write-Host 'Service identity: NetworkService'
+    Write-Host 'Existing runner registrations are reused only when .runner/.service and NetworkService identity are consistent.'
     Write-Host 'No Cloudflare/R2/provider credential was requested or installed.'
 }
 finally {
