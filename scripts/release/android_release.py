@@ -21,6 +21,11 @@ HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 MAX_ANDROID_VERSION_CODE = 2_100_000_000
 RELEASE_SCHEMA = "mish.android-release/v1"
 DEFAULT_BUILD_GRADLE = Path("android/app/build.gradle.kts")
+DEFAULT_GRADLE_PROPERTIES = Path("android/gradle.properties")
+ANDROID_ABI_VENDOR_KEYS = {
+    "armeabi-v7a": "android_arm",
+    "arm64-v8a": "android_arm64",
+}
 
 
 def derive(tag: str) -> dict[str, int | str]:
@@ -60,6 +65,22 @@ def load_active_release_version(build_gradle: Path = DEFAULT_BUILD_GRADLE) -> st
     version = matches[0]
     derive_stable(f"v{version}")
     return version
+
+
+def load_target_abi(gradle_properties: Path = DEFAULT_GRADLE_PROPERTIES) -> str:
+    if not gradle_properties.is_file():
+        raise ValueError(f"Android Gradle properties contract is missing: {gradle_properties}")
+    values: list[str] = []
+    for raw in gradle_properties.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key.strip() == "mishTargetAbi":
+            values.append(value.strip())
+    if len(values) != 1 or values[0] not in ANDROID_ABI_VENDOR_KEYS:
+        raise ValueError("Android target contract must define exactly one supported mishTargetAbi")
+    return values[0]
 
 
 def next_rc(existing_tags: list[str], *, base_version: str) -> dict[str, int | str]:
@@ -137,9 +158,11 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
     if not HEX64_RE.fullmatch(cert_digest):
         raise ValueError("signing certificate SHA-256 must be 64 hex characters")
 
+    target_abi = load_target_abi(Path(args.gradle_properties))
+    vendor_key = ANDROID_ABI_VENDOR_KEYS[target_abi]
     with Path(args.sing_box_manifest).open("rb") as handle:
         sing_box = tomllib.load(handle)
-    android_vendor = sing_box["android_arm64"]
+    android_vendor = sing_box[vendor_key]
 
     return {
         "schema": RELEASE_SCHEMA,
@@ -150,7 +173,7 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
             "rc_number": identity["rc_number"],
             "source_commit": args.source_commit,
             "android_version_code": identity["version_code"],
-            "abi": "arm64-v8a",
+            "abi": target_abi,
             "build_mode": "release",
         },
         "artifact": {
@@ -169,8 +192,8 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
         "sing_box": {
             "version": sing_box["version"],
             "release_tag": sing_box["release_tag"],
-            "android_arm64_asset": android_vendor["asset"],
-            "android_arm64_sha256": android_vendor["sha256"],
+            f"{vendor_key}_asset": android_vendor["asset"],
+            f"{vendor_key}_sha256": android_vendor["sha256"],
         },
     }
 
@@ -195,12 +218,14 @@ def verify_manifest(
     toolchain = require_mapping(manifest.get("toolchain"), "manifest.toolchain")
     sing_box = require_mapping(manifest.get("sing_box"), "manifest.sing_box")
 
+    product_abi = require_text(product, "abi", "manifest.product")
+    if product_abi not in ANDROID_ABI_VENDOR_KEYS:
+        raise ValueError("manifest.product.abi is not an explicitly supported Android ABI")
     expected_product: dict[str, Any] = {
         "version": identity["version_name"],
         "release_tag": tag,
         "rc_number": identity["rc_number"],
         "android_version_code": identity["version_code"],
-        "abi": "arm64-v8a",
         "build_mode": "release",
     }
     for key, expected in expected_product.items():
@@ -235,9 +260,10 @@ def verify_manifest(
     for key in ("gradle", "android_build_tools", "android_ndk", "rust", "cargo_ndk"):
         require_text(toolchain, key, "manifest.toolchain")
 
-    for key in ("version", "release_tag", "android_arm64_asset"):
+    vendor_key = ANDROID_ABI_VENDOR_KEYS[product_abi]
+    for key in ("version", "release_tag", f"{vendor_key}_asset"):
         require_text(sing_box, key, "manifest.sing_box")
-    sing_box_digest = require_text(sing_box, "android_arm64_sha256", "manifest.sing_box")
+    sing_box_digest = require_text(sing_box, f"{vendor_key}_sha256", "manifest.sing_box")
     if not HEX64_RE.fullmatch(sing_box_digest):
         raise ValueError("manifest sing-box SHA-256 must be lowercase 64-hex")
 
@@ -247,6 +273,7 @@ def verify_manifest(
         "version_name": str(identity["version_name"]),
         "version_code": int(identity["version_code"]),
         "source_commit": source_commit,
+        "abi": product_abi,
         "artifact_name": artifact_name,
         "artifact_sha256": artifact_digest,
         "signing_certificate_sha256": signing_digest,
@@ -300,6 +327,7 @@ def main() -> int:
     manifest_parser.add_argument("--apk", required=True)
     manifest_parser.add_argument("--signing-cert-sha256", required=True)
     manifest_parser.add_argument("--sing-box-manifest", default="vendor/sing-box/release.toml")
+    manifest_parser.add_argument("--gradle-properties", default=str(DEFAULT_GRADLE_PROPERTIES))
     manifest_parser.add_argument("--jdk-major", type=int, required=True)
     manifest_parser.add_argument("--gradle", required=True)
     manifest_parser.add_argument("--android-build-tools", required=True)
