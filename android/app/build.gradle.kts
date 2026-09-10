@@ -20,6 +20,33 @@ val generatedJniLibsPath = layout.buildDirectory
     .asFile
     .absolutePath
 
+val releaseVersionName = providers.environmentVariable("MISH_RELEASE_VERSION_NAME").orNull
+val releaseVersionCode = providers.environmentVariable("MISH_RELEASE_VERSION_CODE").orNull?.let { raw ->
+    raw.toIntOrNull()?.takeIf { it in 1..2_100_000_000 }
+        ?: throw GradleException("MISH_RELEASE_VERSION_CODE must be an integer in 1..2100000000.")
+}
+if ((releaseVersionName == null) != (releaseVersionCode == null)) {
+    throw GradleException("MISH_RELEASE_VERSION_NAME and MISH_RELEASE_VERSION_CODE must be provided together.")
+}
+if (releaseVersionName != null && !Regex("""\d+\.\d+\.\d+""").matches(releaseVersionName)) {
+    throw GradleException("MISH_RELEASE_VERSION_NAME must be a base MAJOR.MINOR.PATCH version.")
+}
+
+val releaseStoreFile = providers.environmentVariable("MISH_RELEASE_STORE_FILE").orNull
+val releaseStorePassword = providers.environmentVariable("MISH_RELEASE_STORE_PASSWORD").orNull
+val releaseKeyAlias = providers.environmentVariable("MISH_RELEASE_KEY_ALIAS").orNull
+val releaseKeyPassword = providers.environmentVariable("MISH_RELEASE_KEY_PASSWORD").orNull
+val releaseSigningInputs = listOf(
+    releaseStoreFile,
+    releaseStorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+)
+val releaseSigningRequested = releaseSigningInputs.any { !it.isNullOrBlank() }
+if (releaseSigningRequested && releaseSigningInputs.any { it.isNullOrBlank() }) {
+    throw GradleException("Release signing inputs must be provided as one complete set.")
+}
+
 val hostLibraryName = when {
     System.getProperty("os.name").startsWith("Windows", ignoreCase = true) -> "mish_android_ffi.dll"
     System.getProperty("os.name").startsWith("Mac", ignoreCase = true) -> "libmish_android_ffi.dylib"
@@ -88,18 +115,38 @@ val buildAndroidUniFfi = tasks.register<Exec>("buildAndroidUniFfi") {
 android {
     namespace = "com.mobileproxymish.app"
     compileSdk = 37
+    buildToolsVersion = "36.0.0"
     ndkVersion = "29.0.14206865"
 
     defaultConfig {
         applicationId = "com.mobileproxymish.app"
         minSdk = 23
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0-dev"
+        versionCode = releaseVersionCode ?: 1
+        versionName = releaseVersionName ?: "0.1.0-dev"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
             abiFilters += "arm64-v8a"
+        }
+    }
+
+    signingConfigs {
+        if (releaseSigningRequested) {
+            create("release") {
+                storeFile = file(requireNotNull(releaseStoreFile))
+                storePassword = requireNotNull(releaseStorePassword)
+                keyAlias = requireNotNull(releaseKeyAlias)
+                keyPassword = requireNotNull(releaseKeyPassword)
+            }
+        }
+    }
+
+    buildTypes {
+        getByName("release") {
+            if (releaseSigningRequested) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
