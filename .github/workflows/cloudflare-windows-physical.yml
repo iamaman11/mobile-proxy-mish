@@ -1,0 +1,72 @@
+name: Cloudflare Windows Pre-Phone Proof
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-windows-prephone
+  cancel-in-progress: false
+
+jobs:
+  windows-prephone:
+    name: Cloudflare Windows Pre-Phone Proof
+    if: ${{ github.ref == 'refs/heads/main' && github.ref_protected == true }}
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 20
+    env:
+      LAB_POWERSHELL_EXE: C:\mish-lab\tools\powershell-7.6.6\pwsh.exe
+      ADB_EXE: C:\mish-lab\tools\android-sdk\platform-tools\adb.exe
+      MESH_DEVICE_CIDR: 100.96.0.0/12
+    steps:
+      - name: Checkout accepted main CF-2 probe
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          clean: true
+
+      - name: Verify physical host identity
+        shell: cmd
+        run: |
+          if not exist "%LAB_POWERSHELL_EXE%" (
+            echo Accepted LAB-owned PowerShell is missing.
+            exit /b 2
+          )
+          "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".\lab\windows\labctl.ps1" host inspect -PhysicalLab
+          exit /b %ERRORLEVEL%
+
+      - name: Prove Cloudflare Windows pre-phone boundary
+        shell: cmd
+        run: |
+          "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".\lab\windows\labctl.ps1" cloudflare prove -PhysicalLab -Recovery -MeshDeviceCidr "%MESH_DEVICE_CIDR%" -EvidencePath "%RUNNER_TEMP%\mish-cloudflare-windows-prephone.json"
+          exit /b %ERRORLEVEL%
+
+      - name: Prove PHONE-ON boundary
+        shell: cmd
+        run: |
+          "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".\lab\windows\labctl.ps1" android inspect -AdbPath "%ADB_EXE%" -RequireNoDevice -TimeoutSeconds 30
+          exit /b %ERRORLEVEL%
+
+      - name: Publish bounded summary
+        if: ${{ always() }}
+        shell: cmd
+        run: |
+          >>"%GITHUB_STEP_SUMMARY%" echo ### CF-2 Windows pre-phone proof
+          >>"%GITHUB_STEP_SUMMARY%" echo - Main commit: `%GITHUB_SHA%`
+          >>"%GITHUB_STEP_SUMMARY%" echo - Cloudflare desired-config mutation: **NO**
+          >>"%GITHUB_STEP_SUMMARY%" echo - One Client observation: **supported warp-cli + Windows route/DNS APIs**
+          >>"%GITHUB_STEP_SUMMARY%" echo - Expected Mesh/device CIDR: `%MESH_DEVICE_CIDR%`
+          >>"%GITHUB_STEP_SUMMARY%" echo - Recovery matrix: **bounded disconnect/reconnect**
+          >>"%GITHUB_STEP_SUMMARY%" echo - Phone boundary: **device must be absent**
+          >>"%GITHUB_STEP_SUMMARY%" echo - This run does **not** claim sing-box ordinary-route ownership, Android Mesh, E3, E4, or product READY.
+
+      - name: Upload typed CF-2 evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cloudflare-windows-prephone-evidence
+          path: ${{ runner.temp }}\mish-cloudflare-windows-prephone.json
+          if-no-files-found: warn
+          retention-days: 30
