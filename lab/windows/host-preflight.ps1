@@ -164,7 +164,16 @@ try {
 
     $sdkManager = Join-Path $sdkRoot 'cmdline-tools\latest\bin\sdkmanager.bat'
     $ndkPath = Join-Path $sdkRoot ('ndk\' + [string]$manifest.android.ndk)
-    $platformPath = Join-Path $sdkRoot ('platforms\android-' + [string]$manifest.android.compile_sdk)
+    $expectedPlatformDir = 'android-{0}.{1}' -f [int]$manifest.android.compile_sdk, [int]$manifest.android.compile_sdk_minor
+    $platformDir = [string]$manifest.android.platform_dir
+    $platformPackage = [string]$manifest.android.platform_package
+    if ($platformDir -ne $expectedPlatformDir -or $platformPackage -ne ('platforms;' + $expectedPlatformDir)) {
+        Stop-Lab -Category 'IDENTITY_MISMATCH' -Message 'Android platform manifest coordinate is inconsistent.'
+    }
+    if (-not (@($manifest.android.packages | ForEach-Object { [string]$_ }) -contains $platformPackage)) {
+        Stop-Lab -Category 'IDENTITY_MISMATCH' -Message 'Android platform package is missing from the install set.'
+    }
+    $platformPath = Join-Path $sdkRoot ('platforms\' + $platformDir)
     if (-not (Test-Path -LiteralPath $sdkManager) -or -not (Test-Path -LiteralPath $ndkPath) -or -not (Test-Path -LiteralPath $platformPath)) {
         Stop-Lab -Category 'HOST_PREREQUISITE_MISSING' -Message 'Pinned Android SDK/NDK components are incomplete.'
     }
@@ -221,6 +230,8 @@ try {
                 rust = [string]$manifest.rust.toolchain
                 cargo_ndk = [string]$manifest.rust.cargo_ndk
                 android_compile_sdk = [int]$manifest.android.compile_sdk
+                android_compile_sdk_minor = [int]$manifest.android.compile_sdk_minor
+                android_platform_package = [string]$manifest.android.platform_package
                 android_ndk = [string]$manifest.android.ndk
             }
             cross_build = [ordered]@{
