@@ -17,7 +17,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: android-release-${{ github.event_name == 'workflow_dispatch' && 'rc-publish' || github.ref }}
+  group: android-release-${{ github.event_name == 'workflow_dispatch' && github.ref_type == 'tag' && 'rc-publish' || github.event_name == 'workflow_dispatch' && 'rc-activate' || github.ref }}
   cancel-in-progress: false
 
 env:
@@ -162,7 +162,7 @@ jobs:
 
   prepare-rc:
     name: Prepare zero-input Android RC
-    if: ${{ github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
     needs: [contract, harness-signing-contract]
     runs-on: ubuntu-latest
     permissions:
@@ -241,37 +241,34 @@ jobs:
             echo '- Production signing key: **not materialized in READY projection**'
           } >> "$GITHUB_STEP_SUMMARY"
 
-  publish-rc:
-    name: Publish immutable Android RC
-    if: ${{ github.event_name == 'workflow_dispatch' }}
+  activate-rc:
+    name: Activate machine-owned Android RC tag
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
     needs: prepare-rc
     runs-on: ubuntu-latest
-    environment: android-release
     permissions:
       contents: write
+      actions: write
     env:
       RC_TAG: ${{ needs.prepare-rc.outputs.rc_tag }}
       SOURCE_SHA: ${{ needs.prepare-rc.outputs.source_sha }}
     steps:
-      - name: Checkout exact authorized source
+      - name: Checkout exact authorized main source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.prepare-rc.outputs.source_sha }}
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Revalidate exact main candidate and release identity
-        id: version
+      - name: Freeze machine-owned tag and dispatch tag-scoped release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]
+          [[ "$GITHUB_REF" == "refs/heads/main" ]]
           [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]]
-          python3 scripts/release/android_release.py derive \
-            --tag "$RC_TAG" \
-            --github-output "$GITHUB_OUTPUT"
 
           git fetch --no-tags origin main
           [[ "$(git rev-parse origin/main)" == "$SOURCE_SHA" ]]
@@ -280,6 +277,86 @@ jobs:
             echo "Target RC tag already exists: $RC_TAG" >&2
             exit 1
           fi
+          if gh release view "$RC_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Target RC Release already exists: $RC_TAG" >&2
+            exit 1
+          fi
+
+          created=0
+          rollback_tag() {
+            if [[ "$created" == "1" ]]; then
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$RC_TAG" >/dev/null || true
+            fi
+          }
+          trap rollback_tag ERR
+
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f "ref=refs/tags/$RC_TAG" \
+            -f "sha=$SOURCE_SHA" > "$RUNNER_TEMP/created-rc-ref.json"
+          created=1
+
+          TAG_META="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RC_TAG" \
+            --jq '[.object.type, .object.sha] | @tsv')"
+          IFS=$'\t' read -r TAG_TYPE TAG_SHA <<< "$TAG_META"
+          [[ "$TAG_TYPE" == "commit" ]]
+          [[ "$TAG_SHA" == "$SOURCE_SHA" ]]
+
+          gh api --method POST \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/android-release.yml/dispatches" \
+            -f "ref=$RC_TAG"
+
+          trap - ERR
+
+          {
+            echo '### Android RC ACTIVATED'
+            echo "- Source: \`$SOURCE_SHA\`"
+            echo "- Machine-owned RC tag: \`$RC_TAG\`"
+            echo '- Next execution: **automatic tag-scoped workflow_dispatch**'
+            echo '- Production signing key on activation job: **NO**'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  publish-rc:
+    name: Publish immutable Android RC
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref_type == 'tag' }}
+    needs: [contract, harness-signing-contract]
+    runs-on: ubuntu-latest
+    environment: android-release
+    permissions:
+      contents: write
+    env:
+      RC_TAG: ${{ github.ref_name }}
+      SOURCE_SHA: ${{ github.sha }}
+    steps:
+      - name: Checkout exact machine-owned tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Revalidate exact tag candidate and release identity
+        id: version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]
+          [[ "$GITHUB_REF" == "refs/tags/$RC_TAG" ]]
+          [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]]
+          python3 scripts/release/android_release.py derive \
+            --tag "$RC_TAG" \
+            --github-output "$GITHUB_OUTPUT"
+
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$SOURCE_SHA" origin/main
+
+          TAG_META="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RC_TAG" \
+            --jq '[.object.type, .object.sha] | @tsv')"
+          IFS=$'\t' read -r TAG_TYPE TAG_SHA <<< "$TAG_META"
+          [[ "$TAG_TYPE" == "commit" ]]
+          [[ "$TAG_SHA" == "$SOURCE_SHA" ]]
+
           if gh release view "$RC_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Target RC Release already exists: $RC_TAG" >&2
             exit 1
@@ -435,34 +512,6 @@ jobs:
           echo "harness_manifest_name=$HARNESS_MANIFEST_NAME" >> "$GITHUB_OUTPUT"
           echo "product_cert_sha256=$CERT_SHA256" >> "$GITHUB_OUTPUT"
 
-      - name: Create immutable RC tag for exact verified candidate
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          git fetch --no-tags origin main
-          [[ "$(git rev-parse origin/main)" == "$SOURCE_SHA" ]]
-
-          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RC_TAG" >/dev/null 2>&1; then
-            echo "Target RC tag appeared during the build: $RC_TAG" >&2
-            exit 1
-          fi
-          if gh release view "$RC_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Target RC Release appeared during the build: $RC_TAG" >&2
-            exit 1
-          fi
-
-          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
-            -f "ref=refs/tags/$RC_TAG" \
-            -f "sha=$SOURCE_SHA" > "$RUNNER_TEMP/created-rc-ref.json"
-
-          TAG_META="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RC_TAG" \
-            --jq '[.object.type, .object.sha] | @tsv')"
-          IFS=$'\t' read -r TAG_TYPE TAG_SHA <<< "$TAG_META"
-          [[ "$TAG_TYPE" == "commit" ]]
-          [[ "$TAG_SHA" == "$SOURCE_SHA" ]]
-
       - name: Publish immutable versioned prerelease
         shell: bash
         env:
@@ -528,7 +577,7 @@ jobs:
       - name: Upload bounded same-certificate E3 harness
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: e3-harness-${{ needs.prepare-rc.outputs.rc_tag }}
+          name: e3-harness-${{ github.ref_name }}
           path: ${{ runner.temp }}/e3-harness
           if-no-files-found: error
           retention-days: 7
@@ -541,7 +590,8 @@ jobs:
             echo "- RC tag: \`$RC_TAG\`"
             echo "- Source: \`$SOURCE_SHA\`"
             echo "- Product signing cert SHA-256: \`${{ steps.artifact.outputs.product_cert_sha256 }}\`"
-            echo '- Activation: **zero-input workflow dispatch; tag is machine-owned**'
+            echo '- Authorization: **one zero-input main dispatch; tag transition is machine-owned**'
+            echo '- Protected release execution: **automatic tag-scoped workflow_dispatch**'
             echo '- Product Release assets: **APK + release manifest only**'
             echo '- E3 harness: **separate test-only Actions artifact, 7-day retention**'
             echo '- E3 harness signing certificate: **same as product APK**'
