@@ -29,6 +29,7 @@ try {
     $tag = 'v0.1.0-rc.1'
     $source = '4542c1e2a16f3ac93f52ecb2464c2cfc0cafb3c0'
     $cert = '1958d474069ce0f8b8e5390c9c4ebecd6e306fb4e0f0f6e12d35c9b91cc67803'
+    $abi = 'armeabi-v7a'
     $apkName = "mobile-proxy-mish-$tag.apk"
     $apkPath = Join-Path $temp $apkName
     [IO.File]::WriteAllBytes($apkPath, [Text.Encoding]::UTF8.GetBytes('deterministic-labctl-fixture'))
@@ -44,7 +45,7 @@ try {
             rc_number = 1
             source_commit = $source
             android_version_code = 1000001
-            abi = 'arm64-v8a'
+            abi = $abi
             build_mode = 'release'
         }
         artifact = [ordered]@{
@@ -69,6 +70,7 @@ try {
     $receipt = Get-Content -Raw -LiteralPath $verification | ConvertFrom-Json
     Assert-True ($receipt.schema -eq 'mish.lab.release-verification/v1') 'Verification schema mismatch.'
     Assert-True ($receipt.result -eq 'PASS') 'Verification receipt did not PASS.'
+    Assert-True ($receipt.abi -eq $abi) 'Verification receipt ABI mismatch.'
     Assert-True ($receipt.apk.sha256 -eq $digest) 'Verification digest mismatch.'
 
     $wrongDigest = '0' * 64
@@ -92,10 +94,28 @@ try {
     $evidenceText = Get-Content -Raw -LiteralPath $evidencePath
     $evidence = $evidenceText | ConvertFrom-Json
     Assert-True ($evidence.schema -eq 'mish.lab.evidence/v1') 'Evidence schema mismatch.'
+    Assert-True ($evidence.observations.release.abi -eq $abi) 'Evidence release ABI mismatch.'
     Assert-True ($evidence.observations.release.apk_sha256 -eq $digest) 'Evidence release digest mismatch.'
     Assert-True (-not $evidenceText.Contains('must-not-leak')) 'Evidence allowlist leaked arbitrary input data.'
     Assert-True (-not $evidenceText.Contains('password')) 'Evidence must not contain password-shaped input.'
     Assert-True (-not $evidenceText.Contains('token')) 'Evidence must not contain token-shaped input.'
+
+    # Unknown ABI must fail closed before any install/ADB action.
+    $manifest.product.abi = 'x86'
+    [IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
+    $badAbiReceipt = Join-Path $temp 'bad-abi.json'
+    Invoke-LabctlChild @(
+        'release','verify',
+        '-Tag',$tag,
+        '-ExpectedSourceCommit',$source,
+        '-ExpectedApkSha256',$digest,
+        '-ExpectedSigningCertificateSha256',$cert,
+        '-Directory',$temp,
+        '-ReceiptPath',$badAbiReceipt
+    ) 2 | Out-Null
+    Assert-True (-not (Test-Path -LiteralPath $badAbiReceipt)) 'Unsupported ABI must not emit a PASS receipt.'
+    $manifest.product.abi = $abi
+    [IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
 
     # Install must reject stale bytes before it can invoke adb.
     [IO.File]::AppendAllText($apkPath, 'tampered')
