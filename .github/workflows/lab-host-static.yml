@@ -171,13 +171,22 @@ jobs:
 
       - name: Verify pinned PowerShell artifact metadata upstream
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:GITHUB_TOKEN)) {
+            throw 'Hosted static release verification requires the job-scoped GITHUB_TOKEN.'
+          }
           $manifest = Get-Content -Raw -LiteralPath 'lab/windows/toolchain.json' | ConvertFrom-Json
           $version = [string]$manifest.powershell.version
           $assetName = [string]$manifest.powershell.asset
           $releaseUri = "https://api.github.com/repos/PowerShell/PowerShell/releases/tags/v$version"
-          $headers = @{ 'User-Agent' = 'mobile-proxy-mish-lab-static' }
+          $headers = @{
+            'User-Agent' = 'mobile-proxy-mish-lab-static'
+            'Authorization' = "Bearer $env:GITHUB_TOKEN"
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
           $release = Invoke-RestMethod -Headers $headers -Uri $releaseUri
           $asset = @($release.assets | Where-Object { $_.name -eq $assetName })
           if ($asset.Count -ne 1) {
