@@ -38,9 +38,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Test release and E3 harness identity contracts
+      - name: Test release, failed-reservation, and E3 harness identity contracts
         run: |
           python3 scripts/release/test_android_release.py
+          python3 scripts/release/test_failed_rc_reservation.py
           python3 scripts/release/test_e3_harness.py
 
       - name: Validate pinned Android release build-tools contract
@@ -116,13 +117,14 @@ jobs:
           echo "MISH_RELEASE_KEY_ALIAS=lab3-contract" >> "$GITHUB_ENV"
           echo "MISH_RELEASE_KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
           echo 'MISH_RELEASE_VERSION_NAME=0.1.0' >> "$GITHUB_ENV"
-          echo 'MISH_RELEASE_VERSION_CODE=1000002' >> "$GITHUB_ENV"
+          echo 'MISH_RELEASE_VERSION_CODE=1000003' >> "$GITHUB_ENV"
 
-      - name: Prove release-targeting test APK uses the same signing certificate
+      - name: Prove release variant, unit tests, and same-certificate E3 harness
         shell: bash
         run: |
           set -euo pipefail
           gradle --no-daemon --no-configuration-cache -p android \
+            :app:testReleaseUnitTest \
             :app:assembleRelease \
             :app:assembleReleaseAndroidTest
 
@@ -140,7 +142,7 @@ jobs:
           [[ "$test_cert" == "$product_cert" ]]
 
           python3 scripts/release/e3_harness.py manifest \
-            --tag v0.1.0-rc.2 \
+            --tag v0.1.0-rc.3 \
             --source-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
             --product-apk "$PRODUCT_APK" \
             --test-apk "$TEST_APK" \
@@ -149,7 +151,7 @@ jobs:
             --output "$RUNNER_TEMP/e3-harness-contract.json"
           python3 scripts/release/e3_harness.py verify \
             --manifest "$RUNNER_TEMP/e3-harness-contract.json" \
-            --tag v0.1.0-rc.2 \
+            --tag v0.1.0-rc.3 \
             --source-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
             --signing-cert-sha256 "$product_cert" \
             --product-apk "$PRODUCT_APK" \
@@ -167,6 +169,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: read
     outputs:
       rc_tag: ${{ steps.candidate.outputs.tag }}
       source_sha: ${{ steps.candidate.outputs.source_sha }}
@@ -197,7 +200,7 @@ jobs:
             --github-output "$GITHUB_OUTPUT"
           echo "source_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
-      - name: Validate previous immutable RC and target absence
+      - name: Validate previous immutable RC reservation and target absence
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -206,14 +209,71 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -n "$PREVIOUS_TAG" ]]; then
-            RELEASE_META="$(gh release view "$PREVIOUS_TAG" \
+            if RELEASE_META="$(gh release view "$PREVIOUS_TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --json tagName,isDraft,isPrerelease \
-              --jq '[.tagName, .isDraft, .isPrerelease] | @tsv')"
-            IFS=$'\t' read -r RELEASE_TAG IS_DRAFT IS_PRERELEASE <<< "$RELEASE_META"
-            [[ "$RELEASE_TAG" == "$PREVIOUS_TAG" ]]
-            [[ "$IS_DRAFT" == "false" ]]
-            [[ "$IS_PRERELEASE" == "true" ]]
+              --jq '[.tagName, .isDraft, .isPrerelease] | @tsv' 2>/dev/null)"; then
+              IFS=$'\t' read -r RELEASE_TAG IS_DRAFT IS_PRERELEASE <<< "$RELEASE_META"
+              [[ "$RELEASE_TAG" == "$PREVIOUS_TAG" ]]
+              [[ "$IS_DRAFT" == "false" ]]
+              [[ "$IS_PRERELEASE" == "true" ]]
+              echo "Previous RC is a published immutable prerelease: $PREVIOUS_TAG"
+            else
+              PREVIOUS_REF="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$PREVIOUS_TAG" \
+                --jq '[.object.type, .object.sha] | @tsv')"
+              IFS=$'\t' read -r PREVIOUS_TYPE PREVIOUS_SHA <<< "$PREVIOUS_REF"
+              [[ "$PREVIOUS_TYPE" == "commit" ]]
+              [[ "$PREVIOUS_SHA" =~ ^[0-9a-f]{40}$ ]]
+              git merge-base --is-ancestor "$PREVIOUS_SHA" origin/main
+
+              RUNS_JSON="$RUNNER_TEMP/previous-rc-runs.json"
+              JOBS_JSON="$RUNNER_TEMP/previous-rc-jobs.json"
+              gh api \
+                "repos/$GITHUB_REPOSITORY/actions/workflows/android-release.yml/runs?event=workflow_dispatch&status=completed&head_sha=$PREVIOUS_SHA&per_page=100" \
+                > "$RUNS_JSON"
+
+              RUN_TOTAL="$(python3 - "$RUNS_JSON" <<'PY'
+          import json
+          import sys
+          data = json.load(open(sys.argv[1], encoding="utf-8"))
+          print(data.get("total_count", -1))
+          PY
+              )"
+              [[ "$RUN_TOTAL" =~ ^[0-9]+$ ]]
+              (( RUN_TOTAL <= 100 ))
+
+              FAILED_RUN_ID="$(python3 - "$RUNS_JSON" "$PREVIOUS_TAG" "$PREVIOUS_SHA" <<'PY'
+          import json
+          import sys
+          data = json.load(open(sys.argv[1], encoding="utf-8"))
+          tag, sha = sys.argv[2], sys.argv[3]
+          matches = [
+              run for run in data.get("workflow_runs", [])
+              if run.get("name") == "Android Release Candidate"
+              and run.get("path") == ".github/workflows/android-release.yml"
+              and run.get("head_branch") == tag
+              and run.get("head_sha") == sha
+              and run.get("event") == "workflow_dispatch"
+              and run.get("status") == "completed"
+              and run.get("conclusion") == "failure"
+              and (run.get("actor") or {}).get("login") == "github-actions[bot]"
+          ]
+          if len(matches) != 1:
+              raise SystemExit(1)
+          print(matches[0]["id"])
+          PY
+              )"
+              [[ "$FAILED_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+              gh api "repos/$GITHUB_REPOSITORY/actions/runs/$FAILED_RUN_ID/jobs?per_page=100" > "$JOBS_JSON"
+
+              python3 scripts/release/failed_rc_reservation.py \
+                --tag "$PREVIOUS_TAG" \
+                --tag-sha "$PREVIOUS_SHA" \
+                --runs-json "$RUNS_JSON" \
+                --jobs-json "$JOBS_JSON"
+
+              echo "Previous RC is a verified failed machine-owned unpublished reservation: $PREVIOUS_TAG"
+            fi
           fi
 
           if git show-ref --verify --quiet "refs/tags/$RC_TAG"; then
@@ -236,7 +296,7 @@ jobs:
             echo '### Android RC READY'
             echo "- Source: \`$SOURCE_SHA\`"
             echo "- Machine-owned RC tag: \`$RC_TAG\`"
-            echo "- Previous RC: \`${PREVIOUS_TAG:-NONE}\`"
+            echo "- Previous RC reservation: \`${PREVIOUS_TAG:-NONE}\`"
             echo '- Authorization: **zero-input workflow dispatch on protected main**'
             echo '- Production signing key: **not materialized in READY projection**'
           } >> "$GITHUB_STEP_SUMMARY"
@@ -432,7 +492,7 @@ jobs:
           set -euo pipefail
           gradle --no-daemon --no-configuration-cache -p android \
             :app:lintRelease \
-            :app:testDebugUnitTest \
+            :app:testReleaseUnitTest \
             :app:assembleRelease \
             :app:assembleReleaseAndroidTest
 
