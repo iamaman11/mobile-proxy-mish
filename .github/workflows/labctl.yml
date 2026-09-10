@@ -1,0 +1,101 @@
+name: LABCTL Release Consumer
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/labctl.yml'
+      - 'lab/windows/Labctl.psm1'
+      - 'lab/windows/labctl.ps1'
+      - 'lab/windows/test-labctl.ps1'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/labctl.yml'
+      - 'lab/windows/Labctl.psm1'
+      - 'lab/windows/labctl.ps1'
+      - 'lab/windows/test-labctl.ps1'
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: LABCTL Windows Contract
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Assert release-consumer implementation has no Android build owner
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $paths = @('lab/windows/Labctl.psm1', 'lab/windows/labctl.ps1')
+          $forbidden = '(?i)\b(gradle|cargo|rustc|rustup|sdkmanager|ndk-build)\b'
+          $matches = Select-String -Path $paths -Pattern $forbidden
+          if ($matches) {
+            $matches | ForEach-Object { Write-Error "Forbidden physical build-tool dependency: $($_.Path):$($_.LineNumber)" }
+            exit 1
+          }
+
+      - name: Run deterministic labctl contract tests
+        shell: pwsh
+        run: ./lab/windows/test-labctl.ps1
+
+      - name: Inspect hosted Windows execution surface
+        shell: pwsh
+        run: ./lab/windows/labctl.ps1 host inspect
+
+      - name: Resolve and verify accepted REL-1 RC without rebuilding
+        shell: pwsh
+        env:
+          RC_TAG: v0.1.0-rc.1
+          RC_SOURCE: 4542c1e2a16f3ac93f52ecb2464c2cfc0cafb3c0
+          RC_APK_SHA256: 26d7faa5e5f4f788c9c15fe53aaeac24ebd3a7241881e570887eec102304334e
+          RC_SIGNING_CERT_SHA256: 1958d474069ce0f8b8e5390c9c4ebecd6e306fb4e0f0f6e12d35c9b91cc67803
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'mish-labctl-real-rc'
+          $resolution = Join-Path $root 'resolution.json'
+          $verification = Join-Path $root 'verification.json'
+          $evidence = Join-Path $root 'evidence.json'
+
+          ./lab/windows/labctl.ps1 release resolve `
+            -Tag $env:RC_TAG `
+            -ExpectedSourceCommit $env:RC_SOURCE `
+            -ExpectedApkSha256 $env:RC_APK_SHA256 `
+            -ExpectedSigningCertificateSha256 $env:RC_SIGNING_CERT_SHA256 `
+            -Directory $root `
+            -ReceiptPath $resolution
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          ./lab/windows/labctl.ps1 release verify `
+            -Tag $env:RC_TAG `
+            -ExpectedSourceCommit $env:RC_SOURCE `
+            -ExpectedApkSha256 $env:RC_APK_SHA256 `
+            -ExpectedSigningCertificateSha256 $env:RC_SIGNING_CERT_SHA256 `
+            -Directory $root `
+            -ReceiptPath $verification
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          ./lab/windows/labctl.ps1 evidence collect `
+            -InputPath $verification `
+            -EvidencePath $evidence
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $proof = Get-Content -Raw -LiteralPath $evidence | ConvertFrom-Json
+          if ($proof.schema -ne 'mish.lab.evidence/v1' -or
+              $proof.result -ne 'PASS' -or
+              $proof.observations.release.tag -ne $env:RC_TAG -or
+              $proof.observations.release.source_commit -ne $env:RC_SOURCE -or
+              $proof.observations.release.apk_sha256 -ne $env:RC_APK_SHA256) {
+            throw 'Real RC consumer evidence does not match the authorized tuple.'
+          }
+
+          "LABCTL_REAL_RC_CONSUMER=PASS" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "RC_TAG=$($proof.observations.release.tag)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "RC_SOURCE=$($proof.observations.release.source_commit)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "RC_APK_SHA256=$($proof.observations.release.apk_sha256)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
