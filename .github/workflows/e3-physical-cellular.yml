@@ -5,15 +5,19 @@ on:
     paths:
       - '.github/workflows/e3-physical-cellular.yml'
       - 'lab/windows/E3Harness.psm1'
+      - 'lab/windows/Labctl.psm1'
       - 'lab/windows/labctl.ps1'
       - 'lab/windows/test-e3-harness.ps1'
+      - 'docs/lab/LABCTL.md'
   push:
     branches: [main]
     paths:
       - '.github/workflows/e3-physical-cellular.yml'
       - 'lab/windows/E3Harness.psm1'
+      - 'lab/windows/Labctl.psm1'
       - 'lab/windows/labctl.ps1'
       - 'lab/windows/test-e3-harness.ps1'
+      - 'docs/lab/LABCTL.md'
   workflow_dispatch:
     inputs:
       mode:
@@ -50,7 +54,7 @@ jobs:
 
   physical-cellular:
     name: E3 Physical Cellular Windows LAB
-    if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && github.ref_protected == true }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected == true }}
     needs: contract
     runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
     timeout-minutes: 30
@@ -69,7 +73,7 @@ jobs:
       E3_HOST: checkip.amazonaws.com
       E3_PORT: '80'
       E3_PATH: '/'
-      RUN_MODE: ${{ github.event_name == 'push' && 'pre-device-dry' || inputs.mode }}
+      RUN_MODE: ${{ inputs.mode }}
 
     steps:
       - name: Checkout accepted main execution adapter
@@ -123,11 +127,18 @@ jobs:
           "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".\lab\windows\labctl.ps1" android inspect -AdbPath "%ADB_EXE%" -RequireNoDevice -TimeoutSeconds 30 > "%RUNNER_TEMP%\mish-e3\android-observation.json"
           exit /b %ERRORLEVEL%
 
-      - name: Emit typed PHONE-ON readiness certificate
+      - name: Emit typed E3 readiness receipt
         if: ${{ env.RUN_MODE == 'pre-device-dry' }}
         shell: cmd
         run: |
           "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".\lab\windows\labctl.ps1" e3 ready -VerificationReceipt "%RUNNER_TEMP%\mish-e3\verification.json" -HarnessVerificationReceipt "%RUNNER_TEMP%\mish-e3\harness-verification.json" -AndroidObservationPath "%RUNNER_TEMP%\mish-e3\android-observation.json" -EvidencePath "%RUNNER_TEMP%\mish-e3\readiness.json"
+          exit /b %ERRORLEVEL%
+
+      - name: Project readiness into durable LAB evidence
+        if: ${{ env.RUN_MODE == 'pre-device-dry' }}
+        shell: cmd
+        run: |
+          "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".\lab\windows\labctl.ps1" evidence collect -InputPath "%RUNNER_TEMP%\mish-e3\readiness.json" -EvidencePath "%RUNNER_TEMP%\mish-e3\evidence.json"
           exit /b %ERRORLEVEL%
 
       - name: Publish pre-device boundary summary
@@ -141,6 +152,7 @@ jobs:
           >>"%GITHUB_STEP_SUMMARY%" echo - Test APK SHA-256: `%HARNESS_TEST_APK_SHA256%`
           >>"%GITHUB_STEP_SUMMARY%" echo - Android product/test build on physical runner: **NO**
           >>"%GITHUB_STEP_SUMMARY%" echo - APK installation: **NO**
+          >>"%GITHUB_STEP_SUMMARY%" echo - Durable evidence schema: `mish.lab.evidence/v1`
           >>"%GITHUB_STEP_SUMMARY%" echo - PHONE-ON READY
           >>"%GITHUB_STEP_SUMMARY%" echo - E3_PASS=NO
           >>"%GITHUB_STEP_SUMMARY%" echo - NO_EVIDENCE_ESCALATION=PASS
@@ -149,20 +161,20 @@ jobs:
         if: ${{ env.RUN_MODE == 'pre-device-dry' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: lab3-e3-pre-device-readiness
-          path: ${{ runner.temp }}\mish-e3\readiness.json
+          name: lab3-e3-pre-device-evidence
+          path: ${{ runner.temp }}\mish-e3\evidence.json
           if-no-files-found: error
           retention-days: 30
 
       - name: Execute original E3 positive-negative-recovery ceremony
-        if: ${{ github.event_name == 'workflow_dispatch' && env.RUN_MODE == 'full-root-toggle' }}
+        if: ${{ env.RUN_MODE == 'full-root-toggle' }}
         shell: cmd
         run: |
           "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".\lab\windows\labctl.ps1" e3 execute -VerificationReceipt "%RUNNER_TEMP%\mish-e3\verification.json" -HarnessVerificationReceipt "%RUNNER_TEMP%\mish-e3\harness-verification.json" -AdbPath "%ADB_EXE%" -E3Host "%E3_HOST%" -E3Port "%E3_PORT%" -E3Path "%E3_PATH%" -TimeoutSeconds 300
           exit /b %ERRORLEVEL%
 
       - name: Publish E3 execution summary
-        if: ${{ github.event_name == 'workflow_dispatch' && env.RUN_MODE == 'full-root-toggle' && success() }}
+        if: ${{ env.RUN_MODE == 'full-root-toggle' && success() }}
         shell: cmd
         run: |
           >>"%GITHUB_STEP_SUMMARY%" echo ### E3 physical cellular accepted ceremony
