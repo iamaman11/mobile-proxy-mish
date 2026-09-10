@@ -60,6 +60,7 @@ The E3 surface changes execution/supply mechanics only; #10 remains the semantic
 ```text
 e3 verify
   = verify the exact harness run/artifact/ZIP/manifest/test-APK identity
+    and the separately pinned exact test-APK SHA-256
     against an already verified exact product RC
 
 e3 ready
@@ -85,7 +86,7 @@ AND github.ref == refs/heads/main
 AND github.ref_protected == true
 ```
 
-Therefore a merge/push may validate the contract automatically but must never start the Windows physical LAB. The accepted physical runner remains `[self-hosted, windows, x64, mobile-proxy-mish-lab]`, and PowerShell is invoked only through `C:\mish-lab\tools\powershell-7.6.6\pwsh.exe` from `shell: cmd` steps.
+Therefore a merge/push may validate the contract automatically but must never start the Windows physical LAB. The accepted physical runner remains `[self-hosted, windows, x64, mobile-proxy-mish-lab]`, and PowerShell is invoked only through `C:\mish-lab\tools\powershell-7.6.6\pwsh.exe` from `shell: cmd` steps. Physical commands use repository-owned `labctl.ps1` through `pwsh -File`; inline `pwsh -Command` glue is not part of the accepted physical boundary.
 
 ## LAB lifecycle boundary
 
