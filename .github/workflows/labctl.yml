@@ -5,17 +5,23 @@ on:
     paths:
       - '.github/workflows/labctl.yml'
       - '.github/workflows/labctl-physical.yml'
+      - '.github/workflows/cloudflare-windows-physical.yml'
       - 'lab/windows/Labctl.psm1'
+      - 'lab/windows/CloudflareProbe.psm1'
       - 'lab/windows/labctl.ps1'
       - 'lab/windows/test-labctl.ps1'
+      - 'lab/windows/test-cloudflare-probe.ps1'
   push:
     branches: [main]
     paths:
       - '.github/workflows/labctl.yml'
       - '.github/workflows/labctl-physical.yml'
+      - '.github/workflows/cloudflare-windows-physical.yml'
       - 'lab/windows/Labctl.psm1'
+      - 'lab/windows/CloudflareProbe.psm1'
       - 'lab/windows/labctl.ps1'
       - 'lab/windows/test-labctl.ps1'
+      - 'lab/windows/test-cloudflare-probe.ps1'
 
 permissions:
   contents: read
@@ -97,9 +103,94 @@ jobs:
             throw 'Every LAB-2 physical run block must use cmd as its outer shell.'
           }
 
+      - name: Validate CF-2 physical trust boundary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $workflowPath = '.github/workflows/cloudflare-windows-physical.yml'
+          $workflow = Get-Content -Raw -LiteralPath $workflowPath
+          $modulePath = 'lab/windows/CloudflareProbe.psm1'
+          $module = Get-Content -Raw -LiteralPath $modulePath
+
+          foreach ($forbidden in @(
+            '(?m)^\s*pull_request\s*:',
+            '(?m)^\s*push\s*:',
+            '(?m)^\s*shell:\s*pwsh\s*$',
+            '(?m)^\s*shell:\s*powershell\s*$',
+            '(?i)CLOUDFLARE_API_TOKEN|R2_ACCESS_KEY|R2_SECRET|terraform',
+            '(?i)MISH_ANDROID_RELEASE_(KEYSTORE|STORE_PASSWORD|KEY_ALIAS|KEY_PASSWORD)',
+            '(?i)registration\s+(new|token|delete)',
+            '(?i)tunnel\s+protocol\s+set',
+            '(?i)tunnel\s+ip\s+(add|remove)'
+          )) {
+            if ($workflow -match $forbidden) {
+              throw "CF-2 physical workflow violates the supported observation boundary: $forbidden"
+            }
+          }
+
+          foreach ($forbidden in @(
+            '(?i)CLOUDFLARE_API_TOKEN|R2_ACCESS_KEY|R2_SECRET|terraform',
+            '(?i)Invoke-(RestMethod|WebRequest)',
+            '(?i)https?://',
+            '(?i)registration\s+(new|token|delete)',
+            '(?i)tunnel\s+protocol\s+set',
+            '(?i)tunnel\s+ip\s+(add|remove)'
+          )) {
+            if ($module -match $forbidden) {
+              throw "CF-2 probe introduced a second provider/configuration path: $forbidden"
+            }
+          }
+
+          foreach ($required in @(
+            'workflow_dispatch:',
+            "github.ref == 'refs/heads/main'",
+            'github.ref_protected == true',
+            'runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]',
+            'persist-credentials: false',
+            'LAB_POWERSHELL_EXE: C:\mish-lab\tools\powershell-7.6.6\pwsh.exe',
+            'MESH_DEVICE_CIDR: 100.96.0.0/12',
+            'labctl.ps1" cloudflare prove -PhysicalLab -Recovery',
+            'labctl.ps1" android inspect',
+            '-RequireNoDevice',
+            'cloudflare-windows-prephone-evidence',
+            'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02'
+          )) {
+            if (-not $workflow.Contains($required)) {
+              throw "CF-2 physical workflow is missing required trust text: $required"
+            }
+          }
+
+          foreach ($required in @(
+            "'C:\Program Files\Cloudflare\Cloudflare WARP\warp-cli.exe'",
+            "'CloudflareWARP'",
+            "@('registration', 'show')",
+            "@('settings')",
+            "@('status')",
+            "@('connect')",
+            "@('disconnect')",
+            "Find-NetRoute -RemoteIPAddress",
+            "Get-DnsClientServerAddress",
+            "ordinary_ipv4_owner_claim = 'NON_CLOUDFLARE_OBSERVED'",
+            'sing_box_ordinary_ipv4_ownership_proven = $false'
+          )) {
+            if (-not $module.Contains($required)) {
+              throw "CF-2 probe is missing required supported observation text: $required"
+            }
+          }
+
+          $runBlocks = ([regex]::Matches($workflow, '(?m)^\s*run:\s*\|\s*$')).Count
+          $cmdShells = ([regex]::Matches($workflow, '(?m)^\s*shell:\s*cmd\s*$')).Count
+          if ($runBlocks -eq 0 -or $cmdShells -ne $runBlocks) {
+            throw 'Every CF-2 physical run block must use cmd as its outer shell.'
+          }
+
       - name: Run deterministic labctl contract tests
         shell: pwsh
         run: ./lab/windows/test-labctl.ps1
+
+      - name: Run deterministic Cloudflare Windows probe tests
+        shell: pwsh
+        run: ./lab/windows/test-cloudflare-probe.ps1
 
       - name: Inspect hosted Windows execution surface
         shell: pwsh
