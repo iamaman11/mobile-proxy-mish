@@ -1,0 +1,209 @@
+name: Android Release Candidate
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/android-release.yml'
+      - 'scripts/release/**'
+      - 'android/app/build.gradle.kts'
+      - 'android/build.gradle.kts'
+      - 'rust-toolchain.toml'
+      - 'vendor/sing-box/release.toml'
+  push:
+    branches: [main]
+    tags:
+      - 'v*.*.*-rc.*'
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: Android Release Contract
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Test release identity contract
+        run: python3 scripts/release/test_android_release.py
+
+      - name: Validate pinned Android release build-tools contract
+        run: |
+          set -euo pipefail
+          grep -Fq 'buildToolsVersion = "36.0.0"' android/app/build.gradle.kts
+          grep -Fq 'ndkVersion = "29.0.14206865"' android/app/build.gradle.kts
+          grep -Fq 'channel = "1.98.1"' rust-toolchain.toml
+
+  publish-rc:
+    name: Publish immutable Android RC
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') }}
+    needs: contract
+    runs-on: ubuntu-latest
+    environment: android-release
+    permissions:
+      contents: write
+    env:
+      ANDROID_BUILD_TOOLS: '36.0.0'
+      ANDROID_NDK_VERSION: '29.0.14206865'
+      GRADLE_VERSION: '9.6.0'
+      JDK_MAJOR: '17'
+      RUST_TOOLCHAIN: '1.98.1'
+      CARGO_NDK_VERSION: '4.1.2'
+    steps:
+      - name: Checkout exact tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate tag and accepted-main ancestry
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/release/android_release.py derive \
+            --tag "$GITHUB_REF_NAME" \
+            --github-output "$GITHUB_OUTPUT"
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up pinned Gradle
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          gradle-version: '9.6.0'
+
+      - name: Install pinned Rust Android tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup override set "$RUST_TOOLCHAIN"
+          rustup target add aarch64-linux-android
+          cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
+
+      - name: Install pinned Android release tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:?Android SDK root is not configured}}"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$SDKMANAGER"
+          "$SDKMANAGER" \
+            "build-tools;$ANDROID_BUILD_TOOLS" \
+            "ndk;$ANDROID_NDK_VERSION"
+          test -x "$SDK_ROOT/build-tools/$ANDROID_BUILD_TOOLS/apksigner"
+          test -x "$SDK_ROOT/build-tools/$ANDROID_BUILD_TOOLS/aapt"
+          test -d "$SDK_ROOT/ndk/$ANDROID_NDK_VERSION"
+          echo "ANDROID_NDK_HOME=$SDK_ROOT/ndk/$ANDROID_NDK_VERSION" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$SDK_ROOT/ndk/$ANDROID_NDK_VERSION" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK=$SDK_ROOT/ndk/$ANDROID_NDK_VERSION" >> "$GITHUB_ENV"
+
+      - name: Materialize restricted release signing key
+        shell: bash
+        env:
+          KEYSTORE_B64: ${{ secrets.MISH_ANDROID_RELEASE_KEYSTORE_B64 }}
+          STORE_PASSWORD: ${{ secrets.MISH_ANDROID_RELEASE_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.MISH_ANDROID_RELEASE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.MISH_ANDROID_RELEASE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for value in "$KEYSTORE_B64" "$STORE_PASSWORD" "$KEY_ALIAS" "$KEY_PASSWORD"; do
+            if [[ -z "$value" ]]; then
+              echo 'Android release signing secrets are incomplete.' >&2
+              exit 1
+            fi
+          done
+          KEYSTORE_PATH="$RUNNER_TEMP/mish-android-release.keystore"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$KEYSTORE_PATH"
+          chmod 600 "$KEYSTORE_PATH"
+          test -s "$KEYSTORE_PATH"
+          echo "MISH_RELEASE_STORE_FILE=$KEYSTORE_PATH" >> "$GITHUB_ENV"
+
+      - name: Build and sign release candidate once
+        shell: bash
+        env:
+          MISH_RELEASE_VERSION_NAME: ${{ steps.version.outputs.version_name }}
+          MISH_RELEASE_VERSION_CODE: ${{ steps.version.outputs.version_code }}
+          MISH_RELEASE_STORE_PASSWORD: ${{ secrets.MISH_ANDROID_RELEASE_STORE_PASSWORD }}
+          MISH_RELEASE_KEY_ALIAS: ${{ secrets.MISH_ANDROID_RELEASE_KEY_ALIAS }}
+          MISH_RELEASE_KEY_PASSWORD: ${{ secrets.MISH_ANDROID_RELEASE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          gradle --no-daemon --no-configuration-cache -p android \
+            :app:lintRelease \
+            :app:testDebugUnitTest \
+            :app:assembleRelease
+
+      - name: Verify exact signed APK and generate release manifest
+        id: artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:?Android SDK root is not configured}}"
+          APKSIGNER="$SDK_ROOT/build-tools/$ANDROID_BUILD_TOOLS/apksigner"
+          AAPT="$SDK_ROOT/build-tools/$ANDROID_BUILD_TOOLS/aapt"
+          BUILT_APK="android/app/build/outputs/apk/release/app-release.apk"
+          test -f "$BUILT_APK"
+
+          CERTS="$RUNNER_TEMP/apk-certs.txt"
+          "$APKSIGNER" verify --verbose --print-certs "$BUILT_APK" > "$CERTS"
+          CERT_SHA256="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$CERTS" | head -n 1 | tr -d ':[:space:]')"
+          [[ "$CERT_SHA256" =~ ^[0-9A-Fa-f]{64}$ ]]
+
+          BADGING="$("$AAPT" dump badging "$BUILT_APK" | head -n 1)"
+          grep -Fq "versionName='${{ steps.version.outputs.version_name }}'" <<< "$BADGING"
+          grep -Fq "versionCode='${{ steps.version.outputs.version_code }}'" <<< "$BADGING"
+
+          mkdir -p dist
+          APK_NAME="mobile-proxy-mish-${GITHUB_REF_NAME}.apk"
+          MANIFEST_NAME="mobile-proxy-mish-${GITHUB_REF_NAME}.release.json"
+          cp "$BUILT_APK" "dist/$APK_NAME"
+
+          python3 scripts/release/android_release.py manifest \
+            --tag "$GITHUB_REF_NAME" \
+            --source-commit "$GITHUB_SHA" \
+            --apk "dist/$APK_NAME" \
+            --signing-cert-sha256 "$CERT_SHA256" \
+            --jdk-major "$JDK_MAJOR" \
+            --gradle "$GRADLE_VERSION" \
+            --android-build-tools "$ANDROID_BUILD_TOOLS" \
+            --android-ndk "$ANDROID_NDK_VERSION" \
+            --rust "$RUST_TOOLCHAIN" \
+            --cargo-ndk "$CARGO_NDK_VERSION" \
+            --output "dist/$MANIFEST_NAME"
+
+          echo "apk_name=$APK_NAME" >> "$GITHUB_OUTPUT"
+          echo "manifest_name=$MANIFEST_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Publish immutable versioned prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release already exists for $GITHUB_REF_NAME; refusing mutable replacement." >&2
+            exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/${{ steps.artifact.outputs.apk_name }}" \
+            "dist/${{ steps.artifact.outputs.manifest_name }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --prerelease \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Immutable Android release candidate. Physical acceptance must reference this exact tag and APK digest; stable promotion must reuse the same signed bytes."
+
+      - name: Remove materialized signing key
+        if: ${{ always() }}
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/mish-android-release.keystore"
