@@ -48,6 +48,26 @@ jobs:
             throw 'Runner SHA-256 is invalid.'
           }
 
+          $expectedPlatformDir = 'android-{0}.{1}' -f [int]$manifest.android.compile_sdk, [int]$manifest.android.compile_sdk_minor
+          if ([string]$manifest.android.platform_dir -ne $expectedPlatformDir) {
+            throw 'Android platform directory does not match compile SDK + minor API.'
+          }
+          if ([string]$manifest.android.platform_package -ne ('platforms;' + $expectedPlatformDir)) {
+            throw 'Android platform package does not match compile SDK + minor API.'
+          }
+          $sdkPackages = @($manifest.android.packages | ForEach-Object { [string]$_ })
+          if (-not ($sdkPackages -contains [string]$manifest.android.platform_package)) {
+            throw 'Android platform package is missing from the bootstrap install set.'
+          }
+          if ([int]$manifest.android.compile_sdk_minor -ne 0) {
+            throw 'Current product build uses base compileSdk and therefore requires minor API 0.'
+          }
+          $appBuildText = Get-Content -Raw -LiteralPath 'android/app/build.gradle.kts'
+          $compileSdkPattern = 'compileSdk\s*=\s*' + [regex]::Escape([string]$manifest.android.compile_sdk) + '\b'
+          if ($appBuildText -notmatch $compileSdkPattern) {
+            throw 'LAB Android platform coordinate drifted from the product compileSdk owner.'
+          }
+
           foreach ($path in @(
             'lab/windows/bootstrap-windows.ps1',
             'lab/windows/host-preflight.ps1'
@@ -83,6 +103,25 @@ jobs:
           }
           if ($bootstrapText -match '(?i)Write-(Host|Output|Verbose|Debug).*plain(Token|ProviderToken)') {
             throw 'Bootstrap must never write plaintext runner token variables.'
+          }
+
+      - name: Verify pinned Android platform exists upstream
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $manifest = Get-Content -Raw -LiteralPath 'lab/windows/toolchain.json' | ConvertFrom-Json
+          $package = [string]$manifest.android.platform_package
+          $metadata = Join-Path $env:RUNNER_TEMP 'android-repository2-3.xml'
+          $curl = Get-Command curl.exe -ErrorAction Stop
+          & $curl.Source --fail --silent --show-error --location --retry 3 --retry-delay 2 `
+            --output $metadata 'https://dl.google.com/android/repository/repository2-3.xml'
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to read live Android SDK repository metadata (curl exit $LASTEXITCODE)."
+          }
+          $repositoryText = Get-Content -Raw -LiteralPath $metadata
+          $packagePattern = '<remotePackage\s+path="' + [regex]::Escape($package) + '"'
+          if ($repositoryText -notmatch $packagePattern) {
+            throw "Pinned Android SDK package is absent from live Google repository metadata: $package"
           }
 
       - name: Exercise bootstrap winget idempotency contract
