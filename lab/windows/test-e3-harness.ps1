@@ -5,6 +5,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $labctl = Join-Path $PSScriptRoot 'labctl.ps1'
+$e3ModulePath = Join-Path $PSScriptRoot 'E3Harness.psm1'
 $pwsh = (Get-Process -Id $PID).Path
 $temp = Join-Path ([IO.Path]::GetTempPath()) ('mish-e3-test-' + [Guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($temp) | Out-Null
@@ -31,6 +32,7 @@ try {
     $tag='v0.1.0-rc.3'
     $source='d057f267ffac5cbeca40839778783d462a51b7a0'
     $cert='1958d474069ce0f8b8e5390c9c4ebecd6e306fb4e0f0f6e12d35c9b91cc67803'
+    $abi='armeabi-v7a'
     $runId=34498778808L
     $artifactId=10161372180L
     $zipSha='1c1758a5ce3672db76952627e4b1a61ac4e2e73744957f8c8b1f80b5efc01d36'
@@ -41,7 +43,7 @@ try {
     $productSha=(Get-FileHash -Algorithm SHA256 -LiteralPath $productPath).Hash.ToLowerInvariant()
     $releaseReceipt=Join-Path $temp 'release-verification.json'
     [IO.File]::WriteAllText($releaseReceipt,([ordered]@{
-        schema='mish.lab.release-verification/v1'; result='PASS'; repository='iamaman11/mobile-proxy-mish'; tag=$tag; source_commit=$source
+        schema='mish.lab.release-verification/v1'; result='PASS'; repository='iamaman11/mobile-proxy-mish'; tag=$tag; source_commit=$source; abi=$abi
         apk=[ordered]@{ name=$productName; sha256=$productSha; signing_certificate_sha256=$cert; path=$productPath }
     } | ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
 
@@ -72,6 +74,7 @@ try {
     $verified=Get-Content -Raw -LiteralPath $harnessReceipt | ConvertFrom-Json
     Assert-True ($verified.schema -eq 'mish.lab.e3-harness-verification/v1') 'Harness verification schema mismatch.'
     Assert-True ($verified.result -eq 'PASS') 'Harness verification did not PASS.'
+    Assert-True ($verified.product_abi -eq $abi) 'Harness verification did not bind the verified release ABI.'
     Assert-True ($verified.test_apk.sha256 -eq $testSha) 'Harness test digest mismatch.'
     Assert-True ([long]$verified.run.id -eq $runId) 'Harness run identity mismatch.'
 
@@ -102,7 +105,17 @@ try {
     Assert-True ($ready.schema -eq 'mish.lab.e3-readiness/v1') 'E3 readiness schema mismatch.'
     Assert-True ($ready.boundary -eq 'PHONE-ON READY') 'PHONE-ON boundary mismatch.'
     Assert-True ($ready.phone_on_ready -eq $true -and $ready.e3_pass -eq $false) 'Readiness receipt escalated to E3.'
+    Assert-True ($ready.release.abi -eq $abi) 'E3 readiness lost the verified release ABI.'
     Assert-True ($ready.android.device_count -eq 0) 'Readiness receipt must prove zero devices.'
+
+    # Harness ABI is part of exact release binding and may not be rewritten independently.
+    $badHarness=Get-Content -Raw -LiteralPath $harnessReceipt | ConvertFrom-Json
+    $badHarness.product_abi='arm64-v8a'
+    $badHarnessPath=Join-Path $temp 'wrong-abi-harness.json'
+    [IO.File]::WriteAllText($badHarnessPath,($badHarness|ConvertTo-Json -Depth 12),[Text.UTF8Encoding]::new($false))
+    $badReadiness=Join-Path $temp 'wrong-abi-readiness.json'
+    Invoke-LabctlChild @('e3','ready','-VerificationReceipt',$releaseReceipt,'-HarnessVerificationReceipt',$badHarnessPath,'-AndroidObservationPath',$androidObservation,'-EvidencePath',$badReadiness) 2 | Out-Null
+    Assert-True (-not (Test-Path -LiteralPath $badReadiness)) 'Mismatched harness/release ABI must not emit readiness.'
 
     $evidence=Join-Path $temp 'evidence.json'
     Invoke-LabctlChild @('evidence','collect','-InputPath',$readiness,'-EvidencePath',$evidence) 0 | Out-Null
@@ -110,7 +123,7 @@ try {
     Assert-True ($durable.schema -eq 'mish.lab.evidence/v1') 'Durable E3 readiness evidence must use the accepted LAB evidence schema.'
     Assert-True ($durable.run_kind -eq 'e3-pre-device-dry' -and $durable.result -eq 'PASS' -and $null -eq $durable.failure) 'Durable E3 readiness evidence envelope mismatch.'
     Assert-True ($durable.git_ref -eq 'refs/heads/main' -and $durable.git_commit -eq ('a' * 40) -and $durable.run_id -eq '12345') 'Durable evidence git/run identity mismatch.'
-    Assert-True ($durable.observations.release.tag -eq $tag -and $durable.observations.release.source_commit -eq $source -and $durable.observations.release.apk_sha256 -eq $productSha -and $durable.observations.release.signing_certificate_sha256 -eq $cert) 'Durable release projection mismatch.'
+    Assert-True ($durable.observations.release.tag -eq $tag -and $durable.observations.release.source_commit -eq $source -and $durable.observations.release.abi -eq $abi -and $durable.observations.release.apk_sha256 -eq $productSha -and $durable.observations.release.signing_certificate_sha256 -eq $cert) 'Durable release projection mismatch.'
     Assert-True ([long]$durable.observations.harness.run_id -eq $runId -and [long]$durable.observations.harness.artifact_id -eq $artifactId -and $durable.observations.harness.artifact_name -eq "e3-harness-$tag") 'Durable harness run/artifact projection mismatch.'
     Assert-True ($durable.observations.harness.source_commit -eq $source -and $durable.observations.harness.artifact_zip_sha256 -eq $zipSha -and $durable.observations.harness.test_apk_sha256 -eq $testSha -and $durable.observations.harness.signing_certificate_sha256 -eq $cert) 'Durable harness digest/signing projection mismatch.'
     Assert-True ($durable.observations.harness.instrumentation_class -eq 'com.mobileproxymish.app.cellular.CellularE3InstrumentedTest' -and $durable.observations.harness.instrumentation_component -eq 'com.mobileproxymish.app.test/androidx.test.runner.AndroidJUnitRunner') 'Durable instrumentation identity mismatch.'
@@ -128,6 +141,11 @@ try {
     Remove-Item -LiteralPath $evidence -Force
     Invoke-LabctlChild @('evidence','collect','-InputPath',$tamperedReadiness,'-EvidencePath',$evidence) 2 | Out-Null
     Assert-True (-not (Test-Path -LiteralPath $evidence)) 'Escalating readiness receipt must not emit durable PASS evidence.'
+
+    $e3Module=Get-Content -Raw -LiteralPath $e3ModulePath
+    Assert-True ($e3Module.Contains("`$abi.StdOut.Trim() -ne `$r.abi")) 'E3 execute must compare device ABI with the exact verified RC ABI.'
+    Assert-True ($e3Module.Contains('E3 device ABI must match the exact verified RC ABI.')) 'E3 ABI failure must be typed against verified RC identity.'
+    Assert-True (-not $e3Module.Contains('E3 device must be arm64-v8a.')) 'E3 must not retain an independent arm64-only device owner.'
 
     $workflowPath=Join-Path (Split-Path $PSScriptRoot -Parent | Split-Path -Parent) '.github/workflows/e3-physical-cellular.yml'
     $workflow=Get-Content -Raw -LiteralPath $workflowPath
