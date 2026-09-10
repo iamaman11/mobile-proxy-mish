@@ -1,0 +1,88 @@
+name: LABCTL Physical Release Consumer
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: labctl-physical-release-consumer
+  cancel-in-progress: false
+
+jobs:
+  physical-release-consumer:
+    name: LABCTL Physical Release Consumer
+    if: ${{ github.ref == 'refs/heads/main' && github.ref_protected == true }}
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 20
+    env:
+      LAB_POWERSHELL_EXE: C:\mish-lab\tools\powershell-7.6.6\pwsh.exe
+      RC_TAG: v0.1.0-rc.1
+      RC_SOURCE: 4542c1e2a16f3ac93f52ecb2464c2cfc0cafb3c0
+      RC_APK_SHA256: 26d7faa5e5f4f788c9c15fe53aaeac24ebd3a7241881e570887eec102304334e
+      RC_SIGNING_CERT_SHA256: 1958d474069ce0f8b8e5390c9c4ebecd6e306fb4e0f0f6e12d35c9b91cc67803
+    steps:
+      - name: Checkout accepted main labctl
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          clean: true
+
+      - name: Verify physical host identity
+        shell: cmd
+        run: |
+          if not exist "%LAB_POWERSHELL_EXE%" (
+            echo Accepted LAB-owned PowerShell is missing.
+            exit /b 2
+          )
+          "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".\lab\windows\labctl.ps1" host inspect -PhysicalLab
+          exit /b %ERRORLEVEL%
+
+      - name: Resolve exact accepted RC
+        shell: cmd
+        run: |
+          if not exist "%RUNNER_TEMP%\mish-labctl-physical" mkdir "%RUNNER_TEMP%\mish-labctl-physical"
+          "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".\lab\windows\labctl.ps1" release resolve -Tag "%RC_TAG%" -ExpectedSourceCommit "%RC_SOURCE%" -ExpectedApkSha256 "%RC_APK_SHA256%" -ExpectedSigningCertificateSha256 "%RC_SIGNING_CERT_SHA256%" -Directory "%RUNNER_TEMP%\mish-labctl-physical" -ReceiptPath "%RUNNER_TEMP%\mish-labctl-physical\resolution.json"
+          exit /b %ERRORLEVEL%
+
+      - name: Verify exact downloaded RC bytes
+        shell: cmd
+        run: |
+          "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".\lab\windows\labctl.ps1" release verify -Tag "%RC_TAG%" -ExpectedSourceCommit "%RC_SOURCE%" -ExpectedApkSha256 "%RC_APK_SHA256%" -ExpectedSigningCertificateSha256 "%RC_SIGNING_CERT_SHA256%" -Directory "%RUNNER_TEMP%\mish-labctl-physical" -ReceiptPath "%RUNNER_TEMP%\mish-labctl-physical\verification.json"
+          exit /b %ERRORLEVEL%
+
+      - name: Prove PHONE-ON boundary
+        shell: cmd
+        run: |
+          "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".\lab\windows\labctl.ps1" android inspect -AdbPath "C:\mish-lab\tools\android-sdk\platform-tools\adb.exe" -RequireNoDevice -TimeoutSeconds 30
+          exit /b %ERRORLEVEL%
+
+      - name: Collect typed release-consumer evidence
+        shell: cmd
+        run: |
+          "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".\lab\windows\labctl.ps1" evidence collect -InputPath "%RUNNER_TEMP%\mish-labctl-physical\verification.json" -EvidencePath "%RUNNER_TEMP%\mish-labctl-release-consumer-evidence.json"
+          exit /b %ERRORLEVEL%
+
+      - name: Publish bounded summary
+        if: ${{ always() }}
+        shell: cmd
+        run: |
+          >>"%GITHUB_STEP_SUMMARY%" echo ### LAB-2 physical release consumer
+          >>"%GITHUB_STEP_SUMMARY%" echo - Main commit: `%GITHUB_SHA%`
+          >>"%GITHUB_STEP_SUMMARY%" echo - RC tag: `%RC_TAG%`
+          >>"%GITHUB_STEP_SUMMARY%" echo - RC source: `%RC_SOURCE%`
+          >>"%GITHUB_STEP_SUMMARY%" echo - RC APK SHA-256: `%RC_APK_SHA256%`
+          >>"%GITHUB_STEP_SUMMARY%" echo - Phone boundary: **device must be absent**
+          >>"%GITHUB_STEP_SUMMARY%" echo - Android build on physical runner: **NO**
+          >>"%GITHUB_STEP_SUMMARY%" echo - APK installation: **NO**
+          >>"%GITHUB_STEP_SUMMARY%" echo - This run does **not** claim E3, Mesh, proxy serving, or product READY.
+
+      - name: Upload typed LAB-2 evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: labctl-release-consumer-evidence
+          path: ${{ runner.temp }}\mish-labctl-release-consumer-evidence.json
+          if-no-files-found: error
+          retention-days: 30
