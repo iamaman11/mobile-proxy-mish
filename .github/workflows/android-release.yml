@@ -7,6 +7,7 @@ on:
       - 'scripts/release/**'
       - 'android/app/build.gradle.kts'
       - 'android/build.gradle.kts'
+      - 'android/gradle.properties'
       - 'rust-toolchain.toml'
       - 'vendor/sing-box/release.toml'
   push:
@@ -50,6 +51,7 @@ jobs:
           grep -Fq 'buildToolsVersion = "36.0.0"' android/app/build.gradle.kts
           grep -Fq 'ndkVersion = "29.0.14206865"' android/app/build.gradle.kts
           grep -Fq 'testBuildType = if (releaseSigningRequested) "release" else "debug"' android/app/build.gradle.kts
+          grep -Eq '^mishTargetAbi=(armeabi-v7a|arm64-v8a)$' android/gradle.properties
           grep -Fq 'channel = "1.98.1"' rust-toolchain.toml
 
   harness-signing-contract:
@@ -72,14 +74,22 @@ jobs:
         with:
           gradle-version: '9.6.0'
 
-      - name: Install pinned Rust Android tooling
+      - name: Install pinned Rust Android tooling for target ABI
         shell: bash
         run: |
           set -euo pipefail
+          TARGET_ABI="$(sed -n 's/^mishTargetAbi=//p' android/gradle.properties)"
+          case "$TARGET_ABI" in
+            armeabi-v7a) RUST_TARGET='armv7-linux-androideabi' ;;
+            arm64-v8a) RUST_TARGET='aarch64-linux-android' ;;
+            *) echo "Unsupported mishTargetAbi: $TARGET_ABI" >&2; exit 1 ;;
+          esac
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
           rustup override set "$RUST_TOOLCHAIN"
-          rustup target add aarch64-linux-android
+          rustup target add "$RUST_TARGET"
           cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
+          echo "MISH_TARGET_ABI=$TARGET_ABI" >> "$GITHUB_ENV"
+          echo "MISH_RUST_TARGET=$RUST_TARGET" >> "$GITHUB_ENV"
 
       - name: Install pinned Android test tooling
         shell: bash
@@ -119,7 +129,7 @@ jobs:
           echo 'MISH_RELEASE_VERSION_NAME=0.1.0' >> "$GITHUB_ENV"
           echo 'MISH_RELEASE_VERSION_CODE=1000003' >> "$GITHUB_ENV"
 
-      - name: Prove release variant, unit tests, and same-certificate E3 harness
+      - name: Prove release variant, unit tests, target ABI, and same-certificate E3 harness
         shell: bash
         run: |
           set -euo pipefail
@@ -133,6 +143,8 @@ jobs:
           mapfile -t TEST_APKS < <(find android/app/build/outputs/apk/androidTest -type f -name '*-androidTest.apk' -print)
           [[ "${#TEST_APKS[@]}" -eq 1 ]]
           TEST_APK="${TEST_APKS[0]}"
+          unzip -l "$PRODUCT_APK" | grep -Fq "lib/$MISH_TARGET_ABI/libmish_android_ffi.so"
+          unzip -l "$PRODUCT_APK" | grep -Fq "lib/$MISH_TARGET_ABI/libjnidispatch.so"
 
           SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:?Android SDK root is not configured}}"
           APKSIGNER="$SDK_ROOT/build-tools/$ANDROID_BUILD_TOOLS/apksigner"
@@ -433,14 +445,22 @@ jobs:
         with:
           gradle-version: '9.6.0'
 
-      - name: Install pinned Rust Android tooling
+      - name: Install pinned Rust Android tooling for target ABI
         shell: bash
         run: |
           set -euo pipefail
+          TARGET_ABI="$(sed -n 's/^mishTargetAbi=//p' android/gradle.properties)"
+          case "$TARGET_ABI" in
+            armeabi-v7a) RUST_TARGET='armv7-linux-androideabi' ;;
+            arm64-v8a) RUST_TARGET='aarch64-linux-android' ;;
+            *) echo "Unsupported mishTargetAbi: $TARGET_ABI" >&2; exit 1 ;;
+          esac
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
           rustup override set "$RUST_TOOLCHAIN"
-          rustup target add aarch64-linux-android
+          rustup target add "$RUST_TARGET"
           cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
+          echo "MISH_TARGET_ABI=$TARGET_ABI" >> "$GITHUB_ENV"
+          echo "MISH_RUST_TARGET=$RUST_TARGET" >> "$GITHUB_ENV"
 
       - name: Install pinned Android release tooling
         shell: bash
@@ -509,6 +529,8 @@ jobs:
           mapfile -t TEST_APKS < <(find android/app/build/outputs/apk/androidTest -type f -name '*-androidTest.apk' -print)
           [[ "${#TEST_APKS[@]}" -eq 1 ]]
           BUILT_TEST_APK="${TEST_APKS[0]}"
+          unzip -l "$BUILT_APK" | grep -Fq "lib/$MISH_TARGET_ABI/libmish_android_ffi.so"
+          unzip -l "$BUILT_APK" | grep -Fq "lib/$MISH_TARGET_ABI/libjnidispatch.so"
 
           PRODUCT_CERTS="$RUNNER_TEMP/product-apk-certs.txt"
           TEST_CERTS="$RUNNER_TEMP/test-apk-certs.txt"
@@ -649,6 +671,7 @@ jobs:
             echo '### Android RC + E3 harness'
             echo "- RC tag: \`$RC_TAG\`"
             echo "- Source: \`$SOURCE_SHA\`"
+            echo "- Product ABI: \`$MISH_TARGET_ABI\`"
             echo "- Product signing cert SHA-256: \`${{ steps.artifact.outputs.product_cert_sha256 }}\`"
             echo '- Authorization: **one zero-input main dispatch; tag transition is machine-owned**'
             echo '- Protected release execution: **automatic tag-scoped workflow_dispatch**'

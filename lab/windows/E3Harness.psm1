@@ -10,6 +10,7 @@ $script:TestClass = 'com.mobileproxymish.app.cellular.CellularE3InstrumentedTest
 $script:TestComponent = 'com.mobileproxymish.app.test/androidx.test.runner.AndroidJUnitRunner'
 $script:Hex40Pattern = '^[0-9a-f]{40}$'
 $script:Hex64Pattern = '^[0-9a-f]{64}$'
+$script:SupportedAndroidAbis = @('armeabi-v7a', 'arm64-v8a')
 
 function Stop-E3 {
     param([Parameter(Mandatory)][string]$Category, [Parameter(Mandatory)][string]$Message)
@@ -27,7 +28,7 @@ function Read-E3Json {
 }
 
 function Write-E3Json {
-    param([Parameter(Mandatory)]$Value, [Parameter(Mandatory)][string]$Path)
+    param([Parameter(Mandatory)]$Value,[Parameter(Mandatory)][string]$Path)
     $full = [IO.Path]::GetFullPath($Path)
     $parent = Split-Path -Parent $full
     if ($parent) { [IO.Directory]::CreateDirectory($parent) | Out-Null }
@@ -60,15 +61,17 @@ function Assert-ReleaseReceipt {
     }
     $tag = [string]$Receipt.tag
     $source = [string]$Receipt.source_commit
+    $abi = [string]$Receipt.abi
     $productSha = [string]$Receipt.apk.sha256
     $cert = [string]$Receipt.apk.signing_certificate_sha256
     Assert-E3Hex40 $source 'ReleaseSource'
+    if (-not ($script:SupportedAndroidAbis -contains $abi)) { Stop-E3 'IDENTITY_MISMATCH' 'Verified release Android ABI is unsupported.' }
     Assert-E3Hex64 $productSha 'ProductSha256'
     Assert-E3Hex64 $cert 'SigningCertificateSha256'
     if ((Get-E3Sha256 ([string]$Receipt.apk.path)) -ne $productSha) {
         Stop-E3 'DIGEST_MISMATCH' 'Verified product APK bytes changed after release verification.'
     }
-    return [pscustomobject]@{ tag=$tag; source=$source; product_sha256=$productSha; cert=$cert; product_path=[IO.Path]::GetFullPath([string]$Receipt.apk.path); product_name=[string]$Receipt.apk.name }
+    return [pscustomobject]@{ tag=$tag; source=$source; abi=$abi; product_sha256=$productSha; cert=$cert; product_path=[IO.Path]::GetFullPath([string]$Receipt.apk.path); product_name=[string]$Receipt.apk.name }
 }
 
 function Invoke-E3GitHubJson {
@@ -145,7 +148,7 @@ function Invoke-E3HarnessVerify {
 
     $receipt = [ordered]@{
         schema=$script:HarnessVerificationSchema; result='PASS'; repository=$script:Repository
-        rc_tag=$r.tag; source_commit=$r.source; signing_certificate_sha256=$r.cert
+        rc_tag=$r.tag; source_commit=$r.source; product_abi=$r.abi; signing_certificate_sha256=$r.cert
         run=[ordered]@{ id=$HarnessRunId; workflow='Android Release Candidate'; event='workflow_dispatch'; actor='github-actions[bot]' }
         artifact=[ordered]@{ id=$HarnessArtifactId; name=$artifactName; zip_sha256=$ExpectedHarnessZipSha256 }
         product_apk=[ordered]@{ name=$r.product_name; sha256=$r.product_sha256; path=$r.product_path }
@@ -154,7 +157,7 @@ function Invoke-E3HarnessVerify {
         verified_at_utc=[DateTimeOffset]::UtcNow.ToString('o')
     }
     $written = Write-E3Json $receipt $ReceiptPath
-    return [pscustomobject]@{ result='PASS'; rc_tag=$r.tag; run_id=$HarnessRunId; artifact_id=$HarnessArtifactId; test_apk_sha256=$testSha; receipt=$written }
+    return [pscustomobject]@{ result='PASS'; rc_tag=$r.tag; product_abi=$r.abi; run_id=$HarnessRunId; artifact_id=$HarnessArtifactId; test_apk_sha256=$testSha; receipt=$written }
 }
 
 function Invoke-E3Readiness {
@@ -169,7 +172,7 @@ function Invoke-E3Readiness {
     $r = Assert-ReleaseReceipt $release
     $h = Read-E3Json $HarnessVerificationReceipt
     if ([string]$h.schema -ne $script:HarnessVerificationSchema -or [string]$h.result -ne 'PASS' -or
-        [string]$h.rc_tag -ne $r.tag -or [string]$h.source_commit -ne $r.source -or
+        [string]$h.rc_tag -ne $r.tag -or [string]$h.source_commit -ne $r.source -or [string]$h.product_abi -ne $r.abi -or
         [string]$h.signing_certificate_sha256 -ne $r.cert -or [string]$h.product_apk.sha256 -ne $r.product_sha256 -or
         (Get-E3Sha256 ([string]$h.test_apk.path)) -ne [string]$h.test_apk.sha256) {
         Stop-E3 'VERIFICATION_REQUIRED' 'A matching PASS E3 harness verification receipt is required.'
@@ -182,7 +185,7 @@ function Invoke-E3Readiness {
         schema=$script:ReadinessSchema; result='PASS'; repository=$script:Repository
         git_ref=[string]$env:GITHUB_REF; git_commit=[string]$env:GITHUB_SHA; run_id=[string]$env:GITHUB_RUN_ID
         boundary='PHONE-ON READY'; phone_on_ready=$true; e3_pass=$false
-        release=[ordered]@{ tag=$r.tag; source_commit=$r.source; apk_sha256=$r.product_sha256; signing_certificate_sha256=$r.cert }
+        release=[ordered]@{ tag=$r.tag; source_commit=$r.source; abi=$r.abi; apk_sha256=$r.product_sha256; signing_certificate_sha256=$r.cert }
         harness=[ordered]@{ run_id=[long]$h.run.id; artifact_id=[long]$h.artifact.id; artifact_name=[string]$h.artifact.name; artifact_zip_sha256=[string]$h.artifact.zip_sha256; test_apk_sha256=[string]$h.test_apk.sha256; signing_certificate_sha256=[string]$h.signing_certificate_sha256; instrumentation_class=[string]$h.instrumentation.class; instrumentation_component=[string]$h.instrumentation.component }
         android=[ordered]@{ device_count=0; device_absent=$true }
         completed_at_utc=[DateTimeOffset]::UtcNow.ToString('o')
@@ -226,7 +229,7 @@ function Invoke-E3FullRootToggle {
     if ($E3Host -notmatch '^[A-Za-z0-9.-]+$' -or $E3Path -notmatch '^/[A-Za-z0-9._~/%-]*$') { Stop-E3 'INPUT_INVALID' 'E3 endpoint identity is invalid.' }
     $release=Read-E3Json $ReleaseVerificationReceipt; $r=Assert-ReleaseReceipt $release
     $h=Read-E3Json $HarnessVerificationReceipt
-    if ([string]$h.schema -ne $script:HarnessVerificationSchema -or [string]$h.result -ne 'PASS' -or [string]$h.rc_tag -ne $r.tag -or [string]$h.source_commit -ne $r.source -or [string]$h.signing_certificate_sha256 -ne $r.cert) { Stop-E3 'VERIFICATION_REQUIRED' 'Matching E3 harness verification is required.' }
+    if ([string]$h.schema -ne $script:HarnessVerificationSchema -or [string]$h.result -ne 'PASS' -or [string]$h.rc_tag -ne $r.tag -or [string]$h.source_commit -ne $r.source -or [string]$h.product_abi -ne $r.abi -or [string]$h.signing_certificate_sha256 -ne $r.cert) { Stop-E3 'VERIFICATION_REQUIRED' 'Matching E3 harness verification is required.' }
     if ((Get-E3Sha256 ([string]$h.test_apk.path)) -ne [string]$h.test_apk.sha256) { Stop-E3 'DIGEST_MISMATCH' 'Verified E3 test APK bytes changed before execution.' }
     $adb=Resolve-E3Executable $AdbPath
     $devices=Invoke-E3Process $adb @('devices') $TimeoutSeconds
@@ -235,7 +238,7 @@ function Invoke-E3FullRootToggle {
     if($rows.Count -ne 1){ Stop-E3 'DEVICE_COUNT_INVALID' 'Full E3 requires exactly one authorized Android device.' }
     $serial=($rows[0] -split '\s+')[0]
     $abi=Invoke-E3Process $adb @('-s',$serial,'shell','getprop','ro.product.cpu.abi') $TimeoutSeconds
-    if($abi.ExitCode -ne 0 -or $abi.StdOut.Trim() -ne 'arm64-v8a'){ Stop-E3 'DEVICE_INVALID' 'E3 device must be arm64-v8a.' }
+    if($abi.ExitCode -ne 0 -or $abi.StdOut.Trim() -ne $r.abi){ Stop-E3 'DEVICE_INVALID' 'E3 device ABI must match the exact verified RC ABI.' }
     $root=Invoke-E3Process $adb @('-s',$serial,'shell','su','-c','id') $TimeoutSeconds
     if($root.ExitCode -ne 0 -or $root.StdOut -notmatch 'uid=0'){ Stop-E3 'ROOT_REQUIRED' 'E3 full-root-toggle requires root.' }
 
@@ -251,7 +254,7 @@ function Invoke-E3FullRootToggle {
     }
     try { Set-MobileData 'enable'; Run-E3Case 'positive'; Set-MobileData 'disable'; Run-E3Case 'negative'; Set-MobileData 'enable'; Run-E3Case 'positive' }
     finally { try { [void](Invoke-E3Process $adb @('-s',$serial,'shell','su','-c','svc data enable') $TimeoutSeconds) } catch {} }
-    return [pscustomobject]@{ result='PASS'; scenario='full-root-toggle'; e3_pass=$true; rc_tag=$r.tag; source_commit=$r.source; test_apk_sha256=[string]$h.test_apk.sha256 }
+    return [pscustomobject]@{ result='PASS'; scenario='full-root-toggle'; e3_pass=$true; rc_tag=$r.tag; source_commit=$r.source; product_abi=$r.abi; test_apk_sha256=[string]$h.test_apk.sha256 }
 }
 
 function Invoke-E3Domain {

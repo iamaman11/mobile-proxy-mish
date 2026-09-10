@@ -4,6 +4,11 @@ release_tag = "v1.14.0"
 license = "GPL-3.0-or-later"
 license_note = "Upstream LICENSE also restricts derivative works from using the application name or implying association without consent."
 
+[android_arm]
+asset = "sing-box-1.14.0-android-arm.tar.gz"
+url = "https://github.com/SagerNet/sing-box/releases/download/v1.14.0/sing-box-1.14.0-android-arm.tar.gz"
+sha256 = "b345438adfd1ee52da0594af4c14c459b0300485f42dd0aec18429ae12b2dc34"
+
 [android_arm64]
 asset = "sing-box-1.14.0-android-arm64.tar.gz"
 url = "https://github.com/SagerNet/sing-box/releases/download/v1.14.0/sing-box-1.14.0-android-arm64.tar.gz"

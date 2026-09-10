@@ -20,6 +20,12 @@ val generatedJniLibsPath = layout.buildDirectory
     .asFile
     .absolutePath
 
+val targetAbi = providers.gradleProperty("mishTargetAbi").orNull
+    ?: throw GradleException("mishTargetAbi must be defined in android/gradle.properties.")
+if (targetAbi !in setOf("armeabi-v7a", "arm64-v8a")) {
+    throw GradleException("mishTargetAbi must be one of the explicitly supported Android ABIs.")
+}
+
 val releaseVersionName = providers.environmentVariable("MISH_RELEASE_VERSION_NAME").orNull
 val releaseVersionCode = providers.environmentVariable("MISH_RELEASE_VERSION_CODE").orNull?.let { raw ->
     raw.toIntOrNull()?.takeIf { it in 1..2_100_000_000 }
@@ -101,7 +107,7 @@ val buildAndroidUniFfi = tasks.register<Exec>("buildAndroidUniFfi") {
         "-P",
         "23",
         "-t",
-        "arm64-v8a",
+        targetAbi,
         "-o",
         generatedJniLibsPath,
         "build",
@@ -132,7 +138,7 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
-            abiFilters += "arm64-v8a"
+            abiFilters += targetAbi
         }
     }
 

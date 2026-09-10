@@ -10,6 +10,7 @@ $script:E3ReadinessSchema = 'mish.lab.e3-readiness/v1'
 $script:RcTagPattern = '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-rc\.([1-9]\d*)$'
 $script:Hex40Pattern = '^[0-9a-f]{40}$'
 $script:Hex64Pattern = '^[0-9a-f]{64}$'
+$script:SupportedAndroidAbis = @('armeabi-v7a', 'arm64-v8a')
 
 function Stop-Labctl {
     param(
@@ -189,7 +190,8 @@ function Assert-ManifestTuple {
     if ([string]$Manifest.product.source_commit -ne $ExpectedSourceCommit) {
         Stop-Labctl 'IDENTITY_MISMATCH' 'Manifest source commit does not match the authorized source commit.'
     }
-    if ([string]$Manifest.product.abi -ne 'arm64-v8a' -or [string]$Manifest.product.build_mode -ne 'release') {
+    $productAbi = [string]$Manifest.product.abi
+    if (-not ($script:SupportedAndroidAbis -contains $productAbi) -or [string]$Manifest.product.build_mode -ne 'release') {
         Stop-Labctl 'IDENTITY_MISMATCH' 'Manifest Android ABI/build mode is not the releasable product contract.'
     }
     if ([string]$Manifest.artifact.name -ne $ExpectedApkName) {
@@ -201,6 +203,7 @@ function Assert-ManifestTuple {
     if ([string]$Manifest.artifact.signing_certificate_sha256 -ne $ExpectedSigningCertificateSha256) {
         Stop-Labctl 'SIGNING_IDENTITY_MISMATCH' 'Manifest signing certificate does not match the authorized signing identity.'
     }
+    return $productAbi
 }
 
 function Resolve-Executable {
@@ -305,7 +308,7 @@ function Invoke-ReleaseResolve {
     $manifestPath = Join-Path $outputDirectory $manifestName
     Invoke-ArtifactDownload ([string]$manifestAsset.browser_download_url) $manifestPath
     $manifest = Read-LabJson $manifestPath
-    Assert-ManifestTuple $manifest $Tag $ExpectedSourceCommit $ExpectedApkSha256 $ExpectedSigningCertificateSha256 $apkName
+    $productAbi = Assert-ManifestTuple $manifest $Tag $ExpectedSourceCommit $ExpectedApkSha256 $ExpectedSigningCertificateSha256 $apkName
 
     Invoke-ArtifactDownload ([string]$apkAsset.browser_download_url) $apkPath
     $actualDigest = Get-FileSha256 $apkPath
@@ -321,6 +324,7 @@ function Invoke-ReleaseResolve {
         tag = $Tag
         tag_commit = $tagCommit
         source_commit = $ExpectedSourceCommit
+        abi = $productAbi
         apk = [ordered]@{
             name = $apkName
             sha256 = $ExpectedApkSha256
@@ -334,7 +338,7 @@ function Invoke-ReleaseResolve {
         resolved_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
     }
     $written = Write-LabJson $receipt $ReceiptPath
-    return [pscustomobject]@{ result = 'PASS'; tag = $Tag; source_commit = $tagCommit; apk_sha256 = $ExpectedApkSha256; receipt = $written }
+    return [pscustomobject]@{ result = 'PASS'; tag = $Tag; source_commit = $tagCommit; abi = $productAbi; apk_sha256 = $ExpectedApkSha256; receipt = $written }
 }
 
 function Invoke-ReleaseVerify {
@@ -356,7 +360,7 @@ function Invoke-ReleaseVerify {
     $apkPath = Join-Path ([IO.Path]::GetFullPath($Directory)) $apkName
     $manifestPath = Join-Path ([IO.Path]::GetFullPath($Directory)) $manifestName
     $manifest = Read-LabJson $manifestPath
-    Assert-ManifestTuple $manifest $Tag $ExpectedSourceCommit $ExpectedApkSha256 $ExpectedSigningCertificateSha256 $apkName
+    $productAbi = Assert-ManifestTuple $manifest $Tag $ExpectedSourceCommit $ExpectedApkSha256 $ExpectedSigningCertificateSha256 $apkName
     $actualDigest = Get-FileSha256 $apkPath
     if ($actualDigest -ne $ExpectedApkSha256) {
         Stop-Labctl 'DIGEST_MISMATCH' 'Local APK SHA-256 does not match the authorized digest.'
@@ -368,6 +372,7 @@ function Invoke-ReleaseVerify {
         repository = $script:Repository
         tag = $Tag
         source_commit = $ExpectedSourceCommit
+        abi = $productAbi
         apk = [ordered]@{
             name = $apkName
             sha256 = $ExpectedApkSha256
@@ -377,7 +382,7 @@ function Invoke-ReleaseVerify {
         verified_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
     }
     $written = Write-LabJson $receipt $ReceiptPath
-    return [pscustomobject]@{ result = 'PASS'; tag = $Tag; apk_sha256 = $ExpectedApkSha256; receipt = $written }
+    return [pscustomobject]@{ result = 'PASS'; tag = $Tag; abi = $productAbi; apk_sha256 = $ExpectedApkSha256; receipt = $written }
 }
 
 function Assert-VerificationReceipt {
@@ -393,6 +398,9 @@ function Assert-VerificationReceipt {
     }
     if ([string]$Receipt.repository -ne $script:Repository -or [string]$Receipt.tag -ne $Tag -or [string]$Receipt.source_commit -ne $ExpectedSourceCommit) {
         Stop-Labctl 'IDENTITY_MISMATCH' 'Verification receipt identity does not match the authorized release.'
+    }
+    if (-not ($script:SupportedAndroidAbis -contains [string]$Receipt.abi)) {
+        Stop-Labctl 'IDENTITY_MISMATCH' 'Verification receipt Android ABI is unsupported.'
     }
     if ([string]$Receipt.apk.sha256 -ne $ExpectedApkSha256 -or [string]$Receipt.apk.signing_certificate_sha256 -ne $ExpectedSigningCertificateSha256) {
         Stop-Labctl 'DIGEST_MISMATCH' 'Verification receipt artifact identity does not match the authorized release.'
@@ -455,6 +463,9 @@ function Invoke-EvidenceCollect {
         }
         $receiptDigest = [string]$receipt.apk.sha256
         Assert-Hex64 $receiptDigest 'VerificationReceiptApkSha256'
+        if (-not ($script:SupportedAndroidAbis -contains [string]$receipt.abi)) {
+            Stop-Labctl 'IDENTITY_MISMATCH' 'Release evidence receipt Android ABI is unsupported.'
+        }
         if ((Get-FileSha256 ([string]$receipt.apk.path)) -ne $receiptDigest) {
             Stop-Labctl 'DIGEST_MISMATCH' 'Verified APK bytes changed before evidence collection.'
         }
@@ -472,6 +483,7 @@ function Invoke-EvidenceCollect {
                 release = [ordered]@{
                     tag = [string]$receipt.tag
                     source_commit = [string]$receipt.source_commit
+                    abi = [string]$receipt.abi
                     apk_name = [string]$receipt.apk.name
                     apk_sha256 = $receiptDigest
                     signing_certificate_sha256 = [string]$receipt.apk.signing_certificate_sha256
@@ -496,10 +508,14 @@ function Invoke-EvidenceCollect {
 
         $tag = [string]$receipt.release.tag
         $source = [string]$receipt.release.source_commit
+        $releaseAbi = [string]$receipt.release.abi
         $productSha = [string]$receipt.release.apk_sha256
         $releaseCert = [string]$receipt.release.signing_certificate_sha256
         Assert-RcTag $tag
         Assert-Hex40 $source 'E3ReleaseSourceCommit'
+        if (-not ($script:SupportedAndroidAbis -contains $releaseAbi)) {
+            Stop-Labctl 'IDENTITY_MISMATCH' 'E3 release Android ABI is unsupported.'
+        }
         Assert-Hex64 $productSha 'E3ProductApkSha256'
         Assert-Hex64 $releaseCert 'E3ReleaseSigningCertificateSha256'
 
@@ -540,6 +556,7 @@ function Invoke-EvidenceCollect {
                 release = [ordered]@{
                     tag = $tag
                     source_commit = $source
+                    abi = $releaseAbi
                     apk_sha256 = $productSha
                     signing_certificate_sha256 = $releaseCert
                 }
