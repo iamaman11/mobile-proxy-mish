@@ -68,7 +68,7 @@ try {
     } | ConvertTo-Json -Depth 5),[Text.UTF8Encoding]::new($false))
 
     $harnessReceipt=Join-Path $temp 'harness-verification.json'
-    Invoke-LabctlChild @('e3','verify','-VerificationReceipt',$releaseReceipt,'-HarnessRunId',[string]$runId,'-HarnessArtifactId',[string]$artifactId,'-ExpectedHarnessZipSha256',$zipSha,'-HarnessDirectory',$harnessDir,'-RunMetadataPath',$runMetadata,'-ArtifactMetadataPath',$artifactMetadata,'-ReceiptPath',$harnessReceipt) 0 | Out-Null
+    Invoke-LabctlChild @('e3','verify','-VerificationReceipt',$releaseReceipt,'-HarnessRunId',[string]$runId,'-HarnessArtifactId',[string]$artifactId,'-ExpectedHarnessZipSha256',$zipSha,'-ExpectedTestApkSha256',$testSha,'-HarnessDirectory',$harnessDir,'-RunMetadataPath',$runMetadata,'-ArtifactMetadataPath',$artifactMetadata,'-ReceiptPath',$harnessReceipt) 0 | Out-Null
     $verified=Get-Content -Raw -LiteralPath $harnessReceipt | ConvertFrom-Json
     Assert-True ($verified.schema -eq 'mish.lab.e3-harness-verification/v1') 'Harness verification schema mismatch.'
     Assert-True ($verified.result -eq 'PASS') 'Harness verification did not PASS.'
@@ -76,12 +76,16 @@ try {
     Assert-True ([long]$verified.run.id -eq $runId) 'Harness run identity mismatch.'
 
     Remove-Item -LiteralPath $harnessReceipt -Force
+    $wrongTestSha='0' * 64
+    Invoke-LabctlChild @('e3','verify','-VerificationReceipt',$releaseReceipt,'-HarnessRunId',[string]$runId,'-HarnessArtifactId',[string]$artifactId,'-ExpectedHarnessZipSha256',$zipSha,'-ExpectedTestApkSha256',$wrongTestSha,'-HarnessDirectory',$harnessDir,'-RunMetadataPath',$runMetadata,'-ArtifactMetadataPath',$artifactMetadata,'-ReceiptPath',$harnessReceipt) 2 | Out-Null
+    Assert-True (-not (Test-Path -LiteralPath $harnessReceipt)) 'Mismatched accepted test digest must not emit PASS receipt.'
+
     [IO.File]::AppendAllText($testPath,'tamper')
-    Invoke-LabctlChild @('e3','verify','-VerificationReceipt',$releaseReceipt,'-HarnessRunId',[string]$runId,'-HarnessArtifactId',[string]$artifactId,'-ExpectedHarnessZipSha256',$zipSha,'-HarnessDirectory',$harnessDir,'-RunMetadataPath',$runMetadata,'-ArtifactMetadataPath',$artifactMetadata,'-ReceiptPath',$harnessReceipt) 2 | Out-Null
+    Invoke-LabctlChild @('e3','verify','-VerificationReceipt',$releaseReceipt,'-HarnessRunId',[string]$runId,'-HarnessArtifactId',[string]$artifactId,'-ExpectedHarnessZipSha256',$zipSha,'-ExpectedTestApkSha256',$testSha,'-HarnessDirectory',$harnessDir,'-RunMetadataPath',$runMetadata,'-ArtifactMetadataPath',$artifactMetadata,'-ReceiptPath',$harnessReceipt) 2 | Out-Null
     Assert-True (-not (Test-Path -LiteralPath $harnessReceipt)) 'Tampered harness must not emit PASS receipt.'
     [IO.File]::WriteAllBytes($testPath,[Text.Encoding]::UTF8.GetBytes('deterministic-test-fixture'))
 
-    Invoke-LabctlChild @('e3','verify','-VerificationReceipt',$releaseReceipt,'-HarnessRunId',[string]$runId,'-HarnessArtifactId',[string]$artifactId,'-ExpectedHarnessZipSha256',$zipSha,'-HarnessDirectory',$harnessDir,'-RunMetadataPath',$runMetadata,'-ArtifactMetadataPath',$artifactMetadata,'-ReceiptPath',$harnessReceipt) 0 | Out-Null
+    Invoke-LabctlChild @('e3','verify','-VerificationReceipt',$releaseReceipt,'-HarnessRunId',[string]$runId,'-HarnessArtifactId',[string]$artifactId,'-ExpectedHarnessZipSha256',$zipSha,'-ExpectedTestApkSha256',$testSha,'-HarnessDirectory',$harnessDir,'-RunMetadataPath',$runMetadata,'-ArtifactMetadataPath',$artifactMetadata,'-ReceiptPath',$harnessReceipt) 0 | Out-Null
 
     [Environment]::SetEnvironmentVariable('GITHUB_REPOSITORY','iamaman11/mobile-proxy-mish')
     [Environment]::SetEnvironmentVariable('GITHUB_REF','refs/heads/main')
@@ -140,6 +144,7 @@ try {
         '(?i)\bsdkmanager\b',
         '(?i)\bndk-build\b',
         '(?m)^\s*shell:\s*(pwsh|powershell)\s*$',
+        '(?i)\s-Command\s',
         '(?i)MISH_ANDROID_RELEASE_(KEYSTORE|STORE_PASSWORD|KEY_ALIAS|KEY_PASSWORD)',
         '(?i)CLOUDFLARE_API_TOKEN|R2_ACCESS_KEY|R2_SECRET|terraform\s+apply',
         '(?i)\blatest\b'
@@ -164,6 +169,7 @@ try {
         'HARNESS_TEST_APK_SHA256: 2d377cfce3f0827d6bc4efda313d6ebaeb6dac148303bb1eaff9a0b60c860c9c',
         'actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093',
         'artifact-ids: ${{ env.HARNESS_ARTIFACT_ID }}',
+        '-ExpectedTestApkSha256 "%HARNESS_TEST_APK_SHA256%"',
         '-HarnessDirectory "%RUNNER_TEMP%\mish-e3\harness\%HARNESS_ARTIFACT_NAME%"',
         'labctl.ps1" release resolve',
         'labctl.ps1" release verify',
