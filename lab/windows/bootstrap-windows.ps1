@@ -130,29 +130,29 @@ function Ensure-PortablePowerShell {
         [Parameter(Mandatory)][string]$TempRoot
     )
     $version = [version]([string]$Manifest.version)
-    $home = Join-Path $ToolsRoot ('powershell-' + $version.ToString())
-    $exe = Join-Path $home 'pwsh.exe'
+    $powerShellHome = Join-Path $ToolsRoot ('powershell-' + $version.ToString())
+    $exe = Join-Path $powerShellHome 'pwsh.exe'
 
     if (Test-PortablePowerShellCapability -Executable $exe -ExpectedVersion $version) {
         Write-Host "Portable PowerShell $version already satisfies the LAB-1 service-visible requirement."
-        Add-MachinePath -PathEntry $home
+        Add-MachinePath -PathEntry $powerShellHome
         return $exe
     }
 
-    if (Test-Path -LiteralPath $home) {
-        Remove-Item -Recurse -Force -LiteralPath $home
+    if (Test-Path -LiteralPath $powerShellHome) {
+        Remove-Item -Recurse -Force -LiteralPath $powerShellHome
     }
-    New-Item -ItemType Directory -Force -Path $home | Out-Null
+    New-Item -ItemType Directory -Force -Path $powerShellHome | Out-Null
 
     $archive = Join-Path $TempRoot ([string]$Manifest.asset)
     Get-RemoteFile -Uri ([string]$Manifest.url) -OutFile $archive -Sha256 ([string]$Manifest.sha256)
-    Expand-Archive -LiteralPath $archive -DestinationPath $home -Force
+    Expand-Archive -LiteralPath $archive -DestinationPath $powerShellHome -Force
 
     if (-not (Test-PortablePowerShellCapability -Executable $exe -ExpectedVersion $version)) {
         throw "Pinned portable PowerShell $version did not satisfy its exact execution postcondition."
     }
 
-    Add-MachinePath -PathEntry $home
+    Add-MachinePath -PathEntry $powerShellHome
     Write-Host "Pinned portable PowerShell $version materialized for LAB-1 service execution."
     return $exe
 }
