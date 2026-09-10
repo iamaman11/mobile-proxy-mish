@@ -129,3 +129,8 @@ try {
 finally {
     Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+# Expected negative child cases set LASTEXITCODE; do not let that leak into the
+# test-harness process result after all assertions have passed.
+$global:LASTEXITCODE = 0
+exit 0
