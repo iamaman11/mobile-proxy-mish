@@ -90,6 +90,7 @@ function Invoke-E3HarnessVerify {
         [Parameter(Mandatory)][long]$HarnessRunId,
         [Parameter(Mandatory)][long]$HarnessArtifactId,
         [Parameter(Mandatory)][string]$ExpectedHarnessZipSha256,
+        [Parameter(Mandatory)][string]$ExpectedTestApkSha256,
         [Parameter(Mandatory)][string]$HarnessDirectory,
         [Parameter(Mandatory)][string]$ReceiptPath,
         [string]$RunMetadataPath,
@@ -97,6 +98,7 @@ function Invoke-E3HarnessVerify {
     )
     if ($HarnessRunId -le 0 -or $HarnessArtifactId -le 0) { Stop-E3 'INPUT_INVALID' 'Harness run/artifact IDs must be positive.' }
     Assert-E3Hex64 $ExpectedHarnessZipSha256 'HarnessZipSha256'
+    Assert-E3Hex64 $ExpectedTestApkSha256 'ExpectedTestApkSha256'
     $release = Read-E3Json $ReleaseVerificationReceipt
     $r = Assert-ReleaseReceipt $release
 
@@ -137,7 +139,9 @@ function Invoke-E3HarnessVerify {
     }
     $testSha = [string]$manifest.test_apk.sha256
     Assert-E3Hex64 $testSha 'TestApkSha256'
-    if ((Get-E3Sha256 $testPath) -ne $testSha) { Stop-E3 'DIGEST_MISMATCH' 'E3 test APK digest mismatch.' }
+    if ($testSha -ne $ExpectedTestApkSha256 -or (Get-E3Sha256 $testPath) -ne $ExpectedTestApkSha256) {
+        Stop-E3 'DIGEST_MISMATCH' 'E3 test APK digest does not match the exact accepted test digest.'
+    }
 
     $receipt = [ordered]@{
         schema=$script:HarnessVerificationSchema; result='PASS'; repository=$script:Repository
@@ -259,6 +263,7 @@ function Invoke-E3Domain {
         [long]$HarnessRunId,
         [long]$HarnessArtifactId,
         [string]$ExpectedHarnessZipSha256,
+        [string]$ExpectedTestApkSha256,
         [string]$HarnessDirectory,
         [string]$ReceiptPath,
         [string]$RunMetadataPath,
@@ -272,7 +277,18 @@ function Invoke-E3Domain {
         [ValidateRange(1,3600)][int]$TimeoutSeconds=180
     )
     switch($Action){
-        'verify' { return Invoke-E3HarnessVerify $ReleaseVerificationReceipt $HarnessRunId $HarnessArtifactId $ExpectedHarnessZipSha256 $HarnessDirectory $ReceiptPath $RunMetadataPath $ArtifactMetadataPath }
+        'verify' {
+            return Invoke-E3HarnessVerify `
+                -ReleaseVerificationReceipt $ReleaseVerificationReceipt `
+                -HarnessRunId $HarnessRunId `
+                -HarnessArtifactId $HarnessArtifactId `
+                -ExpectedHarnessZipSha256 $ExpectedHarnessZipSha256 `
+                -ExpectedTestApkSha256 $ExpectedTestApkSha256 `
+                -HarnessDirectory $HarnessDirectory `
+                -ReceiptPath $ReceiptPath `
+                -RunMetadataPath $RunMetadataPath `
+                -ArtifactMetadataPath $ArtifactMetadataPath
+        }
         'ready' { return Invoke-E3Readiness $ReleaseVerificationReceipt $HarnessVerificationReceipt $AndroidObservationPath $EvidencePath }
         'execute' { return Invoke-E3FullRootToggle $ReleaseVerificationReceipt $HarnessVerificationReceipt $AdbPath $E3Host $E3Port $E3Path $TimeoutSeconds }
     }
