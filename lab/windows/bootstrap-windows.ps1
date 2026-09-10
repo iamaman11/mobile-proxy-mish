@@ -6,7 +6,8 @@ param(
     [ValidatePattern('^[A-Za-z0-9._-]{0,64}$')]
     [string]$RunnerName = '',
     [string]$RunnerTokenProviderExecutable = '',
-    [string]$RunnerTokenProviderArgumentsJson = ''
+    [string]$RunnerTokenProviderArgumentsJson = '',
+    [switch]$SelfTest
 )
 
 $ErrorActionPreference = 'Stop'
@@ -48,16 +49,6 @@ function Get-RemoteFile {
     }
 }
 
-function Install-WingetPackage {
-    param([Parameter(Mandatory)][string]$Id)
-    $winget = Get-Command winget.exe -ErrorAction Stop
-    & $winget.Source install --id $Id --exact --silent --scope machine `
-        --accept-package-agreements --accept-source-agreements --disable-interactivity
-    if ($LASTEXITCODE -ne 0) {
-        throw "winget failed to install $Id."
-    }
-}
-
 function Add-MachinePath {
     param([Parameter(Mandatory)][string]$PathEntry)
     $current = [Environment]::GetEnvironmentVariable('Path', 'Machine')
@@ -80,6 +71,148 @@ function Refresh-ProcessPath {
     $machine = [Environment]::GetEnvironmentVariable('Path', 'Machine')
     $user = [Environment]::GetEnvironmentVariable('Path', 'User')
     $env:Path = "$machine;$user"
+}
+
+function Format-NativeExitCode {
+    param([Parameter(Mandatory)][int]$ExitCode)
+    $unsigned = [BitConverter]::ToUInt32([BitConverter]::GetBytes($ExitCode), 0)
+    return ('0x{0:X8}' -f $unsigned)
+}
+
+function Test-GitCapability {
+    param([Parameter(Mandatory)][version]$MinimumVersion)
+    $command = Get-Command git.exe -ErrorAction SilentlyContinue
+    if (-not $command) { return $false }
+    $text = (& $command.Source --version 2>$null | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0) { return $false }
+    $match = [regex]::Match($text, '\b([0-9]+\.[0-9]+(?:\.[0-9]+)?)\b')
+    if (-not $match.Success) { return $false }
+    try { return ([version]$match.Groups[1].Value -ge $MinimumVersion) }
+    catch { return $false }
+}
+
+function Test-PowerShellCapability {
+    param([Parameter(Mandatory)][version]$MinimumVersion)
+    $command = Get-Command pwsh.exe -ErrorAction SilentlyContinue
+    if (-not $command) { return $false }
+    $text = (& $command.Source -NoLogo -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion.ToString()' 2>$null | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or -not $text) { return $false }
+    try { return ([version]$text -ge $MinimumVersion) }
+    catch { return $false }
+}
+
+function Get-JdkPath {
+    param([Parameter(Mandatory)][int]$Major)
+    $root = 'C:\Program Files\Eclipse Adoptium'
+    if (-not (Test-Path -LiteralPath $root -PathType Container)) { return $null }
+    foreach ($candidate in @(Get-ChildItem $root -Directory -Filter "jdk-$Major*" -ErrorAction SilentlyContinue | Sort-Object Name -Descending)) {
+        $java = Join-Path $candidate.FullName 'bin\java.exe'
+        if (-not (Test-Path -LiteralPath $java -PathType Leaf)) { continue }
+        $text = (& $java -version 2>&1 | Out-String)
+        if ($LASTEXITCODE -eq 0 -and $text -match ('version\s+"' + [regex]::Escape([string]$Major) + '(?:\.|\")')) {
+            return $candidate.FullName
+        }
+    }
+    return $null
+}
+
+function Test-JavaCapability {
+    param([Parameter(Mandatory)][int]$Major)
+    return [bool](Get-JdkPath -Major $Major)
+}
+
+function Ensure-WingetPackage {
+    param(
+        [Parameter(Mandatory)][string]$Id,
+        [Parameter(Mandatory)][string]$CapabilityName,
+        [Parameter(Mandatory)][scriptblock]$ReadyScript,
+        [string]$WingetPath = ''
+    )
+
+    if (& $ReadyScript) {
+        Write-Host "$CapabilityName already satisfies the LAB-1 requirement; winget install skipped."
+        return
+    }
+
+    if (-not $WingetPath) {
+        $winget = Get-Command winget.exe -ErrorAction Stop
+        $WingetPath = $winget.Source
+    }
+
+    Write-Host "Materializing $CapabilityName through winget package $Id."
+    & $WingetPath install --id $Id --exact --silent --scope machine `
+        --accept-package-agreements --accept-source-agreements --disable-interactivity
+    $exitCode = [int]$LASTEXITCODE
+
+    # WinGet/installer exit status is transport evidence, not the installed-state owner.
+    # Refresh machine PATH and verify the actual capability before deciding success/failure.
+    Refresh-ProcessPath
+    if (& $ReadyScript) {
+        if ($exitCode -ne 0) {
+            Write-Host "winget returned $exitCode ($(Format-NativeExitCode -ExitCode $exitCode)) for $Id, but the required capability postcondition is satisfied; continuing."
+        }
+        return
+    }
+
+    $hex = Format-NativeExitCode -ExitCode $exitCode
+    throw "winget failed to materialize $CapabilityName ($Id): exit code $exitCode ($hex); required capability postcondition is not satisfied."
+}
+
+function Invoke-WingetPackageSelfTest {
+    $root = Join-Path $env:TEMP ('mish-lab-winget-selftest-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force -Path $root | Out-Null
+    try {
+        $skipMarker = Join-Path $root 'skip-invoked.txt'
+        $skipWinget = Join-Path $root 'skip-winget.cmd'
+        Set-Content -Encoding Ascii -LiteralPath $skipWinget -Value @(
+            '@echo off',
+            "echo invoked>`"$skipMarker`"",
+            'exit /b 1'
+        )
+        Ensure-WingetPackage -Id 'SelfTest.Skip' -CapabilityName 'self-test ready capability' `
+            -ReadyScript { $true } -WingetPath $skipWinget
+        if (Test-Path -LiteralPath $skipMarker) {
+            throw 'Winget self-test failed: a ready capability still invoked winget.'
+        }
+
+        $postMarker = Join-Path $root 'postcondition.txt'
+        $postWinget = Join-Path $root 'post-winget.cmd'
+        Set-Content -Encoding Ascii -LiteralPath $postWinget -Value @(
+            '@echo off',
+            "echo ready>`"$postMarker`"",
+            'exit /b 1'
+        )
+        Ensure-WingetPackage -Id 'SelfTest.Postcondition' -CapabilityName 'self-test materialized capability' `
+            -ReadyScript { Test-Path -LiteralPath $postMarker } -WingetPath $postWinget
+        if (-not (Test-Path -LiteralPath $postMarker)) {
+            throw 'Winget self-test failed: postcondition marker was not materialized.'
+        }
+
+        $failWinget = Join-Path $root 'fail-winget.cmd'
+        Set-Content -Encoding Ascii -LiteralPath $failWinget -Value @(
+            '@echo off',
+            'exit /b 1'
+        )
+        $failedAsExpected = $false
+        try {
+            Ensure-WingetPackage -Id 'SelfTest.Fail' -CapabilityName 'self-test missing capability' `
+                -ReadyScript { $false } -WingetPath $failWinget
+        }
+        catch {
+            if ($_.Exception.Message -notmatch 'exit code 1 \(0x00000001\).*postcondition is not satisfied') {
+                throw
+            }
+            $failedAsExpected = $true
+        }
+        if (-not $failedAsExpected) {
+            throw 'Winget self-test failed: missing capability did not fail closed.'
+        }
+
+        Write-Host 'Bootstrap winget idempotency self-test passed.'
+    }
+    finally {
+        Remove-Item -Recurse -Force -LiteralPath $root -ErrorAction SilentlyContinue
+    }
 }
 
 function Get-RunnerRegistrationSecureToken {
@@ -153,6 +286,11 @@ function Get-RunnerRegistrationSecureToken {
     }
 }
 
+if ($SelfTest) {
+    Invoke-WingetPackageSelfTest
+    exit 0
+}
+
 Assert-Administrator
 if (-not [Environment]::Is64BitOperatingSystem) {
     throw 'LAB-1 requires 64-bit Windows.'
@@ -180,17 +318,18 @@ try {
 
     New-Item -ItemType Directory -Force -Path $runnerRoot, $toolsRoot, $cargoHome, $rustupHome, $sdkRoot | Out-Null
 
-    Install-WingetPackage -Id ([string]$manifest.git.winget_id)
-    Install-WingetPackage -Id ([string]$manifest.powershell.winget_id)
-    Install-WingetPackage -Id ([string]$manifest.java.winget_id)
+    Ensure-WingetPackage -Id ([string]$manifest.git.winget_id) -CapabilityName 'Git' `
+        -ReadyScript { Test-GitCapability -MinimumVersion ([version]([string]$manifest.git.minimum_version)) }
+    Ensure-WingetPackage -Id ([string]$manifest.powershell.winget_id) -CapabilityName 'PowerShell' `
+        -ReadyScript { Test-PowerShellCapability -MinimumVersion ([version]([string]$manifest.powershell.minimum_version)) }
+    Ensure-WingetPackage -Id ([string]$manifest.java.winget_id) -CapabilityName 'Temurin JDK' `
+        -ReadyScript { Test-JavaCapability -Major ([int]$manifest.java.major) }
     Refresh-ProcessPath
 
-    $jdk = Get-ChildItem 'C:\Program Files\Eclipse Adoptium' -Directory -Filter 'jdk-17*' -ErrorAction Stop |
-        Sort-Object Name -Descending |
-        Select-Object -First 1
-    if (-not $jdk) { throw 'Temurin JDK 17 was not found after installation.' }
-    Set-MachineVariable -Name 'JAVA_HOME' -Value $jdk.FullName
-    Add-MachinePath -PathEntry (Join-Path $jdk.FullName 'bin')
+    $jdkPath = Get-JdkPath -Major ([int]$manifest.java.major)
+    if (-not $jdkPath) { throw 'Temurin JDK 17 was not found after materialization.' }
+    Set-MachineVariable -Name 'JAVA_HOME' -Value $jdkPath
+    Add-MachinePath -PathEntry (Join-Path $jdkPath 'bin')
 
     if (-not (Test-Path -LiteralPath (Join-Path $gradleHome 'bin\gradle.bat'))) {
         $gradleZip = Join-Path $tempRoot ([string]$manifest.gradle.asset)
@@ -251,7 +390,7 @@ try {
     )
 
     Refresh-ProcessPath
-    $env:JAVA_HOME = $jdk.FullName
+    $env:JAVA_HOME = $jdkPath
     $env:ANDROID_SDK_ROOT = $sdkRoot
     $env:ANDROID_HOME = $sdkRoot
     $env:RUSTUP_HOME = $rustupHome
