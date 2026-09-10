@@ -101,6 +101,23 @@ jobs:
             }
           }
 
+          $bootstrapTokens = $null
+          $bootstrapErrors = $null
+          $bootstrapAst = [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'lab/windows/bootstrap-windows.ps1'),
+            [ref]$bootstrapTokens,
+            [ref]$bootstrapErrors
+          )
+          $homeAssignments = @($bootstrapAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+              $node.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and
+              $node.Left.VariablePath.UserPath -ieq 'HOME'
+          }, $true))
+          if ($homeAssignments.Count -ne 0) {
+            throw 'LAB-1 bootstrap must never assign to the read-only HOME automatic variable (PowerShell variable names are case-insensitive).'
+          }
+
           $bootstrapText = Get-Content -Raw -LiteralPath 'lab/windows/bootstrap-windows.ps1'
           foreach ($required in @(
             'RunnerTokenProviderExecutable',
@@ -112,6 +129,7 @@ jobs:
             'Ensure-WingetPackage',
             'required capability postcondition is not satisfied',
             'Ensure-PortablePowerShell',
+            '$powerShellHome',
             'Get-ConfiguredRunnerService',
             'Existing repository runner registration detected',
             'skipping token retrieval',
