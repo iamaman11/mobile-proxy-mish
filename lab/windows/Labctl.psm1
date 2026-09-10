@@ -18,11 +18,34 @@ function Stop-Labctl {
     throw "MISH_LABCTL_FAILURE|$Category|$Message"
 }
 
-function Assert-RcTag {
+function Get-RcIdentity {
     param([Parameter(Mandatory)][string]$Tag)
-    if ($Tag -notmatch $script:RcTagPattern) {
+    $match = [regex]::Match($Tag, $script:RcTagPattern)
+    if (-not $match.Success) {
         Stop-Labctl 'IDENTITY_MISMATCH' 'RC tag must match vMAJOR.MINOR.PATCH-rc.N.'
     }
+    $major = [int]$match.Groups[1].Value
+    $minor = [int]$match.Groups[2].Value
+    $patch = [int]$match.Groups[3].Value
+    $rc = [int]$match.Groups[4].Value
+    if ($major -gt 20 -or $minor -gt 99 -or $patch -gt 99 -or $rc -gt 9999) {
+        Stop-Labctl 'IDENTITY_MISMATCH' 'RC tag components exceed the accepted Android versionCode bounds.'
+    }
+    $versionCode = $major * 100000000 + $minor * 1000000 + $patch * 10000 + $rc
+    if ($versionCode -lt 1 -or $versionCode -gt 2100000000) {
+        Stop-Labctl 'IDENTITY_MISMATCH' 'Derived Android versionCode is outside the accepted range.'
+    }
+    return [pscustomobject]@{
+        Tag = $Tag
+        VersionName = "$major.$minor.$patch"
+        VersionCode = $versionCode
+        RcNumber = $rc
+    }
+}
+
+function Assert-RcTag {
+    param([Parameter(Mandatory)][string]$Tag)
+    [void](Get-RcIdentity $Tag)
 }
 
 function Assert-Hex40 {
@@ -96,8 +119,34 @@ function Invoke-GitHubJson {
         return Invoke-RestMethod -Method Get -Uri $Uri -Headers $headers -MaximumRedirection 5
     }
     catch {
-        Stop-Labctl 'RELEASE_UNAVAILABLE' 'Exact GitHub Release metadata could not be read.'
+        Stop-Labctl 'RELEASE_UNAVAILABLE' 'Required GitHub release/ref metadata could not be read.'
     }
+}
+
+function Resolve-GitTagCommit {
+    param([Parameter(Mandatory)][string]$Tag)
+    $escapedTag = [Uri]::EscapeDataString($Tag)
+    $ref = Invoke-GitHubJson "https://api.github.com/repos/$script:Repository/git/ref/tags/$escapedTag"
+    if ([string]$ref.ref -ne "refs/tags/$Tag") {
+        Stop-Labctl 'IDENTITY_MISMATCH' 'Git tag ref name does not match the authorized RC tag.'
+    }
+    $objectType = [string]$ref.object.type
+    $objectSha = [string]$ref.object.sha
+    Assert-Hex40 $objectSha 'GitTagObjectSha'
+
+    for ($depth = 0; $depth -lt 8; $depth++) {
+        if ($objectType -eq 'commit') {
+            return $objectSha
+        }
+        if ($objectType -ne 'tag') {
+            Stop-Labctl 'IDENTITY_MISMATCH' 'Git tag ref resolves to an unsupported object type.'
+        }
+        $tagObject = Invoke-GitHubJson "https://api.github.com/repos/$script:Repository/git/tags/$objectSha"
+        $objectType = [string]$tagObject.object.type
+        $objectSha = [string]$tagObject.object.sha
+        Assert-Hex40 $objectSha 'GitTagObjectSha'
+    }
+    Stop-Labctl 'IDENTITY_MISMATCH' 'Git tag indirection exceeds the bounded resolution depth.'
 }
 
 function Invoke-ArtifactDownload {
@@ -126,11 +175,15 @@ function Assert-ManifestTuple {
         [Parameter(Mandatory)][string]$ExpectedSigningCertificateSha256,
         [Parameter(Mandatory)][string]$ExpectedApkName
     )
+    $identity = Get-RcIdentity $Tag
     if ([string]$Manifest.schema -ne $script:ReleaseSchema -or [string]$Manifest.channel -ne 'rc') {
         Stop-Labctl 'RELEASE_INVALID' 'Release manifest schema/channel mismatch.'
     }
-    if ([string]$Manifest.product.release_tag -ne $Tag) {
-        Stop-Labctl 'IDENTITY_MISMATCH' 'Manifest release tag does not match the authorized tag.'
+    if ([string]$Manifest.product.release_tag -ne $Tag -or
+        [string]$Manifest.product.version -ne $identity.VersionName -or
+        [int]$Manifest.product.rc_number -ne $identity.RcNumber -or
+        [int]$Manifest.product.android_version_code -ne $identity.VersionCode) {
+        Stop-Labctl 'IDENTITY_MISMATCH' 'Manifest version identity does not match the authorized RC tag.'
     }
     if ([string]$Manifest.product.source_commit -ne $ExpectedSourceCommit) {
         Stop-Labctl 'IDENTITY_MISMATCH' 'Manifest source commit does not match the authorized source commit.'
@@ -186,12 +239,15 @@ function Invoke-LabProcess {
         Stop-Labctl 'PROCESS_FAILED' 'Required subprocess could not be started.'
     }
     try {
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
         if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
             try { $process.Kill($true) } catch { }
+            try { $process.WaitForExit(5000) | Out-Null } catch { }
             Stop-Labctl 'PROCESS_TIMEOUT' 'Required subprocess exceeded its bounded timeout.'
         }
-        $stdout = $process.StandardOutput.ReadToEnd()
-        $stderr = $process.StandardError.ReadToEnd()
+        $stdout = $stdoutTask.GetAwaiter().GetResult()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
         $exitCode = $process.ExitCode
     }
     finally {
@@ -217,6 +273,11 @@ function Invoke-ReleaseResolve {
     Assert-Hex40 $ExpectedSourceCommit 'ExpectedSourceCommit'
     Assert-Hex64 $ExpectedApkSha256 'ExpectedApkSha256'
     Assert-Hex64 $ExpectedSigningCertificateSha256 'ExpectedSigningCertificateSha256'
+
+    $tagCommit = Resolve-GitTagCommit $Tag
+    if ($tagCommit -ne $ExpectedSourceCommit) {
+        Stop-Labctl 'IDENTITY_MISMATCH' 'Exact Git tag does not resolve to the authorized source commit.'
+    }
 
     $outputDirectory = [IO.Path]::GetFullPath($Directory)
     [IO.Directory]::CreateDirectory($outputDirectory) | Out-Null
@@ -257,6 +318,7 @@ function Invoke-ReleaseResolve {
         repository = $script:Repository
         release_id = [long]$release.id
         tag = $Tag
+        tag_commit = $tagCommit
         source_commit = $ExpectedSourceCommit
         apk = [ordered]@{
             name = $apkName
@@ -271,7 +333,7 @@ function Invoke-ReleaseResolve {
         resolved_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
     }
     $written = Write-LabJson $receipt $ReceiptPath
-    return [pscustomobject]@{ result = 'PASS'; tag = $Tag; apk_sha256 = $ExpectedApkSha256; receipt = $written }
+    return [pscustomobject]@{ result = 'PASS'; tag = $Tag; source_commit = $tagCommit; apk_sha256 = $ExpectedApkSha256; receipt = $written }
 }
 
 function Invoke-ReleaseVerify {
@@ -386,6 +448,11 @@ function Invoke-EvidenceCollect {
     if ([string]$receipt.schema -ne $script:VerificationSchema -or [string]$receipt.result -ne 'PASS') {
         Stop-Labctl 'VERIFICATION_REQUIRED' 'Evidence collection accepts only a PASS release-verification receipt.'
     }
+    $receiptDigest = [string]$receipt.apk.sha256
+    Assert-Hex64 $receiptDigest 'VerificationReceiptApkSha256'
+    if ((Get-FileSha256 ([string]$receipt.apk.path)) -ne $receiptDigest) {
+        Stop-Labctl 'DIGEST_MISMATCH' 'Verified APK bytes changed before evidence collection.'
+    }
     # Deliberate allowlist projection: paths, arbitrary extra fields and secret-shaped data are never copied.
     $evidence = [ordered]@{
         schema = $script:EvidenceSchema
@@ -401,7 +468,7 @@ function Invoke-EvidenceCollect {
                 tag = [string]$receipt.tag
                 source_commit = [string]$receipt.source_commit
                 apk_name = [string]$receipt.apk.name
-                apk_sha256 = [string]$receipt.apk.sha256
+                apk_sha256 = $receiptDigest
                 signing_certificate_sha256 = [string]$receipt.apk.signing_certificate_sha256
             }
         }
