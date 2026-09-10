@@ -147,6 +147,28 @@ jobs:
             throw 'LAB-1 must not use WinGet/MSIX as the PowerShell service capability owner.'
           }
 
+          $preflightText = Get-Content -Raw -LiteralPath 'lab/windows/host-preflight.ps1'
+          foreach ($required in @(
+            '$expectedCargoPath = Join-Path $cargoHome ''bin\cargo.exe''',
+            '$expectedRustcPath = Join-Path $cargoHome ''bin\rustc.exe''',
+            '$rustToolchainSelector = ''+'' + [string]$manifest.rust.toolchain',
+            '& $rustcPath $rustToolchainSelector --version',
+            '& $cargoPath $rustToolchainSelector ndk --version',
+            '$rustToolchainSelector,'
+          )) {
+            if (-not $preflightText.Contains($required)) {
+              throw "LAB-1 preflight must select the manifest Rust toolchain explicitly: $required"
+            }
+          }
+          foreach ($forbidden in @(
+            '(?m)&\s+\$rustcPath\s+--version',
+            '(?m)&\s+\$cargoPath\s+ndk\s+--version'
+          )) {
+            if ($preflightText -match $forbidden) {
+              throw 'LAB-1 preflight must not validate Rust through the mutable rustup default toolchain.'
+            }
+          }
+
       - name: Verify pinned PowerShell artifact metadata upstream
         shell: pwsh
         run: |
