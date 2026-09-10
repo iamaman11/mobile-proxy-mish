@@ -164,6 +164,7 @@ try {
         'HARNESS_TEST_APK_SHA256: 2d377cfce3f0827d6bc4efda313d6ebaeb6dac148303bb1eaff9a0b60c860c9c',
         'actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093',
         'artifact-ids: ${{ env.HARNESS_ARTIFACT_ID }}',
+        '-HarnessDirectory "%RUNNER_TEMP%\mish-e3\harness\%HARNESS_ARTIFACT_NAME%"',
         'labctl.ps1" release resolve',
         'labctl.ps1" release verify',
         'labctl.ps1" e3 verify',
