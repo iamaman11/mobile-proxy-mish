@@ -115,7 +115,7 @@ jobs:
       - name: Verify exact harness run, artifact, manifest, and bytes
         shell: cmd
         run: |
-          "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".\lab\windows\labctl.ps1" e3 verify -VerificationReceipt "%RUNNER_TEMP%\mish-e3\verification.json" -HarnessRunId "%HARNESS_RUN_ID%" -HarnessArtifactId "%HARNESS_ARTIFACT_ID%" -ExpectedHarnessZipSha256 "%HARNESS_ZIP_SHA256%" -HarnessDirectory "%RUNNER_TEMP%\mish-e3\harness" -ReceiptPath "%RUNNER_TEMP%\mish-e3\harness-verification.json"
+          "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".\lab\windows\labctl.ps1" e3 verify -VerificationReceipt "%RUNNER_TEMP%\mish-e3\verification.json" -HarnessRunId "%HARNESS_RUN_ID%" -HarnessArtifactId "%HARNESS_ARTIFACT_ID%" -ExpectedHarnessZipSha256 "%HARNESS_ZIP_SHA256%" -HarnessDirectory "%RUNNER_TEMP%\mish-e3\harness\%HARNESS_ARTIFACT_NAME%" -ReceiptPath "%RUNNER_TEMP%\mish-e3\harness-verification.json"
           if errorlevel 1 exit /b %ERRORLEVEL%
           "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$r=Get-Content -Raw -LiteralPath $env:RUNNER_TEMP\mish-e3\harness-verification.json ^| ConvertFrom-Json; if($r.test_apk.sha256 -ne $env:HARNESS_TEST_APK_SHA256){exit 2}"
           exit /b %ERRORLEVEL%
