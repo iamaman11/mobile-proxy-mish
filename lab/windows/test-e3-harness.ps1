@@ -97,19 +97,63 @@ try {
     $ready=Get-Content -Raw -LiteralPath $readiness | ConvertFrom-Json
     Assert-True ($ready.schema -eq 'mish.lab.e3-readiness/v1') 'E3 readiness schema mismatch.'
     Assert-True ($ready.boundary -eq 'PHONE-ON READY') 'PHONE-ON boundary mismatch.'
-    Assert-True ($ready.phone_on_ready -eq $true -and $ready.e3_pass -eq $false) 'Readiness evidence escalated to E3.'
-    Assert-True ($ready.android.device_count -eq 0) 'Readiness evidence must prove zero devices.'
+    Assert-True ($ready.phone_on_ready -eq $true -and $ready.e3_pass -eq $false) 'Readiness receipt escalated to E3.'
+    Assert-True ($ready.android.device_count -eq 0) 'Readiness receipt must prove zero devices.'
+
+    $evidence=Join-Path $temp 'evidence.json'
+    Invoke-LabctlChild @('evidence','collect','-InputPath',$readiness,'-EvidencePath',$evidence) 0 | Out-Null
+    $durable=Get-Content -Raw -LiteralPath $evidence | ConvertFrom-Json
+    Assert-True ($durable.schema -eq 'mish.lab.evidence/v1') 'Durable E3 readiness evidence must use the accepted LAB evidence schema.'
+    Assert-True ($durable.run_kind -eq 'e3-pre-device-dry' -and $durable.result -eq 'PASS' -and $null -eq $durable.failure) 'Durable E3 readiness evidence envelope mismatch.'
+    Assert-True ($durable.git_ref -eq 'refs/heads/main' -and $durable.git_commit -eq ('a' * 40) -and $durable.run_id -eq '12345') 'Durable evidence git/run identity mismatch.'
+    Assert-True ($durable.observations.release.tag -eq $tag -and $durable.observations.release.source_commit -eq $source -and $durable.observations.release.apk_sha256 -eq $productSha -and $durable.observations.release.signing_certificate_sha256 -eq $cert) 'Durable release projection mismatch.'
+    Assert-True ([long]$durable.observations.harness.run_id -eq $runId -and [long]$durable.observations.harness.artifact_id -eq $artifactId -and $durable.observations.harness.artifact_name -eq "e3-harness-$tag") 'Durable harness run/artifact projection mismatch.'
+    Assert-True ($durable.observations.harness.source_commit -eq $source -and $durable.observations.harness.artifact_zip_sha256 -eq $zipSha -and $durable.observations.harness.test_apk_sha256 -eq $testSha -and $durable.observations.harness.signing_certificate_sha256 -eq $cert) 'Durable harness digest/signing projection mismatch.'
+    Assert-True ($durable.observations.harness.instrumentation_class -eq 'com.mobileproxymish.app.cellular.CellularE3InstrumentedTest' -and $durable.observations.harness.instrumentation_component -eq 'com.mobileproxymish.app.test/androidx.test.runner.AndroidJUnitRunner') 'Durable instrumentation identity mismatch.'
+    Assert-True ($durable.observations.android.device_count -eq 0 -and $durable.observations.android.device_absent -eq $true) 'Durable evidence must preserve the zero-device boundary.'
+    Assert-True ($durable.observations.boundary.name -eq 'PHONE-ON READY' -and $durable.observations.boundary.phone_on_ready -eq $true -and $durable.observations.boundary.e3_pass -eq $false -and $durable.observations.boundary.no_evidence_escalation -eq 'PASS') 'Durable evidence escalated beyond PHONE-ON readiness.'
+    $durableJson=Get-Content -Raw -LiteralPath $evidence
+    Assert-True (-not $durableJson.Contains($temp)) 'Durable evidence must not persist local working paths.'
+    foreach($privateField in @('imei','imsi','iccid','phone_number','public_ip','device_serial')){
+        Assert-True ($durableJson -notmatch ('(?i)"' + [regex]::Escape($privateField) + '"')) "Durable evidence leaked forbidden field $privateField."
+    }
+
+    $tamperedReadiness=Join-Path $temp 'tampered-readiness.json'
+    $ready.e3_pass=$true
+    [IO.File]::WriteAllText($tamperedReadiness,($ready|ConvertTo-Json -Depth 12),[Text.UTF8Encoding]::new($false))
+    Remove-Item -LiteralPath $evidence -Force
+    Invoke-LabctlChild @('evidence','collect','-InputPath',$tamperedReadiness,'-EvidencePath',$evidence) 2 | Out-Null
+    Assert-True (-not (Test-Path -LiteralPath $evidence)) 'Escalating readiness receipt must not emit durable PASS evidence.'
 
     $workflowPath=Join-Path (Split-Path $PSScriptRoot -Parent | Split-Path -Parent) '.github/workflows/e3-physical-cellular.yml'
     $workflow=Get-Content -Raw -LiteralPath $workflowPath
-    foreach($forbidden in @('(?i)\bgradle\b','(?i)\bcargo\b','(?i)\brustup\b','(?i)\brustc\b','(?i)\bsdkmanager\b','(?i)\bndk-build\b','(?m)^\s*shell:\s*(pwsh|powershell)\s*$','(?i)MISH_ANDROID_RELEASE_(KEYSTORE|STORE_PASSWORD|KEY_ALIAS|KEY_PASSWORD)','(?i)CLOUDFLARE_API_TOKEN|R2_ACCESS_KEY|R2_SECRET|terraform\s+apply')){
-        if($workflow -match $forbidden){ throw "E3 physical workflow violates build/secret boundary: $forbidden" }
+    Assert-True ($workflow -match '(?m)^\s{8}shell:\s*pwsh\s*$') 'Hosted Windows contract should retain its legitimate pwsh shell.'
+    $physicalMatch=[regex]::Match($workflow,'(?ms)^  physical-cellular:\s*\r?\n(?<body>.*)\z')
+    Assert-True $physicalMatch.Success 'Physical-cellular job block could not be isolated for trust-boundary checking.'
+    $physicalJob=$physicalMatch.Value
+
+    foreach($forbidden in @(
+        '(?i)\bgradle\b',
+        '(?i)\bcargo\b',
+        '(?i)\brustup\b',
+        '(?i)\brustc\b',
+        '(?i)\bsdkmanager\b',
+        '(?i)\bndk-build\b',
+        '(?m)^\s*shell:\s*(pwsh|powershell)\s*$',
+        '(?i)MISH_ANDROID_RELEASE_(KEYSTORE|STORE_PASSWORD|KEY_ALIAS|KEY_PASSWORD)',
+        '(?i)CLOUDFLARE_API_TOKEN|R2_ACCESS_KEY|R2_SECRET|terraform\s+apply',
+        '(?i)\blatest\b'
+    )){
+        if($physicalJob -match $forbidden){ throw "E3 physical job violates build/secret/trust boundary: $forbidden" }
     }
+
     foreach($required in @(
         'runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]',
+        "github.event_name == 'workflow_dispatch'",
         "github.ref == 'refs/heads/main'",
         'github.ref_protected == true',
         'LAB_POWERSHELL_EXE: C:\mish-lab\tools\powershell-7.6.6\pwsh.exe',
+        'shell: cmd',
         'RC_TAG: v0.1.0-rc.3',
         'RC_SOURCE: d057f267ffac5cbeca40839778783d462a51b7a0',
         'RC_APK_SHA256: 84d8a53857a20a5d55093604324770d00fdbd8a187a69c524e88920d00b323f0',
@@ -126,9 +170,13 @@ try {
         'labctl.ps1" android inspect',
         '-RequireNoDevice',
         'labctl.ps1" e3 ready',
+        'labctl.ps1" evidence collect',
+        'mish-e3\evidence.json',
+        'mish.lab.evidence/v1',
         'PHONE-ON READY',
-        'E3_PASS=NO'
-    )){ if(-not $workflow.Contains($required)){ throw "E3 physical workflow missing required trust text: $required" } }
+        'E3_PASS=NO',
+        'NO_EVIDENCE_ESCALATION=PASS'
+    )){ if(-not $physicalJob.Contains($required)){ throw "E3 physical job missing required trust text: $required" } }
 
     Write-Host 'E3_HARNESS_DETERMINISTIC_TESTS=PASS'
 }
