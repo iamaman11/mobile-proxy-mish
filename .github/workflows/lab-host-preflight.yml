@@ -16,6 +16,8 @@ jobs:
     if: ${{ github.ref == 'refs/heads/main' && github.ref_protected == true }}
     runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
     timeout-minutes: 45
+    env:
+      LAB_POWERSHELL_EXE: C:\mish-lab\tools\powershell-7.6.6\pwsh.exe
     steps:
       - name: Checkout accepted main
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -24,44 +26,29 @@ jobs:
           clean: true
 
       - name: Execute host-only preflight
-        shell: powershell
+        shell: cmd
         run: |
-          $ErrorActionPreference = 'Stop'
-          $manifest = Get-Content -Raw -LiteralPath './lab/windows/toolchain.json' | ConvertFrom-Json
-          $powerShellHome = Join-Path ([string]$manifest.host.tools_root) ('powershell-' + [string]$manifest.powershell.version)
-          $powerShellExe = Join-Path $powerShellHome 'pwsh.exe'
-          if (-not (Test-Path -LiteralPath $powerShellExe -PathType Leaf)) {
-            throw "Pinned LAB PowerShell executable is absent: $powerShellExe"
-          }
-          $env:Path = "$powerShellHome;$env:Path"
-          & $powerShellExe -NoLogo -NoProfile -NonInteractive -File './lab/windows/host-preflight.ps1' `
-            -RepositoryRoot '${{ github.workspace }}' `
-            -EvidencePath '${{ runner.temp }}\mish-lab-host-preflight.json'
-          if ($LASTEXITCODE -ne 0) {
-            exit $LASTEXITCODE
-          }
+          if not exist "%LAB_POWERSHELL_EXE%" (
+            echo Pinned LAB PowerShell executable is absent: %LAB_POWERSHELL_EXE%
+            exit /b 2
+          )
+          "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".\lab\windows\host-preflight.ps1" -RepositoryRoot "%GITHUB_WORKSPACE%" -EvidencePath "%RUNNER_TEMP%\mish-lab-host-preflight.json"
+          exit /b %ERRORLEVEL%
 
       - name: Publish redacted run summary
         if: ${{ always() }}
-        shell: powershell
+        shell: cmd
         run: |
-          $path = '${{ runner.temp }}\mish-lab-host-preflight.json'
-          if (-not (Test-Path -LiteralPath $path)) {
-            "### LAB-1 host preflight`n- Evidence file was not produced." >> $env:GITHUB_STEP_SUMMARY
-            exit 0
-          }
-
-          $evidence = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json
-          @(
-            '### LAB-1 host preflight'
-            "- Result: **$($evidence.result)**"
-            "- Commit: ``$($evidence.git_commit)``"
-            "- Ref: ``$($evidence.git_ref)``"
-            "- Phone absent: ``$($evidence.observations.host.phone_absent)``"
-            "- Android arm64 cross-build target: ``$($evidence.observations.cross_build.target)``"
-            '- Evidence domain: **Windows host/toolchain fixture only**'
-            '- This run does **not** claim E3, Mesh, proxy serving, or product READY.'
-          ) >> $env:GITHUB_STEP_SUMMARY
+          >>"%GITHUB_STEP_SUMMARY%" echo ### LAB-1 host preflight
+          >>"%GITHUB_STEP_SUMMARY%" echo - Commit: `%GITHUB_SHA%`
+          >>"%GITHUB_STEP_SUMMARY%" echo - Ref: `%GITHUB_REF%`
+          if exist "%RUNNER_TEMP%\mish-lab-host-preflight.json" (
+            >>"%GITHUB_STEP_SUMMARY%" echo - Typed evidence file: **produced**
+          ) else (
+            >>"%GITHUB_STEP_SUMMARY%" echo - Typed evidence file: **not produced**
+          )
+          >>"%GITHUB_STEP_SUMMARY%" echo - Evidence domain: **Windows host/toolchain fixture only**
+          >>"%GITHUB_STEP_SUMMARY%" echo - This run does **not** claim E3, Mesh, proxy serving, or product READY.
 
       - name: Upload typed LAB-1 evidence
         if: ${{ always() }}
