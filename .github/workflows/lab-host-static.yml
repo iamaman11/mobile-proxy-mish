@@ -72,14 +72,30 @@ jobs:
             'Get-RunnerRegistrationSecureToken',
             'Runner token provider executable must be an absolute Windows path.',
             'Provider output is intentionally suppressed.',
-            'Read-Host ''GitHub runner registration token'' -AsSecureString'
+            'Read-Host ''GitHub runner registration token'' -AsSecureString',
+            'Ensure-WingetPackage',
+            'required capability postcondition is not satisfied',
+            'Bootstrap winget idempotency self-test passed.'
           )) {
             if (-not $bootstrapText.Contains($required)) {
-              throw "LAB-1 autonomous token-source contract drifted: $required"
+              throw "LAB-1 bootstrap contract drifted: $required"
             }
           }
           if ($bootstrapText -match '(?i)Write-(Host|Output|Verbose|Debug).*plain(Token|ProviderToken)') {
             throw 'Bootstrap must never write plaintext runner token variables.'
+          }
+
+      - name: Exercise bootstrap winget idempotency contract
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dummySha = '0' * 40
+          & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
+            -File 'lab/windows/bootstrap-windows.ps1' `
+            -RepositoryCommit $dummySha `
+            -SelfTest
+          if ($LASTEXITCODE -ne 0) {
+            throw "Bootstrap winget self-test failed with exit code $LASTEXITCODE."
           }
 
       - name: Validate physical-workflow trust boundary
