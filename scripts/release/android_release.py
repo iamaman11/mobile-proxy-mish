@@ -12,10 +12,15 @@ from typing import Any
 
 RC_TAG_RE = re.compile(r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-rc\.([1-9]\d*)$")
 STABLE_TAG_RE = re.compile(r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+ACTIVE_VERSION_RE = re.compile(
+    r'^\s*versionName\s*=\s*releaseVersionName\s*\?:\s*"((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))-dev"\s*$',
+    re.MULTILINE,
+)
 HEX40_RE = re.compile(r"^[0-9a-f]{40}$")
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 MAX_ANDROID_VERSION_CODE = 2_100_000_000
 RELEASE_SCHEMA = "mish.android-release/v1"
+DEFAULT_BUILD_GRADLE = Path("android/app/build.gradle.kts")
 
 
 def derive(tag: str) -> dict[str, int | str]:
@@ -44,6 +49,54 @@ def derive_stable(tag: str) -> dict[str, str]:
     if major > 20 or minor > 99 or patch > 99:
         raise ValueError("stable tag components exceed supported bounds")
     return {"tag": tag, "version_name": f"{major}.{minor}.{patch}"}
+
+
+def load_active_release_version(build_gradle: Path = DEFAULT_BUILD_GRADLE) -> str:
+    if not build_gradle.is_file():
+        raise ValueError(f"Android build contract is missing: {build_gradle}")
+    matches = ACTIVE_VERSION_RE.findall(build_gradle.read_text(encoding="utf-8"))
+    if len(matches) != 1:
+        raise ValueError("Android build contract must expose exactly one releaseVersionName ?: MAJOR.MINOR.PATCH-dev")
+    version = matches[0]
+    derive_stable(f"v{version}")
+    return version
+
+
+def next_rc(existing_tags: list[str], *, base_version: str) -> dict[str, int | str]:
+    derive_stable(f"v{base_version}")
+    prefix = f"v{base_version}-rc."
+    active: list[tuple[int, str]] = []
+    for raw in existing_tags:
+        tag = raw.strip()
+        if not tag:
+            continue
+        match = RC_TAG_RE.fullmatch(tag)
+        if match is None:
+            if tag.startswith(prefix):
+                raise ValueError(f"malformed tag in active RC lineage: {tag}")
+            continue
+        tag_base = ".".join(match.groups()[:3])
+        if tag_base == base_version:
+            active.append((int(match.group(4)), tag))
+
+    if not active:
+        next_number = 1
+        previous_tag = ""
+    else:
+        numbers = sorted(number for number, _ in active)
+        if len(numbers) != len(set(numbers)):
+            raise ValueError("duplicate RC numbers in active lineage")
+        expected = list(range(1, numbers[-1] + 1))
+        if numbers != expected:
+            raise ValueError("active RC lineage must be contiguous from rc.1")
+        if numbers[-1] >= 9_999:
+            raise ValueError("active RC lineage exhausted rc.N encoding bounds")
+        next_number = numbers[-1] + 1
+        previous_tag = f"v{base_version}-rc.{numbers[-1]}"
+
+    result = derive(f"v{base_version}-rc.{next_number}")
+    result["previous_tag"] = previous_tag
+    return result
 
 
 def sha256(path: Path) -> str:
@@ -224,8 +277,8 @@ def validate_promotion(rc_tag: str, stable_tag: str, manifest: dict[str, Any]) -
 
 def write_github_output(path: Path, values: dict[str, int | str]) -> None:
     with path.open("a", encoding="utf-8", newline="\n") as handle:
-        for key in ("tag", "version_name", "version_code", "rc_number"):
-            handle.write(f"{key}={values[key]}\n")
+        for key, value in values.items():
+            handle.write(f"{key}={value}\n")
 
 
 def main() -> int:
@@ -235,6 +288,11 @@ def main() -> int:
     derive_parser = sub.add_parser("derive")
     derive_parser.add_argument("--tag", required=True)
     derive_parser.add_argument("--github-output")
+
+    next_parser = sub.add_parser("next-rc")
+    next_parser.add_argument("--tags-file", required=True)
+    next_parser.add_argument("--build-gradle", default=str(DEFAULT_BUILD_GRADLE))
+    next_parser.add_argument("--github-output")
 
     manifest_parser = sub.add_parser("manifest")
     manifest_parser.add_argument("--tag", required=True)
@@ -265,6 +323,14 @@ def main() -> int:
     try:
         if args.command == "derive":
             values = derive(args.tag)
+            if args.github_output:
+                write_github_output(Path(args.github_output), values)
+            else:
+                print(json.dumps(values, sort_keys=True))
+        elif args.command == "next-rc":
+            tags = Path(args.tags_file).read_text(encoding="utf-8").splitlines()
+            base_version = load_active_release_version(Path(args.build_gradle))
+            values = next_rc(tags, base_version=base_version)
             if args.github_output:
                 write_github_output(Path(args.github_output), values)
             else:
