@@ -141,6 +141,14 @@ try {
         Stop-Lab -Category 'IDENTITY_MISMATCH' -Message 'PowerShell resolved outside the LAB-owned portable toolchain.'
     }
 
+    $expectedCargoPath = Join-Path $cargoHome 'bin\cargo.exe'
+    $expectedRustcPath = Join-Path $cargoHome 'bin\rustc.exe'
+    if ([IO.Path]::GetFullPath($cargoPath) -ine [IO.Path]::GetFullPath($expectedCargoPath) -or
+        [IO.Path]::GetFullPath($rustcPath) -ine [IO.Path]::GetFullPath($expectedRustcPath)) {
+        Stop-Lab -Category 'IDENTITY_MISMATCH' -Message 'Rust proxies resolved outside the LAB-owned cargo home.'
+    }
+    $rustToolchainSelector = '+' + [string]$manifest.rust.toolchain
+
     $gitVersion = Read-Version ((& $gitPath --version 2>&1 | Out-String).Trim())
     if ($gitVersion -lt [version]([string]$manifest.git.minimum_version)) {
         Stop-Lab -Category 'HOST_PREREQUISITE_MISSING' -Message 'Git is older than the LAB-1 minimum.'
@@ -162,14 +170,14 @@ try {
         Stop-Lab -Category 'HOST_PREREQUISITE_MISSING' -Message 'Gradle version does not match the LAB-1 manifest.'
     }
 
-    $rustText = (& $rustcPath --version 2>&1 | Out-String).Trim()
+    $rustText = (& $rustcPath $rustToolchainSelector --version 2>&1 | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or $rustText -notmatch ('^rustc\s+' + [regex]::Escape([string]$manifest.rust.toolchain) + '\b')) {
-        Stop-Lab -Category 'HOST_PREREQUISITE_MISSING' -Message 'Rust toolchain does not match the LAB-1 manifest.'
+        Stop-Lab -Category 'HOST_PREREQUISITE_MISSING' -Message 'Pinned Rust toolchain does not execute through the LAB rustup proxy.'
     }
 
-    $cargoNdkText = (& $cargoPath ndk --version 2>&1 | Out-String)
+    $cargoNdkText = (& $cargoPath $rustToolchainSelector ndk --version 2>&1 | Out-String)
     if ($LASTEXITCODE -ne 0 -or $cargoNdkText -notmatch ([regex]::Escape([string]$manifest.rust.cargo_ndk))) {
-        Stop-Lab -Category 'HOST_PREREQUISITE_MISSING' -Message 'cargo-ndk version does not match the LAB-1 manifest.'
+        Stop-Lab -Category 'HOST_PREREQUISITE_MISSING' -Message 'Pinned cargo-ndk does not execute through the LAB Rust toolchain.'
     }
 
     $sdkManager = Join-Path $sdkRoot 'cmdline-tools\latest\bin\sdkmanager.bat'
@@ -207,6 +215,7 @@ try {
     Push-Location $RepositoryRoot
     try {
         Invoke-NativeChecked -FilePath $cargoPath -Arguments @(
+            $rustToolchainSelector,
             'ndk', '-P', ([string]$manifest.android.min_sdk), '-t', 'arm64-v8a',
             'build', '-p', 'mish-runtime', '--example', 'android_cellular_connector_link', '--release', '--locked'
         ) -FailureCategory 'BUILD_FAILED' -FailureMessage 'Android arm64 Rust cross-build failed.'

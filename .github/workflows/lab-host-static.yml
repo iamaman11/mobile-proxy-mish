@@ -147,15 +147,46 @@ jobs:
             throw 'LAB-1 must not use WinGet/MSIX as the PowerShell service capability owner.'
           }
 
+          $preflightText = Get-Content -Raw -LiteralPath 'lab/windows/host-preflight.ps1'
+          foreach ($required in @(
+            '$expectedCargoPath = Join-Path $cargoHome ''bin\cargo.exe''',
+            '$expectedRustcPath = Join-Path $cargoHome ''bin\rustc.exe''',
+            '$rustToolchainSelector = ''+'' + [string]$manifest.rust.toolchain',
+            '& $rustcPath $rustToolchainSelector --version',
+            '& $cargoPath $rustToolchainSelector ndk --version',
+            '$rustToolchainSelector,'
+          )) {
+            if (-not $preflightText.Contains($required)) {
+              throw "LAB-1 preflight must select the manifest Rust toolchain explicitly: $required"
+            }
+          }
+          foreach ($forbidden in @(
+            '(?m)&\s+\$rustcPath\s+--version',
+            '(?m)&\s+\$cargoPath\s+ndk\s+--version'
+          )) {
+            if ($preflightText -match $forbidden) {
+              throw 'LAB-1 preflight must not validate Rust through the mutable rustup default toolchain.'
+            }
+          }
+
       - name: Verify pinned PowerShell artifact metadata upstream
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:GITHUB_TOKEN)) {
+            throw 'Hosted static release verification requires the job-scoped GITHUB_TOKEN.'
+          }
           $manifest = Get-Content -Raw -LiteralPath 'lab/windows/toolchain.json' | ConvertFrom-Json
           $version = [string]$manifest.powershell.version
           $assetName = [string]$manifest.powershell.asset
           $releaseUri = "https://api.github.com/repos/PowerShell/PowerShell/releases/tags/v$version"
-          $headers = @{ 'User-Agent' = 'mobile-proxy-mish-lab-static' }
+          $headers = @{
+            'User-Agent' = 'mobile-proxy-mish-lab-static'
+            'Authorization' = "Bearer $env:GITHUB_TOKEN"
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
           $release = Invoke-RestMethod -Headers $headers -Uri $releaseUri
           $asset = @($release.assets | Where-Object { $_.name -eq $assetName })
           if ($asset.Count -ne 1) {
