@@ -86,7 +86,7 @@ jobs:
           android=false
           while IFS= read -r path; do
             case "$path" in
-              android/*|crates/*|Cargo.toml|Cargo.lock|rust-toolchain.toml|.github/workflows/ci.yml|.github/actions/*)
+              android/*|crates/*|Cargo.toml|Cargo.lock|rust-toolchain.toml|vendor/sing-box/release.toml|.github/workflows/ci.yml|.github/actions/*)
                 android=true
                 break
                 ;;
@@ -148,7 +148,15 @@ jobs:
           data = tomllib.loads(Path("vendor/sing-box/release.toml").read_text())
           version = data["version"]
           linux = data["linux_amd64_ci"]
-          android = data["android_arm64"]
+          props = {}
+          for raw in Path("android/gradle.properties").read_text().splitlines():
+              if "=" in raw and not raw.lstrip().startswith("#"):
+                  key, value = raw.split("=", 1)
+                  props[key.strip()] = value.strip()
+          target_abi = props.get("mishTargetAbi")
+          vendor_key = {"armeabi-v7a": "android_arm", "arm64-v8a": "android_arm64"}.get(target_abi)
+          assert vendor_key is not None, "unsupported mishTargetAbi"
+          android = data[vendor_key]
 
           assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version)
           for artifact in (linux, android):
@@ -326,12 +334,21 @@ jobs:
         with:
           gradle-version: '9.6.0'
 
-      - name: Install pinned Rust Android tooling
+      - name: Install pinned Rust Android tooling for target ABI
         run: |
+          set -euo pipefail
+          TARGET_ABI="$(sed -n 's/^mishTargetAbi=//p' android/gradle.properties)"
+          case "$TARGET_ABI" in
+            armeabi-v7a) RUST_TARGET='armv7-linux-androideabi' ;;
+            arm64-v8a) RUST_TARGET='aarch64-linux-android' ;;
+            *) echo "Unsupported mishTargetAbi: $TARGET_ABI" >&2; exit 1 ;;
+          esac
           rustup toolchain install 1.98.1 --profile minimal
           rustup override set 1.98.1
-          rustup target add aarch64-linux-android
+          rustup target add "$RUST_TARGET"
           cargo install cargo-ndk --version 4.1.2 --locked
+          echo "MISH_TARGET_ABI=$TARGET_ABI" >> "$GITHUB_ENV"
+          echo "MISH_RUST_TARGET=$RUST_TARGET" >> "$GITHUB_ENV"
 
       - name: Install pinned Android NDK
         run: |
@@ -357,25 +374,25 @@ jobs:
         run: |
           APK="android/app/build/outputs/apk/debug/app-debug.apk"
           TEST_APK="android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"
-          NATIVE="android/app/build/generated/rust-jni/arm64-v8a/libmish_android_ffi.so"
+          NATIVE="android/app/build/generated/rust-jni/$MISH_TARGET_ABI/libmish_android_ffi.so"
           test -f "$APK"
           test -f "$TEST_APK"
           test -f "$NATIVE"
-          unzip -l "$APK" | grep -q 'lib/arm64-v8a/libmish_android_ffi.so'
-          unzip -l "$APK" | grep -q 'lib/arm64-v8a/libjnidispatch.so'
+          unzip -l "$APK" | grep -q "lib/$MISH_TARGET_ABI/libmish_android_ffi.so"
+          unzip -l "$APK" | grep -q "lib/$MISH_TARGET_ABI/libjnidispatch.so"
           readelf -Ws "$NATIVE" | grep -q 'android_setsocknetwork'
           readelf -Ws "$NATIVE" | grep -q 'android_getaddrinfofornetwork'
 
-      - name: Verify Android arm64 cellular connector link path
+      - name: Verify Android target cellular connector link path
         run: |
           set -euo pipefail
-          cargo ndk -P 23 -t arm64-v8a build \
+          cargo ndk -P 23 -t "$MISH_TARGET_ABI" build \
             -p mish-runtime \
             --example android_cellular_connector_link \
             --release \
             --locked
 
-          CONNECTOR="target/aarch64-linux-android/release/examples/android_cellular_connector_link"
+          CONNECTOR="target/$MISH_RUST_TARGET/release/examples/android_cellular_connector_link"
           SYMBOLS="$RUNNER_TEMP/android-cellular-connector.symbols"
           test -x "$CONNECTOR"
           readelf -Ws "$CONNECTOR" > "$SYMBOLS"
