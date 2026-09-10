@@ -47,6 +47,64 @@ class VersionContractTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     MODULE.derive(tag)
 
+    def test_active_release_version_is_read_from_android_product_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            build = Path(tmp) / "build.gradle.kts"
+            build.write_text(
+                'versionName = releaseVersionName ?: "2.3.4-dev"\n',
+                encoding="utf-8",
+            )
+            self.assertEqual(MODULE.load_active_release_version(build), "2.3.4")
+
+    def test_active_release_version_requires_one_unambiguous_owner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            build = Path(tmp) / "build.gradle.kts"
+            build.write_text(
+                'versionName = releaseVersionName ?: "0.1.0-dev"\n'
+                'versionName = releaseVersionName ?: "0.1.1-dev"\n',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "exactly one"):
+                MODULE.load_active_release_version(build)
+
+    def test_next_rc_allocates_first_candidate_for_empty_lineage(self):
+        value = MODULE.next_rc([], base_version="0.1.0")
+        self.assertEqual(value["tag"], "v0.1.0-rc.1")
+        self.assertEqual(value["previous_tag"], "")
+
+    def test_next_rc_continues_only_active_product_lineage(self):
+        value = MODULE.next_rc(
+            [
+                "v0.0.9-rc.7",
+                "v0.1.0-rc.1",
+                "v0.1.0-rc.2",
+                "v9.9.9-rc.1",
+            ],
+            base_version="0.1.0",
+        )
+        self.assertEqual(value["tag"], "v0.1.0-rc.3")
+        self.assertEqual(value["previous_tag"], "v0.1.0-rc.2")
+        self.assertEqual(value["version_code"], 1_000_003)
+
+    def test_next_rc_rejects_gap_in_active_lineage(self):
+        with self.assertRaisesRegex(ValueError, "contiguous"):
+            MODULE.next_rc(
+                ["v0.1.0-rc.1", "v0.1.0-rc.3"],
+                base_version="0.1.0",
+            )
+
+    def test_next_rc_rejects_malformed_active_lineage_tag(self):
+        with self.assertRaisesRegex(ValueError, "malformed"):
+            MODULE.next_rc(
+                ["v0.1.0-rc.1", "v0.1.0-rc.02"],
+                base_version="0.1.0",
+            )
+
+    def test_next_rc_rejects_exhausted_lineage(self):
+        tags = [f"v0.1.0-rc.{number}" for number in range(1, 10_000)]
+        with self.assertRaisesRegex(ValueError, "exhausted"):
+            MODULE.next_rc(tags, base_version="0.1.0")
+
 
 class ReleaseVerificationTests(unittest.TestCase):
     def setUp(self):
