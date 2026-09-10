@@ -43,12 +43,15 @@
     "commandline_tools_url": "https://dl.google.com/android/repository/commandlinetools-win-15859902_latest.zip",
     "commandline_tools_sha256": "90ae805d20434428bffcb699c290860f19bb5f66a67e6b330067e3de801fb04a",
     "compile_sdk": 37,
+    "compile_sdk_minor": 0,
+    "platform_package": "platforms;android-37.0",
+    "platform_dir": "android-37.0",
     "target_sdk": 36,
     "min_sdk": 23,
     "ndk": "29.0.14206865",
     "packages": [
       "platform-tools",
-      "platforms;android-37",
+      "platforms;android-37.0",
       "ndk;29.0.14206865"
     ]
   }
