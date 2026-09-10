@@ -201,20 +201,34 @@ jobs:
             throw "Bootstrap host dependency self-test failed with exit code $LASTEXITCODE."
           }
 
-      - name: Validate physical-workflow trust and launcher boundary
+      - name: Validate physical-workflow trust and execution-policy boundary
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $manifest = Get-Content -Raw -LiteralPath 'lab/windows/toolchain.json' | ConvertFrom-Json
           $text = Get-Content -Raw -LiteralPath '.github/workflows/lab-host-preflight.yml'
 
           foreach ($forbidden in @(
             '(?m)^\s*pull_request\s*:',
             '(?m)^\s*push\s*:',
-            '(?m)^\s*shell:\s*pwsh\s*$'
+            '(?m)^\s*shell:\s*pwsh\s*$',
+            '(?m)^\s*shell:\s*powershell\s*$',
+            '(?i)Set-ExecutionPolicy'
           )) {
             if ($text -match $forbidden) {
-              throw 'Physical LAB-1 workflow violates trigger or service-PATH independence.'
+              throw 'Physical LAB-1 workflow violates trigger, shell, or execution-policy isolation.'
             }
+          }
+
+          $expectedPowerShellExe = 'C:\mish-lab\tools\powershell-{0}\pwsh.exe' -f [string]$manifest.powershell.version
+          $expectedEnvLine = 'LAB_POWERSHELL_EXE: ' + $expectedPowerShellExe
+          if (-not $text.Contains($expectedEnvLine)) {
+            throw "Physical LAB-1 workflow PowerShell projection drifted from manifest: $expectedEnvLine"
+          }
+
+          $cmdShellCount = ([regex]::Matches($text, '(?m)^\s*shell:\s*cmd\s*$')).Count
+          if ($cmdShellCount -lt 2) {
+            throw 'Physical LAB-1 workflow must use cmd for all run-step outer shells.'
           }
 
           foreach ($required in @(
@@ -223,10 +237,11 @@ jobs:
             'github.ref_protected == true',
             'runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]',
             'persist-credentials: false',
-            'shell: powershell',
-            '(''powershell-'' + [string]$manifest.powershell.version)',
-            'Join-Path $powerShellHome ''pwsh.exe''',
-            '-File ''./lab/windows/host-preflight.ps1'''
+            'shell: cmd',
+            '"%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".\lab\windows\host-preflight.ps1"',
+            '-RepositoryRoot "%GITHUB_WORKSPACE%"',
+            '-EvidencePath "%RUNNER_TEMP%\mish-lab-host-preflight.json"',
+            'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02'
           )) {
             if (-not $text.Contains($required)) {
               throw "Physical LAB-1 workflow is missing required trust/launcher text: $required"
