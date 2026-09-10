@@ -6,6 +6,7 @@ $script:ReleaseSchema = 'mish.android-release/v1'
 $script:ResolutionSchema = 'mish.lab.release-resolution/v1'
 $script:VerificationSchema = 'mish.lab.release-verification/v1'
 $script:EvidenceSchema = 'mish.lab.evidence/v1'
+$script:E3ReadinessSchema = 'mish.lab.e3-readiness/v1'
 $script:RcTagPattern = '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-rc\.([1-9]\d*)$'
 $script:Hex40Pattern = '^[0-9a-f]{40}$'
 $script:Hex64Pattern = '^[0-9a-f]{64}$'
@@ -444,36 +445,133 @@ function Invoke-AndroidInstall {
 
 function Invoke-EvidenceCollect {
     param([Parameter(Mandatory)][string]$InputPath, [Parameter(Mandatory)][string]$EvidencePath)
+    $startedAt = [DateTimeOffset]::UtcNow.ToString('o')
     $receipt = Read-LabJson $InputPath
-    if ([string]$receipt.schema -ne $script:VerificationSchema -or [string]$receipt.result -ne 'PASS') {
-        Stop-Labctl 'VERIFICATION_REQUIRED' 'Evidence collection accepts only a PASS release-verification receipt.'
-    }
-    $receiptDigest = [string]$receipt.apk.sha256
-    Assert-Hex64 $receiptDigest 'VerificationReceiptApkSha256'
-    if ((Get-FileSha256 ([string]$receipt.apk.path)) -ne $receiptDigest) {
-        Stop-Labctl 'DIGEST_MISMATCH' 'Verified APK bytes changed before evidence collection.'
-    }
-    # Deliberate allowlist projection: paths, arbitrary extra fields and secret-shaped data are never copied.
-    $evidence = [ordered]@{
-        schema = $script:EvidenceSchema
-        run_kind = 'release-consumer'
-        repository = $script:Repository
-        git_ref = [string]$env:GITHUB_REF
-        git_commit = [string]$env:GITHUB_SHA
-        run_id = [string]$env:GITHUB_RUN_ID
-        result = 'PASS'
-        failure = $null
-        observations = [ordered]@{
-            release = [ordered]@{
-                tag = [string]$receipt.tag
-                source_commit = [string]$receipt.source_commit
-                apk_name = [string]$receipt.apk.name
-                apk_sha256 = $receiptDigest
-                signing_certificate_sha256 = [string]$receipt.apk.signing_certificate_sha256
-            }
+    $schema = [string]$receipt.schema
+
+    if ($schema -eq $script:VerificationSchema) {
+        if ([string]$receipt.result -ne 'PASS') {
+            Stop-Labctl 'VERIFICATION_REQUIRED' 'Release evidence collection accepts only a PASS release-verification receipt.'
         }
-        completed_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
+        $receiptDigest = [string]$receipt.apk.sha256
+        Assert-Hex64 $receiptDigest 'VerificationReceiptApkSha256'
+        if ((Get-FileSha256 ([string]$receipt.apk.path)) -ne $receiptDigest) {
+            Stop-Labctl 'DIGEST_MISMATCH' 'Verified APK bytes changed before evidence collection.'
+        }
+        $evidence = [ordered]@{
+            schema = $script:EvidenceSchema
+            run_kind = 'release-consumer'
+            repository = $script:Repository
+            git_ref = [string]$env:GITHUB_REF
+            git_commit = [string]$env:GITHUB_SHA
+            run_id = [string]$env:GITHUB_RUN_ID
+            started_at_utc = $startedAt
+            result = 'PASS'
+            failure = $null
+            observations = [ordered]@{
+                release = [ordered]@{
+                    tag = [string]$receipt.tag
+                    source_commit = [string]$receipt.source_commit
+                    apk_name = [string]$receipt.apk.name
+                    apk_sha256 = $receiptDigest
+                    signing_certificate_sha256 = [string]$receipt.apk.signing_certificate_sha256
+                }
+            }
+            completed_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
+        }
     }
+    elseif ($schema -eq $script:E3ReadinessSchema) {
+        if ([string]$receipt.result -ne 'PASS' -or [string]$receipt.repository -ne $script:Repository -or
+            [string]$receipt.boundary -ne 'PHONE-ON READY' -or [bool]$receipt.phone_on_ready -ne $true -or [bool]$receipt.e3_pass -ne $false) {
+            Stop-Labctl 'VERIFICATION_REQUIRED' 'E3 evidence collection accepts only a PASS non-escalating PHONE-ON readiness receipt.'
+        }
+        if ($env:GITHUB_REPOSITORY -ne $script:Repository -or $env:GITHUB_REF -ne 'refs/heads/main' -or $env:GITHUB_REF_PROTECTED -ne 'true') {
+            Stop-Labctl 'UNTRUSTED_REF' 'E3 durable evidence requires protected main.'
+        }
+        Assert-Hex40 ([string]$receipt.git_commit) 'E3ReadinessGitCommit'
+        if ([string]$receipt.git_ref -ne [string]$env:GITHUB_REF -or [string]$receipt.git_commit -ne [string]$env:GITHUB_SHA -or
+            [string]$receipt.run_id -ne [string]$env:GITHUB_RUN_ID -or [string]$receipt.run_id -notmatch '^[1-9]\d*$') {
+            Stop-Labctl 'IDENTITY_MISMATCH' 'E3 readiness git/run identity does not match the current protected run.'
+        }
+
+        $tag = [string]$receipt.release.tag
+        $source = [string]$receipt.release.source_commit
+        $productSha = [string]$receipt.release.apk_sha256
+        $releaseCert = [string]$receipt.release.signing_certificate_sha256
+        Assert-RcTag $tag
+        Assert-Hex40 $source 'E3ReleaseSourceCommit'
+        Assert-Hex64 $productSha 'E3ProductApkSha256'
+        Assert-Hex64 $releaseCert 'E3ReleaseSigningCertificateSha256'
+
+        $harnessRun = [string]$receipt.harness.run_id
+        $harnessArtifact = [string]$receipt.harness.artifact_id
+        $harnessName = [string]$receipt.harness.artifact_name
+        $harnessZipSha = [string]$receipt.harness.artifact_zip_sha256
+        $testSha = [string]$receipt.harness.test_apk_sha256
+        $harnessCert = [string]$receipt.harness.signing_certificate_sha256
+        $instrumentationClass = [string]$receipt.harness.instrumentation_class
+        $instrumentationComponent = [string]$receipt.harness.instrumentation_component
+        if ($harnessRun -notmatch '^[1-9]\d*$' -or $harnessArtifact -notmatch '^[1-9]\d*$' -or $harnessName -ne "e3-harness-$tag") {
+            Stop-Labctl 'IDENTITY_MISMATCH' 'E3 harness run/artifact identity is invalid.'
+        }
+        Assert-Hex64 $harnessZipSha 'E3HarnessZipSha256'
+        Assert-Hex64 $testSha 'E3TestApkSha256'
+        Assert-Hex64 $harnessCert 'E3HarnessSigningCertificateSha256'
+        if ($harnessCert -ne $releaseCert -or
+            $instrumentationClass -ne 'com.mobileproxymish.app.cellular.CellularE3InstrumentedTest' -or
+            $instrumentationComponent -ne 'com.mobileproxymish.app.test/androidx.test.runner.AndroidJUnitRunner') {
+            Stop-Labctl 'IDENTITY_MISMATCH' 'E3 harness signing/instrumentation identity does not match the accepted contract.'
+        }
+        if ([int]$receipt.android.device_count -ne 0 -or [bool]$receipt.android.device_absent -ne $true) {
+            Stop-Labctl 'OBSERVATION_CONTRADICTION' 'E3 pre-device durable evidence requires an explicit zero-device observation.'
+        }
+
+        $evidence = [ordered]@{
+            schema = $script:EvidenceSchema
+            run_kind = 'e3-pre-device-dry'
+            repository = $script:Repository
+            git_ref = [string]$receipt.git_ref
+            git_commit = [string]$receipt.git_commit
+            run_id = [string]$receipt.run_id
+            started_at_utc = $startedAt
+            result = 'PASS'
+            failure = $null
+            observations = [ordered]@{
+                release = [ordered]@{
+                    tag = $tag
+                    source_commit = $source
+                    apk_sha256 = $productSha
+                    signing_certificate_sha256 = $releaseCert
+                }
+                harness = [ordered]@{
+                    run_id = [long]$harnessRun
+                    artifact_id = [long]$harnessArtifact
+                    artifact_name = $harnessName
+                    source_commit = $source
+                    artifact_zip_sha256 = $harnessZipSha
+                    test_apk_sha256 = $testSha
+                    signing_certificate_sha256 = $harnessCert
+                    instrumentation_class = $instrumentationClass
+                    instrumentation_component = $instrumentationComponent
+                }
+                android = [ordered]@{
+                    device_count = 0
+                    device_absent = $true
+                }
+                boundary = [ordered]@{
+                    name = 'PHONE-ON READY'
+                    phone_on_ready = $true
+                    e3_pass = $false
+                    no_evidence_escalation = 'PASS'
+                }
+            }
+            completed_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
+        }
+    }
+    else {
+        Stop-Labctl 'VERIFICATION_REQUIRED' 'Evidence collection accepts only supported typed PASS receipts.'
+    }
+
     $written = Write-LabJson $evidence $EvidencePath
     return [pscustomobject]@{ result = 'PASS'; evidence = $written; schema = $script:EvidenceSchema }
 }
