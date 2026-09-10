@@ -118,6 +118,11 @@ android {
     buildToolsVersion = "36.0.0"
     ndkVersion = "29.0.14206865"
 
+    // Ordinary CI keeps the debug instrumentation variant. Restricted release builds
+    // that provide a complete signing configuration bind androidTest to the release
+    // variant so the E3 harness can target the exact signed product APK.
+    testBuildType = if (releaseSigningRequested) "release" else "debug"
+
     defaultConfig {
         applicationId = "com.mobileproxymish.app"
         minSdk = 23
