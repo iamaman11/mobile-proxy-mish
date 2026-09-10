@@ -206,9 +206,9 @@ jobs:
             'runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]',
             'persist-credentials: false',
             'shell: powershell',
-            "('powershell-' + [string]$manifest.powershell.version)",
-            "Join-Path $powerShellHome 'pwsh.exe'",
-            "-File './lab/windows/host-preflight.ps1'"
+            '(''powershell-'' + [string]$manifest.powershell.version)',
+            'Join-Path $powerShellHome ''pwsh.exe''',
+            '-File ''./lab/windows/host-preflight.ps1'''
           )) {
             if (-not $text.Contains($required)) {
               throw "Physical LAB-1 workflow is missing required trust/launcher text: $required"
