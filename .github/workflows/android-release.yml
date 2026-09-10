@@ -181,6 +181,12 @@ jobs:
             --cargo-ndk "$CARGO_NDK_VERSION" \
             --output "dist/$MANIFEST_NAME"
 
+          python3 scripts/release/android_release.py verify \
+            --tag "$GITHUB_REF_NAME" \
+            --manifest "dist/$MANIFEST_NAME" \
+            --apk "dist/$APK_NAME" \
+            --expected-source-commit "$GITHUB_SHA"
+
           echo "apk_name=$APK_NAME" >> "$GITHUB_OUTPUT"
           echo "manifest_name=$MANIFEST_NAME" >> "$GITHUB_OUTPUT"
 
@@ -202,6 +208,43 @@ jobs:
             --prerelease \
             --title "$GITHUB_REF_NAME" \
             --notes "Immutable Android release candidate. Physical acceptance must reference this exact tag and APK digest; stable promotion must reuse the same signed bytes."
+
+      - name: Read back exact published RC bytes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RELEASE_META="$(gh release view "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json tagName,isDraft,isPrerelease \
+            --jq '[.tagName, .isDraft, .isPrerelease] | @tsv')"
+          IFS=$'\t' read -r RELEASE_TAG IS_DRAFT IS_PRERELEASE <<< "$RELEASE_META"
+          [[ "$RELEASE_TAG" == "$GITHUB_REF_NAME" ]]
+          [[ "$IS_DRAFT" == "false" ]]
+          [[ "$IS_PRERELEASE" == "true" ]]
+
+          READBACK="$RUNNER_TEMP/android-release-readback"
+          mkdir -p "$READBACK"
+          gh release download "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "${{ steps.artifact.outputs.apk_name }}" \
+            --dir "$READBACK"
+          gh release download "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "${{ steps.artifact.outputs.manifest_name }}" \
+            --dir "$READBACK"
+
+          cmp "dist/${{ steps.artifact.outputs.apk_name }}" \
+            "$READBACK/${{ steps.artifact.outputs.apk_name }}"
+          cmp "dist/${{ steps.artifact.outputs.manifest_name }}" \
+            "$READBACK/${{ steps.artifact.outputs.manifest_name }}"
+
+          python3 scripts/release/android_release.py verify \
+            --tag "$GITHUB_REF_NAME" \
+            --manifest "$READBACK/${{ steps.artifact.outputs.manifest_name }}" \
+            --apk "$READBACK/${{ steps.artifact.outputs.apk_name }}" \
+            --expected-source-commit "$GITHUB_SHA"
 
       - name: Remove materialized signing key
         if: ${{ always() }}

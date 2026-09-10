@@ -7,15 +7,17 @@ This document defines the stable execution architecture for Cloudflare/bootstrap
 Create one controlled path from source to real-device evidence:
 
 ```text
-GitHub
- -> protected/manual workflow
+Git source
+ -> GitHub-hosted CI / restricted release workflow
+ -> exact versioned immutable Android RC/release bytes
+ -> protected/manual physical workflow
  -> one isolated Windows self-hosted lab runner
  -> repository-local stateless labctl
  -> supported Windows/Android/provider interfaces
  -> typed evidence back to GitHub
 ```
 
-Product/runtime ownership does not move into the lab. Cloudflare, Android, carrier networks and vendor applications remain external live reality. GitHub remains the source/review/workflow/evidence control plane.
+Product/runtime ownership does not move into the lab. Cloudflare, Android, carrier networks and vendor applications remain external live reality. GitHub remains the source/review/workflow/evidence control plane. The physical Windows lab consumes exact published release bytes; it is not a second Android release-build authority.
 
 ## Sequential pre-phone stages
 
@@ -25,22 +27,29 @@ Execute these in order:
 #23 LAB-0  repository/governance + evidence contract
  -> #24 CF-1  Cloudflare IaC/bootstrap authority
  -> #25 LAB-1 Windows lab host + isolated self-hosted runner
- -> #26 LAB-2 stateless labctl + unified workflow primitives
+ -> #48 REL-1 versioned immutable Android RC/release artifact path
+ -> #26 LAB-2 stateless labctl + release-consumer workflow primitives
  -> #27 CF-2 Windows One Client + pre-phone Cloudflare validation
  -> #28 LAB-3 E3 pre-device cutover + dry proof
  -> PHONE-ON boundary
- -> #10 physical E3 full-root-toggle
+ -> #10 physical E3 full-root-toggle on exact accepted RC bytes
 ```
 
 Parent index: #22.
 
-The sequence is deliberately serial where stages share provider, runner or evidence ownership. A later issue may be prepared in advance, but acceptance and live mutations must not leap over an unmet predecessor gate.
+The sequence is deliberately serial where stages share provider, runner, release or evidence ownership. A later issue may be prepared in advance, but acceptance and live mutations must not leap over an unmet predecessor gate.
 
 ## Ownership
 
 ```text
 Git/GitHub
-  desired source, workflow definitions, review, immutable run/artifact evidence
+  desired source, workflow definitions, review, immutable run/evidence records
+
+GitHub-hosted restricted release workflow
+  Android release build/sign/package authority
+
+GitHub Release exact version/tag + digest
+  versioned binary distribution authority
 
 Cloudflare
   live provider/transport state
@@ -50,13 +59,13 @@ Terraform
   (its state is deployment machinery, not product/runtime truth)
 
 Windows lab host
-  physical execution environment only
+  physical execution environment and exact-release consumer only
 
 GitHub self-hosted runner
   job transport into that host only
 
 labctl
-  stateless repository-owned execution adapter
+  stateless repository-owned execution adapter and exact-release verifier/consumer
 
 Android / MISH runtime owners
   live product facts
@@ -64,6 +73,24 @@ Android / MISH runtime owners
 E3 / E4 workflows
   acceptance ceremonies and evidence only
 ```
+
+## Release law
+
+The accepted A13 supply-chain rule applies to every physical acceptance path:
+
+```text
+PIN
+ -> BUILD ONCE
+ -> HASH
+ -> SIGN
+ -> ATTEST
+ -> TEST EXACT BYTES
+ -> PROMOTE EXACT BYTES
+```
+
+Normal PR/main CI may build debug/test artifacts as source verification. Those are not release authority. A physical workflow must resolve an exact version/tag, download the named release asset, verify its manifest and digest, and test those bytes. `latest` is never machine acceptance identity.
+
+Stable promotion may only reuse the exact signed RC bytes/digest already accepted physically. It must not run Gradle/Cargo again to manufacture a new stable artifact.
 
 ## What labctl is not
 
@@ -75,9 +102,11 @@ E3 / E4 workflows
 - an Issue-command router;
 - a device registry;
 - a mutable readiness/status database;
-- a second product lifecycle owner.
+- a second product lifecycle owner;
+- an Android release build system;
+- a second artifact registry or release selector based on `latest`.
 
-It may invoke bounded subprocesses, ADB, build tools and supported vendor/client interfaces from a GitHub Actions job and serialize typed evidence for that run.
+It may invoke bounded subprocesses, ADB and supported vendor/client interfaces from a GitHub Actions job, resolve/verify exact release assets, and serialize typed evidence for that run. Optional local developer builds remain ordinary developer diagnostics and never create physical-acceptance or release identity.
 
 ## Standard change paths
 
@@ -86,6 +115,20 @@ It may invoke bounded subprocesses, ADB, build tools and supported vendor/client
 ```text
 short-lived branch -> PR -> required hosted CI -> squash merge -> accepted main
 ```
+
+### Android release candidate
+
+```text
+accepted source/version
+ -> restricted GitHub-hosted release workflow
+ -> build/sign once
+ -> final APK SHA-256 + release manifest
+ -> exact versioned GitHub prerelease
+ -> exact-tag readback and byte verification
+ -> downstream physical consumer
+```
+
+Release-signing private material belongs only to the restricted GitHub release environment. It must not be committed, exposed to ordinary PR jobs, or copied to the physical lab runner.
 
 ### Cloudflare supported desired configuration
 
@@ -110,24 +153,29 @@ One-time provider bootstrap steps that cannot yet be represented safely as IaC m
 
 ```text
 accepted protected main
+ + exact RC/release version/tag + expected digest
  -> manual/protected physical workflow
  -> isolated self-hosted Windows runner
- -> labctl
+ -> labctl resolve/download/verify exact release bytes
  -> real host/device/vendor observations
  -> typed/redacted GitHub evidence
 ```
 
+No Gradle/Cargo rebuild may substitute for the selected published release asset.
+
 ## Phone-on boundary
 
-The phone is not introduced until #23 through #28 are accepted. LAB-3 must leave the lab in a state where the only missing facts are truly device/physical facts.
+The phone is not introduced until #23, #24, #25, #48, #26, #27 and #28 are accepted. LAB-3 must leave the lab in a state where the only missing facts are truly device/physical facts.
 
 At PHONE-ON:
 
 ```text
-connect/power rooted arm64 Android
+select exact accepted RC version/tag + digest
+ -> connect/power rooted arm64 Android
  -> authorize ADB
  -> verify API/ABI/root
  -> confirm real SIM + LTE/5G + validated Wi-Fi
+ -> install/test the exact verified RC bytes
  -> run #10 E3 full-root-toggle
 ```
 
@@ -169,10 +217,13 @@ NO_MUTABLE_LAB_STATUS_DB
 NO_UNTRUSTED_REF_ON_PHYSICAL_RUNNER
 NO_PROVIDER_CREDENTIAL_ON_UNTRUSTED_REF
 NO_PROVIDER_APPLY_SECRET_ON_PHYSICAL_RUNNER
+NO_RELEASE_SIGNING_SECRET_ON_PHYSICAL_RUNNER
+NO_PHYSICAL_ANDROID_RELEASE_BUILD
+NO_LATEST_RELEASE_AUTHORITY
 NO_SECOND_ANDROID_VPN
 NO_DEFAULT_WIFI_WARP_FALLBACK
 NO_EVIDENCE_ESCALATION
 NO_SECRET_OR_DEVICE_IDENTIFIER_PERSISTENCE
 ```
 
-The repository is public. Physical and provider workflows therefore require stricter trust boundaries than ordinary hosted PR CI.
+The repository is public. Physical, provider and release-signing workflows therefore require stricter trust boundaries than ordinary hosted PR CI.
