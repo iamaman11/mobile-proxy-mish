@@ -67,6 +67,24 @@ class VersionContractTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "exactly one"):
                 MODULE.load_active_release_version(build)
 
+    def test_target_abi_is_read_from_android_gradle_properties(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            props = Path(tmp) / "gradle.properties"
+            props.write_text("org.gradle.caching=true\nmishTargetAbi=armeabi-v7a\n", encoding="utf-8")
+            self.assertEqual(MODULE.load_target_abi(props), "armeabi-v7a")
+
+    def test_target_abi_rejects_missing_duplicate_or_unknown_owner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            props = Path(tmp) / "gradle.properties"
+            for text in (
+                "org.gradle.caching=true\n",
+                "mishTargetAbi=armeabi-v7a\nmishTargetAbi=arm64-v8a\n",
+                "mishTargetAbi=x86\n",
+            ):
+                props.write_text(text, encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "exactly one supported"):
+                    MODULE.load_target_abi(props)
+
     def test_next_rc_allocates_first_candidate_for_empty_lineage(self):
         value = MODULE.next_rc([], base_version="0.1.0")
         self.assertEqual(value["tag"], "v0.1.0-rc.1")
@@ -123,7 +141,7 @@ class ReleaseVerificationTests(unittest.TestCase):
                 "rc_number": 1,
                 "source_commit": self.source_commit,
                 "android_version_code": 1_000_001,
-                "abi": "arm64-v8a",
+                "abi": "armeabi-v7a",
                 "build_mode": "release",
             },
             "artifact": {
@@ -142,8 +160,8 @@ class ReleaseVerificationTests(unittest.TestCase):
             "sing_box": {
                 "version": "1.14.0",
                 "release_tag": "v1.14.0",
-                "android_arm64_asset": "sing-box-1.14.0-android-arm64.tar.gz",
-                "android_arm64_sha256": "c" * 64,
+                "android_arm_asset": "sing-box-1.14.0-android-arm.tar.gz",
+                "android_arm_sha256": "c" * 64,
             },
         }
 
@@ -159,6 +177,23 @@ class ReleaseVerificationTests(unittest.TestCase):
         )
         self.assertEqual(result["artifact_sha256"], MODULE.sha256(self.apk))
         self.assertEqual(result["source_commit"], self.source_commit)
+        self.assertEqual(result["abi"], "armeabi-v7a")
+
+    def test_historical_arm64_manifest_still_verifies(self):
+        self.manifest["product"]["abi"] = "arm64-v8a"
+        self.manifest["sing_box"] = {
+            "version": "1.14.0",
+            "release_tag": "v1.14.0",
+            "android_arm64_asset": "sing-box-1.14.0-android-arm64.tar.gz",
+            "android_arm64_sha256": "c" * 64,
+        }
+        result = MODULE.verify_manifest(self.manifest, tag="v0.1.0-rc.1", apk_path=self.apk)
+        self.assertEqual(result["abi"], "arm64-v8a")
+
+    def test_unknown_abi_fails_closed(self):
+        self.manifest["product"]["abi"] = "x86"
+        with self.assertRaisesRegex(ValueError, "supported Android ABI"):
+            MODULE.verify_manifest(self.manifest, tag="v0.1.0-rc.1", apk_path=self.apk)
 
     def test_digest_mismatch_fails_closed(self):
         self.manifest["artifact"]["sha256"] = "d" * 64
