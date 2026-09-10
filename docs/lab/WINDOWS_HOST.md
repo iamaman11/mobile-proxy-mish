@@ -113,6 +113,28 @@ $script = "$env:TEMP\mish-lab-bootstrap.ps1"
 Invoke-WebRequest "https://raw.githubusercontent.com/iamaman11/mobile-proxy-mish/$sha/lab/windows/bootstrap-windows.ps1" -OutFile $script
 ```
 
+### Bootstrap rerun and package postconditions
+
+LAB-1 bootstrap is expected to survive a bounded retry after a partial host-toolchain installation. For the WinGet-owned Git, PowerShell and Temurin JDK prerequisites, installed Windows capability is the authoritative postcondition; a raw WinGet process exit code is not sufficient by itself to decide installed state.
+
+The bootstrap therefore follows this rule for each of those prerequisites:
+
+```text
+capability already satisfies toolchain.json
+ -> skip winget entirely
+
+capability missing
+ -> invoke pinned package id through winget
+ -> refresh native Windows PATH/state
+ -> verify the real capability again
+    -> satisfied: continue, even if installer transport returned nonzero
+    -> not satisfied: fail closed and report decimal + hexadecimal exit code
+```
+
+A broken WinGet source configuration is **not** treated as success. It is tolerated only when no WinGet call is needed because the required capability already exists, or when the requested installation actually materialized the required capability despite the transport exit status. Otherwise bootstrap fails with the exact exit code and unsatisfied postcondition.
+
+`LAB Host Static` executes the bootstrap's deterministic package-idempotency self-test on GitHub-hosted Windows. The self-test proves that an already-ready dependency does not invoke WinGet, a nonzero installer status is accepted only when its postcondition became true, and a nonzero status with a missing postcondition remains fail-closed.
+
 ### Autonomous token provider
 
 Automation is the preferred path when an approved vault is already available. The bootstrap accepts:
