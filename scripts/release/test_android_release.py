@@ -64,7 +64,7 @@ class ReleaseVerificationTests(unittest.TestCase):
                 "release_tag": "v0.1.0-rc.1",
                 "rc_number": 1,
                 "source_commit": self.source_commit,
-                "android_version_code": 1,
+                "android_version_code": 1_000_001,
                 "abi": "arm64-v8a",
                 "build_mode": "release",
             },
