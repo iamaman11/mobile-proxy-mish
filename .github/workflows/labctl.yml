@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/labctl.yml'
+      - '.github/workflows/labctl-physical.yml'
       - 'lab/windows/Labctl.psm1'
       - 'lab/windows/labctl.ps1'
       - 'lab/windows/test-labctl.ps1'
@@ -11,6 +12,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/labctl.yml'
+      - '.github/workflows/labctl-physical.yml'
       - 'lab/windows/Labctl.psm1'
       - 'lab/windows/labctl.ps1'
       - 'lab/windows/test-labctl.ps1'
@@ -39,6 +41,60 @@ jobs:
           if ($matches) {
             $matches | ForEach-Object { Write-Error "Forbidden physical build-tool dependency: $($_.Path):$($_.LineNumber)" }
             exit 1
+          }
+
+      - name: Validate physical release-consumer trust boundary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = '.github/workflows/labctl-physical.yml'
+          $text = Get-Content -Raw -LiteralPath $path
+
+          foreach ($forbidden in @(
+            '(?m)^\s*pull_request\s*:',
+            '(?m)^\s*push\s*:',
+            '(?m)^\s*shell:\s*pwsh\s*$',
+            '(?m)^\s*shell:\s*powershell\s*$',
+            '(?i)Set-ExecutionPolicy',
+            '(?i)\b(gradle|cargo|rustc|rustup|sdkmanager|ndk-build)\b',
+            '(?i)\bassemble(Debug|Release|DebugAndroidTest)\b',
+            '(?i)MISH_ANDROID_RELEASE_(KEYSTORE|STORE_PASSWORD|KEY_ALIAS|KEY_PASSWORD)',
+            '(?i)CLOUDFLARE_API_TOKEN|R2_ACCESS_KEY|R2_SECRET|terraform\s+apply',
+            '(?i)\badb(?:\.exe)?\s+install\b'
+          )) {
+            if ($text -match $forbidden) {
+              throw "LAB-2 physical workflow violates release-consumer boundary: $forbidden"
+            }
+          }
+
+          foreach ($required in @(
+            'workflow_dispatch:',
+            "github.ref == 'refs/heads/main'",
+            'github.ref_protected == true',
+            'runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]',
+            'persist-credentials: false',
+            'LAB_POWERSHELL_EXE: C:\mish-lab\tools\powershell-7.6.6\pwsh.exe',
+            'RC_TAG: v0.1.0-rc.1',
+            'RC_SOURCE: 4542c1e2a16f3ac93f52ecb2464c2cfc0cafb3c0',
+            'RC_APK_SHA256: 26d7faa5e5f4f788c9c15fe53aaeac24ebd3a7241881e570887eec102304334e',
+            'RC_SIGNING_CERT_SHA256: 1958d474069ce0f8b8e5390c9c4ebecd6e306fb4e0f0f6e12d35c9b91cc67803',
+            'labctl.ps1" host inspect -PhysicalLab',
+            'labctl.ps1" release resolve',
+            'labctl.ps1" release verify',
+            'labctl.ps1" android inspect',
+            '-RequireNoDevice',
+            'labctl.ps1" evidence collect',
+            'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02'
+          )) {
+            if (-not $text.Contains($required)) {
+              throw "LAB-2 physical workflow is missing required trust text: $required"
+            }
+          }
+
+          $runBlocks = ([regex]::Matches($text, '(?m)^\s*run:\s*\|\s*$')).Count
+          $cmdShells = ([regex]::Matches($text, '(?m)^\s*shell:\s*cmd\s*$')).Count
+          if ($runBlocks -eq 0 -or $cmdShells -ne $runBlocks) {
+            throw 'Every LAB-2 physical run block must use cmd as its outer shell.'
           }
 
       - name: Run deterministic labctl contract tests
