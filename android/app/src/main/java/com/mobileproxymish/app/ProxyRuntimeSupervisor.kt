@@ -64,7 +64,6 @@ class ProxyRuntimeSupervisor(
     private val pidFile = File(runtimeDir, PID_FILE)
     private val binaryFile = File(appContext.applicationInfo.nativeLibraryDir, SING_BOX_LIBRARY)
     private val mutableSnapshot = MutableStateFlow<ProxyRuntimeSnapshot>(ProxyRuntimeSnapshot.Stopped)
-    private val startRequested = AtomicBoolean(false)
     private val closed = AtomicBoolean(false)
     private val lock = Any()
     private val executor = Executors.newSingleThreadExecutor { task ->
@@ -81,8 +80,18 @@ class ProxyRuntimeSupervisor(
         get() = mutableSnapshot.asStateFlow()
 
     fun start() {
-        if (closed.get() || !startRequested.compareAndSet(false, true)) return
-        mutableSnapshot.value = ProxyRuntimeSnapshot.Starting
+        if (closed.get()) return
+        synchronized(lock) {
+            when (mutableSnapshot.value) {
+                ProxyRuntimeSnapshot.Starting,
+                ProxyRuntimeSnapshot.Running,
+                -> return
+
+                ProxyRuntimeSnapshot.Stopped,
+                is ProxyRuntimeSnapshot.Failed,
+                -> mutableSnapshot.value = ProxyRuntimeSnapshot.Starting
+            }
+        }
         try {
             executor.execute(::startBlocking)
         } catch (_: RejectedExecutionException) {
@@ -93,7 +102,12 @@ class ProxyRuntimeSupervisor(
     private fun startBlocking() {
         synchronized(lock) {
             if (closed.get()) return
-            runtimeDir.mkdirs()
+            if (!runtimeDir.isDirectory && !runtimeDir.mkdirs()) {
+                mutableSnapshot.value = ProxyRuntimeSnapshot.Failed(
+                    ProxyRuntimeFailure.ConfigurationRejected,
+                )
+                return
+            }
             if (!binaryFile.isFile || !binaryFile.canExecute()) {
                 mutableSnapshot.value = ProxyRuntimeSnapshot.Failed(
                     ProxyRuntimeFailure.NativeRuntimeMissing,
@@ -161,7 +175,7 @@ class ProxyRuntimeSupervisor(
                     .redirectErrorStream(true)
                     .start()
             } catch (_: Exception) {
-                configFile.delete()
+                deleteIfPresent(configFile)
                 runCatching { newBridge.stop() }
                 mutableSnapshot.value = ProxyRuntimeSnapshot.Failed(
                     ProxyRuntimeFailure.ChildLaunchFailed,
@@ -172,7 +186,7 @@ class ProxyRuntimeSupervisor(
             val newPid = processPid(newChild)
             if (newPid == null || !writePid(newPid)) {
                 terminateProcess(newChild, newPid)
-                configFile.delete()
+                deleteIfPresent(configFile)
                 runCatching { newBridge.stop() }
                 mutableSnapshot.value = ProxyRuntimeSnapshot.Failed(
                     ProxyRuntimeFailure.ChildLaunchFailed,
@@ -183,8 +197,8 @@ class ProxyRuntimeSupervisor(
 
             if (!waitForHealthy(newChild, newBridge)) {
                 terminateProcess(newChild, newPid)
-                pidFile.delete()
-                configFile.delete()
+                deleteIfPresent(pidFile)
+                deleteIfPresent(configFile)
                 runCatching { newBridge.stop() }
                 mutableSnapshot.value = ProxyRuntimeSnapshot.Failed(
                     ProxyRuntimeFailure.HealthCheckFailed,
@@ -192,8 +206,18 @@ class ProxyRuntimeSupervisor(
                 return
             }
 
-            // sing-box has consumed the configuration; remove runtime credential material from disk.
-            configFile.delete()
+            // sing-box has consumed the configuration. Runtime credential material must not
+            // survive on disk after the child is healthy.
+            if (!deleteIfPresent(configFile)) {
+                terminateProcess(newChild, newPid)
+                deleteIfPresent(pidFile)
+                runCatching { newBridge.stop() }
+                mutableSnapshot.value = ProxyRuntimeSnapshot.Failed(
+                    ProxyRuntimeFailure.CleanupFailed,
+                )
+                return
+            }
+
             child = newChild
             childPid = newPid
             bridge = newBridge
@@ -223,7 +247,11 @@ class ProxyRuntimeSupervisor(
                     }
                     return@Thread
                 }
-                Thread.sleep(HEALTH_POLL_MS)
+                try {
+                    Thread.sleep(HEALTH_POLL_MS)
+                } catch (_: InterruptedException) {
+                    return@Thread
+                }
             }
         }, "mish-proxy-runtime-monitor")
         thread.isDaemon = true
@@ -273,13 +301,12 @@ class ProxyRuntimeSupervisor(
     }
 
     private fun cleanupStaleChild(): Boolean {
-        configFile.delete()
+        if (!deleteIfPresent(configFile)) return false
         if (!pidFile.isFile) return true
         val pid = pidFile.readText(Charsets.US_ASCII).trim().toIntOrNull() ?: return false
         val procDir = File("/proc/$pid")
         if (!procDir.exists()) {
-            pidFile.delete()
-            return true
+            return deleteIfPresent(pidFile)
         }
         if (!isExactOwnedSingBoxProcess(pid)) return false
         AndroidProcess.killProcess(pid)
@@ -288,8 +315,7 @@ class ProxyRuntimeSupervisor(
             Thread.sleep(25)
         }
         if (procDir.exists()) return false
-        pidFile.delete()
-        return true
+        return deleteIfPresent(pidFile)
     }
 
     private fun isExactOwnedSingBoxProcess(pid: Int): Boolean {
@@ -374,11 +400,29 @@ class ProxyRuntimeSupervisor(
         var clean = true
         if (currentChild != null && !terminateProcess(currentChild, currentPid)) clean = false
         if (currentBridge != null && runCatching { currentBridge.stop() }.isFailure) clean = false
-        configFile.delete()
-        pidFile.delete()
+        if (!deleteIfPresent(configFile)) clean = false
+        if (!deleteIfPresent(pidFile)) clean = false
         stopping = false
         return clean
     }
+
+    fun stop() {
+        if (closed.get()) return
+        try {
+            executor.execute {
+                val clean = synchronized(lock) { cleanupCurrentLocked() }
+                mutableSnapshot.value = if (clean) {
+                    ProxyRuntimeSnapshot.Stopped
+                } else {
+                    ProxyRuntimeSnapshot.Failed(ProxyRuntimeFailure.CleanupFailed)
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            mutableSnapshot.value = ProxyRuntimeSnapshot.Failed(ProxyRuntimeFailure.CleanupFailed)
+        }
+    }
+
+    private fun deleteIfPresent(file: File): Boolean = !file.exists() || file.delete() || !file.exists()
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
