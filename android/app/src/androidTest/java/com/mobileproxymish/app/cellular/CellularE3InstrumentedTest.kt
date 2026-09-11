@@ -51,11 +51,15 @@ class CellularE3InstrumentedTest {
 
     private fun runLifecycle(arguments: android.os.Bundle) {
         val host = arguments.getString("e3Host") ?: "checkip.amazonaws.com"
-        val port = arguments.getString("e3Port")?.toIntOrNull() ?: 443
+        val requestedPort = arguments.getString("e3Port")?.toIntOrNull() ?: HTTPS_PORT
         val path = arguments.getString("e3Path") ?: "/"
+        // Historical orchestration supplied port 80. Revised #75 acceptance requires
+        // HTTPS, so the PRODUCT proof is pinned to 443 until the orchestration default is
+        // cleaned up; the legacy input remains validated for artifact compatibility only.
+        val proofPort = HTTPS_PORT
 
         require(HOST_PATTERN.matches(host)) { "e3Host must be a DNS hostname" }
-        require(port in 1..65535) { "e3Port must be in 1..65535" }
+        require(requestedPort in 1..65535) { "e3Port must be in 1..65535" }
         require(path.startsWith('/')) { "e3Path must start with /" }
         assertEquals(
             "instrumentation must execute inside the PRODUCT UID",
@@ -67,6 +71,7 @@ class CellularE3InstrumentedTest {
             ?: throw AssertionError("E3_SAFE_FAILURE stage=product_runtime application_missing")
         val runtime = application.cellularRuntime
         var mobileDataMayBeDisabled = false
+        var runtimeClosed = false
 
         try {
             // Positive: MishApplication already started the real process-generation bridge.
@@ -87,14 +92,14 @@ class CellularE3InstrumentedTest {
             val initialPublicIp = performPublicProbe(
                 addresses = positiveAddresses,
                 host = host,
-                port = port,
+                port = proofPort,
                 path = path,
                 phase = "positive",
             )
             requirePublicIpLiteral(initialPublicIp)
             println(
                 "E3_EVIDENCE phase=positive owner_admitted=true product_root_policy=enforced " +
-                    "dns=uid_policy public_socket=uid_policy transport=${transportLabel(port)} " +
+                    "dns=uid_policy public_socket=uid_policy transport=https " +
                     "public_ip_observed=true ipv6=fail_closed",
             )
 
@@ -115,7 +120,7 @@ class CellularE3InstrumentedTest {
                 negativeSequence > positiveSequence,
             )
             assertDnsFailsClosed(positiveDns, host)
-            assertPublicSocketFailsClosed(stableProbeAddress, port)
+            assertPublicSocketFailsClosed(stableProbeAddress, proofPort)
             println(
                 "E3_EVIDENCE phase=negative owner_not_admitted=true fresh_loss_generation=true " +
                     "dns_blocked=true public_socket_blocked=true no_default_fallback=true",
@@ -144,23 +149,31 @@ class CellularE3InstrumentedTest {
             val recoveryPublicIp = performPublicProbe(
                 addresses = recoveryAddresses,
                 host = host,
-                port = port,
+                port = proofPort,
                 path = path,
                 phase = "recovery",
             )
             requirePublicIpLiteral(recoveryPublicIp)
+
+            // Deliberate shutdown is part of the accepted PRODUCT lifecycle. Verify from
+            // the same PRODUCT UID/root grant that all exact #75 signatures disappeared;
+            // this is read-only verification after the production adapter performed delete.
+            runtime.close()
+            runtimeClosed = true
+            verifyProductPolicyCleanup(Process.myUid())
+
             println(
                 "E3_EVIDENCE phase=recovery owner_admitted=true fresh_generation=true " +
                     "product_root_policy=reconciled dns=uid_policy public_socket=uid_policy " +
-                    "transport=${transportLabel(port)} public_ip_observed=true ipv6=fail_closed",
+                    "transport=https public_ip_observed=true cleanup_verified=true ipv6=fail_closed",
             )
         } finally {
             if (mobileDataMayBeDisabled) {
                 runCatching { executeMobileDataTransition("enable") }
             }
-            // Intentional PRODUCT runtime shutdown exercises exact owned-rule deletion.
-            // The Windows LAB performs a separate read-only post-test cleanup check.
-            runtime.close()
+            if (!runtimeClosed) {
+                runtime.close()
+            }
         }
     }
 
@@ -485,6 +498,93 @@ class CellularE3InstrumentedTest {
         assertFalse("negative public socket escaped fail-closed policy", escaped)
     }
 
+    private fun verifyProductPolicyCleanup(productUid: Int) {
+        val identity = runProductRoot("id -u")
+        if (identity.timedOut || identity.exitCode != 0 || identity.stdout.trim() != "0") {
+            throw AssertionError("E3_SAFE_FAILURE stage=root_policy_cleanup root_authority_lost")
+        }
+
+        val ipv4Rules = runProductRoot("ip -4 rule show")
+        val ipv6Rules = runProductRoot("ip -6 rule show")
+        val ipv4Table = runProductRoot("iptables -t mangle -L OUTPUT -n")
+        val ipv6Table = runProductRoot("ip6tables -t mangle -L OUTPUT -n")
+        if (listOf(ipv4Rules, ipv6Rules, ipv4Table, ipv6Table).any {
+                it.timedOut || it.exitCode != 0
+            }
+        ) {
+            throw AssertionError("E3_SAFE_FAILURE stage=root_policy_cleanup inspection_failed")
+        }
+
+        assertFalse(
+            "PRODUCT IPv4 lookup survived intentional cleanup",
+            OWNED_IPV4_LOOKUP.containsMatchIn(ipv4Rules.stdout),
+        )
+        assertFalse(
+            "PRODUCT IPv4 guard survived intentional cleanup",
+            OWNED_GUARD.containsMatchIn(ipv4Rules.stdout),
+        )
+        assertFalse(
+            "PRODUCT IPv6 guard survived intentional cleanup",
+            OWNED_GUARD.containsMatchIn(ipv6Rules.stdout),
+        )
+
+        val ipv4Selector = runProductRoot(selectorCheckCommand("iptables", productUid))
+        val ipv6Selector = runProductRoot(selectorCheckCommand("ip6tables", productUid))
+        if (ipv4Selector.timedOut || ipv6Selector.timedOut) {
+            throw AssertionError("E3_SAFE_FAILURE stage=root_policy_cleanup selector_check_timeout")
+        }
+        assertTrue(
+            "PRODUCT IPv4 selector survived intentional cleanup",
+            ipv4Selector.exitCode != 0,
+        )
+        assertTrue(
+            "PRODUCT IPv6 selector survived intentional cleanup",
+            ipv6Selector.exitCode != 0,
+        )
+    }
+
+    private fun selectorCheckCommand(binary: String, productUid: Int): String =
+        "$binary -t mangle -C OUTPUT -m owner --uid-owner $productUid " +
+            "-m conntrack --ctstate NEW -j MARK --set-xmark 0x200000/0x200000"
+
+    private fun runProductRoot(command: String): RootReadResult {
+        val child = try {
+            ProcessBuilder(listOf("su", "-c", command))
+                .redirectErrorStream(true)
+                .start()
+        } catch (_: Exception) {
+            return RootReadResult(exitCode = -1, stdout = "", timedOut = false)
+        }
+
+        return try {
+            val deadline = SystemClock.elapsedRealtime() + ROOT_READ_TIMEOUT_MILLIS
+            var exitCode: Int? = null
+            do {
+                exitCode = try {
+                    child.exitValue()
+                } catch (_: IllegalThreadStateException) {
+                    null
+                }
+                if (exitCode == null) {
+                    SystemClock.sleep(ROOT_READ_POLL_MILLIS)
+                }
+            } while (exitCode == null && SystemClock.elapsedRealtime() < deadline)
+
+            if (exitCode == null) {
+                child.destroy()
+                RootReadResult(exitCode = -1, stdout = "", timedOut = true)
+            } else {
+                val stdout = child.inputStream
+                    .bufferedReader(Charsets.UTF_8)
+                    .use { it.readText() }
+                    .take(ROOT_READ_OUTPUT_MAX_CHARS)
+                RootReadResult(exitCode = exitCode, stdout = stdout, timedOut = false)
+            }
+        } finally {
+            child.destroy()
+        }
+    }
+
     private fun requireMobileDataTransition(state: String) {
         assertTrue("root mobile-data transition failed", executeMobileDataTransition(state))
     }
@@ -543,11 +643,15 @@ class CellularE3InstrumentedTest {
         )
     }
 
-    private fun transportLabel(port: Int): String = if (port == HTTPS_PORT) "https" else "http"
-
     private data class SafeProbeFailure(
         val stage: String,
         val exceptionClass: String,
+    )
+
+    private data class RootReadResult(
+        val exitCode: Int,
+        val stdout: String,
+        val timedOut: Boolean,
     )
 
     private companion object {
@@ -562,10 +666,19 @@ class CellularE3InstrumentedTest {
         const val NEGATIVE_SOCKET_TIMEOUT_MILLIS = 5_000
         const val HTTP_RESPONSE_MAX_BYTES = 65_536
         const val HTTPS_PORT = 443
+        const val ROOT_READ_TIMEOUT_MILLIS = 5_000L
+        const val ROOT_READ_POLL_MILLIS = 25L
+        const val ROOT_READ_OUTPUT_MAX_CHARS = 8_192
 
         val HOST_PATTERN = Regex("^[A-Za-z0-9.-]+$")
         val IPV4_LITERAL = Regex(
             "^(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)(?:\\.(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)){3}$",
+        )
+        val OWNED_IPV4_LOOKUP = Regex(
+            "(?m)^9500:\\s+from\\s+all\\s+fwmark\\s+0x200000/0x200000\\s+lookup\\s+",
+        )
+        val OWNED_GUARD = Regex(
+            "(?m)^9501:\\s+from\\s+all\\s+fwmark\\s+0x200000/0x200000\\s+unreachable",
         )
     }
 }
