@@ -323,7 +323,6 @@ checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 name = "mish-android-ffi"
 version = "0.1.0"
 dependencies = [
- "mish-android-network",
  "mish-cellular",
  "uniffi",
 ]
@@ -560,7 +559,7 @@ dependencies = [
 name = "siphasher"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ee5873ec9cce0195efcb7a4e9507a04cd49aec9c83d0389df45b1ef7ba2e649"
+checksum = "8ee5873ec9cce0195efcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "smawk"
