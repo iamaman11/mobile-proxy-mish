@@ -27,7 +27,8 @@ enum class CellularBoundaryFailure {
  *
  * `OwnerSnapshot` is the natural owner's typed projection. `BoundaryUnavailable`
  * represents failure of an adapter boundary and therefore cannot be treated as an
- * admitted or ready cellular path.
+ * admitted or ready cellular path. `rootPolicyFailure` is diagnostic adapter metadata,
+ * not a second admission/readiness fact.
  */
 sealed interface CellularRuntimeSnapshot {
     data class OwnerSnapshot(
@@ -36,6 +37,7 @@ sealed interface CellularRuntimeSnapshot {
 
     data class BoundaryUnavailable(
         val reason: CellularBoundaryFailure,
+        val rootPolicyFailure: CellularRootPolicyFailure? = null,
     ) : CellularRuntimeSnapshot
 }
 
@@ -48,10 +50,15 @@ sealed interface CellularRuntimeSnapshot {
  * unrelated, or superseded callbacks.
  */
 internal class CellularInterfaceHints {
-    private val byNetwork = mutableMapOf<ULong, String?>()
+    private val byNetwork = mutableMapOf<ULong, String>()
 
     fun observed(networkHandle: ULong, interfaceName: String?) {
-        byNetwork[networkHandle] = interfaceName
+        // A synchronous getLinkProperties() can transiently return null during a
+        // capability callback. Do not erase an already observed interface for the same
+        // exact Network generation; onLost is the authoritative lifetime revocation.
+        if (interfaceName != null) {
+            byNetwork[networkHandle] = interfaceName
+        }
     }
 
     fun lost(networkHandle: ULong) {
@@ -129,7 +136,8 @@ class CellularRuntimeBridge(
                         mutableSnapshot.value
                     } else {
                         CellularRuntimeSnapshot.BoundaryUnavailable(
-                            CellularBoundaryFailure.RootPolicyReconcileFailed,
+                            reason = CellularBoundaryFailure.RootPolicyReconcileFailed,
+                            rootPolicyFailure = initialPolicy.reason,
                         )
                     }
                 }
@@ -195,9 +203,15 @@ class CellularRuntimeBridge(
             }
 
             // Mechanism follows the owner-selected handle, never whichever callback
-            // happened to arrive most recently. This preserves the current path when an
-            // old handle is lost or an unrelated candidate is observed.
-            val interfaceName = interfaceHints.interfaceFor(admission.admittedNetworkHandle)
+            // happened to arrive most recently. If the callback-time LinkProperties read
+            // was transiently null, resolve the interface read-only from that exact handle.
+            val admittedHandle = admission.admittedNetworkHandle
+            var interfaceName = interfaceHints.interfaceFor(admittedHandle)
+            if (interfaceName == null && admittedHandle != null) {
+                interfaceName = observer.interfaceNameFor(admittedHandle)
+                interfaceHints.observed(admittedHandle, interfaceName)
+            }
+
             val policyResult = rootPolicy.reconcile(
                 admitted = admission.state == CellularAdmissionState.ADMITTED,
                 interfaceName = interfaceName,
@@ -214,7 +228,8 @@ class CellularRuntimeBridge(
                         CellularRuntimeSnapshot.OwnerSnapshot(admission)
                     } else {
                         CellularRuntimeSnapshot.BoundaryUnavailable(
-                            CellularBoundaryFailure.RootPolicyReconcileFailed,
+                            reason = CellularBoundaryFailure.RootPolicyReconcileFailed,
+                            rootPolicyFailure = policyResult.reason,
                         )
                     }
                 }
@@ -254,7 +269,7 @@ class CellularRuntimeBridge(
         val cleanup = try {
             policyExecutor.submit {
                 interfaceHints.clear()
-                rootPolicy.close()
+                rootPolicy.cleanupExactOwnedRules()
             }
         } catch (_: RejectedExecutionException) {
             null
@@ -266,14 +281,16 @@ class CellularRuntimeBridge(
             } catch (_: InterruptedException) {
                 Thread.currentThread().interrupt()
             } catch (_: Exception) {
-                // Exact cleanup is best-effort during teardown. A future process start
-                // begins by reconciling fail-closed before network observation resumes.
+                // E3 independently verifies the exact kernel post-condition. A future
+                // process start also reconciles fail-closed before observation resumes.
             }
         }
         policyExecutor.shutdownNow()
     }
 
     private companion object {
-        const val CLOSE_TIMEOUT_SECONDS = 30L
+        // Includes one potentially in-flight bounded root reconciliation plus the final
+        // exact cleanup transaction. This is a shutdown-only path, never UI/callback work.
+        const val CLOSE_TIMEOUT_SECONDS = 60L
     }
 }
