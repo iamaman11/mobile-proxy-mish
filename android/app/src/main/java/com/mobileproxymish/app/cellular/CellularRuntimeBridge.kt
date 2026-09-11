@@ -57,9 +57,6 @@ internal class CellularInterfaceHints {
     private val byNetwork = mutableMapOf<ULong, String>()
 
     fun observed(networkHandle: ULong, interfaceName: String?) {
-        // A synchronous getLinkProperties() can transiently return null during a
-        // capability callback. Do not erase an already observed interface for the same
-        // exact Network generation; onLost is the authoritative lifetime revocation.
         if (interfaceName != null) {
             byNetwork[networkHandle] = interfaceName
         }
@@ -145,9 +142,6 @@ class CellularRuntimeBridge(
 
             if (!closed.get()) {
                 observer.start()
-                // close() can race between the check above and requestNetwork(). If it
-                // did, revoke the just-created callback immediately rather than leaving
-                // an observer alive after policy cleanup/executor shutdown.
                 if (closed.get()) {
                     observer.close()
                 }
@@ -206,9 +200,6 @@ class CellularRuntimeBridge(
 
         if (closed.get()) return
 
-        // Mechanism follows the owner-selected handle, never whichever callback happened
-        // to arrive most recently. Resolve a transiently missing interface read-only for
-        // that exact owner-selected handle before dispatching the bounded root transaction.
         val admittedHandle = admission.admittedNetworkHandle
         var interfaceName = interfaceHints.interfaceFor(admittedHandle)
         if (interfaceName == null && admittedHandle != null) {
@@ -289,8 +280,9 @@ class CellularRuntimeBridge(
                     CellularRuntimeSnapshot.OwnerSnapshot(admission)
                 } else {
                     CellularRuntimeSnapshot.BoundaryUnavailable(
-                        policyResult.reason?.let(CellularBoundaryFailure::RootPolicyUnavailable)
-                            ?: CellularBoundaryFailure.RootPolicyReconcileFailed,
+                        policyResult.reason?.let {
+                            CellularBoundaryFailure.RootPolicyUnavailable(it)
+                        } ?: CellularBoundaryFailure.RootPolicyReconcileFailed,
                     )
                 }
             }
@@ -322,10 +314,6 @@ class CellularRuntimeBridge(
         }
     }
 
-    /**
-     * Forces the kernel mechanism to the safe base and preserves a more specific policy
-     * failure when fail-closed enforcement itself cannot be established.
-     */
     private fun snapshotForFailClosed(
         preferredFailure: CellularBoundaryFailure?,
         preserveOnCleanFailClosed: Boolean = false,
