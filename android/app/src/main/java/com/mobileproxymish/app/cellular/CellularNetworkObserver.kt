@@ -2,6 +2,7 @@ package com.mobileproxymish.app.cellular
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
@@ -13,7 +14,9 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * It deliberately does not decide readiness. The request constrains the platform-side
  * acquisition to a non-VPN cellular Internet network; fresh capability bits are still
- * forwarded to the Rust Cellular Egress natural owner for admission and lease policy.
+ * forwarded to the Rust Cellular Egress natural owner for admission. A transient Linux
+ * interface hint is forwarded only so the root-policy adapter can realize an already
+ * owner-admitted decision; it is never a second admission source.
  */
 class CellularNetworkObserver(
     context: Context,
@@ -29,23 +32,18 @@ class CellularNetworkObserver(
         .build()
 
     private val callback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return
+            emitObserved(network, capabilities, connectivityManager.getLinkProperties(network))
+        }
+
         override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
-            sink.onEvent(
-                CellularNetworkEvent.Observed(
-                    sequence = nextSequence(),
-                    networkHandle = network.networkHandle,
-                    isCellular = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR),
-                    hasInternet = capabilities.hasCapability(
-                        NetworkCapabilities.NET_CAPABILITY_INTERNET,
-                    ),
-                    isValidated = capabilities.hasCapability(
-                        NetworkCapabilities.NET_CAPABILITY_VALIDATED,
-                    ),
-                    isNotVpn = capabilities.hasCapability(
-                        NetworkCapabilities.NET_CAPABILITY_NOT_VPN,
-                    ),
-                ),
-            )
+            emitObserved(network, capabilities, connectivityManager.getLinkProperties(network))
+        }
+
+        override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
+            val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return
+            emitObserved(network, capabilities, linkProperties)
         }
 
         override fun onLost(network: Network) {
@@ -83,6 +81,30 @@ class CellularNetworkObserver(
 
         connectivityManager.unregisterNetworkCallback(callback)
         requested = false
+    }
+
+    private fun emitObserved(
+        network: Network,
+        capabilities: NetworkCapabilities,
+        linkProperties: LinkProperties?,
+    ) {
+        sink.onEvent(
+            CellularNetworkEvent.Observed(
+                sequence = nextSequence(),
+                networkHandle = network.networkHandle,
+                isCellular = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR),
+                hasInternet = capabilities.hasCapability(
+                    NetworkCapabilities.NET_CAPABILITY_INTERNET,
+                ),
+                isValidated = capabilities.hasCapability(
+                    NetworkCapabilities.NET_CAPABILITY_VALIDATED,
+                ),
+                isNotVpn = capabilities.hasCapability(
+                    NetworkCapabilities.NET_CAPABILITY_NOT_VPN,
+                ),
+                interfaceName = linkProperties?.interfaceName,
+            ),
+        )
     }
 
     private fun nextSequence(): Long = sequence.incrementAndGet()
