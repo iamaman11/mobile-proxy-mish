@@ -34,6 +34,33 @@ class MagiskRootAuthorityTest {
         assertEquals(RootAuthorityStatus.InteractiveGrantRequired, authority.probe())
     }
 
+    @Test
+    fun incompleteIdentityOutputNeverGrantsRootAuthority() {
+        val process = FakeProcess(
+            RootProcessResult(0, "0\n", outputComplete = false),
+        )
+        val authority = MagiskRootAuthority.forTesting(process)
+
+        assertEquals(RootAuthorityStatus.Incomplete, authority.probe())
+        assertEquals(1, process.calls)
+    }
+
+    @Test
+    fun incompleteRpdbOutputNeverGrantsRootAuthority() {
+        val authority = MagiskRootAuthority.forTesting(
+            FakeProcess(
+                RootProcessResult(0, "0\n"),
+                RootProcessResult(
+                    0,
+                    "0: from all lookup local\n",
+                    outputComplete = false,
+                ),
+            ),
+        )
+
+        assertEquals(RootAuthorityStatus.Incomplete, authority.probe())
+    }
+
     private class FakeProcess(vararg results: RootProcessResult) : RootProcess {
         private val results = ArrayDeque(results.toList())
         var calls = 0
