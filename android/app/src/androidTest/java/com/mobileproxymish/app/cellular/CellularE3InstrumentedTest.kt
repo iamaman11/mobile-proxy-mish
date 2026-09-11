@@ -51,21 +51,23 @@ class CellularE3InstrumentedTest {
         require(port in 1..65535) { "e3Port must be in 1..65535" }
         require(path.startsWith('/')) { "e3Path must start with /" }
 
-        waitForValidatedTransport(NetworkCapabilities.TRANSPORT_WIFI, present = true)
-        waitForValidatedTransport(NetworkCapabilities.TRANSPORT_CELLULAR, present = true)
-
         val controller = CellularController()
         val observer = CellularNetworkObserver(context, forwardingSink(controller))
         observer.start()
         try {
+            // The observer now owns an active requestNetwork() lifetime. Do not require
+            // cellular to exist before starting it: DEVICE-1 proved that the product must
+            // be able to acquire/retain a background direct cellular Network itself.
             waitForAdmission(controller, CellularAdmissionState.ADMITTED)
+            waitForDirectCellular(validated = true, present = true)
+
             val lease = controller.admittedNetworkLease()
             val publicIp = performBoundHttpProbe(lease, host, port, path)
 
             assertTrue("echo response must be a bare IPv4/IPv6 literal", isIpLiteral(publicIp))
             println(
-                "E3_EVIDENCE mode=positive wifi_validated=true cellular_validated=true " +
-                    "dns=lease socket_bind=lease public_ip=$publicIp",
+                "E3_EVIDENCE mode=positive direct_cellular_validated=true " +
+                    "not_vpn=request_contract dns=lease socket_bind=lease public_ip_observed=true",
             )
         } finally {
             observer.close()
@@ -73,18 +75,18 @@ class CellularE3InstrumentedTest {
     }
 
     private fun runNegative() {
-        waitForValidatedTransport(NetworkCapabilities.TRANSPORT_WIFI, present = true)
-        waitForValidatedTransport(NetworkCapabilities.TRANSPORT_CELLULAR, present = false)
+        // LAB disables user mobile data before this mode. The product request is then
+        // started deliberately: it must fail closed rather than minting authority from
+        // Wi-Fi, Cloudflare VPN, IMS-only cellular, or another default network.
+        waitForDirectCellular(validated = false, present = false)
 
         val controller = CellularController()
         val observer = CellularNetworkObserver(context, forwardingSink(controller))
         observer.start()
         try {
-            // Give a cellular-only callback a bounded opportunity to contradict the
-            // platform precondition. Wi-Fi must never be projected into the owner.
-            SystemClock.sleep(1_500)
+            SystemClock.sleep(5_000)
             assertFalse(
-                "cellular owner must not become ADMITTED while validated cellular is absent",
+                "cellular owner must not become ADMITTED while direct cellular is unavailable",
                 controller.admissionSnapshot().state == CellularAdmissionState.ADMITTED,
             )
 
@@ -97,8 +99,7 @@ class CellularE3InstrumentedTest {
             }
             assertFalse("no cellular authority lease may be issued", leaseIssued)
             println(
-                "E3_EVIDENCE mode=negative wifi_validated=true cellular_validated=false " +
-                    "lease_issued=false",
+                "E3_EVIDENCE mode=negative direct_cellular_available=false lease_issued=false",
             )
         } finally {
             observer.close()
@@ -139,8 +140,16 @@ class CellularE3InstrumentedTest {
         assertEquals(expected, controller.admissionSnapshot().state)
     }
 
-    private fun waitForValidatedTransport(
-        transport: Int,
+    /**
+     * Observes only the direct cellular Internet path relevant to Cellular Egress.
+     *
+     * `validated=false` means validation is not required by the predicate; it is used
+     * for the negative precondition so even an unvalidated direct cellular Internet
+     * Network prevents an "absent" classification. VPN-derived and IMS-only networks
+     * never satisfy this predicate.
+     */
+    private fun waitForDirectCellular(
+        validated: Boolean,
         present: Boolean,
         timeoutMillis: Long = 30_000,
     ) {
@@ -148,9 +157,10 @@ class CellularE3InstrumentedTest {
         do {
             val observed = connectivityManager.allNetworks.any { network ->
                 val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return@any false
-                capabilities.hasTransport(transport) &&
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) &&
                     capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-                    capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                    capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) &&
+                    (!validated || capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED))
             }
             if (observed == present) {
                 return
@@ -158,12 +168,10 @@ class CellularE3InstrumentedTest {
             SystemClock.sleep(250)
         } while (SystemClock.elapsedRealtime() < deadline)
 
-        val label = when (transport) {
-            NetworkCapabilities.TRANSPORT_WIFI -> "Wi-Fi"
-            NetworkCapabilities.TRANSPORT_CELLULAR -> "cellular"
-            else -> "transport-$transport"
-        }
-        assertTrue("expected validated $label presence=$present", false)
+        assertTrue(
+            "expected direct cellular Internet presence=$present validated_required=$validated",
+            false,
+        )
     }
 
     private fun performBoundHttpProbe(
