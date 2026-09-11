@@ -118,10 +118,7 @@ struct ResolveRequest {
     response: SyncSender<Result<Vec<IpAddr>, ResolverFailure>>,
 }
 
-type BlockingResolver = dyn Fn(
-        CellularNetworkAuthority,
-        &str,
-    ) -> Result<Vec<IpAddr>, OutboundConnectError>
+type BlockingResolver = dyn Fn(CellularNetworkAuthority, &str) -> Result<Vec<IpAddr>, OutboundConnectError>
     + Send
     + Sync
     + 'static;
@@ -223,7 +220,8 @@ fn resolver_worker_loop(
             continue;
         }
 
-        let lookup = resolver(request.authority, &request.hostname).map_err(ResolverFailure::Lookup);
+        let lookup =
+            resolver(request.authority, &request.hostname).map_err(ResolverFailure::Lookup);
         let result = if Instant::now() >= request.deadline
             || validate_authority(&owner, request.authority).is_err()
         {
@@ -244,9 +242,7 @@ fn resolve_domain_blocking(
     bounded_ipv4_resolver_output(numeric)
 }
 
-fn bounded_ipv4_resolver_output(
-    numeric: Vec<String>,
-) -> Result<Vec<IpAddr>, OutboundConnectError> {
+fn bounded_ipv4_resolver_output(numeric: Vec<String>) -> Result<Vec<IpAddr>, OutboundConnectError> {
     let mut addresses = Vec::with_capacity(MAX_IPV4_CANDIDATES);
     for numeric_address in numeric {
         let address = numeric_address
@@ -630,10 +626,12 @@ mod tests {
 
         assert_eq!(result, Ok(()));
         assert_eq!(attempts.get(), 2);
-        assert!(first_attempt_deadline
-            .get()
-            .expect("first attempt deadline")
-            < operation_deadline);
+        assert!(
+            first_attempt_deadline
+                .get()
+                .expect("first attempt deadline")
+                < operation_deadline
+        );
     }
 
     #[test]
@@ -824,7 +822,10 @@ mod tests {
 
         let active_deadline = Instant::now() + Duration::from_secs(1);
         while active.load(Ordering::SeqCst) < RESOLVER_WORKER_COUNT {
-            assert!(Instant::now() < active_deadline, "resolver workers did not become active");
+            assert!(
+                Instant::now() < active_deadline,
+                "resolver workers did not become active"
+            );
             thread::yield_now();
         }
 
