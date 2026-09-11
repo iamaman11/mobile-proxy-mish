@@ -38,6 +38,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 CellularBoundaryFailure.NativeLibraryUnavailable ->
                     "android_ffi.native_library_unavailable"
                 CellularBoundaryFailure.ForeignCallFailed -> "android_ffi.foreign_call_failed"
+                CellularBoundaryFailure.RootAuthorityUnavailable ->
+                    "cellular.root_authority_unavailable"
+                CellularBoundaryFailure.RootPolicyReconcileFailed ->
+                    "cellular.root_policy_reconcile_failed"
             },
         )
 
