@@ -153,6 +153,35 @@ try {
     $workflowPath=Join-Path (Split-Path $PSScriptRoot -Parent | Split-Path -Parent) '.github/workflows/e3-physical-cellular.yml'
     $workflow=Get-Content -Raw -LiteralPath $workflowPath
     Assert-True ($workflow -match '(?m)^\s{8}shell:\s*pwsh\s*$') 'Hosted Windows contract should retain its legitimate pwsh shell.'
+    Assert-True ($workflow.Contains('rc_tag:')) 'E3 workflow must require one exact immutable RC tag input.'
+    Assert-True (-not ($workflow -match '(?i)\blatest\b')) 'E3 workflow must never resolve a mutable latest release.'
+
+    foreach($obsolete in @(
+        'RC_TAG: v0.1.0-rc.4',
+        'RC_SOURCE: dcb49c04c7772481c84971855d7b453a2013d60d',
+        'RC_APK_SHA256: d429ab29c48a88092b153a3ea1ce4fe812d4f0636cecbf229713dea62eda4b66',
+        'HARNESS_RUN_ID: 34537908351',
+        'HARNESS_ARTIFACT_ID: 10176464456',
+        'HARNESS_ZIP_SHA256: b4ced77017aadb606d64b454b0eb3e71b13f15e2db8320254aa628df9630abf2',
+        'HARNESS_TEST_APK_SHA256: 2d377cfce3f0827d6bc4efda313d6ebaeb6dac148303bb1eaff9a0b60c860c9c'
+    )){ Assert-True (-not $workflow.Contains($obsolete)) "E3 workflow retained obsolete hand-copied RC identity: $obsolete" }
+
+    $resolverMatch=[regex]::Match($workflow,'(?ms)^  resolve-rc:\s*\r?\n(?<body>.*?)(?=^  physical-cellular:)')
+    Assert-True $resolverMatch.Success 'Exact RC resolver job block could not be isolated.'
+    $resolverJob=$resolverMatch.Value
+    foreach($required in @(
+        'TRUSTED_RELEASE_SIGNING_CERT_SHA256: 1958d474069ce0f8b8e5390c9c4ebecd6e306fb4e0f0f6e12d35c9b91cc67803',
+        'python3 scripts/release/android_release.py derive --tag "$RC_TAG"',
+        'git merge-base --is-ancestor "$SOURCE_SHA" origin/main',
+        'releases/tags/$RC_TAG',
+        'python3 scripts/release/android_release.py verify',
+        'actions/workflows/android-release.yml/runs?event=workflow_dispatch&status=completed&head_sha=$SOURCE_SHA',
+        'e3-harness-{tag}',
+        'actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093',
+        'python3 scripts/release/e3_harness.py verify',
+        'Human-copied source/digest/artifact tuple: **NO**'
+    )){ if(-not $resolverJob.Contains($required)){ throw "E3 resolver missing required machine-owned identity control: $required" } }
+
     $physicalMatch=[regex]::Match($workflow,'(?ms)^  physical-cellular:\s*\r?\n(?<body>.*)\z')
     Assert-True $physicalMatch.Success 'Physical-cellular job block could not be isolated for trust-boundary checking.'
     $physicalJob=$physicalMatch.Value
@@ -178,16 +207,17 @@ try {
         "github.event_name == 'workflow_dispatch'",
         "github.ref == 'refs/heads/main'",
         'github.ref_protected == true',
+        'needs: [contract, resolve-rc]',
         'LAB_POWERSHELL_EXE: C:\mish-lab\tools\powershell-7.6.6\pwsh.exe',
         'shell: cmd',
-        'RC_TAG: v0.1.0-rc.4',
-        'RC_SOURCE: dcb49c04c7772481c84971855d7b453a2013d60d',
-        'RC_APK_SHA256: d429ab29c48a88092b153a3ea1ce4fe812d4f0636cecbf229713dea62eda4b66',
-        'RC_SIGNING_CERT_SHA256: 1958d474069ce0f8b8e5390c9c4ebecd6e306fb4e0f0f6e12d35c9b91cc67803',
-        'HARNESS_RUN_ID: 34537908351',
-        'HARNESS_ARTIFACT_ID: 10176464456',
-        'HARNESS_ZIP_SHA256: b4ced77017aadb606d64b454b0eb3e71b13f15e2db8320254aa628df9630abf2',
-        'HARNESS_TEST_APK_SHA256: 2d377cfce3f0827d6bc4efda313d6ebaeb6dac148303bb1eaff9a0b60c860c9c',
+        'RC_TAG: ${{ needs.resolve-rc.outputs.rc_tag }}',
+        'RC_SOURCE: ${{ needs.resolve-rc.outputs.source_sha }}',
+        'RC_APK_SHA256: ${{ needs.resolve-rc.outputs.apk_sha256 }}',
+        'RC_SIGNING_CERT_SHA256: ${{ needs.resolve-rc.outputs.signing_cert_sha256 }}',
+        'HARNESS_RUN_ID: ${{ needs.resolve-rc.outputs.harness_run_id }}',
+        'HARNESS_ARTIFACT_ID: ${{ needs.resolve-rc.outputs.harness_artifact_id }}',
+        'HARNESS_ZIP_SHA256: ${{ needs.resolve-rc.outputs.harness_zip_sha256 }}',
+        'HARNESS_TEST_APK_SHA256: ${{ needs.resolve-rc.outputs.test_apk_sha256 }}',
         'actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093',
         'artifact-ids: ${{ env.HARNESS_ARTIFACT_ID }}',
         '-ExpectedTestApkSha256 "%HARNESS_TEST_APK_SHA256%"',
