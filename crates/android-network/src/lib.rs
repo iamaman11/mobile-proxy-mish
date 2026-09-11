@@ -44,10 +44,16 @@ pub fn resolve_host(
     authority: CellularNetworkAuthority,
     hostname: &str,
 ) -> Result<Vec<String>, AndroidNetworkError> {
-    if hostname.is_empty() || hostname.as_bytes().contains(&0) {
-        return Err(AndroidNetworkError::InvalidHostname);
-    }
+    validate_hostname(hostname)?;
     resolve_host_on_platform(authority, hostname)
+}
+
+fn validate_hostname(hostname: &str) -> Result<(), AndroidNetworkError> {
+    if hostname.is_empty() || hostname.as_bytes().contains(&0) {
+        Err(AndroidNetworkError::InvalidHostname)
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(target_os = "android")]
@@ -160,11 +166,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn invalid_hostname_is_rejected_before_platform_access() {
-        // Host tests cannot mint the private authority; the public input validator is
-        // therefore covered through this small pure predicate instead of pretending to
-        // exercise Android DNS.
-        assert!("".is_empty());
-        assert!("bad\0host".as_bytes().contains(&0));
+    fn invalid_hostname_is_rejected_by_pure_boundary_validator() {
+        assert_eq!(validate_hostname(""), Err(AndroidNetworkError::InvalidHostname));
+        assert_eq!(
+            validate_hostname("bad\0host"),
+            Err(AndroidNetworkError::InvalidHostname)
+        );
+        assert_eq!(validate_hostname("example.com"), Ok(()));
     }
 }
