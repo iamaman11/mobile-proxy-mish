@@ -19,6 +19,16 @@ val generatedJniLibsPath = layout.buildDirectory
     .get()
     .asFile
     .absolutePath
+val generatedSingBoxJniPath = layout.buildDirectory
+    .dir("generated/sing-box-jni")
+    .get()
+    .asFile
+    .absolutePath
+val singBoxCachePath = layout.buildDirectory
+    .dir("vendor-cache/sing-box")
+    .get()
+    .asFile
+    .absolutePath
 
 val targetAbi = providers.gradleProperty("mishTargetAbi").orNull
     ?: throw GradleException("mishTargetAbi must be defined in android/gradle.properties.")
@@ -59,6 +69,8 @@ val hostLibraryName = when {
     else -> "libmish_android_ffi.so"
 }
 val hostLibraryPath = "$repoRootPath/target/debug/$hostLibraryName"
+val buildPython = providers.environmentVariable("MISH_BUILD_PYTHON").orNull
+    ?: if (System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) "python" else "python3"
 
 val cleanGeneratedUniFfi = tasks.register<Delete>("cleanGeneratedUniFfi") {
     delete(generatedUniFfiPath)
@@ -72,8 +84,6 @@ val buildHostUniFfi = tasks.register<Exec>("buildHostUniFfi") {
 val generateUniFfiBindings = tasks.register<Exec>("generateUniFfiBindings") {
     dependsOn(cleanGeneratedUniFfi, buildHostUniFfi)
     workingDir(repoRootPath)
-    // UniFFI 0.32 resolves the crate-local crates/android-ffi/uniffi.toml via cargo
-    // metadata. --config is reserved for the newer global configuration format.
     commandLine(
         "cargo",
         "run",
@@ -118,15 +128,34 @@ val buildAndroidUniFfi = tasks.register<Exec>("buildAndroidUniFfi") {
     )
 }
 
+val materializeSingBoxAndroid = tasks.register<Exec>("materializeSingBoxAndroid") {
+    val manifest = "$repoRootPath/vendor/sing-box/release.toml"
+    val materializer = "$repoRootPath/tools/materialize_sing_box_android.py"
+    inputs.file(manifest)
+    inputs.file(materializer)
+    inputs.property("mishTargetAbi", targetAbi)
+    outputs.file("$generatedSingBoxJniPath/$targetAbi/libsingbox.so")
+    workingDir(repoRootPath)
+    commandLine(
+        buildPython,
+        materializer,
+        "--manifest",
+        manifest,
+        "--abi",
+        targetAbi,
+        "--output-dir",
+        generatedSingBoxJniPath,
+        "--cache-dir",
+        singBoxCachePath,
+    )
+}
+
 android {
     namespace = "com.mobileproxymish.app"
     compileSdk = 37
     buildToolsVersion = "36.0.0"
     ndkVersion = "29.0.14206865"
 
-    // Ordinary CI keeps the debug instrumentation variant. Restricted release builds
-    // that provide a complete signing configuration bind androidTest to the release
-    // variant so the E3 harness can target the exact signed product APK.
     testBuildType = if (releaseSigningRequested) "release" else "debug"
 
     defaultConfig {
@@ -165,11 +194,18 @@ android {
         compose = true
     }
 
-    // AGP 9 built-in Kotlin only recognizes extra Kotlin directories through the
-    // AndroidSourceSet.kotlin collection; Java source wiring is intentionally not used.
+    packaging {
+        jniLibs {
+            // The pinned sing-box executable is packaged as a native-library asset so Android
+            // extracts it into the executable nativeLibraryDir rather than app data (noexec).
+            useLegacyPackaging = true
+        }
+    }
+
     sourceSets.getByName("main") {
         kotlin.directories += generatedUniFfiPath
         jniLibs.directories += generatedJniLibsPath
+        jniLibs.directories += generatedSingBoxJniPath
     }
 
     compileOptions {
@@ -179,7 +215,7 @@ android {
 }
 
 tasks.named("preBuild") {
-    dependsOn(buildAndroidUniFfi)
+    dependsOn(buildAndroidUniFfi, materializeSingBoxAndroid)
 }
 
 dependencies {
