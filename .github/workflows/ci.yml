@@ -21,25 +21,26 @@ jobs:
         with:
           ref: qa/81-remediation
           fetch-depth: 0
-      - name: Restore canonical CI and apply bounded patch
+      - name: Apply bounded non-workflow patch
         run: |
           set -euo pipefail
+          cp .github/workflows/ci.yml "$RUNNER_TEMP/qa81-transaction-ci.yml"
           git fetch origin main
           git show origin/main:.github/workflows/ci.yml > .github/workflows/ci.yml
           python3 tools/qa81_final_ci_patch.py
-          rm -f tools/qa81_final_ci_patch.py .github/workflows/qa81-final-ci-patch.yml
+          cp "$RUNNER_TEMP/qa81-transaction-ci.yml" .github/workflows/ci.yml
+          rm -f tools/qa81_final_ci_patch.py
           changed="$(git status --short)"
           printf '%s\n' "$changed"
-          printf '%s\n' "$changed" | grep -Fq '.github/workflows/ci.yml'
+          test "$(printf '%s\n' "$changed" | wc -l)" -eq 3
           printf '%s\n' "$changed" | grep -Fq 'android/app/src/main/AndroidManifest.xml'
           printf '%s\n' "$changed" | grep -Fq 'crates/android-ffi/src/lib.rs'
           printf '%s\n' "$changed" | grep -Fq 'tools/qa81_final_ci_patch.py'
-          printf '%s\n' "$changed" | grep -Fq '.github/workflows/qa81-final-ci-patch.yml'
-      - name: Commit exact product and CI changes
+      - name: Commit and push only non-workflow files
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
-          git commit -m 'CI: verify owned Android proxy runtime packaging'
+          git add android/app/src/main/AndroidManifest.xml crates/android-ffi/src/lib.rs tools/qa81_final_ci_patch.py
+          git commit -m 'Runtime: satisfy Clippy and canonical Android packaging'
           git push origin HEAD:qa/81-remediation
