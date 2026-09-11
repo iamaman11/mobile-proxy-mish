@@ -30,6 +30,7 @@ pub enum CellularAdmissionReason {
     NoObservation,
     NotCellular,
     MissingInternetCapability,
+    VpnDerivedNetwork,
     NotValidated,
     NetworkLost,
 }
@@ -146,6 +147,7 @@ impl CellularController {
         is_cellular: bool,
         has_internet: bool,
         is_validated: bool,
+        is_not_vpn: bool,
     ) -> Result<CellularAdmissionView, CellularBridgeError> {
         let sequence = ObservationSequence::new(sequence)
             .ok_or(CellularBridgeError::InvalidObservationSequence)?;
@@ -158,6 +160,7 @@ impl CellularController {
             is_cellular,
             has_internet,
             is_validated,
+            is_not_vpn,
         );
 
         let mut owner = self.owner()?;
@@ -320,6 +323,7 @@ fn map_snapshot(snapshot: OwnerAdmissionSnapshot) -> CellularAdmissionView {
             OwnerAdmissionReason::MissingInternetCapability => {
                 CellularAdmissionReason::MissingInternetCapability
             }
+            OwnerAdmissionReason::VpnDerivedNetwork => CellularAdmissionReason::VpnDerivedNetwork,
             OwnerAdmissionReason::NotValidated => CellularAdmissionReason::NotValidated,
             OwnerAdmissionReason::NetworkLost => CellularAdmissionReason::NetworkLost,
         }),
@@ -353,7 +357,7 @@ mod tests {
         let controller = CellularController::new();
 
         let view = controller
-            .observe_network(1, 42, true, true, true)
+            .observe_network(1, 42, true, true, true, true)
             .expect("valid observation");
 
         assert_eq!(view.state, CellularAdmissionState::Admitted);
@@ -363,10 +367,23 @@ mod tests {
     }
 
     #[test]
+    fn vpn_derived_observation_is_rejected_by_natural_owner() {
+        let controller = CellularController::new();
+
+        let view = controller
+            .observe_network(1, 42, true, true, true, false)
+            .expect("valid observation");
+
+        assert_eq!(view.state, CellularAdmissionState::NotAdmitted);
+        assert_eq!(view.reason, Some(CellularAdmissionReason::VpnDerivedNetwork));
+        assert_eq!(view.admitted_network_handle, None);
+    }
+
+    #[test]
     fn foreign_loss_fails_closed_through_natural_owner() {
         let controller = CellularController::new();
         controller
-            .observe_network(1, 42, true, true, true)
+            .observe_network(1, 42, true, true, true, true)
             .expect("valid observation");
 
         let view = controller.network_lost(2, 42).expect("valid loss event");
@@ -382,11 +399,11 @@ mod tests {
         let controller = CellularController::new();
 
         assert_eq!(
-            controller.observe_network(0, 42, true, true, true),
+            controller.observe_network(0, 42, true, true, true, true),
             Err(CellularBridgeError::InvalidObservationSequence)
         );
         assert_eq!(
-            controller.observe_network(1, 0, true, true, true),
+            controller.observe_network(1, 0, true, true, true, true),
             Err(CellularBridgeError::InvalidNetworkHandle)
         );
         assert_eq!(
@@ -409,7 +426,7 @@ mod tests {
     fn lease_operation_receives_only_the_captured_owner_handle() {
         let controller = CellularController::new();
         controller
-            .observe_network(1, 42, true, true, true)
+            .observe_network(1, 42, true, true, true, true)
             .expect("valid observation");
         let lease = controller.admitted_network_lease().expect("admitted lease");
 
@@ -425,11 +442,11 @@ mod tests {
     fn stale_lease_refuses_operation_before_platform_invocation() {
         let controller = CellularController::new();
         controller
-            .observe_network(1, 42, true, true, true)
+            .observe_network(1, 42, true, true, true, true)
             .expect("valid observation");
         let lease = controller.admitted_network_lease().expect("admitted lease");
         controller
-            .observe_network(2, 42, true, true, true)
+            .observe_network(2, 42, true, true, true, true)
             .expect("fresh observation");
         let invoked = Cell::new(false);
 
@@ -449,7 +466,7 @@ mod tests {
     fn lease_rejects_success_when_owner_changes_during_operation() {
         let controller = CellularController::new();
         controller
-            .observe_network(1, 42, true, true, true)
+            .observe_network(1, 42, true, true, true, true)
             .expect("valid observation");
         let lease = controller.admitted_network_lease().expect("admitted lease");
         let controller_for_operation = Arc::clone(&controller);
@@ -472,7 +489,7 @@ mod tests {
     fn invalid_lease_operation_inputs_fail_before_platform_access() {
         let controller = CellularController::new();
         controller
-            .observe_network(1, 42, true, true, true)
+            .observe_network(1, 42, true, true, true, true)
             .expect("valid observation");
         let lease = controller.admitted_network_lease().expect("admitted lease");
 
