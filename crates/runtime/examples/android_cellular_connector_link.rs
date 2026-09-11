@@ -1,19 +1,18 @@
-//! Android arm64 link proof for the concrete B4b-2 cellular outbound connector.
+//! Android link proof for the concrete Cellular Egress connector.
 //!
-//! This binary is never an E3 runtime test. Its only purpose is to force the concrete
-//! `CellularOutboundConnector` implementation and its exact-network DNS/connect
-//! primitives into an Android-linked artifact so CI can verify the complete path.
+//! The binary forces the production connector and transitional network-scoped DNS adapter
+//! into one Android artifact. CI uses it to prove `android_getaddrinfofornetwork` remains
+//! available while the physically superseded `android_setsocknetwork` path is absent.
 
 #[cfg(target_os = "android")]
 fn main() {
-    use mish_android_network::{AndroidConnectError, AndroidNetworkError};
+    use mish_android_network::AndroidNetworkError;
     use mish_cellular::CellularNetworkAuthority;
     use mish_cellular_egress_bridge::{
         CellularOutboundConnector, ConnectTarget, OutboundConnectError,
     };
     use mish_runtime::AndroidCellularOutboundConnector;
-    use std::net::{SocketAddr, TcpStream};
-    use std::time::Instant;
+    use std::net::TcpStream;
 
     let connector_method: fn(
         &AndroidCellularOutboundConnector,
@@ -26,13 +25,7 @@ fn main() {
         &str,
     ) -> Result<Vec<String>, AndroidNetworkError> = mish_android_network::resolve_host;
 
-    let connect_method: fn(
-        CellularNetworkAuthority,
-        SocketAddr,
-        Instant,
-    ) -> Result<TcpStream, AndroidConnectError> = mish_android_network::connect_tcp_until;
-
-    std::hint::black_box((connector_method, resolve_method, connect_method));
+    std::hint::black_box((connector_method, resolve_method));
 }
 
 #[cfg(not(target_os = "android"))]

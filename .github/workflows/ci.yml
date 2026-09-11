@@ -123,8 +123,9 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
-      - name: Generate UniFFI Kotlin contract
+      - name: Generate narrow UniFFI Kotlin contract
         run: |
+          set -euo pipefail
           cargo build -p mish-android-ffi --locked
           rm -rf target/uniffi-kotlin
           cargo run -p mish-android-ffi --bin uniffi-bindgen --locked -- \
@@ -133,8 +134,14 @@ jobs:
           GENERATED="target/uniffi-kotlin/com/mobileproxymish/ffi/mish_android_ffi.kt"
           test -f "$GENERATED"
           grep -q '^package com.mobileproxymish.ffi$' "$GENERATED"
-          for symbol in CellularNetworkLease admittedNetworkLease bindSocket resolveHost; do
+          for symbol in CellularController admissionSnapshot observeNetwork networkLost; do
             grep -q "$symbol" "$GENERATED"
+          done
+          for forbidden in CellularNetworkLease admittedNetworkLease bindSocket resolveHost; do
+            if grep -q "$forbidden" "$GENERATED"; then
+              echo "superseded exact-network FFI symbol survived: $forbidden" >&2
+              exit 1
+            fi
           done
 
       - name: Load pinned sing-box release manifest
@@ -200,7 +207,7 @@ jobs:
             > "$PRODUCT_CONFIG"
           "$SB" check -c "$PRODUCT_CONFIG"
           if grep -q '"type": "direct"' "$PRODUCT_CONFIG"; then
-            echo "product config must never contain a direct outbound" >&2
+            echo "product config must never contain a direct outbound before #64 closes DNS ownership" >&2
             exit 1
           fi
 
@@ -370,8 +377,9 @@ jobs:
             :app:assembleDebug \
             :app:assembleDebugAndroidTest
 
-      - name: Verify packaged native runtime and explicit-network linkage
+      - name: Verify packaged native runtime excludes superseded socket binding
         run: |
+          set -euo pipefail
           APK="android/app/build/outputs/apk/debug/app-debug.apk"
           TEST_APK="android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"
           NATIVE="android/app/build/generated/rust-jni/$MISH_TARGET_ABI/libmish_android_ffi.so"
@@ -380,10 +388,18 @@ jobs:
           test -f "$NATIVE"
           unzip -l "$APK" | grep -q "lib/$MISH_TARGET_ABI/libmish_android_ffi.so"
           unzip -l "$APK" | grep -q "lib/$MISH_TARGET_ABI/libjnidispatch.so"
-          readelf -Ws "$NATIVE" | grep -q 'android_setsocknetwork'
-          readelf -Ws "$NATIVE" | grep -q 'android_getaddrinfofornetwork'
+          SYMBOLS="$RUNNER_TEMP/mish-android-ffi.symbols"
+          readelf -Ws "$NATIVE" > "$SYMBOLS"
+          if grep -Fq 'android_setsocknetwork' "$SYMBOLS"; then
+            echo 'superseded android_setsocknetwork leaked into PRODUCT FFI library' >&2
+            exit 1
+          fi
+          if grep -Fq 'android_getaddrinfofornetwork' "$SYMBOLS"; then
+            echo 'network-scoped DNS must not leak into Kotlin/UniFFI surface' >&2
+            exit 1
+          fi
 
-      - name: Verify Android target cellular connector link path
+      - name: Verify Android runtime uses DNS-only network adapter
         run: |
           set -euo pipefail
           cargo ndk -P 23 -t "$MISH_TARGET_ABI" build \
@@ -396,8 +412,8 @@ jobs:
           SYMBOLS="$RUNNER_TEMP/android-cellular-connector.symbols"
           test -x "$CONNECTOR"
           readelf -Ws "$CONNECTOR" > "$SYMBOLS"
-          grep -Fq 'android_setsocknetwork' "$SYMBOLS"
           grep -Fq 'android_getaddrinfofornetwork' "$SYMBOLS"
-          grep -Eq '[[:space:]]connect($|@)' "$SYMBOLS"
-          grep -Eq '[[:space:]]poll($|@)' "$SYMBOLS"
-          grep -Eq '[[:space:]]getsockopt($|@)' "$SYMBOLS"
+          if grep -Fq 'android_setsocknetwork' "$SYMBOLS"; then
+            echo 'superseded android_setsocknetwork returned to runtime connector' >&2
+            exit 1
+          fi

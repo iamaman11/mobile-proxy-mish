@@ -17,9 +17,39 @@ Special cases:
 - `readiness` is a terminal projection sink and may consume public owner snapshots; no owner depends back on it.
 - `application` may coordinate owner public APIs but owns no leaf facts.
 - `sing-box-adapter` translates typed product input to disposable vendor JSON.
-- `android-ffi` is the narrow platform/FFI seam, not a business layer.
+- `android-ffi` is the narrow typed platform/FFI seam, not a business layer and not a network-execution API.
 
 Cycles, service locators, global registries, and shared mutable state are architecture failures.
+
+## Runtime language boundary
+
+The two PRODUCT implementation languages are intentional and have non-overlapping jobs:
+
+```text
+Rust
+  natural owners
+  domain state machines
+  admission/currentness invariants
+  capability/application contracts
+  vendor-neutral runtime coordination
+
+Kotlin
+  Android ConnectivityManager observation
+  Android process/lifecycle composition
+  one typed Magisk/root-policy infrastructure adapter
+  Android UI/presentation
+  instrumentation harness
+
+UniFFI (+ its JNA runtime support)
+  typed Rust <-> Kotlin boundary only
+
+sing-box
+  pinned external proxy child/vendor implementation only
+```
+
+Rust must not grow Android/root/shell policy mechanics. Kotlin must not duplicate Rust owner state or admission decisions. UniFFI must not expose an alternate socket-routing/DNS control plane merely for convenience. `sing-box` is not a third PRODUCT policy language and owns no Cellular Egress state.
+
+YAML, Gradle Kotlin DSL, PowerShell, Terraform and bounded shell snippets are build/CI/operations technologies, not runtime domain layers.
 
 ## Minimal-layer extension invariant
 

@@ -86,7 +86,20 @@ Physical acceptance uses one serialized bounded lab/device execution path. The s
 - `docs/lab/SECURITY.md`;
 - `docs/lab/EVIDENCE.md`.
 
-Do not create an Issue-command router, deployment controller, environment branches, mutable deployment-status database, custom artifact registry, or always-on custom remote-control daemon. The physical runner is execution transport only; repository-local `labctl` is a stateless exact-release verifier/execution adapter only.
+Do not create an Issue-command router for release, provider mutation, protected physical execution, deployment, promotion, or acceptance. Do not create a deployment controller, environment branches, mutable deployment-status database, custom artifact registry, or always-on custom remote-control daemon. The physical runner is execution transport only; repository-local `labctl` is a stateless exact-release verifier/execution adapter only.
+
+### Development diagnostic build convenience
+
+A separate LAB repository may keep **one fixed Issue** as an append-only request log for a narrowly bounded development-only build convenience, provided all of the following remain true:
+
+- the only command is one exact accepted green PRODUCT `main` SHA;
+- the hosted workflow performs no provider mutation and no physical-run mutation;
+- it produces only request-bound debug/test bytes explicitly marked `PHYSICAL_TEST_CANDIDATE_NOT_RELEASE`;
+- those bytes cannot be promoted, cannot become PRODUCT release identity and cannot satisfy formal E3 evidence;
+- the fixed Issue is not a CURRENT stage pointer, mutable status database or generic command router;
+- formal physical acceptance still starts from an exact immutable PRODUCT RC/release and uses the protected/manual acceptance path.
+
+This exception exists only to shorten development feedback for physical defects. It does not modify `PIN -> BUILD ONCE -> HASH -> SIGN -> ATTEST -> TEST EXACT BYTES -> PROMOTE EXACT BYTES`.
 
 Supported Cloudflare desired configuration should use one declarative Git-reviewed path where the provider exposes a stable resource/API. Terraform state is deployment machinery, not product/runtime truth. One-time provider bootstrap exceptions must be explicit rather than silently becoming a permanent second dashboard write path.
 

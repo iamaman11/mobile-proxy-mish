@@ -67,6 +67,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun rootPolicyReasonCode(reason: CellularRootPolicyFailure): String = when (reason) {
         CellularRootPolicyFailure.InvalidProductUid -> "cellular.root_policy_invalid_product_uid"
         CellularRootPolicyFailure.InvalidInterface -> "cellular.root_policy_invalid_interface"
+        CellularRootPolicyFailure.ReservedPolicyCollision ->
+            "cellular.root_policy_reserved_policy_collision"
         CellularRootPolicyFailure.RouteTableDiscoveryFailed ->
             "cellular.root_policy_route_table_discovery_failed"
         CellularRootPolicyFailure.RuleMutationFailed ->
