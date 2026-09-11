@@ -67,7 +67,7 @@ class CellularE3InstrumentedTest {
             assertTrue("echo response must be a bare IPv4/IPv6 literal", isIpLiteral(publicIp))
             println(
                 "E3_EVIDENCE mode=positive direct_cellular_validated=true " +
-                    "not_vpn=request_contract dns=lease socket_bind=lease public_ip_observed=true",
+                    "not_vpn=owner_verified dns=lease socket_bind=lease public_ip_observed=true",
             )
         } finally {
             observer.close()
@@ -115,6 +115,7 @@ class CellularE3InstrumentedTest {
                     isCellular = event.isCellular,
                     hasInternet = event.hasInternet,
                     isValidated = event.isValidated,
+                    isNotVpn = event.isNotVpn,
                 )
 
                 is CellularNetworkEvent.Lost -> controller.networkLost(
