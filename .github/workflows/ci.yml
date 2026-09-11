@@ -26,67 +26,22 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
-
           path = Path('crates/android-ffi/src/lib.rs')
           text = path.read_text()
-
-          old = '''    bridge_claimed: Arc<AtomicBool>,
-}'''
-          new = '''    bridge_claimed: Arc<AtomicBool>,
-    claim_released: AtomicBool,
-}'''
+          old = "    bridge_claimed: Arc<AtomicBool>,\n}"
+          new = "    bridge_claimed: Arc<AtomicBool>,\n    claim_released: AtomicBool,\n}"
           assert old in text
           text = text.replace(old, new, 1)
-
-          old = '''                accept_thread: Mutex::new(Some(accept_thread)),
-                bridge_claimed: Arc::clone(&bridge_claimed),
-            }))'''
-          new = '''                accept_thread: Mutex::new(Some(accept_thread)),
-                bridge_claimed: Arc::clone(&bridge_claimed),
-                claim_released: AtomicBool::new(false),
-            }))'''
+          old = "                accept_thread: Mutex::new(Some(accept_thread)),\n                bridge_claimed: Arc::clone(&bridge_claimed),\n            }))"
+          new = "                accept_thread: Mutex::new(Some(accept_thread)),\n                bridge_claimed: Arc::clone(&bridge_claimed),\n                claim_released: AtomicBool::new(false),\n            }))"
           assert old in text
           text = text.replace(old, new, 1)
-
-          old = '''        self.healthy.store(false, Ordering::Release);
-        self.bridge_claimed.store(false, Ordering::Release);
-        Ok(())'''
-          new = '''        self.healthy.store(false, Ordering::Release);
-        if self
-            .claim_released
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            self.bridge_claimed.store(false, Ordering::Release);
-        }
-        Ok(())'''
+          old = "        self.healthy.store(false, Ordering::Release);\n        self.bridge_claimed.store(false, Ordering::Release);\n        Ok(())"
+          new = "        self.healthy.store(false, Ordering::Release);\n        if self\n            .claim_released\n            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)\n            .is_ok()\n        {\n            self.bridge_claimed.store(false, Ordering::Release);\n        }\n        Ok(())"
           assert old in text
           text = text.replace(old, new, 1)
-
-          anchor = '''    #[test]
-    fn rendered_proxy_runtime_is_loopback_only_and_has_no_direct_fallback() {'''
-          test = '''    #[test]
-    fn stopped_bridge_drop_cannot_release_replacement_claim() {
-        let controller = CellularController::new();
-        let stopped = controller
-            .start_bridge("first".into(), "first-secret".into(), 1_000)
-            .expect("start first bridge");
-        stopped.stop().expect("stop first bridge");
-
-        let replacement = controller
-            .start_bridge("replacement".into(), "replacement-secret".into(), 1_000)
-            .expect("start replacement bridge");
-
-        drop(stopped);
-        assert!(matches!(
-            controller.start_bridge("third".into(), "third-secret".into(), 1_000),
-            Err(AndroidRuntimeError::BridgeAlreadyRunning)
-        ));
-
-        replacement.stop().expect("stop replacement bridge");
-    }
-
-'''
+          anchor = "    #[test]\n    fn rendered_proxy_runtime_is_loopback_only_and_has_no_direct_fallback() {"
+          test = "    #[test]\n    fn stopped_bridge_drop_cannot_release_replacement_claim() {\n        let controller = CellularController::new();\n        let stopped = controller\n            .start_bridge(\"first\".into(), \"first-secret\".into(), 1_000)\n            .expect(\"start first bridge\");\n        stopped.stop().expect(\"stop first bridge\");\n\n        let replacement = controller\n            .start_bridge(\"replacement\".into(), \"replacement-secret\".into(), 1_000)\n            .expect(\"start replacement bridge\");\n\n        drop(stopped);\n        assert!(matches!(\n            controller.start_bridge(\"third\".into(), \"third-secret\".into(), 1_000),\n            Err(AndroidRuntimeError::BridgeAlreadyRunning)\n        ));\n\n        replacement.stop().expect(\"stop replacement bridge\");\n    }\n\n"
           assert anchor in text
           text = text.replace(anchor, test + anchor, 1)
           path.write_text(text)
