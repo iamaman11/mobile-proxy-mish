@@ -10,8 +10,6 @@ on:
       - 'android/gradle.properties'
       - 'rust-toolchain.toml'
       - 'vendor/sing-box/release.toml'
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -39,10 +37,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Test release, failed-reservation, and E3 harness identity contracts
+      - name: Test release, reservation, topology, and E3 harness contracts
         run: |
           python3 scripts/release/test_android_release.py
           python3 scripts/release/test_failed_rc_reservation.py
+          python3 scripts/release/test_release_workflow_topology.py
           python3 scripts/release/test_e3_harness.py
 
       - name: Validate pinned Android release build-tools contract
@@ -54,8 +53,10 @@ jobs:
           grep -Eq '^mishTargetAbi=(armeabi-v7a|arm64-v8a)$' android/gradle.properties
           grep -Fq 'channel = "1.98.1"' rust-toolchain.toml
 
-  harness-signing-contract:
+  release-variant-contract:
     name: E3 Harness Signing Contract
+    if: ${{ github.event_name == 'pull_request' }}
+    needs: contract
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -148,8 +149,8 @@ jobs:
 
           SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:?Android SDK root is not configured}}"
           APKSIGNER="$SDK_ROOT/build-tools/$ANDROID_BUILD_TOOLS/apksigner"
-          product_cert="$($APKSIGNER verify --print-certs "$PRODUCT_APK" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n1 | tr -d ':[:space:]' | tr '[:upper:]' '[:lower:]')"
-          test_cert="$($APKSIGNER verify --print-certs "$TEST_APK" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n1 | tr -d ':[:space:]' | tr '[:upper:]' '[:lower:]')"
+          product_cert="$("$APKSIGNER" verify --print-certs "$PRODUCT_APK" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n1 | tr -d ':[:space:]' | tr '[:upper:]' '[:lower:]')"
+          test_cert="$("$APKSIGNER" verify --print-certs "$TEST_APK" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n1 | tr -d ':[:space:]' | tr '[:upper:]' '[:lower:]')"
           [[ "$product_cert" =~ ^[0-9a-f]{64}$ ]]
           [[ "$test_cert" == "$product_cert" ]]
 
@@ -177,7 +178,7 @@ jobs:
   prepare-rc:
     name: Prepare zero-input Android RC
     if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
-    needs: [contract, harness-signing-contract]
+    needs: contract
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -200,6 +201,7 @@ jobs:
           set -euo pipefail
           [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]
           [[ "$GITHUB_REF" == "refs/heads/main" ]]
+          [[ "$GITHUB_REF_PROTECTED" == "true" ]]
           [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
 
           git fetch --no-tags origin main
@@ -221,14 +223,20 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -n "$PREVIOUS_TAG" ]]; then
-            if RELEASE_META="$(gh release view "$PREVIOUS_TAG" \
-              --repo "$GITHUB_REPOSITORY" \
-              --json tagName,isDraft,isPrerelease \
-              --jq '[.tagName, .isDraft, .isPrerelease] | @tsv' 2>/dev/null)"; then
-              IFS=$'\t' read -r RELEASE_TAG IS_DRAFT IS_PRERELEASE <<< "$RELEASE_META"
-              [[ "$RELEASE_TAG" == "$PREVIOUS_TAG" ]]
-              [[ "$IS_DRAFT" == "false" ]]
-              [[ "$IS_PRERELEASE" == "true" ]]
+            if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$PREVIOUS_TAG" > "$RUNNER_TEMP/previous-release.json" 2>/dev/null; then
+              python3 - "$RUNNER_TEMP/previous-release.json" "$PREVIOUS_TAG" <<'PY'
+          import json
+          import sys
+          release = json.load(open(sys.argv[1], encoding="utf-8"))
+          tag = sys.argv[2]
+          if (
+              release.get("tag_name") != tag
+              or release.get("draft") is not False
+              or release.get("prerelease") is not True
+              or release.get("immutable") is not True
+          ):
+              raise SystemExit("previous RC is not a published immutable prerelease")
+          PY
               echo "Previous RC is a published immutable prerelease: $PREVIOUS_TAG"
             else
               PREVIOUS_REF="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$PREVIOUS_TAG" \
@@ -311,6 +319,7 @@ jobs:
             echo "- Previous RC reservation: \`${PREVIOUS_TAG:-NONE}\`"
             echo '- Authorization: **zero-input workflow dispatch on protected main**'
             echo '- Production signing key: **not materialized in READY projection**'
+            echo '- Android build on activation run: **NO**'
           } >> "$GITHUB_STEP_SUMMARY"
 
   activate-rc:
@@ -340,6 +349,7 @@ jobs:
           set -euo pipefail
           [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]
           [[ "$GITHUB_REF" == "refs/heads/main" ]]
+          [[ "$GITHUB_REF_PROTECTED" == "true" ]]
           [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]]
 
           git fetch --no-tags origin main
@@ -385,12 +395,13 @@ jobs:
             echo "- Machine-owned RC tag: \`$RC_TAG\`"
             echo '- Next execution: **automatic tag-scoped workflow_dispatch**'
             echo '- Production signing key on activation job: **NO**'
+            echo '- Android build on activation job: **NO**'
           } >> "$GITHUB_STEP_SUMMARY"
 
   publish-rc:
     name: Publish immutable Android RC
     if: ${{ github.event_name == 'workflow_dispatch' && github.ref_type == 'tag' }}
-    needs: [contract, harness-signing-contract]
+    needs: contract
     runs-on: ubuntu-latest
     environment: android-release
     permissions:
@@ -500,7 +511,7 @@ jobs:
           test -s "$KEYSTORE_PATH"
           echo "MISH_RELEASE_STORE_FILE=$KEYSTORE_PATH" >> "$GITHUB_ENV"
 
-      - name: Build and sign release candidate once with matching E3 harness
+      - name: Build, test, and sign the release candidate exactly once
         shell: bash
         env:
           MISH_RELEASE_VERSION_NAME: ${{ steps.version.outputs.version_name }}
@@ -611,22 +622,29 @@ jobs:
             --verify-tag \
             --prerelease \
             --title "$RC_TAG" \
-            --notes "Immutable Android release candidate. Physical acceptance must reference this exact tag and APK digest; stable promotion must reuse the same signed product bytes. E3 harness is separate test-only Actions evidence."
+            --notes "Immutable Android release candidate. Physical acceptance must reference this exact tag and APK digest; stable promotion must reuse the same signed product bytes. E3 harness remains bounded test-only Actions evidence for this transition."
 
-      - name: Read back exact published RC bytes
+      - name: Read back and verify exact immutable published RC bytes
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          RELEASE_META="$(gh release view "$RC_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --json tagName,isDraft,isPrerelease \
-            --jq '[.tagName, .isDraft, .isPrerelease] | @tsv')"
-          IFS=$'\t' read -r RELEASE_TAG IS_DRAFT IS_PRERELEASE <<< "$RELEASE_META"
-          [[ "$RELEASE_TAG" == "$RC_TAG" ]]
-          [[ "$IS_DRAFT" == "false" ]]
-          [[ "$IS_PRERELEASE" == "true" ]]
+          RELEASE_JSON="$RUNNER_TEMP/published-release.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RC_TAG" > "$RELEASE_JSON"
+          python3 - "$RELEASE_JSON" "$RC_TAG" <<'PY'
+          import json
+          import sys
+          release = json.load(open(sys.argv[1], encoding="utf-8"))
+          tag = sys.argv[2]
+          if (
+              release.get("tag_name") != tag
+              or release.get("draft") is not False
+              or release.get("prerelease") is not True
+              or release.get("immutable") is not True
+          ):
+              raise SystemExit("published RC is not an immutable prerelease")
+          PY
 
           TAG_META="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RC_TAG" \
             --jq '[.object.type, .object.sha] | @tsv')"
@@ -639,9 +657,6 @@ jobs:
           gh release download "$RC_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --pattern "${{ steps.artifact.outputs.apk_name }}" \
-            --dir "$READBACK"
-          gh release download "$RC_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
             --pattern "${{ steps.artifact.outputs.manifest_name }}" \
             --dir "$READBACK"
 
@@ -649,6 +664,11 @@ jobs:
             "$READBACK/${{ steps.artifact.outputs.apk_name }}"
           cmp "dist/${{ steps.artifact.outputs.manifest_name }}" \
             "$READBACK/${{ steps.artifact.outputs.manifest_name }}"
+
+          gh release verify "$RC_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+          gh release verify-asset "$RC_TAG" \
+            "$READBACK/${{ steps.artifact.outputs.apk_name }}" \
+            --repo "$GITHUB_REPOSITORY" >/dev/null
 
           python3 scripts/release/android_release.py verify \
             --tag "$RC_TAG" \
@@ -674,9 +694,11 @@ jobs:
             echo "- Product ABI: \`$MISH_TARGET_ABI\`"
             echo "- Product signing cert SHA-256: \`${{ steps.artifact.outputs.product_cert_sha256 }}\`"
             echo '- Authorization: **one zero-input main dispatch; tag transition is machine-owned**'
+            echo '- Main activation build/sign: **NO**'
             echo '- Protected release execution: **automatic tag-scoped workflow_dispatch**'
+            echo '- Production Android build/sign/test count: **ONE**'
             echo '- Product Release assets: **APK + release manifest only**'
-            echo '- E3 harness: **separate test-only Actions artifact, 7-day retention**'
+            echo '- E3 harness: **separate test-only Actions artifact, 7-day retention (to be migrated in the next bounded change)**'
             echo '- E3 harness signing certificate: **same as product APK**'
             echo '- Physical Windows release build/signing: **NO**'
           } >> "$GITHUB_STEP_SUMMARY"
