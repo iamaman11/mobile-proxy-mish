@@ -2,132 +2,169 @@
 
 This is the versioned execution protocol for the first physical proof under Issue #10.
 
-E3 proves only the Cellular Egress boundary on a real rooted Android phone with a real carrier. It does **not** prove Cloudflare Mesh, sing-box proxy serving, Kameleo/Camoufox, E4, or overall product readiness.
+E3 proves only the Cellular Egress boundary on a real rooted Android phone with a real carrier. It does **not** prove Cloudflare Mesh, sing-box proxy serving, Kameleo/Camoufox, E4, DNS anti-leak acceptance, or overall product readiness.
 
 ## Evidence contract
 
-```text
-real Android phone
-+ validated Wi-Fi connected
-+ real SIM / LTE/5G
-+ MISH exact-network owner lease
+The accepted B2 owner path is:
 
+```text
+Android requestNetwork(CELLULAR + INTERNET + NOT_VPN)
+ -> observed CELLULAR + INTERNET + VALIDATED + NOT_VPN
+ -> Rust Cellular Egress owner ADMITTED
+ -> owner-issued exact-network lease
+ -> network-scoped DNS
+ -> same lease binds exact socket
+ -> real Internet response
+```
+
+Wi-Fi is not a correctness prerequisite. It may remain present/validated, but it cannot satisfy Cellular Egress and cannot preserve admission when direct cellular disappears.
+
+The physical ceremony is one continuous instrumentation lifetime:
+
+```text
 positive:
-validated cellular -> owner ADMITTED
-owner lease -> network-scoped DNS
-same lease -> exact socket bind
-bound socket -> Internet
-IP echo -> valid public IP literal observed on-device
+  direct cellular validated/non-VPN
+  -> owner ADMITTED
+  -> exact-network DNS/socket lease
+  -> real HTTP response
 
 negative:
-Wi-Fi remains validated
-validated cellular absent
-owner cannot mint cellular lease
-no Wi-Fi/default authority substitution
+  same live request/controller
+  -> LAB/root svc data disable
+  -> direct cellular lost
+  -> owner NOT_ADMITTED
+  -> no new cellular lease
+  -> previously issued lease revoked
+  -> no Wi-Fi/default/VPN substitution
 
 recovery:
-cellular enabled again
-fresh cellular observation -> new owner authority
-positive proof succeeds again
+  same live request/controller remains alive
+  -> LAB/root svc data enable
+  -> requestNetwork() reacquires direct cellular
+  -> fresh owner authority / fresh lease
+  -> network-scoped DNS/socket
+  -> real HTTP response again
 ```
 
-`NO_EVIDENCE_ESCALATION`: successful hosted CI, emulator, arm64 linking, or APK assembly cannot replace this run.
+`NO_EVIDENCE_ESCALATION`: hosted CI, emulator, compile/link proof, APK assembly, release verification, or pre-device readiness cannot replace this physical run.
 
-## Required lab environment
+## Required physical lab environment
 
-The GitHub runner is intentionally external to the product runtime.
-
-Minimum runner labels:
+The physical executor is the accepted isolated Windows LAB:
 
 ```text
-self-hosted
-linux
-mobile-proxy-mish-e3
+runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+PowerShell: C:\mish-lab\tools\powershell-7.6.6\pwsh.exe
+ADB: C:\mish-lab\tools\android-sdk\platform-tools\adb.exe
 ```
 
-Runner prerequisites:
+The Windows LAB is an exact-artifact consumer/evidence executor only. It does not build Android product or instrumentation bytes and does not hold the Android release signing key.
 
-- `adb` available in `PATH`;
-- Android SDK command-line tools configured through `ANDROID_SDK_ROOT` or `ANDROID_HOME`;
-- `rustup`/`cargo` available;
-- USB access to the target phone;
-- the target phone has authorized USB debugging;
-- for `full-root-toggle`, `adb shell su -c id` must yield root;
-- Android API level is at least 23;
-- the phone ABI is `arm64-v8a` for the current support envelope;
-- Wi-Fi is connected to a validated Internet network before the workflow starts;
-- a real SIM/mobile-data subscription is available.
+Phone prerequisites for `full-root-toggle`:
 
-Cloudflare One Agent is **not required** for B2 E3. If it happens to be installed, that does not turn this run into Transport/Mesh evidence.
+- exactly one authorized ADB device;
+- fixed target compatibility: Samsung SM-A022G / Android 11 / API 30 / `armeabi-v7a`;
+- `adb shell su -c id` proves root;
+- real SIM/mobile-data service is available;
+- the exact verified RC product APK and same-source/same-certificate E3 harness are used;
+- Wi-Fi may be on or off; it is not Cellular Egress authority.
 
-## GitHub workflow
+Cloudflare One Agent is not required to satisfy B2 E3. If it is installed or active, its VPN/private-transport network cannot satisfy the `NOT_VPN` Cellular Egress owner contract and this run still does not become Mesh evidence.
 
-Run the workflow only from accepted `main`:
+## Exact RC selection — operator input is only the tag
+
+Run only from accepted protected `main`:
 
 ```text
 Actions -> E3 Physical Cellular -> Run workflow
 branch/ref -> main
 ```
 
-The workflow itself rejects a non-`main` ref so a feature-branch run cannot be mistaken for accepted E3 evidence.
-
-Inputs:
-
-- `device_serial`: exact `adb devices` serial;
-- `scenario`:
-  - `full-root-toggle` — preferred; workflow performs positive -> disable mobile data -> negative -> enable -> positive recovery;
-  - `positive-only` — useful when radio mutation is managed manually;
-  - `negative-only` — phone must already have cellular data unavailable while validated Wi-Fi remains connected;
-- `e3_host`, `e3_port`, `e3_path`: a plain-HTTP endpoint that returns the caller public IP as a bare response body.
-
-Default endpoint is `checkip.amazonaws.com:80/`. The endpoint is a test fixture, not a product dependency and not a readiness authority.
-
-The serial/host/path inputs intentionally accept narrow safe character sets because workflow inputs cross the local `adb` / remote-shell boundary.
-
-## What the instrumentation test actually proves
-
-The target APK contains the same production Rust/UniFFI cellular boundary as the app. The instrumentation APK is only an acceptance driver.
-
-For the positive case it:
-
-1. requires a validated Wi-Fi network to be present at the same time;
-2. requires a validated cellular network to be present;
-3. feeds real Android `NetworkCallback` observations to a fresh Rust `CellularController`;
-4. waits for owner `ADMITTED`;
-5. requests an opaque `CellularNetworkLease` from the owner;
-6. performs `resolveHost()` through that lease (`android_getaddrinfofornetwork`);
-7. creates a real TCP socket;
-8. binds that exact fd through the same lease (`android_setsocknetwork`);
-9. connects to a numeric address returned by the lease-scoped DNS result;
-10. makes a bounded plain-HTTP request and validates that the response body is an IPv4/IPv6 literal.
-
-No Java/Kotlin default DNS lookup is used for the destination address: the numeric result is converted with `Os.inet_pton`.
-
-For the negative case it requires validated Wi-Fi to remain present while validated cellular is absent and verifies that the Rust owner cannot become `ADMITTED` or issue a cellular authority lease.
-
-## Evidence identity
-
-The workflow records in the GitHub Actions job summary:
+Manual inputs are intentionally minimal:
 
 ```text
-Git commit + refs/heads/main
-scenario
-non-secret device model
-Android version/API
-Android build fingerprint
-ABI
-app APK SHA-256
-test APK SHA-256
-test echo endpoint
-PASS/FAIL
+rc_tag = exact immutable vMAJOR.MINOR.PATCH-rc.N
+mode   = pre-device-dry | full-root-toggle
 ```
 
-The actual carrier public-IP value is validated on-device but intentionally not persisted to public GitHub workflow logs/summary. A failure diagnostic also redacts a `public_ip=` evidence token before printing.
+There are no human-entered source SHA, APK SHA-256, harness run ID, artifact ID, harness ZIP digest, or test-APK digest inputs.
 
-Do not add IMEI, IMSI, SIM number, account credentials, proxy credentials, Cloudflare tokens, or other secrets to evidence.
+For the selected `rc_tag`, the hosted resolver must fail closed unless it can derive and verify exactly one coherent identity chain:
+
+```text
+exact Git tag
+ -> exact source commit
+ -> published immutable GitHub RC prerelease
+ -> canonical release APK + release manifest
+ -> GitHub asset SHA-256
+ -> manifest verification
+ -> reviewed release-signing certificate trust anchor
+ -> exact successful machine-owned Android Release Candidate run
+ -> exact e3-harness-<tag> artifact
+ -> artifact SHA-256
+ -> harness manifest + product/test bytes
+ -> test APK SHA-256
+```
+
+The resolved tuple is passed as machine-owned job outputs to the physical Windows job. The existing `labctl release resolve/verify` and `e3 verify` commands then independently re-check those identities before installation/execution.
+
+`latest` is never release authority. An ambiguous, expired, missing, mismatched, unsigned-by-the-reviewed-identity, or multiply-matching release/harness fails closed before physical execution.
+
+## Pre-device mode
+
+`mode=pre-device-dry` is an execution-path readiness proof only. It requires zero ADB devices and emits bounded typed evidence:
+
+```text
+PHONE-ON READY
+E3_PASS=NO
+NO_EVIDENCE_ESCALATION=PASS
+```
+
+It never installs APKs and never satisfies #10.
+
+## What the instrumentation proves
+
+`mode=full-root-toggle` installs the exact already-verified product and instrumentation APKs and runs one continuous lifecycle case.
+
+The positive/recovery portions prove that the production Rust/UniFFI cellular boundary:
+
+1. acquires a direct cellular Android `Network` through the live `requestNetwork()` owner;
+2. admits only `CELLULAR + INTERNET + VALIDATED + NOT_VPN`;
+3. mints an opaque `CellularNetworkLease` only while that authority is current;
+4. resolves the test hostname through the exact admitted network (`android_getaddrinfofornetwork`);
+5. creates a real TCP socket and binds that exact fd through the same lease (`android_setsocknetwork`);
+6. connects only to a numeric address returned by network-scoped DNS;
+7. performs a bounded real HTTP request;
+8. validates that a public IP literal was observed, without persisting the literal.
+
+The negative portion proves, in the same live controller/request lifetime, that loss of direct cellular removes admission, prevents a new lease, and revokes the old lease rather than falling back to Wi-Fi/default/VPN authority.
+
+## Evidence identity and privacy
+
+The workflow summary/evidence may record only bounded non-secret identity such as:
+
+```text
+protected-main run identity
+exact RC tag/source
+verified Android ABI
+product APK SHA-256
+reviewed signing-certificate SHA-256
+harness run/artifact IDs
+harness artifact SHA-256
+test APK SHA-256
+instrumentation identity
+PASS/FAIL boundary
+```
+
+The actual carrier public IP is validated transiently on-device and intentionally not persisted. Do not persist IMEI, IMSI, ICCID, SIM serial, phone number, ADB serial, SSID/BSSID, MAC addresses, private network details, account/enrollment tokens, proxy credentials, or signing secrets.
 
 ## Acceptance rule for Issue #10
 
-Issue #10 may close only when a successful E3 run is linked in the issue and the run corresponds to an accepted `main` commit.
+Issue #10 may close only after a successful protected-main `mode=full-root-toggle` run against an exact machine-resolved immutable RC proves the complete continuous:
 
-A passing `positive-only` run is not enough for the fail-closed portion. Preferred final B2 evidence is `full-root-toggle`; alternatively record separate accepted positive and negative physical runs plus a recovery run when the device cannot use `svc data` reliably.
+```text
+positive -> negative -> recovery positive
+```
+
+Hosted resolver success, pre-device readiness, release publication, or a fresh-process retry is not E3 acceptance.
