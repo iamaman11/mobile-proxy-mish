@@ -154,6 +154,7 @@ try {
     $workflow=Get-Content -Raw -LiteralPath $workflowPath
     Assert-True ($workflow -match '(?m)^\s{8}shell:\s*pwsh\s*$') 'Hosted Windows contract should retain its legitimate pwsh shell.'
     Assert-True ($workflow.Contains('rc_tag:')) 'E3 workflow must require one exact immutable RC tag input.'
+    Assert-True ($workflow.Contains('TRUSTED_RELEASE_SIGNING_CERT_SHA256: 1958d474069ce0f8b8e5390c9c4ebecd6e306fb4e0f0f6e12d35c9b91cc67803')) 'E3 workflow must pin the reviewed release signing identity.'
     foreach($mutableSelector in @(
         '(?i)releases/latest',
         '(?i)\bgh\s+release\s+(view|download)\s+latest\b',
@@ -176,7 +177,6 @@ try {
     Assert-True $resolverMatch.Success 'Exact RC resolver job block could not be isolated.'
     $resolverJob=$resolverMatch.Value
     foreach($required in @(
-        'TRUSTED_RELEASE_SIGNING_CERT_SHA256: 1958d474069ce0f8b8e5390c9c4ebecd6e306fb4e0f0f6e12d35c9b91cc67803',
         'python3 scripts/release/android_release.py derive --tag "$RC_TAG"',
         'git merge-base --is-ancestor "$SOURCE_SHA" origin/main',
         'releases/tags/$RC_TAG',
