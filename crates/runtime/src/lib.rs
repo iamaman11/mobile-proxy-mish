@@ -1,13 +1,12 @@
 //! Runtime Lifecycle natural-owner capability.
 //!
-//! Owns desired-running reconciliation and owned-child lifecycle semantics without
-//! becoming the semantic owner of transport, proxy, or cellular readiness.
-//!
-//! B4b adds only the concrete composition adapter that satisfies the bridge's
-//! `CellularOutboundConnector` port. It does not add an accept loop, retry policy,
-//! supervisor, or second cellular state machine.
+//! Owns bounded runtime composition without becoming the semantic owner of transport,
+//! proxy, or cellular readiness. The concrete egress connector consumes one shared
+//! Cellular Egress owner. Network-scoped DNS remains a transitional read-only Android
+//! adapter; public sockets are ordinary PRODUCT-UID sockets and are steered exclusively
+//! by the accepted root policy-routing adapter.
 
-use mish_android_network::{AndroidConnectError, AndroidNetworkError};
+use mish_android_network::AndroidNetworkError;
 use mish_cellular::{CellularEgress, CellularNetworkAuthority, CellularNetworkAuthorityError};
 use mish_cellular_egress_bridge::{
     CellularOutboundConnector, ConnectTarget, OutboundConnectError, TargetHost,
@@ -37,12 +36,8 @@ impl fmt::Display for CellularConnectorConfigError {
 
 impl std::error::Error for CellularConnectorConfigError {}
 
-/// Concrete runtime-composition adapter from the bridge's outbound port to one shared
-/// Cellular Egress natural owner plus the bounded Android exact-network mechanics.
-///
-/// Runtime Lifecycle supplies one explicit timeout budget. Each CONNECT converts that
-/// budget to one absolute deadline shared by DNS and socket connect so nested adapters
-/// cannot silently extend the externally visible operation indefinitely.
+/// Concrete runtime adapter from the private proxy bridge to one shared Cellular Egress
+/// owner. It has no network-selection state, retry policy, fallback, or second lifecycle.
 #[derive(Clone)]
 pub struct AndroidCellularOutboundConnector {
     owner: Arc<Mutex<CellularEgress>>,
@@ -51,8 +46,6 @@ pub struct AndroidCellularOutboundConnector {
 }
 
 impl AndroidCellularOutboundConnector {
-    /// Wires the connector to an existing runtime-scoped Cellular Egress owner and an
-    /// owner-defined operation timeout. No hidden default timeout is invented here.
     pub fn new(
         owner: Arc<Mutex<CellularEgress>>,
         operation_timeout: Duration,
@@ -60,11 +53,10 @@ impl AndroidCellularOutboundConnector {
         if operation_timeout.is_zero() {
             return Err(CellularConnectorConfigError::ZeroOperationTimeout);
         }
-        let resolver = ResolverWorker::spawn()?;
         Ok(Self {
             owner,
             operation_timeout,
-            resolver: Arc::new(resolver),
+            resolver: Arc::new(ResolverWorker::spawn()?),
         })
     }
 }
@@ -89,10 +81,7 @@ impl CellularOutboundConnector for AndroidCellularOutboundConnector {
             target.port(),
             deadline,
             |authority, domain, deadline| self.resolver.resolve(authority, domain, deadline),
-            |authority, address, deadline| {
-                mish_android_network::connect_tcp_until(authority, address, deadline)
-                    .map_err(map_android_connect_error)
-            },
+            |_authority, address, deadline| connect_root_policy_socket(address, deadline),
         )
     }
 }
@@ -110,8 +99,6 @@ struct ResolverWorker {
 
 impl ResolverWorker {
     fn spawn() -> Result<Self, CellularConnectorConfigError> {
-        // Capacity one is intentional: one request may wait behind the single in-flight
-        // blocking Android resolver operation, but there is no unbounded DNS work queue.
         let (requests, receiver) = mpsc::sync_channel(1);
         thread::Builder::new()
             .name("mish-cellular-dns".into())
@@ -134,7 +121,6 @@ impl ResolverWorker {
             deadline,
             response,
         };
-
         match self.requests.try_send(request) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
@@ -155,15 +141,11 @@ impl ResolverWorker {
 fn resolver_worker_loop(receiver: Receiver<ResolveRequest>) {
     while let Ok(request) = receiver.recv() {
         if Instant::now() >= request.deadline {
-            let _ = request
-                .response
-                .send(Err(OutboundConnectError::Unavailable));
+            let _ = request.response.send(Err(OutboundConnectError::Unavailable));
             continue;
         }
 
         let result = resolve_domain_blocking(request.authority, &request.hostname);
-        // A result that arrives after the owner deadline is discarded as stale. The
-        // getaddrinfo operation is read-only; no late connect effect can be dispatched.
         let result = if Instant::now() < request.deadline {
             result
         } else {
@@ -189,9 +171,28 @@ fn resolve_domain_blocking(
         .collect()
 }
 
-/// Private deterministic operation seam. Production has exactly one implementation:
-/// `mish-android-network`. Closures exist only to prove sequencing/failure behavior in
-/// hosted tests without pretending those tests are physical E3 evidence.
+/// Ordinary PRODUCT-UID socket. Routing is intentionally not selected here: the root
+/// adapter is the single infrastructure mechanism that marks this flow and routes it to
+/// the current owner-admitted cellular table. No default-route fallback is introduced.
+fn connect_root_policy_socket(
+    address: SocketAddr,
+    deadline: Instant,
+) -> Result<TcpStream, OutboundConnectError> {
+    let timeout = remaining(deadline)?;
+    TcpStream::connect_timeout(&address, timeout).map_err(|error| {
+        if matches!(
+            error.kind(),
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+        ) {
+            OutboundConnectError::Unavailable
+        } else {
+            OutboundConnectError::Failed
+        }
+    })
+}
+
+/// Private deterministic operation seam. Closures exist only to prove owner sequencing
+/// and currentness in hosted tests; production has the DNS + root-policy socket path above.
 fn connect_host_with<T>(
     owner: &Arc<Mutex<CellularEgress>>,
     host: &TargetHost,
@@ -214,7 +215,6 @@ fn connect_host_with<T>(
     ensure_deadline(deadline)?;
 
     let authority = issue_authority(owner)?;
-
     let address = match host {
         TargetHost::Ipv4(address) => IpAddr::V4(*address),
         TargetHost::Ipv6(address) => IpAddr::V6(*address),
@@ -230,8 +230,9 @@ fn connect_host_with<T>(
         }
     };
 
-    // Exactly one address/connect attempt is dispatched. Runtime Lifecycle owns any
-    // later recovery decision; this adapter has no retry or address-fallback stack.
+    // Exactly one address/connect attempt is dispatched. Authority is validated both
+    // before and after the bounded platform effect so a stale generation cannot be
+    // promoted into apparent success.
     ensure_deadline(deadline)?;
     validate_authority(owner, authority)?;
     let stream = connect(authority, SocketAddr::new(address, port), deadline)?;
@@ -281,26 +282,11 @@ fn map_authority_error(error: CellularNetworkAuthorityError) -> OutboundConnectE
 
 fn map_android_network_error(error: AndroidNetworkError) -> OutboundConnectError {
     match error {
-        AndroidNetworkError::InvalidHostname | AndroidNetworkError::InvalidSocketFd => {
-            OutboundConnectError::Rejected
-        }
+        AndroidNetworkError::InvalidHostname => OutboundConnectError::Rejected,
         AndroidNetworkError::UnsupportedPlatform => OutboundConnectError::Unavailable,
-        AndroidNetworkError::NativeSocketBindFailed
-        | AndroidNetworkError::NativeDnsLookupFailed
+        AndroidNetworkError::NativeDnsLookupFailed
         | AndroidNetworkError::NativeDnsNoResults
         | AndroidNetworkError::NativeAddressConversionFailed => OutboundConnectError::Failed,
-    }
-}
-
-fn map_android_connect_error(error: AndroidConnectError) -> OutboundConnectError {
-    match error {
-        AndroidConnectError::DeadlineExceeded | AndroidConnectError::UnsupportedPlatform => {
-            OutboundConnectError::Unavailable
-        }
-        AndroidConnectError::NativeSocketCreateFailed
-        | AndroidConnectError::NativeSocketBindFailed
-        | AndroidConnectError::NativeConnectFailed
-        | AndroidConnectError::NativeSocketModeFailed => OutboundConnectError::Failed,
     }
 }
 
@@ -346,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn expired_deadline_prevents_all_owner_and_platform_effects() {
+    fn expired_deadline_prevents_all_platform_effects() {
         let owner = admitted_owner();
         let resolved = Cell::new(false);
         let connected = Cell::new(false);
@@ -438,7 +424,6 @@ mod tests {
         let connect_authority = Cell::new(None::<CellularNetworkAuthority>);
         let expected_deadline = deadline();
         let first = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 20));
-        let second = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 21));
 
         let result = connect_host_with(
             &owner,
@@ -449,7 +434,7 @@ mod tests {
                 assert_eq!(domain, "example.invalid");
                 assert_eq!(received_deadline, expected_deadline);
                 dns_authority.set(Some(authority));
-                Ok(vec![first, second])
+                Ok(vec![first])
             },
             |authority, address, received_deadline| {
                 assert_eq!(received_deadline, expected_deadline);
@@ -517,7 +502,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_port_is_rejected_before_authority_or_platform_access() {
+    fn zero_port_is_rejected_before_platform_access() {
         let owner = admitted_owner();
         let connected = Cell::new(false);
 
