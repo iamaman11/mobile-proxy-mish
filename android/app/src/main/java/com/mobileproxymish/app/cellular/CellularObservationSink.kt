@@ -4,7 +4,8 @@ package com.mobileproxymish.app.cellular
  * Typed Android-platform observation sent toward the Rust Cellular Egress owner.
  *
  * These events are runtime-only adapter facts. They are not readiness decisions and
- * must never be persisted as current truth.
+ * must never be persisted as current truth. `interfaceName` is an ephemeral routing
+ * realization hint used only after the Rust owner admits the exact network generation.
  */
 sealed interface CellularNetworkEvent {
     val sequence: Long
@@ -12,6 +13,7 @@ sealed interface CellularNetworkEvent {
     data class Observed(
         override val sequence: Long,
         val networkHandle: Long,
+        val interfaceName: String?,
         val isCellular: Boolean,
         val hasInternet: Boolean,
         val isValidated: Boolean,
