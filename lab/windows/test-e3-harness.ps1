@@ -180,6 +180,8 @@ try {
         'python3 scripts/release/android_release.py derive --tag "$RC_TAG"',
         'git merge-base --is-ancestor "$SOURCE_SHA" origin/main',
         'releases/tags/$RC_TAG',
+        'release.get("immutable") is not True',
+        'exact RC is mutable; GitHub release immutability is required before physical acceptance',
         'python3 scripts/release/android_release.py verify',
         'actions/workflows/android-release.yml/runs?event=workflow_dispatch&status=completed&head_sha=$SOURCE_SHA',
         'e3-harness-{tag}',
