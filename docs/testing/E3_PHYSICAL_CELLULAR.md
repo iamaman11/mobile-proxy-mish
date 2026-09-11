@@ -90,14 +90,27 @@ mode   = pre-device-dry | full-root-toggle
 
 There are no human-entered source SHA, APK SHA-256, harness run ID, artifact ID, harness ZIP digest, or test-APK digest inputs.
 
+### Native GitHub release immutability is mandatory
+
+Repository setting `Enable release immutability` must be enabled **before the RC is published**. E3 accepts only a GitHub Release whose API metadata reports:
+
+```text
+immutable=true
+```
+
+This is a byte-integrity requirement, not a documentation label. A release that merely says “immutable” in its notes but reports `immutable=false` is rejected.
+
+GitHub native immutable releases lock the published release assets and associated tag against replacement/movement. The setting applies only to future releases. Therefore historical `v0.1.0-rc.4`, which was published as a mutable release, is historical evidence only and cannot satisfy the new E3 release-selection gate.
+
 For the selected `rc_tag`, the hosted resolver must fail closed unless it can derive and verify exactly one coherent identity chain:
 
 ```text
 exact Git tag
  -> exact source commit
- -> published immutable GitHub RC prerelease
+ -> published native-immutable GitHub RC prerelease
  -> canonical release APK + release manifest
  -> GitHub asset SHA-256
+ -> downloaded APK SHA-256
  -> manifest verification
  -> reviewed release-signing certificate trust anchor
  -> exact successful machine-owned Android Release Candidate run
@@ -109,7 +122,7 @@ exact Git tag
 
 The resolved tuple is passed as machine-owned job outputs to the physical Windows job. The existing `labctl release resolve/verify` and `e3 verify` commands then independently re-check those identities before installation/execution.
 
-`latest` is never release authority. An ambiguous, expired, missing, mismatched, unsigned-by-the-reviewed-identity, or multiply-matching release/harness fails closed before physical execution.
+`latest` is never release authority. A mutable, ambiguous, expired, missing, mismatched, unsigned-by-the-reviewed-identity, or multiply-matching release/harness fails closed before physical execution.
 
 ## Pre-device mode
 
@@ -161,7 +174,7 @@ The actual carrier public IP is validated transiently on-device and intentionall
 
 ## Acceptance rule for Issue #10
 
-Issue #10 may close only after a successful protected-main `mode=full-root-toggle` run against an exact machine-resolved immutable RC proves the complete continuous:
+Issue #10 may close only after a successful protected-main `mode=full-root-toggle` run against an exact machine-resolved **native-immutable** RC proves the complete continuous:
 
 ```text
 positive -> negative -> recovery positive
