@@ -33,7 +33,20 @@ function Resolve-SyntheticFailure {
 
 Assert-True ((Resolve-SyntheticFailure 'expected:<ADMITTED> but was:<NOT_ADMITTED>') -eq 'positive_admission_timeout') 'Initial admission timeout classification drifted.'
 Assert-True ((Resolve-SyntheticFailure 'expected direct cellular Internet presence=true validated_required=true') -eq 'positive_direct_cellular_missing') 'Initial direct-cellular classification drifted.'
-Assert-True ((Resolve-SyntheticFailure 'network-scoped DNS returned no addresses') -eq 'positive_bound_probe_failed') 'Initial bound-probe classification drifted.'
+Assert-True ((Resolve-SyntheticFailure 'network-scoped DNS returned no addresses') -eq 'positive_dns_empty') 'Positive empty-DNS classification drifted.'
+Assert-True ((Resolve-SyntheticFailure 'Android explicit-network DNS lookup failed') -eq 'positive_dns_lookup_failed') 'Positive native DNS failure classification drifted.'
+Assert-True ((Resolve-SyntheticFailure 'Android explicit-network DNS lookup returned no addresses') -eq 'positive_dns_empty') 'Positive native empty-DNS classification drifted.'
+Assert-True ((Resolve-SyntheticFailure 'Android explicit-network DNS address conversion failed') -eq 'positive_address_conversion_failed') 'Positive native address-conversion classification drifted.'
+Assert-True ((Resolve-SyntheticFailure 'lease must return numeric IP strings') -eq 'positive_address_conversion_failed') 'Positive lease address-conversion classification drifted.'
+Assert-True ((Resolve-SyntheticFailure 'Android explicit-network socket binding failed') -eq 'positive_socket_bind_failed') 'Positive socket-bind classification drifted.'
+Assert-True ((Resolve-SyntheticFailure 'android.system.ErrnoException: connect failed: ENETUNREACH') -eq 'positive_connect_failed') 'Positive connect classification drifted.'
+Assert-True ((Resolve-SyntheticFailure 'E3 echo endpoint must return HTTP 200') -eq 'positive_http_status_failed') 'Positive HTTP-status classification drifted.'
+Assert-True ((Resolve-SyntheticFailure 'socket write made no progress') -eq 'positive_response_io_failed') 'Positive write-progress classification drifted.'
+Assert-True ((Resolve-SyntheticFailure 'android.system.ErrnoException: read failed: ETIMEDOUT') -eq 'positive_response_io_failed') 'Positive read failure classification drifted.'
+Assert-True ((Resolve-SyntheticFailure 'E3 HTTP response exceeded 64 KiB') -eq 'positive_response_io_failed') 'Positive bounded-response classification drifted.'
+Assert-True ((Resolve-SyntheticFailure 'HTTP response must contain header/body separator') -eq 'positive_response_parse_failed') 'Positive response-parse classification drifted.'
+Assert-True ((Resolve-SyntheticFailure 'echo response must be a bare IPv4/IPv6 literal') -eq 'positive_public_ip_parse_failed') 'Positive public-IP parse classification drifted.'
+Assert-True ((Resolve-SyntheticFailure 'all lease-resolved addresses failed') -eq 'positive_bound_probe_unknown') 'Positive probe fallback must remain fail-closed and non-speculative.'
 
 $positive="E3_EVIDENCE phase=positive direct_cellular_validated=true`n"
 Assert-True ((Resolve-SyntheticFailure ($positive + 'expected direct cellular Internet presence=false validated_required=false')) -eq 'negative_loss_timeout') 'Negative loss timeout classification drifted.'
@@ -43,7 +56,9 @@ Assert-True ((Resolve-SyntheticFailure ($positive + 'pre-loss cellular lease mus
 $positiveNegative=$positive + "E3_EVIDENCE phase=negative direct_cellular_available=false`n"
 Assert-True ((Resolve-SyntheticFailure ($positiveNegative + 'expected:<ADMITTED> but was:<NOT_ADMITTED>')) -eq 'recovery_admission_timeout') 'Recovery admission timeout classification drifted.'
 Assert-True ((Resolve-SyntheticFailure ($positiveNegative + 'expected direct cellular Internet presence=true validated_required=true')) -eq 'recovery_direct_cellular_missing') 'Recovery direct-cellular classification drifted.'
-Assert-True ((Resolve-SyntheticFailure ($positiveNegative + 'recovery echo must be a bare IPv4/IPv6 literal')) -eq 'recovery_bound_probe_failed') 'Recovery bound-probe classification drifted.'
+Assert-True ((Resolve-SyntheticFailure ($positiveNegative + 'Android explicit-network socket binding failed')) -eq 'recovery_socket_bind_failed') 'Recovery socket-bind classification drifted.'
+Assert-True ((Resolve-SyntheticFailure ($positiveNegative + 'recovery echo must be a bare IPv4/IPv6 literal')) -eq 'recovery_public_ip_parse_failed') 'Recovery public-IP parse classification drifted.'
+Assert-True ((Resolve-SyntheticFailure ($positiveNegative + 'all lease-resolved addresses failed')) -eq 'recovery_bound_probe_unknown') 'Recovery probe fallback must remain fail-closed and non-speculative.'
 
 $complete=$positiveNegative + "E3_EVIDENCE phase=recovery direct_cellular_validated=true`nOK (1 test)"
 Assert-True ((Resolve-SyntheticFailure $complete 0) -eq 'none') 'Successful lifecycle must not classify as a failure.'
@@ -52,6 +67,8 @@ Assert-True ((Resolve-SyntheticFailure 'unrecognized synthetic failure') -eq 'po
 $moduleText=Get-Content -Raw -LiteralPath $e3ModulePath
 Assert-True ($moduleText.Contains('raw device output is intentionally not persisted.')) 'E3 failure adapter must retain raw device-output non-persistence.'
 Assert-True ($moduleText.Contains('reason=$reason')) 'E3 failure adapter must surface only the typed safe reason.'
+Assert-True (-not $moduleText.Contains("return 'positive_bound_probe_failed'")) 'Generic positive bound-probe collapse must stay removed.'
+Assert-True (-not $moduleText.Contains("return 'recovery_bound_probe_failed'")) 'Generic recovery bound-probe collapse must stay removed.'
 
 Write-Host 'E3_ZERO_INPUT_CONTRACT=PASS'
 Write-Host 'E3_TYPED_FAILURE_CLASSIFICATION=PASS'

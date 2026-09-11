@@ -215,6 +215,25 @@ function Invoke-E3Process {
     } finally { $p.Dispose() }
 }
 
+function Resolve-E3BoundProbeSubstage {
+    param(
+        [Parameter(Mandatory)][string]$StdOut,
+        [Parameter(Mandatory)][ValidateSet('positive','recovery')][string]$Phase
+    )
+
+    if ($StdOut -match 'Android explicit-network DNS lookup failed') { return "${Phase}_dns_lookup_failed" }
+    if ($StdOut -match 'Android explicit-network DNS lookup returned no addresses|network-scoped DNS returned no addresses') { return "${Phase}_dns_empty" }
+    if ($StdOut -match 'Android explicit-network DNS address conversion failed|lease must return numeric IP strings') { return "${Phase}_address_conversion_failed" }
+    if ($StdOut -match 'Android explicit-network socket binding failed') { return "${Phase}_socket_bind_failed" }
+    if ($StdOut -match '(?i)\bconnect failed:') { return "${Phase}_connect_failed" }
+    if ($StdOut -match 'E3 echo endpoint must return HTTP 200') { return "${Phase}_http_status_failed" }
+    if ($StdOut -match 'socket write made no progress|E3 HTTP response exceeded 64 KiB|(?i)\b(?:read|write) failed:') { return "${Phase}_response_io_failed" }
+    if ($StdOut -match 'HTTP response must contain header/body separator') { return "${Phase}_response_parse_failed" }
+    if ($StdOut -match 'echo response must be a bare IPv4/IPv6 literal|recovery echo must be a bare IPv4/IPv6 literal') { return "${Phase}_public_ip_parse_failed" }
+    if ($StdOut -match 'all lease-resolved addresses failed') { return "${Phase}_bound_probe_unknown" }
+    return $null
+}
+
 function Resolve-E3InstrumentationFailure {
     param(
         [Parameter(Mandatory)][string]$StdOut,
@@ -233,7 +252,8 @@ function Resolve-E3InstrumentationFailure {
         if ($StdOut -match 'expected:<ADMITTED> but was:<NOT_ADMITTED>') { return 'positive_admission_timeout' }
         if ($StdOut -match 'expected direct cellular Internet presence=true validated_required=true') { return 'positive_direct_cellular_missing' }
         if ($StdOut -match 'root mobile-data transition failed') { return 'positive_device_control_failed' }
-        if ($StdOut -match 'network-scoped DNS returned no addresses|all lease-resolved addresses failed|echo response must be a bare IPv4/IPv6 literal|E3 echo endpoint must return HTTP 200|lease must return numeric IP strings|socket write made no progress|E3 HTTP response exceeded 64 KiB|HTTP response must contain header/body separator') { return 'positive_bound_probe_failed' }
+        $probe = Resolve-E3BoundProbeSubstage -StdOut $StdOut -Phase 'positive'
+        if ($null -ne $probe) { return $probe }
         return 'positive_unknown'
     }
 
@@ -249,7 +269,8 @@ function Resolve-E3InstrumentationFailure {
         if ($StdOut -match 'expected:<ADMITTED> but was:<NOT_ADMITTED>') { return 'recovery_admission_timeout' }
         if ($StdOut -match 'expected direct cellular Internet presence=true validated_required=true') { return 'recovery_direct_cellular_missing' }
         if ($StdOut -match 'root mobile-data transition failed') { return 'recovery_device_control_failed' }
-        if ($StdOut -match 'network-scoped DNS returned no addresses|all lease-resolved addresses failed|recovery echo must be a bare IPv4/IPv6 literal|E3 echo endpoint must return HTTP 200|lease must return numeric IP strings|socket write made no progress|E3 HTTP response exceeded 64 KiB|HTTP response must contain header/body separator') { return 'recovery_bound_probe_failed' }
+        $probe = Resolve-E3BoundProbeSubstage -StdOut $StdOut -Phase 'recovery'
+        if ($null -ne $probe) { return $probe }
         return 'recovery_unknown'
     }
 
