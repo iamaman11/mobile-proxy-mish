@@ -36,6 +36,33 @@ sealed interface CellularRuntimeSnapshot {
 }
 
 /**
+ * Transient Android infrastructure hints keyed by the exact platform Network handle.
+ *
+ * This is deliberately not a second owner or readiness state. The Rust owner still
+ * decides which handle is admitted; this cache only lets the policy adapter retrieve
+ * the interface hint belonging to that exact owner-selected handle after reordered,
+ * unrelated, or superseded callbacks.
+ */
+internal class CellularInterfaceHints {
+    private val byNetwork = mutableMapOf<ULong, String?>()
+
+    fun observed(networkHandle: ULong, interfaceName: String?) {
+        byNetwork[networkHandle] = interfaceName
+    }
+
+    fun lost(networkHandle: ULong) {
+        byNetwork.remove(networkHandle)
+    }
+
+    fun interfaceFor(admittedNetworkHandle: ULong?): String? =
+        admittedNetworkHandle?.let(byNetwork::get)
+
+    fun clear() {
+        byNetwork.clear()
+    }
+}
+
+/**
  * One process-generation bridge between Android Network observations, the Rust owner,
  * and the narrow root policy-routing adapter that realizes an already owner-admitted
  * decision. This class owns no cellular admission policy.
@@ -46,6 +73,7 @@ class CellularRuntimeBridge(
     private val controller: CellularController?
     private val mutableSnapshot: MutableStateFlow<CellularRuntimeSnapshot>
     private val rootPolicy = CellularRootPolicy(Process.myUid())
+    private val interfaceHints = CellularInterfaceHints()
     private val observer = CellularNetworkObserver(context.applicationContext, this)
 
     val snapshot: StateFlow<CellularRuntimeSnapshot>
@@ -95,6 +123,7 @@ class CellularRuntimeBridge(
         observer.start()
     }
 
+    @Synchronized
     override fun onEvent(event: CellularNetworkEvent) {
         val activeController = controller ?: run {
             mutableSnapshot.value = CellularRuntimeSnapshot.BoundaryUnavailable(
@@ -104,6 +133,17 @@ class CellularRuntimeBridge(
         }
 
         mutableSnapshot.value = try {
+            when (event) {
+                is CellularNetworkEvent.Observed -> interfaceHints.observed(
+                    networkHandle = event.networkHandle.toULong(),
+                    interfaceName = event.interfaceName,
+                )
+
+                is CellularNetworkEvent.Lost -> interfaceHints.lost(
+                    networkHandle = event.networkHandle.toULong(),
+                )
+            }
+
             val admission = when (event) {
                 is CellularNetworkEvent.Observed -> activeController.observeNetwork(
                     sequence = event.sequence.toULong(),
@@ -120,7 +160,10 @@ class CellularRuntimeBridge(
                 )
             }
 
-            val interfaceName = (event as? CellularNetworkEvent.Observed)?.interfaceName
+            // Mechanism follows the owner-selected handle, never whichever callback
+            // happened to arrive most recently. This preserves the current path when an
+            // old handle is lost or an unrelated candidate is observed.
+            val interfaceName = interfaceHints.interfaceFor(admission.admittedNetworkHandle)
             val policyResult = rootPolicy.reconcile(
                 admitted = admission.state == CellularAdmissionState.ADMITTED,
                 interfaceName = interfaceName,
@@ -160,8 +203,10 @@ class CellularRuntimeBridge(
         }
     }
 
+    @Synchronized
     override fun close() {
         observer.close()
+        interfaceHints.clear()
         rootPolicy.close()
     }
 }
