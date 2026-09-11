@@ -1,5 +1,6 @@
 use mish_cellular_egress_bridge::{
-    BridgeCredentials, BridgeListener, CellularOutboundConnector, ConnectTarget, OutboundConnectError,
+    BridgeCredentials, BridgeListener, CellularOutboundConnector, ConnectTarget,
+    OutboundConnectError,
 };
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
