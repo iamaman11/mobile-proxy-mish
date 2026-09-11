@@ -29,7 +29,21 @@ android install may consume only those still-identical bytes
 
 For E3, the operator no longer copies that tuple manually. The E3 workflow accepts only an exact immutable `rc_tag` plus the execution `mode`, resolves the remaining release/harness identity on a hosted runner, and passes the resulting machine-owned tuple to the existing fail-closed `labctl` verifiers.
 
-The release signing-certificate fingerprint remains a reviewed stable trust anchor in the E3 consumer workflow. Per-RC source SHA, APK digest, ABI, harness run/artifact IDs, harness ZIP digest and test-APK digest are derived from the immutable tag/release/run rather than copied into the workflow for each candidate.
+The release signing-certificate fingerprint remains a reviewed stable trust anchor in the E3 consumer workflow. Per-RC source SHA, APK digest, ABI, harness run/artifact IDs, harness ZIP digest and test-APK digest are derived from the exact native-immutable GitHub Release and matching release run rather than copied into the workflow for each candidate.
+
+## Native immutable release prerequisite
+
+The repository GitHub setting `Enable release immutability` is part of the release-consumer trust contract and must be enabled before publishing an E3 candidate.
+
+E3 accepts only release API metadata with:
+
+```text
+immutable=true
+```
+
+This is deliberately stronger than release notes or naming conventions. A release with `immutable=false` is not an E3 artifact authority even when its tag, manifest, certificate and current asset digest otherwise look correct.
+
+GitHub native immutable releases lock published assets and the associated release tag. The setting applies only to future releases; historical mutable RCs remain historical evidence and are not silently upgraded by enabling the setting later.
 
 ## Entry point
 
@@ -71,6 +85,7 @@ exact tag syntax
  -> exact Git tag commit
  -> commit is in accepted main lineage
  -> published non-draft RC prerelease
+ -> GitHub reports immutable=true
  -> canonical release asset set
  -> GitHub APK SHA-256
  -> downloaded APK SHA-256
@@ -156,7 +171,7 @@ Actions -> E3 Physical Cellular -> Run workflow
 Inputs:
 
 ```text
-rc_tag = exact immutable RC tag
+rc_tag = exact native-immutable RC tag
 mode   = pre-device-dry | full-root-toggle
 ```
 
@@ -172,7 +187,7 @@ harness ZIP SHA-256
 test APK SHA-256
 ```
 
-Those are resolved and verified from the exact immutable RC identity.
+Those are resolved and verified from the exact native-immutable RC identity.
 
 `mode=pre-device-dry` requires zero ADB devices, installs nothing, and may only produce:
 
@@ -207,10 +222,11 @@ NO arbitrary-ref physical execution
 NO release signing key on Windows LAB
 NO Android rebuild on Windows LAB
 NO latest/ambiguous RC selection
+NO mutable GitHub Release as E3 byte authority
 NO human-copied per-RC digest/artifact tuple
 NO evidence escalation from hosted/pre-device proof
 NO carrier public-IP persistence
 NO device/SIM/network identifiers in durable public evidence
 ```
 
-A missing, ambiguous, expired, mismatched, or non-canonical release/harness identity fails closed before physical execution.
+A mutable, missing, ambiguous, expired, mismatched, or non-canonical release/harness identity fails closed before physical execution.
