@@ -1,7 +1,6 @@
 package com.mobileproxymish.app.cellular
 
 import java.io.ByteArrayOutputStream
-import java.util.concurrent.TimeUnit
 
 /**
  * Bounded Magisk authority boundary for cellular policy routing.
@@ -64,33 +63,79 @@ internal data class RootProcessResult(
 /**
  * Root process implementation. Output is capped and consumed only to classify typed
  * adapter results; command output is never logged or persisted.
+ *
+ * Android's timed Process.waitFor and destroyForcibly APIs start at API 26, while the
+ * product supports API 23. This implementation therefore uses only the API-23-safe
+ * Process contract: a bounded exitValue poll, concurrent output draining to avoid pipe
+ * back-pressure, and destroy() on timeout. The reader continues draining after the
+ * capture cap so a verbose root command cannot deadlock the child process.
  */
 internal class SuProcess : RootProcess {
     override fun run(arguments: List<String>): RootProcessResult {
         var child: Process? = null
+        var outputReader: Thread? = null
+        val output = ByteArrayOutputStream()
+
         return try {
             child = ProcessBuilder(arguments).redirectErrorStream(true).start()
-            if (!child.waitFor(PROBE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-                child.destroyForcibly()
+            val runningChild = child
+
+            outputReader = Thread(
+                {
+                    try {
+                        runningChild.inputStream.use { input ->
+                            val buffer = ByteArray(OUTPUT_BUFFER_BYTES)
+                            while (true) {
+                                val read = input.read(buffer)
+                                if (read <= 0) break
+
+                                synchronized(output) {
+                                    val remaining = MAX_OUTPUT_BYTES - output.size()
+                                    if (remaining > 0) {
+                                        output.write(buffer, 0, minOf(read, remaining))
+                                    }
+                                }
+                            }
+                        }
+                    } catch (_: Exception) {
+                        // Process teardown may close the pipe while the reader is blocked.
+                        // The command result, not reader teardown, owns success/failure.
+                    }
+                },
+                "mish-root-output",
+            ).apply {
+                isDaemon = true
+                start()
+            }
+
+            val deadline = System.nanoTime() + PROBE_TIMEOUT_NANOS
+            var exitCode: Int? = null
+            do {
+                exitCode = try {
+                    runningChild.exitValue()
+                } catch (_: IllegalThreadStateException) {
+                    null
+                }
+
+                if (exitCode == null) {
+                    Thread.sleep(POLL_INTERVAL_MILLIS)
+                }
+            } while (exitCode == null && System.nanoTime() < deadline)
+
+            if (exitCode == null) {
+                runningChild.destroy()
+                outputReader.join(READER_JOIN_MILLIS)
                 RootProcessResult(exitCode = -1, stdout = "", timedOut = true)
             } else {
-                val output = child.inputStream.use { input ->
-                    ByteArrayOutputStream().use { sink ->
-                        val buffer = ByteArray(256)
-                        while (sink.size() < MAX_OUTPUT_BYTES) {
-                            val read = input.read(
-                                buffer,
-                                0,
-                                minOf(buffer.size, MAX_OUTPUT_BYTES - sink.size()),
-                            )
-                            if (read <= 0) break
-                            sink.write(buffer, 0, read)
-                        }
-                        sink.toString(Charsets.UTF_8.name())
-                    }
+                outputReader.join(READER_JOIN_MILLIS)
+                val stdout = synchronized(output) {
+                    output.toString(Charsets.UTF_8.name())
                 }
-                RootProcessResult(exitCode = child.exitValue(), stdout = output)
+                RootProcessResult(exitCode = exitCode, stdout = stdout)
             }
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            RootProcessResult(exitCode = -1, stdout = "", timedOut = true)
         } catch (_: Exception) {
             RootProcessResult(exitCode = -1, stdout = "")
         } finally {
@@ -99,7 +144,10 @@ internal class SuProcess : RootProcess {
     }
 
     private companion object {
-        const val PROBE_TIMEOUT_SECONDS = 10L
+        const val PROBE_TIMEOUT_NANOS = 10_000_000_000L
+        const val POLL_INTERVAL_MILLIS = 25L
+        const val READER_JOIN_MILLIS = 250L
+        const val OUTPUT_BUFFER_BYTES = 256
         const val MAX_OUTPUT_BYTES = 4096
     }
 }
