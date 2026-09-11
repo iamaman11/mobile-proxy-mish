@@ -42,6 +42,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     "cellular.root_authority_unavailable"
                 CellularBoundaryFailure.RootPolicyReconcileFailed ->
                     "cellular.root_policy_reconcile_failed"
+                CellularBoundaryFailure.RootPolicyInvalidInterface ->
+                    "cellular.root_policy_invalid_interface"
+                CellularBoundaryFailure.RootPolicyRouteTableDiscoveryFailed ->
+                    "cellular.root_policy_route_table_discovery_failed"
+                CellularBoundaryFailure.RootPolicyRuleMutationFailed ->
+                    "cellular.root_policy_rule_mutation_failed"
+                CellularBoundaryFailure.RootPolicyVerificationFailed ->
+                    "cellular.root_policy_verification_failed"
             },
         )
 
