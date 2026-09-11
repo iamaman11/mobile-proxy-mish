@@ -114,11 +114,9 @@ class CellularE3InstrumentedTest {
                     "public_ip_observed=true established_https_ready=true ipv6=fail_closed",
             )
 
-            // Negative: LAB authority changes only the mobile-data setting. The still-live
-            // PRODUCT runtime must receive loss, remove the cellular lookup, retain the
-            // same-mark unreachable protection, block NEW PRODUCT DNS/TCP, and prevent the
-            // already-established PRODUCT HTTPS socket from successfully exchanging new
-            // application data after the newer NOT_ADMITTED owner generation.
+            // Negative: LAB authority requests the bounded mobile-data control effect. The
+            // command result is only a control-plane precondition; actual loss is proven
+            // exclusively by the owner/ConnectivityManager facts observed below.
             mobileDataMayBeDisabled = true
             requireMobileDataTransition("disable")
             waitForDirectCellular(validated = false, present = false, timeoutMillis = NEGATIVE_TIMEOUT_MILLIS)
@@ -663,12 +661,12 @@ class CellularE3InstrumentedTest {
     }
 
     private fun requireMobileDataTransition(state: String) {
-        assertTrue("root mobile-data transition failed", executeMobileDataTransition(state))
+        assertTrue("root mobile-data transition command failed", executeMobileDataTransition(state))
     }
 
     private fun executeMobileDataTransition(state: String): Boolean {
         require(state == "enable" || state == "disable")
-        val command = "su -c 'svc data $state'; code=\$?; echo E3_ROOT_EXIT:\$code"
+        val command = "su -c 'cmd phone data $state'; code=\$?; echo E3_ROOT_EXIT:\$code"
         val descriptor = instrumentation.uiAutomation.executeShellCommand(command)
         val output = android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor)
             .bufferedReader(Charsets.UTF_8)
