@@ -53,8 +53,10 @@ sealed interface CellularRootPolicyResult {
  *
  * Reconciliation establishes fail-closed guards first, revokes any stale IPv4 lookup, then
  * verifies the exact MISH chain before an ADMITTED owner generation may install a fresh
- * cellular lookup. IPv6 deliberately receives the same flow marking but only the unreachable
- * guard until a direct-cellular IPv6 path is separately accepted.
+ * cellular lookup. A referenced versioned MISH chain is immutable: it is never flushed or
+ * rebuilt while OUTPUT can jump into it. Detached partial state may be rebuilt safely before
+ * the jump is attached. IPv6 deliberately receives the same flow marking but only the
+ * unreachable guard until a direct-cellular IPv6 path is separately accepted.
  */
 class CellularRootPolicy internal constructor(
     private val productUid: Int,
@@ -227,28 +229,47 @@ class CellularRootPolicy internal constructor(
             ensureMangleFamily(IP6TABLES, ipv6OwnedChainLines(), ipv6OutputJump()) &&
             removeLegacySelectors()
 
+    /**
+     * A referenced versioned chain is immutable. Reconciliation may only flush/rebuild a
+     * detached chain. This guarantees that every OUTPUT jump is either absent or targets a
+     * complete verified policy; there is never a live empty/partial chain between shell effects.
+     */
     private fun ensureMangleFamily(
         binary: String,
         expectedChainLines: List<String>,
         outputJump: String,
     ): Boolean {
-        val initial = mangleOutputOrNull(binary) ?: return false
-        val chainExists = initial.any { it == "-N $MISH_CHAIN" }
-        val actualChainLines = initial.filter { it.startsWith("-A $MISH_CHAIN ") }
+        var snapshot = mangleOutputOrNull(binary) ?: return false
+        var chainExists = snapshot.any { it == "-N $MISH_CHAIN" }
+        var actualChainLines = snapshot.filter { it.startsWith("-A $MISH_CHAIN ") }
+        var jumpCount = snapshot.count { it == outputJump }
 
-        if (!chainExists && !commandSucceeded("$binary -t mangle -N $MISH_CHAIN")) return false
+        if (!chainExists) {
+            // A jump to a nonexistent user chain should be impossible in a valid ruleset.
+            // Treat it as a malformed reserved state rather than attempting permissive repair.
+            if (jumpCount != 0) return false
+            if (!commandSucceeded("$binary -t mangle -N $MISH_CHAIN")) return false
+            chainExists = true
+            actualChainLines = emptyList()
+        }
 
-        if (!chainExists || actualChainLines != expectedChainLines) {
+        if (actualChainLines != expectedChainLines) {
+            // Rebuild is safe only while the chain is detached. Once referenced, V1 is
+            // immutable; changing it requires a future versioned-chain migration.
+            if (jumpCount != 0) return false
             if (!commandSucceeded("$binary -t mangle -F $MISH_CHAIN")) return false
             for (line in expectedChainLines) {
-                if (!commandSucceeded("$binary -t mangle ${line.replaceFirst("-A ", "-A ")}")) {
-                    return false
-                }
+                if (!commandSucceeded("$binary -t mangle $line")) return false
+            }
+            snapshot = mangleOutputOrNull(binary) ?: return false
+            chainExists = snapshot.any { it == "-N $MISH_CHAIN" }
+            actualChainLines = snapshot.filter { it.startsWith("-A $MISH_CHAIN ") }
+            jumpCount = snapshot.count { it == outputJump }
+            if (!chainExists || actualChainLines != expectedChainLines || jumpCount != 0) {
+                return false
             }
         }
 
-        var snapshot = mangleOutputOrNull(binary) ?: return false
-        var jumpCount = snapshot.count { it == outputJump }
         if (jumpCount == 0) {
             if (!commandSucceeded("$binary -t mangle $outputJump")) return false
             jumpCount = 1
