@@ -41,7 +41,17 @@ class MainActivity : ComponentActivity() {
                         )
                         state.cellularReasonCode?.let { reason ->
                             Text(
-                                text = "Reason: $reason",
+                                text = "Cellular reason: $reason",
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                        }
+                        Text(
+                            text = "Proxy runtime: ${state.proxyState}",
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                        state.proxyReasonCode?.let { reason ->
+                            Text(
+                                text = "Proxy reason: $reason",
                                 style = MaterialTheme.typography.bodyMedium,
                             )
                         }
