@@ -20,6 +20,10 @@ enum class CellularBoundaryFailure {
     ForeignCallFailed,
     RootAuthorityUnavailable,
     RootPolicyReconcileFailed,
+    RootPolicyInvalidInterface,
+    RootPolicyRouteTableDiscoveryFailed,
+    RootPolicyRuleMutationFailed,
+    RootPolicyVerificationFailed,
 }
 
 /**
@@ -136,7 +140,7 @@ class CellularRuntimeBridge(
                         mutableSnapshot.value
                     } else {
                         CellularRuntimeSnapshot.BoundaryUnavailable(
-                            reason = CellularBoundaryFailure.RootPolicyReconcileFailed,
+                            reason = boundaryFailureFor(initialPolicy.reason),
                             rootPolicyFailure = initialPolicy.reason,
                         )
                     }
@@ -228,7 +232,8 @@ class CellularRuntimeBridge(
                         CellularRuntimeSnapshot.OwnerSnapshot(admission)
                     } else {
                         CellularRuntimeSnapshot.BoundaryUnavailable(
-                            reason = CellularBoundaryFailure.RootPolicyReconcileFailed,
+                            reason = policyResult.reason?.let(::boundaryFailureFor)
+                                ?: CellularBoundaryFailure.RootPolicyReconcileFailed,
                             rootPolicyFailure = policyResult.reason,
                         )
                     }
@@ -251,6 +256,22 @@ class CellularRuntimeBridge(
             )
         }
     }
+
+    private fun boundaryFailureFor(reason: CellularRootPolicyFailure): CellularBoundaryFailure =
+        when (reason) {
+            CellularRootPolicyFailure.InvalidProductUid,
+            CellularRootPolicyFailure.RuleMutationFailed,
+            -> CellularBoundaryFailure.RootPolicyRuleMutationFailed
+
+            CellularRootPolicyFailure.InvalidInterface ->
+                CellularBoundaryFailure.RootPolicyInvalidInterface
+
+            CellularRootPolicyFailure.RouteTableDiscoveryFailed ->
+                CellularBoundaryFailure.RootPolicyRouteTableDiscoveryFailed
+
+            CellularRootPolicyFailure.VerificationFailed ->
+                CellularBoundaryFailure.RootPolicyVerificationFailed
+        }
 
     private fun submitPolicyWork(block: () -> Unit) {
         try {
