@@ -96,7 +96,8 @@ Mobile Proxy Android process
 ├─ thin Kotlin Android adapter
 ├─ Rust core / natural-owner crates
 ├─ Compose UI projection
-└─ root/network execution adapter behind the existing Cellular Egress owner
+├─ root/network execution adapter behind the existing Cellular Egress owner
+└─ optional in-process Mesh ingress only if a concrete Transport boundary proves direct safe listener exposure insufficient
 
 sing-box                    separate owned vendor child process; proxy/server only on Android
 Cloudflare One Agent        external Android VPN/private-transport owner
