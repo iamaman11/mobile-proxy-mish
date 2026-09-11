@@ -2,6 +2,7 @@ package com.mobileproxymish.app.cellular
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
@@ -11,9 +12,10 @@ import java.util.concurrent.atomic.AtomicLong
 /**
  * Thin Android adapter that acquires and observes the direct cellular Network lifetime.
  *
- * It deliberately does not decide readiness. The request constrains the platform-side
- * acquisition to a non-VPN cellular Internet network; fresh capability bits are still
- * forwarded to the Rust Cellular Egress natural owner for admission and lease policy.
+ * It deliberately does not decide readiness. The request constrains platform-side
+ * acquisition to a non-VPN cellular Internet network; capability bits still go to the
+ * Rust Cellular Egress natural owner. The interface name is forwarded only as ephemeral
+ * adapter input for realizing an owner-admitted generation in kernel routing policy.
  */
 class CellularNetworkObserver(
     context: Context,
@@ -30,21 +32,19 @@ class CellularNetworkObserver(
 
     private val callback = object : ConnectivityManager.NetworkCallback() {
         override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
-            sink.onEvent(
-                CellularNetworkEvent.Observed(
-                    sequence = nextSequence(),
-                    networkHandle = network.networkHandle,
-                    isCellular = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR),
-                    hasInternet = capabilities.hasCapability(
-                        NetworkCapabilities.NET_CAPABILITY_INTERNET,
-                    ),
-                    isValidated = capabilities.hasCapability(
-                        NetworkCapabilities.NET_CAPABILITY_VALIDATED,
-                    ),
-                    isNotVpn = capabilities.hasCapability(
-                        NetworkCapabilities.NET_CAPABILITY_NOT_VPN,
-                    ),
-                ),
+            emitObserved(
+                network = network,
+                capabilities = capabilities,
+                interfaceName = connectivityManager.getLinkProperties(network)?.interfaceName,
+            )
+        }
+
+        override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
+            val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return
+            emitObserved(
+                network = network,
+                capabilities = capabilities,
+                interfaceName = linkProperties.interfaceName,
             )
         }
 
@@ -67,10 +67,9 @@ class CellularNetworkObserver(
             return
         }
 
-        // requestNetwork is intentional: unlike registerNetworkCallback, this asks
-        // Android to bring up/retain a matching background cellular Network. DEVICE-1
-        // proved that merely re-enabling mobile data does not recreate that Network on
-        // the fixed Samsung while another network/VPN remains active.
+        // requestNetwork is intentional: unlike passive observation, this asks Android
+        // to bring up/retain a matching background cellular Network. DEVICE-1 proved that
+        // merely re-enabling mobile data is insufficient on the fixed Samsung topology.
         connectivityManager.requestNetwork(request, callback)
         requested = true
     }
@@ -83,6 +82,30 @@ class CellularNetworkObserver(
 
         connectivityManager.unregisterNetworkCallback(callback)
         requested = false
+    }
+
+    private fun emitObserved(
+        network: Network,
+        capabilities: NetworkCapabilities,
+        interfaceName: String?,
+    ) {
+        sink.onEvent(
+            CellularNetworkEvent.Observed(
+                sequence = nextSequence(),
+                networkHandle = network.networkHandle,
+                interfaceName = interfaceName,
+                isCellular = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR),
+                hasInternet = capabilities.hasCapability(
+                    NetworkCapabilities.NET_CAPABILITY_INTERNET,
+                ),
+                isValidated = capabilities.hasCapability(
+                    NetworkCapabilities.NET_CAPABILITY_VALIDATED,
+                ),
+                isNotVpn = capabilities.hasCapability(
+                    NetworkCapabilities.NET_CAPABILITY_NOT_VPN,
+                ),
+            ),
+        )
     }
 
     private fun nextSequence(): Long = sequence.incrementAndGet()
