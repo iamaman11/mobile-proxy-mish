@@ -77,6 +77,7 @@ pub struct NetworkObservation {
     is_cellular: bool,
     has_internet: bool,
     is_validated: bool,
+    is_not_vpn: bool,
 }
 
 impl NetworkObservation {
@@ -87,6 +88,7 @@ impl NetworkObservation {
         is_cellular: bool,
         has_internet: bool,
         is_validated: bool,
+        is_not_vpn: bool,
     ) -> Self {
         Self {
             sequence,
@@ -94,6 +96,7 @@ impl NetworkObservation {
             is_cellular,
             has_internet,
             is_validated,
+            is_not_vpn,
         }
     }
 
@@ -102,6 +105,8 @@ impl NetworkObservation {
             Some(CellularAdmissionReason::NotCellular)
         } else if !self.has_internet {
             Some(CellularAdmissionReason::MissingInternetCapability)
+        } else if !self.is_not_vpn {
+            Some(CellularAdmissionReason::VpnDerivedNetwork)
         } else if !self.is_validated {
             Some(CellularAdmissionReason::NotValidated)
         } else {
@@ -112,8 +117,8 @@ impl NetworkObservation {
 
 /// Admission state for the currently observed Android network candidate.
 ///
-/// `Admitted` means only that Android currently reports a cellular network with
-/// `INTERNET + VALIDATED`. It does not claim complete Cellular Egress readiness.
+/// `Admitted` means only that Android currently reports a direct cellular network with
+/// `INTERNET + VALIDATED + NOT_VPN`. It does not claim complete Cellular Egress readiness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CellularAdmissionState {
     /// No fresh owner observation exists yet.
@@ -133,6 +138,8 @@ pub enum CellularAdmissionReason {
     NotCellular,
     /// The observed candidate lacked Android's INTERNET capability.
     MissingInternetCapability,
+    /// The observed candidate was VPN-derived rather than a direct non-VPN network.
+    VpnDerivedNetwork,
     /// The observed candidate lacked Android's VALIDATED capability.
     NotValidated,
     /// The currently admitted network was reported lost.
@@ -254,7 +261,7 @@ impl CellularEgress {
     ///
     /// An invalid observation for the *currently admitted* handle invalidates it
     /// immediately. An unrelated invalid candidate cannot evict an already-admitted
-    /// validated cellular network.
+    /// validated direct cellular network.
     pub fn observe(&mut self, observation: NetworkObservation) -> ApplyResult {
         if self.is_stale(observation.sequence) {
             return ApplyResult::IgnoredStale(self.admission);
@@ -325,6 +332,7 @@ mod tests {
         is_cellular: bool,
         has_internet: bool,
         is_validated: bool,
+        is_not_vpn: bool,
     ) -> NetworkObservation {
         NetworkObservation::new(
             sequence(seq),
@@ -332,6 +340,7 @@ mod tests {
             is_cellular,
             has_internet,
             is_validated,
+            is_not_vpn,
         )
     }
 
@@ -348,10 +357,10 @@ mod tests {
     }
 
     #[test]
-    fn admits_only_validated_cellular_with_internet() {
+    fn admits_only_validated_direct_cellular_with_internet() {
         let mut owner = CellularEgress::new();
 
-        owner.observe(observation(1, 11, true, true, true));
+        owner.observe(observation(1, 11, true, true, true, true));
 
         assert_eq!(owner.admission().state(), CellularAdmissionState::Admitted);
         assert_eq!(owner.admission().reason(), None);
@@ -362,7 +371,7 @@ mod tests {
     fn rejects_cellular_without_validation() {
         let mut owner = CellularEgress::new();
 
-        owner.observe(observation(1, 11, true, true, false));
+        owner.observe(observation(1, 11, true, true, false, true));
 
         assert_eq!(
             owner.admission().state(),
@@ -376,10 +385,27 @@ mod tests {
     }
 
     #[test]
+    fn rejects_vpn_derived_cellular_network() {
+        let mut owner = CellularEgress::new();
+
+        owner.observe(observation(1, 11, true, true, true, false));
+
+        assert_eq!(
+            owner.admission().state(),
+            CellularAdmissionState::NotAdmitted
+        );
+        assert_eq!(
+            owner.admission().reason(),
+            Some(CellularAdmissionReason::VpnDerivedNetwork)
+        );
+        assert_eq!(owner.admission().admitted_network(), None);
+    }
+
+    #[test]
     fn rejects_validated_wifi() {
         let mut owner = CellularEgress::new();
 
-        owner.observe(observation(1, 11, false, true, true));
+        owner.observe(observation(1, 11, false, true, true, true));
 
         assert_eq!(
             owner.admission().state(),
@@ -395,7 +421,7 @@ mod tests {
     #[test]
     fn losing_current_network_fails_closed() {
         let mut owner = CellularEgress::new();
-        owner.observe(observation(1, 11, true, true, true));
+        owner.observe(observation(1, 11, true, true, true, true));
 
         owner.lost(sequence(2), handle(11));
 
@@ -413,8 +439,8 @@ mod tests {
     #[test]
     fn loss_of_superseded_network_cannot_evict_newer_network() {
         let mut owner = CellularEgress::new();
-        owner.observe(observation(1, 11, true, true, true));
-        owner.observe(observation(2, 22, true, true, true));
+        owner.observe(observation(1, 11, true, true, true, true));
+        owner.observe(observation(2, 22, true, true, true, true));
 
         owner.lost(sequence(3), handle(11));
 
@@ -425,10 +451,10 @@ mod tests {
     #[test]
     fn stale_observation_after_loss_is_ignored() {
         let mut owner = CellularEgress::new();
-        owner.observe(observation(1, 11, true, true, true));
+        owner.observe(observation(1, 11, true, true, true, true));
         owner.lost(sequence(3), handle(11));
 
-        let result = owner.observe(observation(2, 11, true, true, true));
+        let result = owner.observe(observation(2, 11, true, true, true, true));
 
         assert!(matches!(result, ApplyResult::IgnoredStale(_)));
         assert_eq!(
@@ -439,11 +465,11 @@ mod tests {
     }
 
     #[test]
-    fn capability_loss_on_current_handle_invalidates_it() {
+    fn validation_loss_on_current_handle_invalidates_it() {
         let mut owner = CellularEgress::new();
-        owner.observe(observation(1, 11, true, true, true));
+        owner.observe(observation(1, 11, true, true, true, true));
 
-        owner.observe(observation(2, 11, true, true, false));
+        owner.observe(observation(2, 11, true, true, false, true));
 
         assert_eq!(
             owner.admission().state(),
@@ -457,11 +483,29 @@ mod tests {
     }
 
     #[test]
+    fn vpn_provenance_change_on_current_handle_invalidates_it() {
+        let mut owner = CellularEgress::new();
+        owner.observe(observation(1, 11, true, true, true, true));
+
+        owner.observe(observation(2, 11, true, true, true, false));
+
+        assert_eq!(
+            owner.admission().state(),
+            CellularAdmissionState::NotAdmitted
+        );
+        assert_eq!(
+            owner.admission().reason(),
+            Some(CellularAdmissionReason::VpnDerivedNetwork)
+        );
+        assert_eq!(owner.admission().admitted_network(), None);
+    }
+
+    #[test]
     fn unrelated_invalid_candidate_does_not_evict_current_network() {
         let mut owner = CellularEgress::new();
-        owner.observe(observation(1, 11, true, true, true));
+        owner.observe(observation(1, 11, true, true, true, true));
 
-        owner.observe(observation(2, 22, false, true, true));
+        owner.observe(observation(2, 22, false, true, true, true));
 
         assert_eq!(owner.admission().state(), CellularAdmissionState::Admitted);
         assert_eq!(owner.admission().admitted_network(), Some(handle(11)));
@@ -481,7 +525,7 @@ mod tests {
     #[test]
     fn authority_captures_exact_owner_generation() {
         let mut owner = CellularEgress::new();
-        owner.observe(observation(1, 42, true, true, true));
+        owner.observe(observation(1, 42, true, true, true, true));
 
         let authority = owner
             .admitted_network_authority()
@@ -494,12 +538,12 @@ mod tests {
     #[test]
     fn reobservation_of_same_raw_handle_invalidates_old_authority() {
         let mut owner = CellularEgress::new();
-        owner.observe(observation(1, 42, true, true, true));
+        owner.observe(observation(1, 42, true, true, true, true));
         let authority = owner
             .admitted_network_authority()
             .expect("admitted authority");
 
-        owner.observe(observation(2, 42, true, true, true));
+        owner.observe(observation(2, 42, true, true, true, true));
 
         assert_eq!(
             owner.validate_network_authority(authority),
@@ -510,7 +554,7 @@ mod tests {
     #[test]
     fn loss_invalidates_existing_authority() {
         let mut owner = CellularEgress::new();
-        owner.observe(observation(1, 42, true, true, true));
+        owner.observe(observation(1, 42, true, true, true, true));
         let authority = owner
             .admitted_network_authority()
             .expect("admitted authority");
