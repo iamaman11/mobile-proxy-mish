@@ -41,8 +41,9 @@ sealed interface CellularRootPolicyResult {
  * mark -> current direct-cellular IPv4 table
  * mark -> unreachable guard
  *
- * The unreachable guard is installed before the selector, so startup/reconciliation
- * never has an interval where a PRODUCT mark can fall through Android default routing.
+ * Every reconciliation first establishes the guards and revokes any previous cellular
+ * lookup before a fresh owner generation can discover and install its table. A stale
+ * generation therefore cannot remain usable while the new generation is being checked.
  * IPv6 gets the same NEW-flow mark plus only the unreachable guard until physical
  * direct-cellular IPv6 evidence exists. Established inbound Mesh replies are not NEW,
  * so they are not redirected by this selector.
@@ -70,31 +71,30 @@ class CellularRootPolicy internal constructor(
             return CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.InvalidProductUid)
         }
 
-        if (!ensureBaseFailClosedRules()) {
+        // Transaction boundary for every owner generation:
+        // 1) guards exist, 2) stale cellular lookup is revoked, 3) selectors/base are
+        // verified. Only then may an admitted generation discover/install a fresh lookup.
+        if (!ensureFailClosedGuards()) {
+            return CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.RuleMutationFailed)
+        }
+        if (!removeOwnedIpv4Lookups()) {
+            return CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.RuleMutationFailed)
+        }
+        if (!ensureSelectors() || !verifyFailClosedBase()) {
             return CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.RuleMutationFailed)
         }
 
         if (!admitted) {
-            return if (removeOwnedIpv4Lookups() && verifyFailClosedBase()) {
-                CellularRootPolicyResult.FailClosed()
-            } else {
-                CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.RuleMutationFailed)
-            }
+            return CellularRootPolicyResult.FailClosed()
         }
 
         val iface = interfaceName?.takeIf { isSafeInterfaceName(it) }
-        if (iface == null) {
-            removeOwnedIpv4Lookups()
-            return CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.InvalidInterface)
-        }
+            ?: return CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.InvalidInterface)
 
         val table = discoverValidatedIpv4Table(iface)
-        if (table == null) {
-            removeOwnedIpv4Lookups()
-            return CellularRootPolicyResult.FailClosed(
+            ?: return CellularRootPolicyResult.FailClosed(
                 CellularRootPolicyFailure.RouteTableDiscoveryFailed,
             )
-        }
 
         if (!replaceIpv4Lookup(table)) {
             removeOwnedIpv4Lookups()
@@ -125,14 +125,13 @@ class CellularRootPolicy internal constructor(
         removeExactRule(IPV6_GUARD_DELETE)
     }
 
-    private fun ensureBaseFailClosedRules(): Boolean {
-        // Guards first, selectors second. A partially completed startup is therefore
-        // either inert (no selector) or fail-closed (selector + guard), never fallback.
-        return ensureRpdbGuard(IPV4_RULE_SHOW, ::isOwnedIpv4Guard, IPV4_GUARD_ADD) &&
-            ensureRpdbGuard(IPV6_RULE_SHOW, ::isOwnedIpv6Guard, IPV6_GUARD_ADD) &&
-            ensureExactRule(ipv4SelectorCheck(), ipv4SelectorAdd()) &&
+    private fun ensureFailClosedGuards(): Boolean =
+        ensureRpdbGuard(IPV4_RULE_SHOW, ::isOwnedIpv4Guard, IPV4_GUARD_ADD) &&
+            ensureRpdbGuard(IPV6_RULE_SHOW, ::isOwnedIpv6Guard, IPV6_GUARD_ADD)
+
+    private fun ensureSelectors(): Boolean =
+        ensureExactRule(ipv4SelectorCheck(), ipv4SelectorAdd()) &&
             ensureExactRule(ipv6SelectorCheck(), ipv6SelectorAdd())
-    }
 
     private fun verifyFailClosedBase(): Boolean =
         commandSucceeded(ipv4SelectorCheck()) &&
