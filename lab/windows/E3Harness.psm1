@@ -215,6 +215,47 @@ function Invoke-E3Process {
     } finally { $p.Dispose() }
 }
 
+function Resolve-E3InstrumentationFailure {
+    param(
+        [Parameter(Mandatory)][string]$StdOut,
+        [Parameter(Mandatory)][int]$ExitCode
+    )
+
+    if ($ExitCode -eq 0 -and $StdOut -match 'OK \(1 test\)') {
+        return 'none'
+    }
+
+    $positive = $StdOut -match 'E3_EVIDENCE phase=positive '
+    $negative = $StdOut -match 'E3_EVIDENCE phase=negative '
+    $recovery = $StdOut -match 'E3_EVIDENCE phase=recovery '
+
+    if (-not $positive) {
+        if ($StdOut -match 'expected:<ADMITTED> but was:<NOT_ADMITTED>') { return 'positive_admission_timeout' }
+        if ($StdOut -match 'expected direct cellular Internet presence=true validated_required=true') { return 'positive_direct_cellular_missing' }
+        if ($StdOut -match 'root mobile-data transition failed') { return 'positive_device_control_failed' }
+        if ($StdOut -match 'network-scoped DNS returned no addresses|all lease-resolved addresses failed|echo response must be a bare IPv4/IPv6 literal|E3 echo endpoint must return HTTP 200|lease must return numeric IP strings|socket write made no progress|E3 HTTP response exceeded 64 KiB|HTTP response must contain header/body separator') { return 'positive_bound_probe_failed' }
+        return 'positive_unknown'
+    }
+
+    if (-not $negative) {
+        if ($StdOut -match 'expected direct cellular Internet presence=false') { return 'negative_loss_timeout' }
+        if ($StdOut -match 'expected:<NOT_ADMITTED> but was:<ADMITTED>') { return 'negative_owner_timeout' }
+        if ($StdOut -match 'no cellular authority lease may be issued|pre-loss cellular lease must be revoked') { return 'negative_lease_revocation_failed' }
+        if ($StdOut -match 'root mobile-data transition failed') { return 'negative_device_control_failed' }
+        return 'negative_unknown'
+    }
+
+    if (-not $recovery) {
+        if ($StdOut -match 'expected:<ADMITTED> but was:<NOT_ADMITTED>') { return 'recovery_admission_timeout' }
+        if ($StdOut -match 'expected direct cellular Internet presence=true validated_required=true') { return 'recovery_direct_cellular_missing' }
+        if ($StdOut -match 'root mobile-data transition failed') { return 'recovery_device_control_failed' }
+        if ($StdOut -match 'network-scoped DNS returned no addresses|all lease-resolved addresses failed|recovery echo must be a bare IPv4/IPv6 literal|E3 echo endpoint must return HTTP 200|lease must return numeric IP strings|socket write made no progress|E3 HTTP response exceeded 64 KiB|HTTP response must contain header/body separator') { return 'recovery_bound_probe_failed' }
+        return 'recovery_unknown'
+    }
+
+    return 'instrumentation_unknown'
+}
+
 function Invoke-E3FullRootToggle {
     param(
         [Parameter(Mandatory)][string]$ReleaseVerificationReceipt,
@@ -250,7 +291,10 @@ function Invoke-E3FullRootToggle {
     function Run-E3Case([string]$Mode){
         $args=@('-s',$serial,'shell','am','instrument','-w','-r','-e','class',$script:TestClass,'-e','e3Mode',$Mode,'-e','e3Host',$E3Host,'-e','e3Port',[string]$E3Port,'-e','e3Path',$E3Path,$script:TestComponent)
         $x=Invoke-E3Process $adb $args $TimeoutSeconds
-        if($x.ExitCode -ne 0 -or $x.StdOut -notmatch 'OK \(1 test\)'){ Stop-E3 'E3_FAILED' "E3 $Mode instrumentation failed; device output is intentionally not persisted." }
+        if($x.ExitCode -ne 0 -or $x.StdOut -notmatch 'OK \(1 test\)'){
+            $reason=Resolve-E3InstrumentationFailure -StdOut $x.StdOut -ExitCode $x.ExitCode
+            Stop-E3 'E3_FAILED' "E3 $Mode instrumentation failed; reason=$reason; raw device output is intentionally not persisted."
+        }
     }
     try { Set-MobileData 'enable'; Run-E3Case 'lifecycle' }
     finally { try { [void](Invoke-E3Process $adb @('-s',$serial,'shell','su','-c','svc data enable') $TimeoutSeconds) } catch {} }
