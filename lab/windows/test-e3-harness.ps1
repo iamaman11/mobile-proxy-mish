@@ -154,7 +154,13 @@ try {
     $workflow=Get-Content -Raw -LiteralPath $workflowPath
     Assert-True ($workflow -match '(?m)^\s{8}shell:\s*pwsh\s*$') 'Hosted Windows contract should retain its legitimate pwsh shell.'
     Assert-True ($workflow.Contains('rc_tag:')) 'E3 workflow must require one exact immutable RC tag input.'
-    Assert-True (-not ($workflow -match '(?i)\blatest\b')) 'E3 workflow must never resolve a mutable latest release.'
+    foreach($mutableSelector in @(
+        '(?i)releases/latest',
+        '(?i)\bgh\s+release\s+(view|download)\s+latest\b',
+        '(?im)^\s*RC_TAG:\s*latest\s*$'
+    )){
+        Assert-True (-not ($workflow -match $mutableSelector)) 'E3 workflow must never resolve a mutable latest release.'
+    }
 
     foreach($obsolete in @(
         'RC_TAG: v0.1.0-rc.4',
