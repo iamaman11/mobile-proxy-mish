@@ -24,6 +24,7 @@ class CellularNetworkObserver(
 ) : Closeable {
     private val connectivityManager = context.getSystemService(ConnectivityManager::class.java)
     private val sequence = AtomicLong(0)
+    private val eventLock = Any()
 
     private val request = NetworkRequest.Builder()
         .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
@@ -47,12 +48,7 @@ class CellularNetworkObserver(
         }
 
         override fun onLost(network: Network) {
-            sink.onEvent(
-                CellularNetworkEvent.Lost(
-                    sequence = nextSequence(),
-                    networkHandle = network.networkHandle,
-                ),
-            )
+            emitLost(network)
         }
     }
 
@@ -88,24 +84,38 @@ class CellularNetworkObserver(
         capabilities: NetworkCapabilities,
         linkProperties: LinkProperties?,
     ) {
-        sink.onEvent(
-            CellularNetworkEvent.Observed(
-                sequence = nextSequence(),
-                networkHandle = network.networkHandle,
-                isCellular = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR),
-                hasInternet = capabilities.hasCapability(
-                    NetworkCapabilities.NET_CAPABILITY_INTERNET,
+        synchronized(eventLock) {
+            // Sequence allocation and sink submission are one atomic ordering boundary.
+            // If Android invokes callbacks concurrently, executor enqueue order therefore
+            // cannot invert owner sequence order and make a stale interface hint current.
+            sink.onEvent(
+                CellularNetworkEvent.Observed(
+                    sequence = sequence.incrementAndGet(),
+                    networkHandle = network.networkHandle,
+                    isCellular = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR),
+                    hasInternet = capabilities.hasCapability(
+                        NetworkCapabilities.NET_CAPABILITY_INTERNET,
+                    ),
+                    isValidated = capabilities.hasCapability(
+                        NetworkCapabilities.NET_CAPABILITY_VALIDATED,
+                    ),
+                    isNotVpn = capabilities.hasCapability(
+                        NetworkCapabilities.NET_CAPABILITY_NOT_VPN,
+                    ),
+                    interfaceName = linkProperties?.interfaceName,
                 ),
-                isValidated = capabilities.hasCapability(
-                    NetworkCapabilities.NET_CAPABILITY_VALIDATED,
-                ),
-                isNotVpn = capabilities.hasCapability(
-                    NetworkCapabilities.NET_CAPABILITY_NOT_VPN,
-                ),
-                interfaceName = linkProperties?.interfaceName,
-            ),
-        )
+            )
+        }
     }
 
-    private fun nextSequence(): Long = sequence.incrementAndGet()
+    private fun emitLost(network: Network) {
+        synchronized(eventLock) {
+            sink.onEvent(
+                CellularNetworkEvent.Lost(
+                    sequence = sequence.incrementAndGet(),
+                    networkHandle = network.networkHandle,
+                ),
+            )
+        }
+    }
 }
