@@ -9,7 +9,8 @@ function Assert-True {
     if(-not $Condition){ throw $Message }
 }
 
-$workflowPath=Join-Path (Split-Path $PSScriptRoot -Parent | Split-Path -Parent) '.github/workflows/e3-physical-cellular.yml'
+$repoRoot=Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$workflowPath=Join-Path $repoRoot '.github/workflows/e3-physical-cellular.yml'
 $workflow=Get-Content -Raw -LiteralPath $workflowPath
 
 $dispatch=[regex]::Match($workflow,'(?ms)^  workflow_dispatch:\s*\r?\n(?<body>.*?)(?=^permissions:)')
@@ -46,7 +47,30 @@ Assert-True ((Resolve-SyntheticFailure 'android.system.ErrnoException: read fail
 Assert-True ((Resolve-SyntheticFailure 'E3 HTTP response exceeded 64 KiB') -eq 'positive_response_io_failed') 'Positive bounded-response classification drifted.'
 Assert-True ((Resolve-SyntheticFailure 'HTTP response must contain header/body separator') -eq 'positive_response_parse_failed') 'Positive response-parse classification drifted.'
 Assert-True ((Resolve-SyntheticFailure 'echo response must be a bare IPv4/IPv6 literal') -eq 'positive_public_ip_parse_failed') 'Positive public-IP parse classification drifted.'
-Assert-True ((Resolve-SyntheticFailure 'all lease-resolved addresses failed') -eq 'positive_bound_probe_unknown') 'Positive probe fallback must remain fail-closed and non-speculative.'
+Assert-True ((Resolve-SyntheticFailure 'all lease-resolved addresses failed') -eq 'positive_bound_probe_unknown') 'Positive legacy probe fallback must remain fail-closed and non-speculative.'
+
+$safeStages=@(
+    'address_conversion',
+    'socket_create',
+    'fd_duplicate',
+    'fd_adopt',
+    'fd_cleanup',
+    'socket_option',
+    'socket_bind',
+    'connect',
+    'write',
+    'read',
+    'http_status',
+    'response_parse',
+    'public_ip_parse'
+)
+foreach($stage in $safeStages){
+    $expected="positive_${stage}_failed"
+    Assert-True ((Resolve-SyntheticFailure "E3_SAFE_FAILURE stage=$stage") -eq $expected) "Positive safe stage classification drifted for $stage."
+}
+Assert-True ((Resolve-SyntheticFailure 'E3_SAFE_FAILURE stage=mixed') -eq 'positive_bound_probe_mixed') 'Positive mixed-attempt classification drifted.'
+Assert-True ((Resolve-SyntheticFailure 'E3_SAFE_FAILURE stage=unknown') -eq 'positive_bound_probe_unknown') 'Positive safe unknown classification drifted.'
+Assert-True ((Resolve-SyntheticFailure 'E3_SAFE_ATTEMPT stage=connect class=android.system.ErrnoException errno=101') -eq 'positive_unknown') 'Per-attempt marker must not become durable aggregate classification.'
 
 $positive="E3_EVIDENCE phase=positive direct_cellular_validated=true`n"
 Assert-True ((Resolve-SyntheticFailure ($positive + 'expected direct cellular Internet presence=false validated_required=false')) -eq 'negative_loss_timeout') 'Negative loss timeout classification drifted.'
@@ -58,7 +82,13 @@ Assert-True ((Resolve-SyntheticFailure ($positiveNegative + 'expected:<ADMITTED>
 Assert-True ((Resolve-SyntheticFailure ($positiveNegative + 'expected direct cellular Internet presence=true validated_required=true')) -eq 'recovery_direct_cellular_missing') 'Recovery direct-cellular classification drifted.'
 Assert-True ((Resolve-SyntheticFailure ($positiveNegative + 'Android explicit-network socket binding failed')) -eq 'recovery_socket_bind_failed') 'Recovery socket-bind classification drifted.'
 Assert-True ((Resolve-SyntheticFailure ($positiveNegative + 'recovery echo must be a bare IPv4/IPv6 literal')) -eq 'recovery_public_ip_parse_failed') 'Recovery public-IP parse classification drifted.'
-Assert-True ((Resolve-SyntheticFailure ($positiveNegative + 'all lease-resolved addresses failed')) -eq 'recovery_bound_probe_unknown') 'Recovery probe fallback must remain fail-closed and non-speculative.'
+Assert-True ((Resolve-SyntheticFailure ($positiveNegative + 'all lease-resolved addresses failed')) -eq 'recovery_bound_probe_unknown') 'Recovery legacy probe fallback must remain fail-closed and non-speculative.'
+foreach($stage in $safeStages){
+    $expected="recovery_${stage}_failed"
+    Assert-True ((Resolve-SyntheticFailure ($positiveNegative + "E3_SAFE_FAILURE stage=$stage")) -eq $expected) "Recovery safe stage classification drifted for $stage."
+}
+Assert-True ((Resolve-SyntheticFailure ($positiveNegative + 'E3_SAFE_FAILURE stage=mixed')) -eq 'recovery_bound_probe_mixed') 'Recovery mixed-attempt classification drifted.'
+Assert-True ((Resolve-SyntheticFailure ($positiveNegative + 'E3_SAFE_FAILURE stage=unknown')) -eq 'recovery_bound_probe_unknown') 'Recovery safe unknown classification drifted.'
 
 $complete=$positiveNegative + "E3_EVIDENCE phase=recovery direct_cellular_validated=true`nOK (1 test)"
 Assert-True ((Resolve-SyntheticFailure $complete 0) -eq 'none') 'Successful lifecycle must not classify as a failure.'
@@ -67,10 +97,23 @@ Assert-True ((Resolve-SyntheticFailure 'unrecognized synthetic failure') -eq 'po
 $moduleText=Get-Content -Raw -LiteralPath $e3ModulePath
 Assert-True ($moduleText.Contains('raw device output is intentionally not persisted.')) 'E3 failure adapter must retain raw device-output non-persistence.'
 Assert-True ($moduleText.Contains('reason=$reason')) 'E3 failure adapter must surface only the typed safe reason.'
+Assert-True ($moduleText.Contains('E3_SAFE_FAILURE stage=')) 'E3 classifier must recognize aggregate safe stage markers.'
 Assert-True (-not $moduleText.Contains("return 'positive_bound_probe_failed'")) 'Generic positive bound-probe collapse must stay removed.'
 Assert-True (-not $moduleText.Contains("return 'recovery_bound_probe_failed'")) 'Generic recovery bound-probe collapse must stay removed.'
 
+$androidE3Path=Join-Path $repoRoot 'android/app/src/androidTest/java/com/mobileproxymish/app/cellular/CellularE3InstrumentedTest.kt'
+$androidE3=Get-Content -Raw -LiteralPath $androidE3Path
+Assert-True ($androidE3.Contains('E3_SAFE_ATTEMPT stage=')) 'Android E3 harness must emit safe per-attempt stage markers.'
+Assert-True ($androidE3.Contains('E3_SAFE_FAILURE stage=')) 'Android E3 harness must emit one safe aggregate stage marker.'
+Assert-True ($androidE3.Contains('failure.javaClass.name')) 'Android E3 safe marker must derive only exception class identity.'
+Assert-True ($androidE3.Contains('(failure as? ErrnoException)?.errno')) 'Android E3 safe marker must derive errno numerically when available.'
+Assert-True (-not $androidE3.Contains('failure.message')) 'Android E3 safe marker must never persist or print Throwable.message.'
+$markerLines=@($androidE3 -split "`r?`n" | Where-Object { $_ -match 'E3_SAFE_(?:ATTEMPT|FAILURE)' })
+$markerText=$markerLines -join "`n"
+Assert-True ($markerText -notmatch 'numericAddress|networkHandle|serial|private|publicIp|host=') 'Safe marker literals must not include network/device identifiers.'
+
 Write-Host 'E3_ZERO_INPUT_CONTRACT=PASS'
 Write-Host 'E3_TYPED_FAILURE_CLASSIFICATION=PASS'
+Write-Host 'E3_SAFE_STAGE_MARKERS=PASS'
 $global:LASTEXITCODE=0
 exit 0
