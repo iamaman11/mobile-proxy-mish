@@ -53,9 +53,6 @@ class CellularE3InstrumentedTest {
         val host = arguments.getString("e3Host") ?: "checkip.amazonaws.com"
         val requestedPort = arguments.getString("e3Port")?.toIntOrNull() ?: HTTPS_PORT
         val path = arguments.getString("e3Path") ?: "/"
-        // Historical orchestration supplied port 80. Revised #75 acceptance requires
-        // HTTPS, so the PRODUCT proof is pinned to 443 until the orchestration default is
-        // cleaned up; the legacy input remains validated for artifact compatibility only.
         val proofPort = HTTPS_PORT
 
         require(HOST_PATTERN.matches(host)) { "e3Host must be a DNS hostname" }
@@ -75,9 +72,6 @@ class CellularE3InstrumentedTest {
         var establishedFlow: SSLSocket? = null
 
         try {
-            // Positive: MishApplication already started the real process-generation bridge.
-            // OwnerSnapshot(ADMITTED) is published only after the PRODUCT root policy has
-            // reconciled and verified the marked IPv4 path for this owner observation.
             val positiveAdmission = waitForOwnerState(
                 runtime = runtime,
                 expected = CellularAdmissionState.ADMITTED,
@@ -99,10 +93,6 @@ class CellularE3InstrumentedTest {
             )
             requirePublicIpLiteral(initialPublicIp)
 
-            // Establish a second real PRODUCT HTTPS/TCP flow while cellular authority is
-            // current, but intentionally send no HTTP application request yet. The TLS
-            // handshake proves that this exact socket existed over the admitted path before
-            // the loss generation. It stays open across the transition below.
             establishedFlow = openEstablishedHttpsFlow(
                 numericAddress = stableProbeAddress,
                 host = host,
@@ -114,9 +104,6 @@ class CellularE3InstrumentedTest {
                     "public_ip_observed=true established_https_ready=true ipv6=fail_closed",
             )
 
-            // Negative: LAB authority requests the bounded mobile-data control effect. The
-            // command result is only a control-plane precondition; actual loss is proven
-            // exclusively by the owner/ConnectivityManager facts observed below.
             mobileDataMayBeDisabled = true
             requireMobileDataTransition("disable")
             waitForDirectCellular(validated = false, present = false, timeoutMillis = NEGATIVE_TIMEOUT_MILLIS)
@@ -145,9 +132,6 @@ class CellularE3InstrumentedTest {
                     "no_default_fallback=true",
             )
 
-            // Recovery: the same owner/runtime must reacquire direct cellular, mint a fresh
-            // observation generation, rediscover the current route table and reconcile the
-            // PRODUCT policy before public egress works again.
             requireMobileDataTransition("enable")
             mobileDataMayBeDisabled = false
             val recoveryAdmission = waitForOwnerState(
@@ -174,9 +158,6 @@ class CellularE3InstrumentedTest {
             )
             requirePublicIpLiteral(recoveryPublicIp)
 
-            // Deliberate shutdown is part of the accepted PRODUCT lifecycle. Verify from
-            // the same PRODUCT UID/root grant that all exact #75 signatures disappeared;
-            // this is read-only verification after the production adapter performed delete.
             runtime.close()
             runtimeClosed = true
             verifyProductPolicyCleanup(Process.myUid())
@@ -211,18 +192,13 @@ class CellularE3InstrumentedTest {
                         return snapshot.admission
                     }
                 }
-
-                is CellularRuntimeSnapshot.BoundaryUnavailable -> {
-                    lastBoundary = snapshot.reason
-                }
+                is CellularRuntimeSnapshot.BoundaryUnavailable -> lastBoundary = snapshot.reason
             }
             SystemClock.sleep(250)
         } while (SystemClock.elapsedRealtime() < deadline)
 
         if (lastBoundary != null) {
-            throw AssertionError(
-                "E3_SAFE_FAILURE stage=root_policy_boundary reason=$lastBoundary",
-            )
+            throw AssertionError("E3_SAFE_FAILURE stage=root_policy_boundary reason=$lastBoundary")
         }
         val actual = (runtime.snapshot.value as? CellularRuntimeSnapshot.OwnerSnapshot)
             ?.admission
@@ -231,10 +207,8 @@ class CellularE3InstrumentedTest {
     }
 
     private fun requireSequence(admission: CellularAdmissionView, phase: String): ULong =
-        admission.lastSequence
-            ?: throw AssertionError("E3_SAFE_FAILURE stage=owner_generation phase=$phase")
+        admission.lastSequence ?: throw AssertionError("E3_SAFE_FAILURE stage=owner_generation phase=$phase")
 
-    /** Read-only evidence observation; this never becomes an admission source. */
     private fun waitForDirectCellular(
         validated: Boolean,
         present: Boolean,
@@ -249,37 +223,23 @@ class CellularE3InstrumentedTest {
                     capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) &&
                     (!validated || capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED))
             }
-            if (observed == present) {
-                return
-            }
+            if (observed == present) return
             SystemClock.sleep(250)
         } while (SystemClock.elapsedRealtime() < deadline)
-
-        throw AssertionError(
-            "expected direct cellular Internet presence=$present validated_required=$validated",
-        )
+        throw AssertionError("expected direct cellular Internet presence=$present validated_required=$validated")
     }
 
-    /**
-     * Returns transient IPv4 resolver addresses published by the currently validated
-     * direct-cellular Network. Addresses are used only in-memory and never logged.
-     * Final resolver/anti-leak ownership remains Issue #64, outside E3.
-     */
     private fun currentDirectCellularIpv4DnsServers(): List<Inet4Address> =
         connectivityManager.allNetworks.asSequence()
             .filter { network ->
-                val capabilities = connectivityManager.getNetworkCapabilities(network)
-                    ?: return@filter false
+                val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return@filter false
                 capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) &&
                     capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
                     capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) &&
                     capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
             }
             .flatMap { network ->
-                connectivityManager.getLinkProperties(network)
-                    ?.dnsServers
-                    ?.asSequence()
-                    ?: emptySequence()
+                connectivityManager.getLinkProperties(network)?.dnsServers?.asSequence() ?: emptySequence()
             }
             .filterIsInstance<Inet4Address>()
             .distinctBy { it.hostAddress }
@@ -294,35 +254,27 @@ class CellularE3InstrumentedTest {
         for (server in dnsServers) {
             try {
                 val addresses = queryIpv4Dns(server, host)
-                if (addresses.isNotEmpty()) {
-                    return addresses
-                }
+                if (addresses.isNotEmpty()) return addresses
             } catch (failure: Throwable) {
                 val safe = SafeProbeFailure("dns_query", failure.javaClass.name)
                 failures += safe
                 emitSafeAttempt(safe, phase)
             }
         }
-        throw AssertionError(
-            "E3_SAFE_FAILURE stage=dns_query phase=$phase attempts=${failures.size}",
-        )
+        throw AssertionError("E3_SAFE_FAILURE stage=dns_query phase=$phase attempts=${failures.size}")
     }
 
     private fun queryIpv4Dns(server: Inet4Address, host: String): List<String> {
         val transactionId = ((SystemClock.elapsedRealtime() ushr 2) and 0xffff).toInt()
         val query = buildDnsQuery(transactionId, host)
         val responseBytes = ByteArray(DNS_RESPONSE_MAX_BYTES)
-
         DatagramSocket().use { socket ->
             socket.soTimeout = DNS_TIMEOUT_MILLIS
             socket.connect(server, DNS_PORT)
             socket.send(DatagramPacket(query, query.size))
             val response = DatagramPacket(responseBytes, responseBytes.size)
             socket.receive(response)
-            return parseIpv4DnsResponse(
-                transactionId = transactionId,
-                response = responseBytes.copyOf(response.length),
-            )
+            return parseIpv4DnsResponse(transactionId, responseBytes.copyOf(response.length))
         }
     }
 
@@ -330,12 +282,11 @@ class CellularE3InstrumentedTest {
         ByteArrayOutputStream().use { output ->
             output.write((transactionId ushr 8) and 0xff)
             output.write(transactionId and 0xff)
-            output.write(0x01) // recursion desired
+            output.write(0x01)
             output.write(0x00)
             output.write(0x00)
-            output.write(0x01) // one question
+            output.write(0x01)
             repeat(6) { output.write(0x00) }
-
             for (label in host.trimEnd('.').split('.')) {
                 val bytes = label.toByteArray(Charsets.US_ASCII)
                 require(bytes.size in 1..63) { "invalid DNS label" }
@@ -344,9 +295,9 @@ class CellularE3InstrumentedTest {
             }
             output.write(0x00)
             output.write(0x00)
-            output.write(0x01) // A
+            output.write(0x01)
             output.write(0x00)
-            output.write(0x01) // IN
+            output.write(0x01)
             output.toByteArray()
         }
 
@@ -356,17 +307,14 @@ class CellularE3InstrumentedTest {
         val flags = readU16(response, 2)
         require(flags and 0x8000 != 0) { "DNS response bit missing" }
         require(flags and 0x000f == 0) { "DNS response rcode is non-zero" }
-
         val questionCount = readU16(response, 4)
         val answerCount = readU16(response, 6)
         var offset = DNS_HEADER_BYTES
-
         repeat(questionCount) {
             offset = skipDnsName(response, offset)
             require(offset + 4 <= response.size) { "truncated DNS question" }
             offset += 4
         }
-
         val addresses = mutableListOf<String>()
         repeat(answerCount) {
             offset = skipDnsName(response, offset)
@@ -376,7 +324,6 @@ class CellularE3InstrumentedTest {
             val dataLength = readU16(response, offset + 8)
             offset += 10
             require(offset + dataLength <= response.size) { "truncated DNS rdata" }
-
             if (type == 1 && dnsClass == 1 && dataLength == 4) {
                 addresses += (0 until 4).joinToString(".") { index ->
                     (response[offset + index].toInt() and 0xff).toString()
@@ -409,8 +356,7 @@ class CellularE3InstrumentedTest {
 
     private fun readU16(bytes: ByteArray, offset: Int): Int {
         require(offset + 1 < bytes.size) { "truncated 16-bit field" }
-        return ((bytes[offset].toInt() and 0xff) shl 8) or
-            (bytes[offset + 1].toInt() and 0xff)
+        return ((bytes[offset].toInt() and 0xff) shl 8) or (bytes[offset + 1].toInt() and 0xff)
     }
 
     private fun performPublicProbe(
@@ -430,32 +376,16 @@ class CellularE3InstrumentedTest {
                 emitSafeAttempt(safe, phase)
             }
         }
-        throw AssertionError(
-            "E3_SAFE_FAILURE stage=public_probe phase=$phase attempts=${failures.size}",
-        )
+        throw AssertionError("E3_SAFE_FAILURE stage=public_probe phase=$phase attempts=${failures.size}")
     }
 
-    private fun connectAndReadPublicIp(
-        numericAddress: String,
-        host: String,
-        port: Int,
-        path: String,
-    ): String {
+    private fun connectAndReadPublicIp(numericAddress: String, host: String, port: Int, path: String): String {
         require(IPV4_LITERAL.matches(numericAddress)) { "DNS must return numeric IPv4" }
         val raw = Socket()
         try {
-            raw.connect(
-                InetSocketAddress(InetAddress.getByName(numericAddress), port),
-                SOCKET_TIMEOUT_MILLIS,
-            )
+            raw.connect(InetSocketAddress(InetAddress.getByName(numericAddress), port), SOCKET_TIMEOUT_MILLIS)
             raw.soTimeout = SOCKET_TIMEOUT_MILLIS
-
-            val transport: Socket = if (port == HTTPS_PORT) {
-                createVerifiedTlsSocket(raw, host, port)
-            } else {
-                raw
-            }
-
+            val transport: Socket = if (port == HTTPS_PORT) createVerifiedTlsSocket(raw, host, port) else raw
             transport.use { socket ->
                 val request = (
                     "GET $path HTTP/1.1\r\n" +
@@ -465,20 +395,13 @@ class CellularE3InstrumentedTest {
                     ).toByteArray(Charsets.US_ASCII)
                 socket.getOutputStream().write(request)
                 socket.getOutputStream().flush()
-
-                val response = readBounded(socket.getInputStream())
-                val text = response.toString(Charsets.US_ASCII)
+                val text = readBounded(socket.getInputStream()).toString(Charsets.US_ASCII)
                 require(text.startsWith("HTTP/1.1 200") || text.startsWith("HTTP/1.0 200")) {
                     "E3 echo endpoint must return HTTP 200"
                 }
                 val separator = text.indexOf("\r\n\r\n")
                 require(separator >= 0) { "HTTP response must contain header/body separator" }
-                return text.substring(separator + 4)
-                    .trim()
-                    .lineSequence()
-                    .firstOrNull()
-                    .orEmpty()
-                    .trim()
+                return text.substring(separator + 4).trim().lineSequence().firstOrNull().orEmpty().trim()
             }
         } catch (failure: Throwable) {
             runCatching { raw.close() }
@@ -486,35 +409,22 @@ class CellularE3InstrumentedTest {
         }
     }
 
-    private fun openEstablishedHttpsFlow(
-        numericAddress: String,
-        host: String,
-        port: Int,
-    ): SSLSocket {
+    private fun openEstablishedHttpsFlow(numericAddress: String, host: String, port: Int): SSLSocket {
         require(port == HTTPS_PORT) { "established-flow proof requires HTTPS/443" }
         require(IPV4_LITERAL.matches(numericAddress)) { "DNS must return numeric IPv4" }
         val raw = Socket()
         try {
             raw.keepAlive = true
-            raw.connect(
-                InetSocketAddress(InetAddress.getByName(numericAddress), port),
-                SOCKET_TIMEOUT_MILLIS,
-            )
+            raw.connect(InetSocketAddress(InetAddress.getByName(numericAddress), port), SOCKET_TIMEOUT_MILLIS)
             raw.soTimeout = SOCKET_TIMEOUT_MILLIS
-            return createVerifiedTlsSocket(raw, host, port).also {
-                it.keepAlive = true
-            }
+            return createVerifiedTlsSocket(raw, host, port).also { it.keepAlive = true }
         } catch (failure: Throwable) {
             runCatching { raw.close() }
             throw failure
         }
     }
 
-    private fun assertEstablishedFlowFailsClosed(
-        socket: SSLSocket,
-        host: String,
-        path: String,
-    ) {
+    private fun assertEstablishedFlowFailsClosed(socket: SSLSocket, host: String, path: String) {
         val escaped = try {
             socket.soTimeout = NEGATIVE_SOCKET_TIMEOUT_MILLIS
             val request = (
@@ -525,20 +435,14 @@ class CellularE3InstrumentedTest {
                 ).toByteArray(Charsets.US_ASCII)
             socket.getOutputStream().write(request)
             socket.getOutputStream().flush()
-
-            val response = readBounded(socket.getInputStream())
-            val text = response.toString(Charsets.US_ASCII)
+            val text = readBounded(socket.getInputStream()).toString(Charsets.US_ASCII)
             text.startsWith("HTTP/1.1 200") || text.startsWith("HTTP/1.0 200")
         } catch (_: Throwable) {
             false
         } finally {
             runCatching { socket.close() }
         }
-
-        assertFalse(
-            "established PRODUCT HTTPS flow exchanged application data after NOT_ADMITTED",
-            escaped,
-        )
+        assertFalse("established PRODUCT HTTPS flow exchanged application data after NOT_ADMITTED", escaped)
     }
 
     private fun createVerifiedTlsSocket(raw: Socket, host: String, port: Int): SSLSocket {
@@ -552,21 +456,14 @@ class CellularE3InstrumentedTest {
     }
 
     private fun assertDnsFailsClosed(dnsServers: List<Inet4Address>, host: String) {
-        val escaped = dnsServers.any { server ->
-            runCatching { queryIpv4Dns(server, host) }
-                .getOrNull()
-                ?.isNotEmpty() == true
-        }
+        val escaped = dnsServers.any { server -> runCatching { queryIpv4Dns(server, host) }.getOrNull()?.isNotEmpty() == true }
         assertFalse("negative DNS query escaped fail-closed policy", escaped)
     }
 
     private fun assertPublicSocketFailsClosed(numericAddress: String, port: Int) {
         val escaped = runCatching {
             Socket().use { socket ->
-                socket.connect(
-                    InetSocketAddress(InetAddress.getByName(numericAddress), port),
-                    NEGATIVE_SOCKET_TIMEOUT_MILLIS,
-                )
+                socket.connect(InetSocketAddress(InetAddress.getByName(numericAddress), port), NEGATIVE_SOCKET_TIMEOUT_MILLIS)
             }
             true
         }.getOrDefault(false)
@@ -578,81 +475,46 @@ class CellularE3InstrumentedTest {
         if (identity.timedOut || identity.exitCode != 0 || identity.stdout.trim() != "0") {
             throw AssertionError("E3_SAFE_FAILURE stage=root_policy_cleanup root_authority_lost")
         }
-
         val ipv4Rules = runProductRoot("ip -4 rule show")
         val ipv6Rules = runProductRoot("ip -6 rule show")
         val ipv4Table = runProductRoot("iptables -t mangle -L OUTPUT -n")
         val ipv6Table = runProductRoot("ip6tables -t mangle -L OUTPUT -n")
-        if (listOf(ipv4Rules, ipv6Rules, ipv4Table, ipv6Table).any {
-                it.timedOut || it.exitCode != 0
-            }
-        ) {
+        if (listOf(ipv4Rules, ipv6Rules, ipv4Table, ipv6Table).any { it.timedOut || it.exitCode != 0 }) {
             throw AssertionError("E3_SAFE_FAILURE stage=root_policy_cleanup inspection_failed")
         }
-
-        assertFalse(
-            "PRODUCT IPv4 lookup survived intentional cleanup",
-            OWNED_IPV4_LOOKUP.containsMatchIn(ipv4Rules.stdout),
-        )
-        assertFalse(
-            "PRODUCT IPv4 guard survived intentional cleanup",
-            OWNED_GUARD.containsMatchIn(ipv4Rules.stdout),
-        )
-        assertFalse(
-            "PRODUCT IPv6 guard survived intentional cleanup",
-            OWNED_GUARD.containsMatchIn(ipv6Rules.stdout),
-        )
-
+        assertFalse("PRODUCT IPv4 lookup survived intentional cleanup", OWNED_IPV4_LOOKUP.containsMatchIn(ipv4Rules.stdout))
+        assertFalse("PRODUCT IPv4 guard survived intentional cleanup", OWNED_GUARD.containsMatchIn(ipv4Rules.stdout))
+        assertFalse("PRODUCT IPv6 guard survived intentional cleanup", OWNED_GUARD.containsMatchIn(ipv6Rules.stdout))
         val ipv4Selector = runProductRoot(selectorCheckCommand("iptables", productUid))
         val ipv6Selector = runProductRoot(selectorCheckCommand("ip6tables", productUid))
         if (ipv4Selector.timedOut || ipv6Selector.timedOut) {
             throw AssertionError("E3_SAFE_FAILURE stage=root_policy_cleanup selector_check_timeout")
         }
-        assertTrue(
-            "PRODUCT IPv4 selector survived intentional cleanup",
-            ipv4Selector.exitCode != 0,
-        )
-        assertTrue(
-            "PRODUCT IPv6 selector survived intentional cleanup",
-            ipv6Selector.exitCode != 0,
-        )
+        assertTrue("PRODUCT IPv4 selector survived intentional cleanup", ipv4Selector.exitCode != 0)
+        assertTrue("PRODUCT IPv6 selector survived intentional cleanup", ipv6Selector.exitCode != 0)
     }
 
     private fun selectorCheckCommand(binary: String, productUid: Int): String =
-        "$binary -t mangle -C OUTPUT -m owner --uid-owner $productUid " +
-            "-m conntrack --ctstate NEW -j MARK --set-xmark 0x200000/0x200000"
+        "$binary -t mangle -C OUTPUT -m owner --uid-owner $productUid -m conntrack --ctstate NEW -j MARK --set-xmark 0x200000/0x200000"
 
     private fun runProductRoot(command: String): RootReadResult {
         val child = try {
-            ProcessBuilder(listOf("su", "-c", command))
-                .redirectErrorStream(true)
-                .start()
+            ProcessBuilder(listOf("su", "-c", command)).redirectErrorStream(true).start()
         } catch (_: Exception) {
             return RootReadResult(exitCode = -1, stdout = "", timedOut = false)
         }
-
         return try {
             val deadline = SystemClock.elapsedRealtime() + ROOT_READ_TIMEOUT_MILLIS
             var exitCode: Int? = null
             do {
-                exitCode = try {
-                    child.exitValue()
-                } catch (_: IllegalThreadStateException) {
-                    null
-                }
-                if (exitCode == null) {
-                    SystemClock.sleep(ROOT_READ_POLL_MILLIS)
-                }
+                exitCode = try { child.exitValue() } catch (_: IllegalThreadStateException) { null }
+                if (exitCode == null) SystemClock.sleep(ROOT_READ_POLL_MILLIS)
             } while (exitCode == null && SystemClock.elapsedRealtime() < deadline)
-
             if (exitCode == null) {
                 child.destroy()
                 RootReadResult(exitCode = -1, stdout = "", timedOut = true)
             } else {
-                val stdout = child.inputStream
-                    .bufferedReader(Charsets.UTF_8)
-                    .use { it.readText() }
-                    .take(ROOT_READ_OUTPUT_MAX_CHARS)
+                val stdout = child.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }.take(ROOT_READ_OUTPUT_MAX_CHARS)
                 RootReadResult(exitCode = exitCode, stdout = stdout, timedOut = false)
             }
         } finally {
@@ -682,28 +544,22 @@ class CellularE3InstrumentedTest {
             if (read < 0) break
             if (read == 0) continue
             output.write(buffer, 0, read)
-            require(output.size() <= HTTP_RESPONSE_MAX_BYTES) {
-                "E3 HTTP response exceeded 64 KiB"
-            }
+            require(output.size() <= HTTP_RESPONSE_MAX_BYTES) { "E3 HTTP response exceeded 64 KiB" }
         }
         return output.toByteArray()
     }
 
     private fun requirePublicIpLiteral(value: String) {
-        if (!isIpLiteral(value)) {
-            throw AssertionError("E3_SAFE_FAILURE stage=public_ip_parse")
-        }
+        if (!isIpLiteral(value)) throw AssertionError("E3_SAFE_FAILURE stage=public_ip_parse")
     }
 
     private fun isIpLiteral(value: String): Boolean {
         val ipv6Characters = Regex("^[0-9A-Fa-f:]+$")
-        return IPV4_LITERAL.matches(value) ||
-            (value.contains(':') && ipv6Characters.matches(value))
+        return IPV4_LITERAL.matches(value) || (value.contains(':') && ipv6Characters.matches(value))
     }
 
     private fun classifyProbeStage(failure: Throwable): String = when {
-        failure.message?.contains("TLS hostname verification", ignoreCase = true) == true ->
-            "tls_hostname"
+        failure.message?.contains("TLS hostname verification", ignoreCase = true) == true -> "tls_hostname"
         failure.message?.contains("HTTP 200", ignoreCase = true) == true -> "http_status"
         failure.message?.contains("header/body", ignoreCase = true) == true -> "response_parse"
         failure is javax.net.ssl.SSLException -> "tls_handshake"
@@ -713,21 +569,11 @@ class CellularE3InstrumentedTest {
     }
 
     private fun emitSafeAttempt(failure: SafeProbeFailure, phase: String) {
-        println(
-            "E3_SAFE_ATTEMPT phase=$phase stage=${failure.stage} class=${failure.exceptionClass}",
-        )
+        println("E3_SAFE_ATTEMPT phase=$phase stage=${failure.stage} class=${failure.exceptionClass}")
     }
 
-    private data class SafeProbeFailure(
-        val stage: String,
-        val exceptionClass: String,
-    )
-
-    private data class RootReadResult(
-        val exitCode: Int,
-        val stdout: String,
-        val timedOut: Boolean,
-    )
+    private data class SafeProbeFailure(val stage: String, val exceptionClass: String)
+    private data class RootReadResult(val exitCode: Int, val stdout: String, val timedOut: Boolean)
 
     private companion object {
         const val POSITIVE_TIMEOUT_MILLIS = 60_000L
@@ -746,14 +592,8 @@ class CellularE3InstrumentedTest {
         const val ROOT_READ_OUTPUT_MAX_CHARS = 8_192
 
         val HOST_PATTERN = Regex("^[A-Za-z0-9.-]+$")
-        val IPV4_LITERAL = Regex(
-            "^(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)(?:\\.(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)){3}$",
-        )
-        val OWNED_IPV4_LOOKUP = Regex(
-            "(?m)^9500:\\s+from\\s+all\\s+fwmark\\s+0x200000/0x200000\\s+lookup\\s+",
-        )
-        val OWNED_GUARD = Regex(
-            "(?m)^9501:\\s+from\\s+all\\s+fwmark\\s+0x200000/0x200000\\s+unreachable",
-        )
+        val IPV4_LITERAL = Regex("^(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)(?:\\.(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)){3}$")
+        val OWNED_IPV4_LOOKUP = Regex("(?m)^9500:\\s+from\\s+all\\s+fwmark\\s+0x200000/0x200000\\s+lookup\\s+")
+        val OWNED_GUARD = Regex("(?m)^9501:\\s+from\\s+all\\s+fwmark\\s+0x200000/0x200000\\s+unreachable")
     }
 }
