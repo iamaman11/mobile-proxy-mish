@@ -6,6 +6,10 @@ import com.mobileproxymish.ffi.CellularAdmissionState
 import com.mobileproxymish.ffi.CellularAdmissionView
 import com.mobileproxymish.ffi.CellularController
 import java.io.Closeable
+import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -66,6 +70,10 @@ internal class CellularInterfaceHints {
  * One process-generation bridge between Android Network observations, the Rust owner,
  * and the narrow root policy-routing adapter that realizes an already owner-admitted
  * decision. This class owns no cellular admission policy.
+ *
+ * Root process operations run on one private serial executor. They can legitimately
+ * wait for a bounded Magisk decision or shell timeout and therefore must never block
+ * Application.onCreate(), the UI thread, or a ConnectivityManager callback thread.
  */
 class CellularRuntimeBridge(
     context: Context,
@@ -75,6 +83,11 @@ class CellularRuntimeBridge(
     private val rootPolicy = CellularRootPolicy(Process.myUid())
     private val interfaceHints = CellularInterfaceHints()
     private val observer = CellularNetworkObserver(context.applicationContext, this)
+    private val started = AtomicBoolean(false)
+    private val closed = AtomicBoolean(false)
+    private val policyExecutor = Executors.newSingleThreadExecutor { task ->
+        Thread(task, "mish-cellular-policy").apply { isDaemon = true }
+    }
 
     val snapshot: StateFlow<CellularRuntimeSnapshot>
         get() = mutableSnapshot.asStateFlow()
@@ -99,32 +112,47 @@ class CellularRuntimeBridge(
     }
 
     fun start() {
-        if (controller == null) return
+        if (controller == null || closed.get() || !started.compareAndSet(false, true)) return
 
-        val initialPolicy = rootPolicy.failClosed()
-        mutableSnapshot.value = when (initialPolicy) {
-            is CellularRootPolicyResult.AuthorityUnavailable ->
-                CellularRuntimeSnapshot.BoundaryUnavailable(
-                    CellularBoundaryFailure.RootAuthorityUnavailable,
-                )
+        submitPolicyWork {
+            if (closed.get()) return@submitPolicyWork
 
-            is CellularRootPolicyResult.FailClosed -> {
-                if (initialPolicy.reason == null) {
-                    mutableSnapshot.value
-                } else {
+            val initialPolicy = rootPolicy.failClosed()
+            mutableSnapshot.value = when (initialPolicy) {
+                is CellularRootPolicyResult.AuthorityUnavailable ->
                     CellularRuntimeSnapshot.BoundaryUnavailable(
-                        CellularBoundaryFailure.RootPolicyReconcileFailed,
+                        CellularBoundaryFailure.RootAuthorityUnavailable,
                     )
+
+                is CellularRootPolicyResult.FailClosed -> {
+                    if (initialPolicy.reason == null) {
+                        mutableSnapshot.value
+                    } else {
+                        CellularRuntimeSnapshot.BoundaryUnavailable(
+                            CellularBoundaryFailure.RootPolicyReconcileFailed,
+                        )
+                    }
                 }
+
+                CellularRootPolicyResult.Enforced -> mutableSnapshot.value
             }
 
-            CellularRootPolicyResult.Enforced -> mutableSnapshot.value
+            if (!closed.get()) {
+                observer.start()
+            }
         }
-        observer.start()
     }
 
-    @Synchronized
     override fun onEvent(event: CellularNetworkEvent) {
+        if (closed.get()) return
+        submitPolicyWork {
+            if (!closed.get()) {
+                processEvent(event)
+            }
+        }
+    }
+
+    private fun processEvent(event: CellularNetworkEvent) {
         val activeController = controller ?: run {
             mutableSnapshot.value = CellularRuntimeSnapshot.BoundaryUnavailable(
                 CellularBoundaryFailure.NativeLibraryUnavailable,
@@ -203,10 +231,43 @@ class CellularRuntimeBridge(
         }
     }
 
-    @Synchronized
+    private fun submitPolicyWork(block: () -> Unit) {
+        try {
+            policyExecutor.execute(block)
+        } catch (_: RejectedExecutionException) {
+            // close() owns executor shutdown. Work racing with closure is intentionally
+            // dropped because the observer is already being revoked and exact cleanup
+            // is serialized as the final executor effect.
+        }
+    }
+
     override fun close() {
+        if (!closed.compareAndSet(false, true)) return
+
         observer.close()
-        interfaceHints.clear()
-        rootPolicy.close()
+        val cleanup = try {
+            policyExecutor.submit {
+                interfaceHints.clear()
+                rootPolicy.close()
+            }
+        } catch (_: RejectedExecutionException) {
+            null
+        }
+
+        if (cleanup != null) {
+            try {
+                cleanup.get(CLOSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            } catch (_: Exception) {
+                // Exact cleanup is best-effort during teardown. A future process start
+                // begins by reconciling fail-closed before network observation resumes.
+            }
+        }
+        policyExecutor.shutdownNow()
+    }
+
+    private companion object {
+        const val CLOSE_TIMEOUT_SECONDS = 30L
     }
 }
