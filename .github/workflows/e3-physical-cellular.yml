@@ -8,6 +8,7 @@ on:
       - 'lab/windows/Labctl.psm1'
       - 'lab/windows/labctl.ps1'
       - 'lab/windows/test-e3-harness.ps1'
+      - 'lab/windows/test-e3-zero-input.ps1'
       - 'scripts/release/android_release.py'
       - 'scripts/release/e3_harness.py'
       - 'docs/lab/LABCTL.md'
@@ -19,24 +20,13 @@ on:
       - 'lab/windows/E3Harness.psm1'
       - 'lab/windows/Labctl.psm1'
       - 'lab/windows/labctl.ps1'
+      - 'lab/windows/test-e3-harness.ps1'
+      - 'lab/windows/test-e3-zero-input.ps1'
       - 'scripts/release/android_release.py'
       - 'scripts/release/e3_harness.py'
       - 'docs/lab/LABCTL.md'
       - 'docs/testing/E3_PHYSICAL_CELLULAR.md'
   workflow_dispatch:
-    inputs:
-      rc_tag:
-        description: "Exact immutable RC tag to consume (vMAJOR.MINOR.PATCH-rc.N)"
-        required: true
-        type: string
-      mode:
-        description: "Execution boundary"
-        required: true
-        default: pre-device-dry
-        type: choice
-        options:
-          - pre-device-dry
-          - full-root-toggle
 
 permissions:
   contents: read
@@ -60,12 +50,14 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Test exact harness, Windows trust boundary, and readiness projection
+      - name: Test exact harness, Windows trust boundary, readiness projection, and zero-input selection
         shell: pwsh
-        run: ./lab/windows/test-e3-harness.ps1
+        run: |
+          ./lab/windows/test-e3-harness.ps1
+          ./lab/windows/test-e3-zero-input.ps1
 
   resolve-rc:
-    name: Resolve exact immutable E3 RC
+    name: Resolve current immutable E3 RC
     if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected == true }}
     needs: contract
     runs-on: ubuntu-latest
@@ -87,23 +79,53 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Resolve exact tag, source, immutable release, and GitHub asset digest
+      - name: Resolve current tag, source, immutable release, and GitHub asset digest
         id: release-meta
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          RC_TAG: ${{ inputs.rc_tag }}
         run: |
           set -euo pipefail
-          python3 scripts/release/android_release.py derive --tag "$RC_TAG" >/dev/null
+          ROOT="$RUNNER_TEMP/e3-resolve"
+          mkdir -p "$ROOT/release"
+
           git fetch --force --tags origin
           git fetch origin main
+          git tag --list 'v*-rc.*' --sort=version:refname > "$ROOT/tags.txt"
+          python3 scripts/release/android_release.py next-rc \
+            --tags-file "$ROOT/tags.txt" \
+            --github-output "$ROOT/lineage.out"
+
+          RC_TAG="$(python3 - "$ROOT/lineage.out" <<'PY'
+          import sys
+          values = {}
+          for raw in open(sys.argv[1], encoding="utf-8"):
+              key, sep, value = raw.rstrip("\n").partition("=")
+              if not sep or key in values:
+                  raise SystemExit("invalid machine-owned RC lineage projection")
+              values[key] = value
+          tag = values.get("previous_tag", "")
+          if not tag:
+              raise SystemExit("no current RC exists for the active Android release lineage; create an RC first")
+          print(tag)
+          PY
+          )"
+          python3 scripts/release/android_release.py derive --tag "$RC_TAG" >/dev/null
+
           SOURCE_SHA="$(git rev-parse "$RC_TAG^{commit}")"
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
           git merge-base --is-ancestor "$SOURCE_SHA" origin/main
 
-          ROOT="$RUNNER_TEMP/e3-resolve"
-          mkdir -p "$ROOT/release"
+          git diff --name-only --diff-filter=ACDMRTUXB "$SOURCE_SHA" origin/main > "$ROOT/post-rc-paths.txt"
+          while IFS= read -r path; do
+            case "$path" in
+              android/*|crates/*|Cargo.toml|Cargo.lock|rust-toolchain.toml|vendor/sing-box/release.toml|.github/actions/*)
+                echo "current RC is stale after product-impacting main change: $path" >&2
+                exit 2
+                ;;
+            esac
+          done < "$ROOT/post-rc-paths.txt"
+
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RC_TAG" > "$ROOT/release.json"
 
           python3 - "$ROOT/release.json" "$RC_TAG" "$SOURCE_SHA" "$GITHUB_OUTPUT" <<'PY'
@@ -114,7 +136,7 @@ jobs:
           path, tag, source, output = sys.argv[1:]
           release = json.load(open(path, encoding="utf-8"))
           if release.get("tag_name") != tag or release.get("draft") is not False or release.get("prerelease") is not True:
-              raise SystemExit("exact tag is not a published RC prerelease")
+              raise SystemExit("current tag is not a published RC prerelease")
           if release.get("immutable") is not True:
               raise SystemExit("exact RC is mutable; GitHub release immutability is required before physical acceptance")
           apk_name = f"mobile-proxy-mish-{tag}.apk"
@@ -298,12 +320,13 @@ jobs:
           TEST_APK_SHA256: ${{ steps.harness-bytes.outputs.test_apk_sha256 }}
         run: |
           {
-            echo '### E3 exact RC projection'
+            echo '### E3 current RC projection'
             echo "- RC tag: \`$RC_TAG\`"
             echo "- Source: \`$SOURCE_SHA\`"
             echo "- Product APK SHA-256: \`$APK_SHA256\`"
             echo "- Harness run/artifact: \`$HARNESS_RUN_ID\` / \`$HARNESS_ARTIFACT_ID\`"
             echo "- Test APK SHA-256: \`$TEST_APK_SHA256\`"
+            echo '- Selection: **machine-owned active RC lineage; no human tag input**'
             echo '- Projection source: **native immutable GitHub Release + verified GitHub release attestation + exact successful release run/artifact**'
             echo '- Human-copied source/digest/artifact tuple: **NO**'
           } >> "$GITHUB_STEP_SUMMARY"
@@ -329,7 +352,7 @@ jobs:
       E3_HOST: checkip.amazonaws.com
       E3_PORT: '80'
       E3_PATH: '/'
-      RUN_MODE: ${{ inputs.mode }}
+      RUN_MODE: full-root-toggle
 
     steps:
       - name: Checkout accepted main execution adapter
