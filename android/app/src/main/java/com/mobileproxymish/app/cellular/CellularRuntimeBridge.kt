@@ -139,6 +139,12 @@ class CellularRuntimeBridge(
 
             if (!closed.get()) {
                 observer.start()
+                // close() can race between the check above and requestNetwork(). If it
+                // did, revoke the just-created callback immediately rather than leaving
+                // an observer alive after policy cleanup/executor shutdown.
+                if (closed.get()) {
+                    observer.close()
+                }
             }
         }
     }
