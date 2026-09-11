@@ -138,7 +138,7 @@ jobs:
           if release.get("tag_name") != tag or release.get("draft") is not False or release.get("prerelease") is not True:
               raise SystemExit("current tag is not a published RC prerelease")
           if release.get("immutable") is not True:
-              raise SystemExit("current RC is mutable; GitHub release immutability is required before physical acceptance")
+              raise SystemExit("exact RC is mutable; GitHub release immutability is required before physical acceptance")
           apk_name = f"mobile-proxy-mish-{tag}.apk"
           manifest_name = f"mobile-proxy-mish-{tag}.release.json"
           assets = release.get("assets") or []
