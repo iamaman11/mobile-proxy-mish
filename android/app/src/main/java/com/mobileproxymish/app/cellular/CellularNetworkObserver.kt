@@ -41,6 +41,9 @@ class CellularNetworkObserver(
                     isValidated = capabilities.hasCapability(
                         NetworkCapabilities.NET_CAPABILITY_VALIDATED,
                     ),
+                    isNotVpn = capabilities.hasCapability(
+                        NetworkCapabilities.NET_CAPABILITY_NOT_VPN,
+                    ),
                 ),
             )
         }
