@@ -90,14 +90,20 @@ pub enum AndroidRuntimeError {
 impl fmt::Display for AndroidRuntimeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::InvalidOperationTimeout => "bridge operation timeout is outside the accepted range",
-            Self::BridgeAlreadyRunning => "a private bridge already belongs to this owner generation",
+            Self::InvalidOperationTimeout => {
+                "bridge operation timeout is outside the accepted range"
+            }
+            Self::BridgeAlreadyRunning => {
+                "a private bridge already belongs to this owner generation"
+            }
             Self::BridgeConfigurationRejected => "private bridge configuration was rejected",
             Self::BridgeBindFailed => "private bridge could not bind loopback",
             Self::ConnectorUnavailable => "cellular outbound connector could not start",
             Self::ThreadUnavailable => "bounded bridge worker thread could not start",
             Self::BridgeStateUnavailable => "private bridge state is unavailable",
-            Self::ShutdownTimedOut => "private bridge sessions did not stop within the bounded timeout",
+            Self::ShutdownTimedOut => {
+                "private bridge sessions did not stop within the bounded timeout"
+            }
             Self::InvalidListenAddress => "public proxy listen address is invalid",
             Self::ProxyConfigurationRejected => "proxy runtime configuration was rejected",
         })
@@ -517,7 +523,10 @@ mod tests {
             .observe_network(1, 42, true, true, true, false)
             .expect("valid observation");
         assert_eq!(view.state, CellularAdmissionState::NotAdmitted);
-        assert_eq!(view.reason, Some(CellularAdmissionReason::VpnDerivedNetwork));
+        assert_eq!(
+            view.reason,
+            Some(CellularAdmissionReason::VpnDerivedNetwork)
+        );
         assert_eq!(view.admitted_network_handle, None);
     }
 
