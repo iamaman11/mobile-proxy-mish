@@ -112,7 +112,7 @@ So simplification removes manual identity transcription, not verification depth.
 
 ## E3 bounded commands
 
-The E3 surface changes execution/supply mechanics only; #10 remains the semantic owner of the physical Cellular Egress positive/negative/recovery contract.
+The E3 surface changes execution/supply mechanics only; Issue #10 remains the semantic owner of the physical Cellular Egress positive/negative/recovery contract.
 
 ```text
 e3 verify
@@ -124,13 +124,17 @@ e3 ready
     zero-ADB observation; this receipt is not durable evidence by itself
 
 e3 execute
-  = PHONE-ON adapter for the #10 continuous full-root-toggle lifecycle
-    positive -> negative -> recovery using exact accepted bytes
+  = PHONE-ON adapter for the continuous Issue #10 lifecycle
+    positive -> cellular loss -> recovery using exact accepted bytes
 ```
 
-These are bounded stateless commands. They do not create a daemon, scheduler, status database, second E3 workflow, second CURRENT pointer, release registry, or parallel semantic owner.
+These are bounded stateless commands. They do not create a daemon, scheduler, status database, second E3 workflow, second CURRENT pointer, release registry, routing owner, or parallel semantic owner.
 
-`NO_EVIDENCE_ESCALATION` is mandatory: hosted RC resolution, `e3 verify`, hosted contract CI, and `e3 ready` with `device_count=0` cannot claim E3 PASS.
+`e3 execute` is evidence machinery, not the Cellular Egress owner. For the replacement root-policy architecture it must exercise the exact PRODUCT-owned adapter and observe owner-derived state; LAB/ADB root may perform only the explicitly authorized test mutation such as mobile-data loss/recovery. ADB root must not substitute for PRODUCT runtime root authority.
+
+The historical RC6/bind-based `e3 execute` behavior is not acceptance authority for the revised contract. Before a future run may claim E3 PASS, the workflow/harness/labctl execution path must be updated with the PRODUCT implementation so that it proves the root-policy semantics in `docs/testing/E3_PHYSICAL_CELLULAR.md`.
+
+`NO_EVIDENCE_ESCALATION` is mandatory: hosted RC resolution, `e3 verify`, hosted contract CI, `e3 ready` with `device_count=0`, or LAB-only root-policy canaries cannot claim E3 PASS.
 
 ## Physical execution gate
 
@@ -175,6 +179,8 @@ rc_tag = exact native-immutable RC tag
 mode   = pre-device-dry | full-root-toggle
 ```
 
+`full-root-toggle` is the existing workflow mode name. The name does not define the PRODUCT egress mechanism; the executable harness must match the current accepted E3 contract.
+
 The operator does **not** enter or copy:
 
 ```text
@@ -197,20 +203,26 @@ E3_PASS=NO
 NO_EVIDENCE_ESCALATION=PASS
 ```
 
-`mode=full-root-toggle` requires the physical phone and executes the one-process continuous B2 lifecycle accepted in #65:
+A future `mode=full-root-toggle` acceptance run must use an exact RC/harness pair implementing the revised root-policy path:
 
 ```text
 request direct CELLULAR + INTERNET + NOT_VPN
- -> positive admitted + exact-network DNS/socket proof
- -> svc data disable
- -> direct cellular lost / owner NOT_ADMITTED / old lease revoked
- -> svc data enable
- -> same request reacquires direct cellular
- -> fresh owner authority / fresh lease
- -> positive exact-network DNS/socket proof again
+ -> owner ADMITTED with fresh generation
+ -> PRODUCT root policy reconciled for intended proxy egress
+ -> current direct-cellular route validated behind fail-closed guard
+ -> cellular-owned DNS/public egress succeeds
+ -> bounded LAB mobile-data loss mutation
+ -> direct cellular lost / owner NOT_ADMITTED / old generation unusable
+ -> target egress fails closed; no Wi-Fi/default/WARP fallback
+ -> bounded LAB mobile-data restore
+ -> same PRODUCT lifecycle reacquires direct cellular
+ -> fresh generation + fresh policy reconciliation
+ -> cellular-owned public egress succeeds again
 ```
 
-Wi-Fi is not a correctness prerequisite and cannot satisfy Cellular Egress. Cloudflare/VPN-derived networks cannot satisfy the `NOT_VPN` owner policy.
+Wi-Fi is not an E3 correctness prerequisite and cannot satisfy Cellular Egress. Cloudflare/VPN-derived networks cannot satisfy the `NOT_VPN` owner policy. For the replacement path Cloudflare One Agent remains connected as the target-topology coexistence fixture, but E3 does not claim Mesh end-to-end acceptance.
+
+Unsupported/unvalidated IPv6 must remain fail closed. Whole-PRODUCT-UID routing and any dedicated egress helper remain prohibited assumptions until separately justified by physical privilege/lifecycle/isolation evidence.
 
 ## Trust and privacy rules
 
@@ -229,4 +241,4 @@ NO carrier public-IP persistence
 NO device/SIM/network identifiers in durable public evidence
 ```
 
-A mutable, missing, ambiguous, expired, mismatched, or non-canonical release/harness identity fails closed before physical execution.
+A mutable, missing, ambiguous, expired, mismatched, non-canonical or stale-mechanism release/harness identity fails closed before physical execution.

@@ -17,30 +17,33 @@ This file is a navigation index, not a second source of truth. Durable architect
 - Issue #6 — completed B0 physical-tree derivation from capability ownership/dependency rules.
 - Issue #7 / PR #8 — completed B1 repository/bootstrap implementation.
 - Issue #9 — completed main protection/ruleset blocker.
+- PR #73 — application-wide minimal-layer extension invariant: existing natural owner + one narrow adapter before any new architectural layer.
 - `docs/lab/PLAN.md` — stable managed-lab execution sequence and ownership boundaries; live stage status remains in Issues.
 
 ## Current implementation line
 
-- Issue #10 — single owner for B2 Cellular Egress + Android Network boundary.
+- Issue #10 — single owner for B2 Cellular Egress implementation and E3 acceptance.
+- Issue #63 — physical Android/device behavior and root-policy characterization evidence owner.
 - PR #11 — B2a cellular natural-owner semantics and Android observation seam.
 - PR #12 — B2b-1 stable UniFFI typed cellular contract.
 - PR #13 — B2b-2 Android native packaging/runtime bridge + owner-derived Compose projection.
-- PR #14 — B2c-1 opaque exact-network authority lease, NDK DNS/socket binding seam.
+- PR #14 — historical B2c-1 exact-network lease/NDK bind seam. Physical target-topology evidence later showed the bind mechanism fails with `EPERM`; Issue #10 now owns its replacement by a lifecycle-bounded root policy-routing adapter while preserving the existing Cellular Egress owner.
+- Issue #64 — subsequent DNS ownership / anti-leak acceptance owner after B2/E3; it must not become a second Cellular Egress owner.
 
-The live status of B2 must be read from Issue #10 rather than copied into this file.
+The live status of B2 must be read from Issue #10 rather than copied into this file. Device-specific findings live in Issue #63. Historical PRs remain implementation history and do not override later accepted physical disposition.
 
 ## Windows / Mesh contract navigation
 
-- `docs/architecture/SYSTEM.md` — canonical product path and destination-based Windows route ownership: ordinary Internet via sing-box TUN, Mesh/device destinations via Cloudflare One Traffic only.
+- `docs/architecture/SYSTEM.md` — canonical product path and destination-based Windows route ownership: ordinary Internet via sing-box TUN, Mesh/device destinations via Cloudflare One Traffic only; Android public proxy egress is independently cellular-owned and fail-closed.
 - Issue #27 — bounded pre-Android Windows acceptance; MASQUE is primary and Cloudflare One WireGuard is only a concrete-defect fallback.
 - `docs/testing/E4_FULL_STACK.md` — later physical proof for the real Android Mesh proxy endpoint, cellular DNS/egress, browser compatibility and selected-app fail-closed behavior.
 
 ## Test/evidence navigation
 
 - `docs/architecture/ACCEPTANCE.md` — E1/E2/E3/E4 evidence domains and readiness/acceptance separation.
-- `docs/testing/E3_PHYSICAL_CELLULAR.md` — executable physical cellular acceptance protocol.
+- `docs/testing/E3_PHYSICAL_CELLULAR.md` — executable physical Cellular Egress acceptance protocol for the current PRODUCT mechanism; old bind-based RC/harness evidence cannot satisfy the revised root-policy acceptance path.
 - `docs/testing/E4_FULL_STACK.md` — future Windows/Cloudflare/Mesh/Kameleo/Camoufox full-stack execution contract.
-- `.github/workflows/e3-physical-cellular.yml` — manual self-hosted E3 runner workflow once a physical lab runner is connected.
+- `.github/workflows/e3-physical-cellular.yml` — manual self-hosted E3 runner workflow; the workflow/harness must match the accepted PRODUCT mechanism before a future run may claim E3 PASS.
 
 ## Non-authority rule
 

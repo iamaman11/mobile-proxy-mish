@@ -103,7 +103,7 @@ E3 physical rooted Android + real carrier
 E4 Windows -> Mesh -> Android -> cellular -> real clients
 ```
 
-`NO_EVIDENCE_ESCALATION`: an evidence document may only claim the domain physically exercised by that run. Host preflight, provider plan, APK build, arm64 link proof and a device-absent dry run cannot claim E3.
+`NO_EVIDENCE_ESCALATION`: an evidence document may only claim the domain physically exercised by that run. Host preflight, provider plan, APK build, ABI-specific link/package proof and a device-absent dry run cannot claim E3.
 
 ## Storage
 

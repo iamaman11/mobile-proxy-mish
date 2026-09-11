@@ -17,7 +17,11 @@ product-admitted Mesh listener
         ↓
 sing-box (:1080 / :1081 / :3128)
         ↓
-validated Android cellular Network
+product Cellular Egress owner
+        ↓
+validated direct-cellular authority
+        ↓
+fail-closed product-owned cellular routing
         ↓
 LTE/5G Internet
 ```
@@ -41,10 +45,33 @@ Current commits are implementation-stage evidence only. They must not be interpr
 
 Durable architecture decision history is in GitHub Issue #2 and ADR #5. Physical-tree derivation is Issue #6. Current Cellular Egress implementation/acceptance is owned by Issue #10; read that issue for live stage status rather than relying on copied status text in documentation.
 
-## Core law
+## Core laws
 
 ```text
 one fact -> one natural owner -> one write path -> one observation path
 ```
 
-The repository is a modular monolith. Capability crates are compile-time ownership boundaries, not separate services or processes.
+```text
+Do not add a new architectural layer when an existing natural owner plus one narrow adapter can solve the concrete requirement correctly.
+```
+
+The repository is a modular monolith. Capability crates are compile-time ownership boundaries, not separate services or processes. The canonical dependency and minimal-layer rules live in `docs/architecture/DEPENDENCIES.md`.
+
+## Development entry path
+
+This is a navigation procedure, not a second live-status system:
+
+```text
+fresh accepted main + current natural-owner Issue
+ -> identify the fact owner and the smallest bounded change
+ -> prefer existing owner + existing port or one narrow new port + one adapter
+ -> short-lived branch
+ -> direct tests at the cheapest evidence level that can prove the claim
+ -> PR
+ -> exact-head required CI
+ -> squash merge
+ -> fresh post-merge verification
+ -> record live stage status only in the natural-owner Issue
+```
+
+Physical claims are never promoted from weaker evidence: E3 proves the real rooted-phone/carrier Cellular Egress boundary; E4 proves the Windows -> Mesh -> Android -> proxy -> cellular full stack. New framework/process/control-plane/state layers require a concrete blocking ownership, privilege, lifecycle or failure-isolation fact and direct evidence as defined by `docs/architecture/DEPENDENCIES.md`.
