@@ -19,7 +19,6 @@ on:
       - 'lab/windows/E3Harness.psm1'
       - 'lab/windows/Labctl.psm1'
       - 'lab/windows/labctl.ps1'
-      - 'lab/windows/test-e3-harness.ps1'
       - 'scripts/release/android_release.py'
       - 'scripts/release/e3_harness.py'
       - 'docs/lab/LABCTL.md'
@@ -162,6 +161,8 @@ jobs:
           test -f "$APK"
           test -f "$MANIFEST"
           [[ "$(sha256sum "$APK" | awk '{print $1}')" == "$APK_SHA256" ]]
+          gh release verify "$RC_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+          gh release verify-asset "$RC_TAG" "$APK" --repo "$GITHUB_REPOSITORY" >/dev/null
           python3 scripts/release/android_release.py verify \
             --tag "$RC_TAG" \
             --manifest "$MANIFEST" \
@@ -303,7 +304,7 @@ jobs:
             echo "- Product APK SHA-256: \`$APK_SHA256\`"
             echo "- Harness run/artifact: \`$HARNESS_RUN_ID\` / \`$HARNESS_ARTIFACT_ID\`"
             echo "- Test APK SHA-256: \`$TEST_APK_SHA256\`"
-            echo '- Projection source: **native immutable GitHub Release + exact successful release run/artifact**'
+            echo '- Projection source: **native immutable GitHub Release + verified GitHub release attestation + exact successful release run/artifact**'
             echo '- Human-copied source/digest/artifact tuple: **NO**'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -403,7 +404,7 @@ jobs:
           >>"%GITHUB_STEP_SUMMARY%" echo - Product APK SHA-256: `%RC_APK_SHA256%`
           >>"%GITHUB_STEP_SUMMARY%" echo - Harness run/artifact: `%HARNESS_RUN_ID%` / `%HARNESS_ARTIFACT_ID%`
           >>"%GITHUB_STEP_SUMMARY%" echo - Test APK SHA-256: `%HARNESS_TEST_APK_SHA256%`
-          >>"%GITHUB_STEP_SUMMARY%" echo - RC identity source: **native immutable GitHub Release**
+          >>"%GITHUB_STEP_SUMMARY%" echo - RC identity source: **native immutable GitHub Release + verified release attestation**
           >>"%GITHUB_STEP_SUMMARY%" echo - Android product/test build on physical runner: **NO**
           >>"%GITHUB_STEP_SUMMARY%" echo - APK installation: **NO**
           >>"%GITHUB_STEP_SUMMARY%" echo - Durable evidence schema: `mish.lab.evidence/v1`
