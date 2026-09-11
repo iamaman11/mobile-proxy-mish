@@ -72,6 +72,7 @@ class CellularE3InstrumentedTest {
         val runtime = application.cellularRuntime
         var mobileDataMayBeDisabled = false
         var runtimeClosed = false
+        var establishedFlow: SSLSocket? = null
 
         try {
             // Positive: MishApplication already started the real process-generation bridge.
@@ -97,15 +98,27 @@ class CellularE3InstrumentedTest {
                 phase = "positive",
             )
             requirePublicIpLiteral(initialPublicIp)
+
+            // Establish a second real PRODUCT HTTPS/TCP flow while cellular authority is
+            // current, but intentionally send no HTTP application request yet. The TLS
+            // handshake proves that this exact socket existed over the admitted path before
+            // the loss generation. It stays open across the transition below.
+            establishedFlow = openEstablishedHttpsFlow(
+                numericAddress = stableProbeAddress,
+                host = host,
+                port = proofPort,
+            )
             println(
                 "E3_EVIDENCE phase=positive owner_admitted=true product_root_policy=enforced " +
                     "dns=uid_policy public_socket=uid_policy transport=https " +
-                    "public_ip_observed=true ipv6=fail_closed",
+                    "public_ip_observed=true established_https_ready=true ipv6=fail_closed",
             )
 
             // Negative: LAB authority changes only the mobile-data setting. The still-live
             // PRODUCT runtime must receive loss, remove the cellular lookup, retain the
-            // same-mark unreachable protection and make NEW PRODUCT DNS/TCP fail closed.
+            // same-mark unreachable protection, block NEW PRODUCT DNS/TCP, and prevent the
+            // already-established PRODUCT HTTPS socket from successfully exchanging new
+            // application data after the newer NOT_ADMITTED owner generation.
             mobileDataMayBeDisabled = true
             requireMobileDataTransition("disable")
             waitForDirectCellular(validated = false, present = false, timeoutMillis = NEGATIVE_TIMEOUT_MILLIS)
@@ -119,11 +132,19 @@ class CellularE3InstrumentedTest {
                 "negative owner sequence must supersede the positive generation",
                 negativeSequence > positiveSequence,
             )
+            assertEstablishedFlowFailsClosed(
+                socket = establishedFlow
+                    ?: throw AssertionError("E3_SAFE_FAILURE stage=established_flow socket_missing"),
+                host = host,
+                path = path,
+            )
+            establishedFlow = null
             assertDnsFailsClosed(positiveDns, host)
             assertPublicSocketFailsClosed(stableProbeAddress, proofPort)
             println(
                 "E3_EVIDENCE phase=negative owner_not_admitted=true fresh_loss_generation=true " +
-                    "dns_blocked=true public_socket_blocked=true no_default_fallback=true",
+                    "established_flow_blocked=true dns_blocked=true public_socket_blocked=true " +
+                    "no_default_fallback=true",
             )
 
             // Recovery: the same owner/runtime must reacquire direct cellular, mint a fresh
@@ -168,6 +189,7 @@ class CellularE3InstrumentedTest {
                     "transport=https public_ip_observed=true cleanup_verified=true ipv6=fail_closed",
             )
         } finally {
+            runCatching { establishedFlow?.close() }
             if (mobileDataMayBeDisabled) {
                 runCatching { executeMobileDataTransition("enable") }
             }
@@ -464,6 +486,61 @@ class CellularE3InstrumentedTest {
             runCatching { raw.close() }
             throw failure
         }
+    }
+
+    private fun openEstablishedHttpsFlow(
+        numericAddress: String,
+        host: String,
+        port: Int,
+    ): SSLSocket {
+        require(port == HTTPS_PORT) { "established-flow proof requires HTTPS/443" }
+        require(IPV4_LITERAL.matches(numericAddress)) { "DNS must return numeric IPv4" }
+        val raw = Socket()
+        try {
+            raw.keepAlive = true
+            raw.connect(
+                InetSocketAddress(InetAddress.getByName(numericAddress), port),
+                SOCKET_TIMEOUT_MILLIS,
+            )
+            raw.soTimeout = SOCKET_TIMEOUT_MILLIS
+            return createVerifiedTlsSocket(raw, host, port).also {
+                it.keepAlive = true
+            }
+        } catch (failure: Throwable) {
+            runCatching { raw.close() }
+            throw failure
+        }
+    }
+
+    private fun assertEstablishedFlowFailsClosed(
+        socket: SSLSocket,
+        host: String,
+        path: String,
+    ) {
+        val escaped = try {
+            socket.soTimeout = NEGATIVE_SOCKET_TIMEOUT_MILLIS
+            val request = (
+                "GET $path HTTP/1.1\r\n" +
+                    "Host: $host\r\n" +
+                    "Connection: close\r\n" +
+                    "User-Agent: mobile-proxy-mish-e3-established\r\n\r\n"
+                ).toByteArray(Charsets.US_ASCII)
+            socket.getOutputStream().write(request)
+            socket.getOutputStream().flush()
+
+            val response = readBounded(socket.getInputStream())
+            val text = response.toString(Charsets.US_ASCII)
+            text.startsWith("HTTP/1.1 200") || text.startsWith("HTTP/1.0 200")
+        } catch (_: Throwable) {
+            false
+        } finally {
+            runCatching { socket.close() }
+        }
+
+        assertFalse(
+            "established PRODUCT HTTPS flow exchanged application data after NOT_ADMITTED",
+            escaped,
+        )
     }
 
     private fun createVerifiedTlsSocket(raw: Socket, host: String, port: Int): SSLSocket {
