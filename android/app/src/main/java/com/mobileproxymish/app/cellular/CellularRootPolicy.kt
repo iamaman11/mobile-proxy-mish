@@ -110,19 +110,31 @@ class CellularRootPolicy internal constructor(
     }
 
     /**
-     * Best-effort exact cleanup for an intentional runtime shutdown. Crash/restart safety
-     * does not depend on this method: the next process generation reconciles the exact
-     * PRODUCT signatures before admitting egress, and a device reboot clears kernel rules.
+     * Exact intentional teardown. Unlike startup admission, cleanup must not skip its
+     * delete attempts merely because a preliminary authority probe is transiently
+     * incomplete. It attempts every exact PRODUCT-owned signature, then independently
+     * verifies that root authority is usable and all signatures are absent.
      */
     @Synchronized
+    internal fun cleanupExactOwnedRules(): Boolean {
+        var mutatedCleanly = true
+
+        if (!removeOwnedIpv4Lookups()) mutatedCleanly = false
+        if (!removeExactRule(ipv4SelectorCheck(), ipv4SelectorDelete())) mutatedCleanly = false
+        if (!removeExactRule(ipv6SelectorCheck(), ipv6SelectorDelete())) mutatedCleanly = false
+        if (!removeRpdbGuard(IPV4_RULE_SHOW, ::isOwnedIpv4Guard, IPV4_GUARD_DELETE)) {
+            mutatedCleanly = false
+        }
+        if (!removeRpdbGuard(IPV6_RULE_SHOW, ::isOwnedIpv6Guard, IPV6_GUARD_DELETE)) {
+            mutatedCleanly = false
+        }
+
+        return mutatedCleanly && verifyExactCleanup()
+    }
+
+    @Synchronized
     override fun close() {
-        if (authority.probe() != RootAuthorityStatus.Ready) return
-        removeOwnedIpv4Lookups()
-        // Stop producing PRODUCT marks before removing the guards that contain them.
-        removeExactRule(ipv4SelectorDelete())
-        removeExactRule(ipv6SelectorDelete())
-        removeExactRule(IPV4_GUARD_DELETE)
-        removeExactRule(IPV6_GUARD_DELETE)
+        cleanupExactOwnedRules()
     }
 
     private fun ensureFailClosedGuards(): Boolean =
@@ -133,12 +145,26 @@ class CellularRootPolicy internal constructor(
         ensureExactRule(ipv4SelectorCheck(), ipv4SelectorAdd()) &&
             ensureExactRule(ipv6SelectorCheck(), ipv6SelectorAdd())
 
-    private fun verifyFailClosedBase(): Boolean =
-        commandSucceeded(ipv4SelectorCheck()) &&
+    private fun verifyFailClosedBase(): Boolean {
+        val ipv4Rules = ruleOutputOrNull(IPV4_RULE_SHOW) ?: return false
+        val ipv6Rules = ruleOutputOrNull(IPV6_RULE_SHOW) ?: return false
+        return commandSucceeded(ipv4SelectorCheck()) &&
             commandSucceeded(ipv6SelectorCheck()) &&
-            ruleOutput(IPV4_RULE_SHOW).any(::isOwnedIpv4Guard) &&
-            ruleOutput(IPV6_RULE_SHOW).any(::isOwnedIpv6Guard) &&
-            ownedIpv4LookupTables(ruleOutput(IPV4_RULE_SHOW)).isEmpty()
+            ipv4Rules.any(::isOwnedIpv4Guard) &&
+            ipv6Rules.any(::isOwnedIpv6Guard) &&
+            ownedIpv4LookupTables(ipv4Rules).isEmpty()
+    }
+
+    private fun verifyExactCleanup(): Boolean {
+        if (authority.probe() != RootAuthorityStatus.Ready) return false
+        val ipv4Rules = ruleOutputOrNull(IPV4_RULE_SHOW) ?: return false
+        val ipv6Rules = ruleOutputOrNull(IPV6_RULE_SHOW) ?: return false
+        return !commandSucceeded(ipv4SelectorCheck()) &&
+            !commandSucceeded(ipv6SelectorCheck()) &&
+            ownedIpv4LookupTables(ipv4Rules).isEmpty() &&
+            ipv4Rules.none(::isOwnedIpv4Guard) &&
+            ipv6Rules.none(::isOwnedIpv6Guard)
+    }
 
     private fun ensureExactRule(check: String, add: String): Boolean {
         if (commandSucceeded(check)) return true
@@ -151,10 +177,23 @@ class CellularRootPolicy internal constructor(
         ownedLineMatcher: (String) -> Boolean,
         addCommand: String,
     ): Boolean {
-        val lines = ruleOutput(showCommand)
+        val lines = ruleOutputOrNull(showCommand) ?: return false
         if (lines.any(ownedLineMatcher)) return true
         if (!commandSucceeded(addCommand)) return false
-        return ruleOutput(showCommand).any(ownedLineMatcher)
+        return ruleOutputOrNull(showCommand)?.any(ownedLineMatcher) == true
+    }
+
+    private fun removeRpdbGuard(
+        showCommand: String,
+        ownedLineMatcher: (String) -> Boolean,
+        deleteCommand: String,
+    ): Boolean {
+        repeat(MAX_RECONCILE_PASSES) {
+            val lines = ruleOutputOrNull(showCommand) ?: return false
+            if (lines.none(ownedLineMatcher)) return true
+            if (!commandSucceeded(deleteCommand)) return false
+        }
+        return ruleOutputOrNull(showCommand)?.none(ownedLineMatcher) == true
     }
 
     private fun discoverValidatedIpv4Table(iface: String): String? {
@@ -188,27 +227,34 @@ class CellularRootPolicy internal constructor(
     }
 
     private fun replaceIpv4Lookup(table: String): Boolean {
-        val existing = ownedIpv4LookupTables(ruleOutput(IPV4_RULE_SHOW))
+        val initialRules = ruleOutputOrNull(IPV4_RULE_SHOW) ?: return false
+        val existing = ownedIpv4LookupTables(initialRules)
 
         for (stale in existing.filterNot { it == table }) {
             if (!commandSucceeded(ipv4LookupDelete(stale))) return false
         }
 
-        if (ownedIpv4LookupTables(ruleOutput(IPV4_RULE_SHOW)).contains(table)) return true
+        val afterDelete = ruleOutputOrNull(IPV4_RULE_SHOW) ?: return false
+        if (ownedIpv4LookupTables(afterDelete).contains(table)) return true
 
         if (!commandSucceeded(ipv4LookupAdd(table))) return false
-        return ownedIpv4LookupTables(ruleOutput(IPV4_RULE_SHOW)).contains(table)
+        return ruleOutputOrNull(IPV4_RULE_SHOW)
+            ?.let(::ownedIpv4LookupTables)
+            ?.contains(table) == true
     }
 
     private fun removeOwnedIpv4Lookups(): Boolean {
         repeat(MAX_RECONCILE_PASSES) {
-            val tables = ownedIpv4LookupTables(ruleOutput(IPV4_RULE_SHOW))
+            val lines = ruleOutputOrNull(IPV4_RULE_SHOW) ?: return false
+            val tables = ownedIpv4LookupTables(lines)
             if (tables.isEmpty()) return true
             for (table in tables) {
                 if (!commandSucceeded(ipv4LookupDelete(table))) return false
             }
         }
-        return ownedIpv4LookupTables(ruleOutput(IPV4_RULE_SHOW)).isEmpty()
+        return ruleOutputOrNull(IPV4_RULE_SHOW)
+            ?.let(::ownedIpv4LookupTables)
+            ?.isEmpty() == true
     }
 
     private fun verifyIpv4Path(iface: String): Boolean {
@@ -228,9 +274,9 @@ class CellularRootPolicy internal constructor(
     private fun isOwnedIpv6Guard(line: String): Boolean =
         OWNED_IPV6_GUARD_REGEX.matches(line.trim())
 
-    private fun ruleOutput(command: String): List<String> {
+    private fun ruleOutputOrNull(command: String): List<String>? {
         val result = runRoot(command)
-        if (result.timedOut || result.exitCode != 0) return emptyList()
+        if (result.timedOut || result.exitCode != 0) return null
         return result.stdout.lineSequence().map(String::trim).filter(String::isNotEmpty).toList()
     }
 
@@ -239,10 +285,15 @@ class CellularRootPolicy internal constructor(
         return !result.timedOut && result.exitCode == 0
     }
 
-    private fun removeExactRule(deleteCommand: String) {
+    private fun removeExactRule(checkCommand: String, deleteCommand: String): Boolean {
         repeat(MAX_RECONCILE_PASSES) {
-            if (!commandSucceeded(deleteCommand)) return
+            val check = runRoot(checkCommand)
+            if (check.timedOut) return false
+            if (check.exitCode != 0) return true
+            if (!commandSucceeded(deleteCommand)) return false
         }
+        val finalCheck = runRoot(checkCommand)
+        return !finalCheck.timedOut && finalCheck.exitCode != 0
     }
 
     private fun runRoot(command: String): RootProcessResult =
