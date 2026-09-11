@@ -221,6 +221,12 @@ function Resolve-E3BoundProbeSubstage {
         [Parameter(Mandatory)][ValidateSet('positive','recovery')][string]$Phase
     )
 
+    if ($StdOut -match 'E3_SAFE_FAILURE stage=(address_conversion|socket_create|fd_duplicate|fd_adopt|fd_cleanup|socket_option|socket_bind|connect|write|read|http_status|response_parse|public_ip_parse|mixed|unknown)\b') {
+        $stage = $Matches[1]
+        if ($stage -eq 'mixed') { return "${Phase}_bound_probe_mixed" }
+        if ($stage -eq 'unknown') { return "${Phase}_bound_probe_unknown" }
+        return "${Phase}_${stage}_failed"
+    }
     if ($StdOut -match 'Android explicit-network DNS lookup failed') { return "${Phase}_dns_lookup_failed" }
     if ($StdOut -match 'Android explicit-network DNS lookup returned no addresses|network-scoped DNS returned no addresses') { return "${Phase}_dns_empty" }
     if ($StdOut -match 'Android explicit-network DNS address conversion failed|lease must return numeric IP strings') { return "${Phase}_address_conversion_failed" }

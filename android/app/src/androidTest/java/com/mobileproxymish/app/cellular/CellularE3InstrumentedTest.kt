@@ -5,6 +5,7 @@ import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
+import android.system.ErrnoException
 import android.system.Os
 import android.system.OsConstants
 import android.system.StructTimeval
@@ -16,7 +17,6 @@ import com.mobileproxymish.ffi.CellularNetworkLease
 import java.io.ByteArrayOutputStream
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -34,6 +34,12 @@ class CellularE3InstrumentedTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context = instrumentation.targetContext
     private val connectivityManager = context.getSystemService(ConnectivityManager::class.java)
+
+    private class SafeProbeFailure(
+        val stage: String,
+        val exceptionClass: String,
+        val errno: Int?,
+    ) : AssertionError("safe E3 probe failure")
 
     @Test
     fun runPhysicalScenario() {
@@ -62,7 +68,7 @@ class CellularE3InstrumentedTest {
             waitForDirectCellular(validated = true, present = true, timeoutMillis = 60_000)
             val initialLease = controller.admittedNetworkLease()
             val initialPublicIp = performBoundHttpProbe(initialLease, host, port, path)
-            assertTrue("echo response must be a bare IPv4/IPv6 literal", isIpLiteral(initialPublicIp))
+            requirePublicIpLiteral(initialPublicIp)
             println(
                 "E3_EVIDENCE phase=positive direct_cellular_validated=true " +
                     "not_vpn=owner_verified dns=lease socket_bind=lease public_ip_observed=true",
@@ -91,7 +97,7 @@ class CellularE3InstrumentedTest {
             waitForDirectCellular(validated = true, present = true, timeoutMillis = 120_000)
             val recoveryLease = controller.admittedNetworkLease()
             val recoveryPublicIp = performBoundHttpProbe(recoveryLease, host, port, path)
-            assertTrue("recovery echo must be a bare IPv4/IPv6 literal", isIpLiteral(recoveryPublicIp))
+            requirePublicIpLiteral(recoveryPublicIp)
             println(
                 "E3_EVIDENCE phase=recovery direct_cellular_validated=true " +
                     "not_vpn=owner_verified fresh_lease=true dns=lease socket_bind=lease " +
@@ -217,16 +223,24 @@ class CellularE3InstrumentedTest {
         val numericAddresses = lease.resolveHost(host)
         assertFalse("network-scoped DNS returned no addresses", numericAddresses.isEmpty())
 
-        var lastFailure: Throwable? = null
+        val failures = mutableListOf<SafeProbeFailure>()
         for (numericAddress in numericAddresses) {
             try {
                 return connectAndReadPublicIp(lease, numericAddress, host, port, path)
             } catch (failure: Throwable) {
-                lastFailure = failure
+                val safe = safeProbeFailure("unknown", failure)
+                failures += safe
+                emitSafeAttempt(safe)
             }
         }
 
-        throw AssertionError("all lease-resolved addresses failed", lastFailure)
+        val stages = failures.map { it.stage }.toSet()
+        val aggregateStage = when (stages.size) {
+            0 -> "unknown"
+            1 -> stages.first()
+            else -> "mixed"
+        }
+        throw AssertionError("all lease-resolved addresses failed; E3_SAFE_FAILURE stage=$aggregateStage")
     }
 
     private fun connectAndReadPublicIp(
@@ -237,35 +251,55 @@ class CellularE3InstrumentedTest {
         path: String,
     ): String {
         val family = if (numericAddress.contains(':')) OsConstants.AF_INET6 else OsConstants.AF_INET
-        val address = Os.inet_pton(family, numericAddress)
-        assertNotNull("lease must return numeric IP strings", address)
-
-        val original = Os.socket(family, OsConstants.SOCK_STREAM, OsConstants.IPPROTO_TCP)
-        val rawFd = try {
-            ParcelFileDescriptor.dup(original).use { duplicate -> duplicate.detachFd() }
-        } finally {
-            Os.close(original)
+        val address = withSafeProbeStage("address_conversion") {
+            Os.inet_pton(family, numericAddress)
+                ?: throw AssertionError("numeric address conversion returned null")
         }
 
-        ParcelFileDescriptor.adoptFd(rawFd).use { socket ->
+        val original = withSafeProbeStage("socket_create") {
+            Os.socket(family, OsConstants.SOCK_STREAM, OsConstants.IPPROTO_TCP)
+        }
+        var duplicateFailure: SafeProbeFailure? = null
+        val rawFd = try {
+            withSafeProbeStage("fd_duplicate") {
+                ParcelFileDescriptor.dup(original).use { duplicate -> duplicate.detachFd() }
+            }
+        } catch (failure: SafeProbeFailure) {
+            duplicateFailure = failure
+            throw failure
+        } finally {
+            try {
+                Os.close(original)
+            } catch (failure: Throwable) {
+                if (duplicateFailure == null) {
+                    throw safeProbeFailure("fd_cleanup", failure)
+                }
+            }
+        }
+
+        val socket = withSafeProbeStage("fd_adopt") { ParcelFileDescriptor.adoptFd(rawFd) }
+        var primaryFailure: Throwable? = null
+        try {
             if (Build.VERSION.SDK_INT >= 29) {
-                val timeout = StructTimeval.fromMillis(15_000)
-                Os.setsockoptTimeval(
-                    socket.fileDescriptor,
-                    OsConstants.SOL_SOCKET,
-                    OsConstants.SO_RCVTIMEO,
-                    timeout,
-                )
-                Os.setsockoptTimeval(
-                    socket.fileDescriptor,
-                    OsConstants.SOL_SOCKET,
-                    OsConstants.SO_SNDTIMEO,
-                    timeout,
-                )
+                withSafeProbeStage("socket_option") {
+                    val timeout = StructTimeval.fromMillis(15_000)
+                    Os.setsockoptTimeval(
+                        socket.fileDescriptor,
+                        OsConstants.SOL_SOCKET,
+                        OsConstants.SO_RCVTIMEO,
+                        timeout,
+                    )
+                    Os.setsockoptTimeval(
+                        socket.fileDescriptor,
+                        OsConstants.SOL_SOCKET,
+                        OsConstants.SO_SNDTIMEO,
+                        timeout,
+                    )
+                }
             }
 
-            lease.bindSocket(rawFd)
-            Os.connect(socket.fileDescriptor, address, port)
+            withSafeProbeStage("socket_bind") { lease.bindSocket(rawFd) }
+            withSafeProbeStage("connect") { Os.connect(socket.fileDescriptor, address, port) }
 
             val request = (
                 "GET $path HTTP/1.1\r\n" +
@@ -273,17 +307,65 @@ class CellularE3InstrumentedTest {
                     "Connection: close\r\n" +
                     "User-Agent: mobile-proxy-mish-e3\r\n\r\n"
                 ).toByteArray(Charsets.US_ASCII)
-            writeAll(socket.fileDescriptor, request)
+            withSafeProbeStage("write") { writeAll(socket.fileDescriptor, request) }
 
-            val response = readBounded(socket.fileDescriptor)
+            val response = withSafeProbeStage("read") { readBounded(socket.fileDescriptor) }
             val text = response.toString(Charsets.US_ASCII)
-            assertTrue(
-                "E3 echo endpoint must return HTTP 200",
-                text.startsWith("HTTP/1.1 200") || text.startsWith("HTTP/1.0 200"),
-            )
+            withSafeProbeStage("http_status") {
+                assertTrue(
+                    "E3 echo endpoint must return HTTP 200",
+                    text.startsWith("HTTP/1.1 200") || text.startsWith("HTTP/1.0 200"),
+                )
+            }
             val separator = text.indexOf("\r\n\r\n")
-            assertTrue("HTTP response must contain header/body separator", separator >= 0)
+            withSafeProbeStage("response_parse") {
+                assertTrue("HTTP response must contain header/body separator", separator >= 0)
+            }
             return text.substring(separator + 4).trim().lineSequence().firstOrNull().orEmpty().trim()
+        } catch (failure: Throwable) {
+            primaryFailure = failure
+            throw failure
+        } finally {
+            try {
+                socket.close()
+            } catch (failure: Throwable) {
+                if (primaryFailure == null) {
+                    throw safeProbeFailure("fd_cleanup", failure)
+                }
+            }
+        }
+    }
+
+    private inline fun <T> withSafeProbeStage(stage: String, block: () -> T): T {
+        try {
+            return block()
+        } catch (failure: Throwable) {
+            throw safeProbeFailure(stage, failure)
+        }
+    }
+
+    private fun safeProbeFailure(stage: String, failure: Throwable): SafeProbeFailure {
+        if (failure is SafeProbeFailure) {
+            return failure
+        }
+        return SafeProbeFailure(
+            stage = stage,
+            exceptionClass = failure.javaClass.name,
+            errno = (failure as? ErrnoException)?.errno,
+        )
+    }
+
+    private fun emitSafeAttempt(failure: SafeProbeFailure) {
+        val errno = failure.errno?.toString() ?: "NONE"
+        println(
+            "E3_SAFE_ATTEMPT stage=${failure.stage} " +
+                "class=${failure.exceptionClass} errno=$errno",
+        )
+    }
+
+    private fun requirePublicIpLiteral(value: String) {
+        if (!isIpLiteral(value)) {
+            throw AssertionError("E3_SAFE_FAILURE stage=public_ip_parse")
         }
     }
 
