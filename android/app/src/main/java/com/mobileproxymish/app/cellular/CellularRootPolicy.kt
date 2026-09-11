@@ -199,7 +199,7 @@ class CellularRootPolicy internal constructor(
 
     private fun discoverValidatedIpv4Table(iface: String): String? {
         val result = runRoot("ip -4 route show table all dev $iface")
-        if (result.timedOut || result.exitCode != 0) return null
+        if (result.timedOut || !result.outputComplete || result.exitCode != 0) return null
 
         val tables = result.stdout.lineSequence()
             .map(String::trim)
@@ -219,7 +219,7 @@ class CellularRootPolicy internal constructor(
         val table = tables.single()
 
         val verify = runRoot("ip -4 route show table $table default dev $iface")
-        if (verify.timedOut || verify.exitCode != 0) return null
+        if (verify.timedOut || !verify.outputComplete || verify.exitCode != 0) return null
         val verified = verify.stdout.lineSequence().map(String::trim).any { line ->
             (line.startsWith("default ") || line == "default") &&
                 Regex("""(?:^|\s)dev\s+${Regex.escape(iface)}(?:\s|$)""").containsMatchIn(line)
@@ -260,7 +260,7 @@ class CellularRootPolicy internal constructor(
 
     private fun verifyIpv4Path(iface: String): Boolean {
         val lookup = runRoot("ip -4 route get 1.1.1.1 mark $MARK_HEX")
-        if (lookup.timedOut || lookup.exitCode != 0) return false
+        if (lookup.timedOut || !lookup.outputComplete || lookup.exitCode != 0) return false
         return Regex("""(?:^|\s)dev\s+${Regex.escape(iface)}(?:\s|$)""")
             .containsMatchIn(lookup.stdout)
     }
@@ -277,24 +277,24 @@ class CellularRootPolicy internal constructor(
 
     private fun ruleOutputOrNull(command: String): List<String>? {
         val result = runRoot(command)
-        if (result.timedOut || result.exitCode != 0) return null
+        if (result.timedOut || !result.outputComplete || result.exitCode != 0) return null
         return result.stdout.lineSequence().map(String::trim).filter(String::isNotEmpty).toList()
     }
 
     private fun commandSucceeded(command: String): Boolean {
         val result = runRoot(command)
-        return !result.timedOut && result.exitCode == 0
+        return !result.timedOut && result.outputComplete && result.exitCode == 0
     }
 
     private fun removeExactRule(checkCommand: String, deleteCommand: String): Boolean {
         repeat(MAX_RECONCILE_PASSES) {
             val check = runRoot(checkCommand)
-            if (check.timedOut) return false
+            if (check.timedOut || !check.outputComplete) return false
             if (check.exitCode != 0) return true
             if (!commandSucceeded(deleteCommand)) return false
         }
         val finalCheck = runRoot(checkCommand)
-        return !finalCheck.timedOut && finalCheck.exitCode != 0
+        return !finalCheck.timedOut && finalCheck.outputComplete && finalCheck.exitCode != 0
     }
 
     private fun runRoot(command: String): RootProcessResult =
