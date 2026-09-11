@@ -88,6 +88,7 @@ class CellularRuntimeBridge(
                     isCellular = event.isCellular,
                     hasInternet = event.hasInternet,
                     isValidated = event.isValidated,
+                    isNotVpn = event.isNotVpn,
                 )
 
                 is CellularNetworkEvent.Lost -> activeController.networkLost(
