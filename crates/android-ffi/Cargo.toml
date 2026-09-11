@@ -16,6 +16,10 @@ path = "src/bin/uniffi-bindgen.rs"
 
 [dependencies]
 mish-cellular = { path = "../cellular" }
+mish-cellular-egress-bridge = { path = "../cellular-egress-bridge" }
+mish-proxy = { path = "../proxy" }
+mish-runtime = { path = "../runtime" }
+mish-sing-box-adapter = { path = "../sing-box-adapter" }
 uniffi = { version = "=0.32.0", features = ["cli"] }
 
 [lints]
