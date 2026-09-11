@@ -124,9 +124,8 @@ mod android {
                     }
                     // SAFETY: family/length were validated for sockaddr_in.
                     let address = unsafe { &*(info.ai_addr.cast::<libc::sockaddr_in>()) };
-                    addresses.push(
-                        Ipv4Addr::from(u32::from_be(address.sin_addr.s_addr)).to_string(),
-                    );
+                    addresses
+                        .push(Ipv4Addr::from(u32::from_be(address.sin_addr.s_addr)).to_string());
                 }
                 libc::AF_INET6 => {
                     if (info.ai_addrlen as usize) < std::mem::size_of::<libc::sockaddr_in6>() {
@@ -167,7 +166,10 @@ mod tests {
 
     #[test]
     fn invalid_hostname_is_rejected_by_pure_boundary_validator() {
-        assert_eq!(validate_hostname(""), Err(AndroidNetworkError::InvalidHostname));
+        assert_eq!(
+            validate_hostname(""),
+            Err(AndroidNetworkError::InvalidHostname)
+        );
         assert_eq!(
             validate_hostname("bad\0host"),
             Err(AndroidNetworkError::InvalidHostname)
