@@ -73,15 +73,15 @@ class CellularRuntimeBridge(
     fun start() {
         if (controller == null) return
 
-        mutableSnapshot.value = when (rootPolicy.failClosed()) {
+        val initialPolicy = rootPolicy.failClosed()
+        mutableSnapshot.value = when (initialPolicy) {
             is CellularRootPolicyResult.AuthorityUnavailable ->
                 CellularRuntimeSnapshot.BoundaryUnavailable(
                     CellularBoundaryFailure.RootAuthorityUnavailable,
                 )
 
             is CellularRootPolicyResult.FailClosed -> {
-                val current = rootPolicy.failClosed()
-                if (current is CellularRootPolicyResult.FailClosed && current.reason == null) {
+                if (initialPolicy.reason == null) {
                     mutableSnapshot.value
                 } else {
                     CellularRuntimeSnapshot.BoundaryUnavailable(
