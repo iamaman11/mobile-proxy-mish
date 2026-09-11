@@ -205,7 +205,10 @@ mod tests {
             .expect("valid observation");
 
         assert_eq!(view.state, CellularAdmissionState::NotAdmitted);
-        assert_eq!(view.reason, Some(CellularAdmissionReason::VpnDerivedNetwork));
+        assert_eq!(
+            view.reason,
+            Some(CellularAdmissionReason::VpnDerivedNetwork)
+        );
         assert_eq!(view.admitted_network_handle, None);
     }
 
