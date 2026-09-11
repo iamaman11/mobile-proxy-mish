@@ -129,12 +129,13 @@ class CellularRootPolicy internal constructor(
             mutatedCleanly = false
         }
 
-        return mutatedCleanly && verifyExactCleanup()
+        val verifiedClean = verifyExactCleanup()
+        return mutatedCleanly && verifiedClean
     }
 
     @Synchronized
     override fun close() {
-        cleanupExactOwnedRules()
+        check(cleanupExactOwnedRules()) { "exact PRODUCT root-policy cleanup failed" }
     }
 
     private fun ensureFailClosedGuards(): Boolean =
