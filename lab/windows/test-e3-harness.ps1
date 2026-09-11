@@ -146,6 +146,9 @@ try {
     Assert-True ($e3Module.Contains("`$abi.StdOut.Trim() -ne `$r.abi")) 'E3 execute must compare device ABI with the exact verified RC ABI.'
     Assert-True ($e3Module.Contains('E3 device ABI must match the exact verified RC ABI.')) 'E3 ABI failure must be typed against verified RC identity.'
     Assert-True (-not $e3Module.Contains('E3 device must be arm64-v8a.')) 'E3 must not retain an independent arm64-only device owner.'
+    Assert-True ($e3Module.Contains("Run-E3Case 'lifecycle'")) 'E3 execute must run one continuous lifecycle instrumentation case.'
+    Assert-True (-not $e3Module.Contains("Run-E3Case 'negative'")) 'E3 execute must not split negative into a fresh instrumentation process.'
+    Assert-True (-not $e3Module.Contains("Run-E3Case 'positive'")) 'E3 execute must not split positive/recovery into fresh instrumentation processes.'
 
     $workflowPath=Join-Path (Split-Path $PSScriptRoot -Parent | Split-Path -Parent) '.github/workflows/e3-physical-cellular.yml'
     $workflow=Get-Content -Raw -LiteralPath $workflowPath
