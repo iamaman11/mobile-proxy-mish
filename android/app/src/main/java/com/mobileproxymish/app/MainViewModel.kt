@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.mobileproxymish.app.cellular.CellularBoundaryFailure
+import com.mobileproxymish.app.cellular.CellularRootPolicyFailure
 import com.mobileproxymish.app.cellular.CellularRuntimeSnapshot
 import com.mobileproxymish.ffi.CellularAdmissionReason
 import com.mobileproxymish.ffi.CellularAdmissionState
@@ -34,23 +35,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun toUiState(snapshot: CellularRuntimeSnapshot): MainUiState = when (snapshot) {
         is CellularRuntimeSnapshot.BoundaryUnavailable -> MainUiState(
             cellularState = "Unknown",
-            cellularReasonCode = when (snapshot.reason) {
-                CellularBoundaryFailure.NativeLibraryUnavailable ->
-                    "android_ffi.native_library_unavailable"
-                CellularBoundaryFailure.ForeignCallFailed -> "android_ffi.foreign_call_failed"
-                CellularBoundaryFailure.RootAuthorityUnavailable ->
-                    "cellular.root_authority_unavailable"
-                CellularBoundaryFailure.RootPolicyReconcileFailed ->
-                    "cellular.root_policy_reconcile_failed"
-                CellularBoundaryFailure.RootPolicyInvalidInterface ->
-                    "cellular.root_policy_invalid_interface"
-                CellularBoundaryFailure.RootPolicyRouteTableDiscoveryFailed ->
-                    "cellular.root_policy_route_table_discovery_failed"
-                CellularBoundaryFailure.RootPolicyRuleMutationFailed ->
-                    "cellular.root_policy_rule_mutation_failed"
-                CellularBoundaryFailure.RootPolicyVerificationFailed ->
-                    "cellular.root_policy_verification_failed"
-            },
+            cellularReasonCode = boundaryReasonCode(snapshot.reason),
         )
 
         is CellularRuntimeSnapshot.OwnerSnapshot -> MainUiState(
@@ -61,6 +46,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             },
             cellularReasonCode = snapshot.admission.reason?.let(::reasonCode),
         )
+    }
+
+    private fun boundaryReasonCode(reason: CellularBoundaryFailure): String = when (reason) {
+        CellularBoundaryFailure.NativeLibraryUnavailable ->
+            "android_ffi.native_library_unavailable"
+        CellularBoundaryFailure.ForeignCallFailed -> "android_ffi.foreign_call_failed"
+        CellularBoundaryFailure.RootAuthorityUnavailable ->
+            "cellular.root_authority_unavailable"
+        CellularBoundaryFailure.RootPolicyReconcileFailed ->
+            "cellular.root_policy_reconcile_failed"
+        CellularBoundaryFailure.RootPolicyGenerationChanged ->
+            "cellular.root_policy_generation_changed"
+        CellularBoundaryFailure.RootPolicyCleanupFailed ->
+            "cellular.root_policy_cleanup_failed"
+        is CellularBoundaryFailure.RootPolicyUnavailable ->
+            rootPolicyReasonCode(reason.failure)
+    }
+
+    private fun rootPolicyReasonCode(reason: CellularRootPolicyFailure): String = when (reason) {
+        CellularRootPolicyFailure.InvalidProductUid -> "cellular.root_policy_invalid_product_uid"
+        CellularRootPolicyFailure.InvalidInterface -> "cellular.root_policy_invalid_interface"
+        CellularRootPolicyFailure.RouteTableDiscoveryFailed ->
+            "cellular.root_policy_route_table_discovery_failed"
+        CellularRootPolicyFailure.RuleMutationFailed ->
+            "cellular.root_policy_rule_mutation_failed"
+        CellularRootPolicyFailure.VerificationFailed ->
+            "cellular.root_policy_verification_failed"
     }
 
     private fun reasonCode(reason: CellularAdmissionReason): String = when (reason) {
