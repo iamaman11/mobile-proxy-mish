@@ -10,41 +10,63 @@ import com.mobileproxymish.ffi.CellularAdmissionReason
 import com.mobileproxymish.ffi.CellularAdmissionState
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 
 data class MainUiState(
     val title: String = "Mobile Proxy MISH",
-    val overallStatus: String = "Overall readiness — not implemented",
+    val overallStatus: String = "Overall readiness — production acceptance pending",
     val cellularState: String = "Unknown",
     val cellularReasonCode: String? = "cellular.no_observation",
+    val proxyState: String = "Stopped",
+    val proxyReasonCode: String? = null,
 )
 
-/** Presentation projection only; it neither owns nor mutates cellular state. */
+/** Presentation projection only; it neither owns nor mutates cellular/proxy runtime state. */
 class MainViewModel(application: Application) : AndroidViewModel(application) {
-    private val cellularRuntime = (application as MishApplication).cellularRuntime
+    private val app = application as MishApplication
+    private val cellularRuntime = app.cellularRuntime
+    private val proxyRuntime = app.proxyRuntime
 
-    val state: StateFlow<MainUiState> = cellularRuntime.snapshot
-        .map(::toUiState)
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.Eagerly,
-            initialValue = toUiState(cellularRuntime.snapshot.value),
-        )
+    val state: StateFlow<MainUiState> = combine(
+        cellularRuntime.snapshot,
+        proxyRuntime.snapshot,
+        ::toUiState,
+    ).stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.Eagerly,
+        initialValue = toUiState(cellularRuntime.snapshot.value, proxyRuntime.snapshot.value),
+    )
 
-    private fun toUiState(snapshot: CellularRuntimeSnapshot): MainUiState = when (snapshot) {
-        is CellularRuntimeSnapshot.BoundaryUnavailable -> MainUiState(
-            cellularState = "Unknown",
-            cellularReasonCode = boundaryReasonCode(snapshot.reason),
-        )
-
-        is CellularRuntimeSnapshot.OwnerSnapshot -> MainUiState(
-            cellularState = when (snapshot.admission.state) {
-                CellularAdmissionState.UNKNOWN -> "Unknown"
-                CellularAdmissionState.NOT_ADMITTED -> "Not admitted"
-                CellularAdmissionState.ADMITTED -> "Admitted"
-            },
-            cellularReasonCode = snapshot.admission.reason?.let(::reasonCode),
+    private fun toUiState(
+        cellular: CellularRuntimeSnapshot,
+        proxy: ProxyRuntimeSnapshot,
+    ): MainUiState {
+        val cellularProjection = when (cellular) {
+            is CellularRuntimeSnapshot.BoundaryUnavailable -> Pair(
+                "Unknown",
+                boundaryReasonCode(cellular.reason),
+            )
+            is CellularRuntimeSnapshot.OwnerSnapshot -> Pair(
+                when (cellular.admission.state) {
+                    CellularAdmissionState.UNKNOWN -> "Unknown"
+                    CellularAdmissionState.NOT_ADMITTED -> "Not admitted"
+                    CellularAdmissionState.ADMITTED -> "Admitted"
+                },
+                cellular.admission.reason?.let(::reasonCode),
+            )
+        }
+        val proxyProjection = when (proxy) {
+            ProxyRuntimeSnapshot.Stopped -> Pair("Stopped", null)
+            ProxyRuntimeSnapshot.Starting -> Pair("Starting", null)
+            ProxyRuntimeSnapshot.Running -> Pair("Running (loopback acceptance only)", null)
+            is ProxyRuntimeSnapshot.Failed -> Pair("Failed", proxyReasonCode(proxy.reason))
+        }
+        return MainUiState(
+            cellularState = cellularProjection.first,
+            cellularReasonCode = cellularProjection.second,
+            proxyState = proxyProjection.first,
+            proxyReasonCode = proxyProjection.second,
         )
     }
 
@@ -75,6 +97,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             "cellular.root_policy_rule_mutation_failed"
         CellularRootPolicyFailure.VerificationFailed ->
             "cellular.root_policy_verification_failed"
+    }
+
+    private fun proxyReasonCode(reason: ProxyRuntimeFailure): String = when (reason) {
+        ProxyRuntimeFailure.NativeRuntimeMissing -> "proxy.native_runtime_missing"
+        ProxyRuntimeFailure.StaleProcessIdentityMismatch -> "proxy.stale_process_identity_mismatch"
+        ProxyRuntimeFailure.PrivateBridgeUnavailable -> "proxy.private_bridge_unavailable"
+        ProxyRuntimeFailure.ConfigurationRejected -> "proxy.configuration_rejected"
+        ProxyRuntimeFailure.ChildLaunchFailed -> "proxy.child_launch_failed"
+        ProxyRuntimeFailure.HealthCheckFailed -> "proxy.health_check_failed"
+        ProxyRuntimeFailure.ChildExited -> "proxy.child_exited"
+        ProxyRuntimeFailure.PrivateBridgeUnhealthy -> "proxy.private_bridge_unhealthy"
+        ProxyRuntimeFailure.CleanupFailed -> "proxy.cleanup_failed"
     }
 
     private fun reasonCode(reason: CellularAdmissionReason): String = when (reason) {
