@@ -63,6 +63,27 @@ Consequences:
 
 The established-flow guarantee remains physical evidence: E3 keeps a real HTTPS connection open across a newer NOT_ADMITTED generation and requires new application data to fail.
 
+### Publication and reconciliation law
+
+`MISH_EGRESS_V1` is a versioned immutable live contract. Reconciliation must never flush or rewrite that chain while an OUTPUT jump references it.
+
+The only permitted repair/build sequence is:
+
+```text
+reserved-space audit
+-> fail-closed RPDB guards
+-> stale IPv4 lookup revoked
+-> create/rebuild MISH_EGRESS_V1 only while detached
+-> verify every expected chain rule
+-> attach exactly one OUTPUT jump
+-> verify published chain + jump
+-> remove the preceding legacy selector
+```
+
+If a referenced `MISH_EGRESS_V1` is incomplete or differs from the exact V1 contract, reconciliation fails closed and leaves it untouched. A future rule-layout change must use a new versioned chain and an explicit migration; it must not mutate V1 in place.
+
+This avoids relying on unproven Android-specific `iptables-restore` transaction semantics. Deterministic tests require that a failed detached build never publishes a jump and that a referenced malformed chain is never flushed or rewritten.
+
 ## Reserved-space collision law
 
 Reserved RPDB priorities are:
