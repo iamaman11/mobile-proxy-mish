@@ -116,6 +116,7 @@ impl std::error::Error for AndroidRuntimeError {}
 pub struct CellularController {
     owner: Arc<Mutex<CellularEgress>>,
     bridge_claimed: Arc<AtomicBool>,
+    claim_released: AtomicBool,
 }
 
 #[uniffi::export]
@@ -280,6 +281,7 @@ impl CellularBridgeRuntime {
                 clients,
                 accept_thread: Mutex::new(Some(accept_thread)),
                 bridge_claimed: Arc::clone(&bridge_claimed),
+                claim_released: AtomicBool::new(false),
             }))
         })();
 
@@ -325,7 +327,13 @@ impl CellularBridgeRuntime {
             .map_err(|_| AndroidRuntimeError::BridgeStateUnavailable)?
             .clear();
         self.healthy.store(false, Ordering::Release);
-        self.bridge_claimed.store(false, Ordering::Release);
+        if self
+            .claim_released
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            self.bridge_claimed.store(false, Ordering::Release);
+        }
         Ok(())
     }
 }
@@ -579,6 +587,27 @@ mod tests {
             .start_bridge("replacement".into(), "secret".into(), 1_000)
             .expect("restart after exact stop");
         replacement.stop().expect("stop replacement");
+    }
+
+    #[test]
+    fn stopped_bridge_drop_cannot_release_replacement_claim() {
+        let controller = CellularController::new();
+        let stopped = controller
+            .start_bridge("first".into(), "first-secret".into(), 1_000)
+            .expect("start first bridge");
+        stopped.stop().expect("stop first bridge");
+
+        let replacement = controller
+            .start_bridge("replacement".into(), "replacement-secret".into(), 1_000)
+            .expect("start replacement bridge");
+
+        drop(stopped);
+        assert!(matches!(
+            controller.start_bridge("third".into(), "third-secret".into(), 1_000),
+            Err(AndroidRuntimeError::BridgeAlreadyRunning)
+        ));
+
+        replacement.stop().expect("stop replacement bridge");
     }
 
     #[test]
