@@ -8,7 +8,10 @@ on:
       - 'lab/windows/Labctl.psm1'
       - 'lab/windows/labctl.ps1'
       - 'lab/windows/test-e3-harness.ps1'
+      - 'scripts/release/android_release.py'
+      - 'scripts/release/e3_harness.py'
       - 'docs/lab/LABCTL.md'
+      - 'docs/testing/E3_PHYSICAL_CELLULAR.md'
   push:
     branches: [main]
     paths:
@@ -17,9 +20,16 @@ on:
       - 'lab/windows/Labctl.psm1'
       - 'lab/windows/labctl.ps1'
       - 'lab/windows/test-e3-harness.ps1'
+      - 'scripts/release/android_release.py'
+      - 'scripts/release/e3_harness.py'
       - 'docs/lab/LABCTL.md'
+      - 'docs/testing/E3_PHYSICAL_CELLULAR.md'
   workflow_dispatch:
     inputs:
+      rc_tag:
+        description: "Exact immutable RC tag to consume (vMAJOR.MINOR.PATCH-rc.N)"
+        required: true
+        type: string
       mode:
         description: "Execution boundary"
         required: true
@@ -37,6 +47,9 @@ concurrency:
   group: e3-physical-cellular
   cancel-in-progress: false
 
+env:
+  TRUSTED_RELEASE_SIGNING_CERT_SHA256: 1958d474069ce0f8b8e5390c9c4ebecd6e306fb4e0f0f6e12d35c9b91cc67803
+
 jobs:
   contract:
     name: E3 Windows Artifact Contract
@@ -52,24 +65,264 @@ jobs:
         shell: pwsh
         run: ./lab/windows/test-e3-harness.ps1
 
+  resolve-rc:
+    name: Resolve exact immutable E3 RC
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected == true }}
+    needs: contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      rc_tag: ${{ steps.release-meta.outputs.rc_tag }}
+      source_sha: ${{ steps.release-meta.outputs.source_sha }}
+      apk_sha256: ${{ steps.release-meta.outputs.apk_sha256 }}
+      signing_cert_sha256: ${{ steps.release-bytes.outputs.signing_cert_sha256 }}
+      harness_run_id: ${{ steps.harness-meta.outputs.run_id }}
+      harness_artifact_id: ${{ steps.harness-meta.outputs.artifact_id }}
+      harness_artifact_name: ${{ steps.harness-meta.outputs.artifact_name }}
+      harness_zip_sha256: ${{ steps.harness-meta.outputs.zip_sha256 }}
+      test_apk_sha256: ${{ steps.harness-bytes.outputs.test_apk_sha256 }}
+    steps:
+      - name: Checkout accepted main resolver
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve exact tag, source, release, and GitHub asset digest
+        id: release-meta
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RC_TAG: ${{ inputs.rc_tag }}
+        run: |
+          set -euo pipefail
+          python3 scripts/release/android_release.py derive --tag "$RC_TAG" >/dev/null
+          git fetch --force --tags origin
+          git fetch origin main
+          SOURCE_SHA="$(git rev-parse "$RC_TAG^{commit}")"
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git merge-base --is-ancestor "$SOURCE_SHA" origin/main
+
+          ROOT="$RUNNER_TEMP/e3-resolve"
+          mkdir -p "$ROOT/release"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RC_TAG" > "$ROOT/release.json"
+
+          python3 - "$ROOT/release.json" "$RC_TAG" "$SOURCE_SHA" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import re
+          import sys
+
+          path, tag, source, output = sys.argv[1:]
+          release = json.load(open(path, encoding="utf-8"))
+          if release.get("tag_name") != tag or release.get("draft") is not False or release.get("prerelease") is not True:
+              raise SystemExit("exact tag is not a published immutable RC prerelease")
+          apk_name = f"mobile-proxy-mish-{tag}.apk"
+          manifest_name = f"mobile-proxy-mish-{tag}.release.json"
+          assets = release.get("assets") or []
+          if len(assets) != 2:
+              raise SystemExit("RC release must contain exactly product APK + release manifest")
+          by_name = {asset.get("name"): asset for asset in assets}
+          if set(by_name) != {apk_name, manifest_name}:
+              raise SystemExit("RC release asset set is not canonical")
+          digest = str(by_name[apk_name].get("digest") or "")
+          match = re.fullmatch(r"sha256:([0-9a-f]{64})", digest)
+          if not match:
+              raise SystemExit("GitHub Release APK digest is unavailable or malformed")
+          with open(output, "a", encoding="utf-8", newline="\n") as handle:
+              handle.write(f"rc_tag={tag}\n")
+              handle.write(f"source_sha={source}\n")
+              handle.write(f"apk_name={apk_name}\n")
+              handle.write(f"manifest_name={manifest_name}\n")
+              handle.write(f"apk_sha256={match.group(1)}\n")
+          PY
+
+      - name: Download and verify exact immutable release bytes
+        id: release-bytes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RC_TAG: ${{ steps.release-meta.outputs.rc_tag }}
+          SOURCE_SHA: ${{ steps.release-meta.outputs.source_sha }}
+          APK_NAME: ${{ steps.release-meta.outputs.apk_name }}
+          MANIFEST_NAME: ${{ steps.release-meta.outputs.manifest_name }}
+          APK_SHA256: ${{ steps.release-meta.outputs.apk_sha256 }}
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/e3-resolve/release"
+          gh release download "$RC_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "$APK_NAME" \
+            --pattern "$MANIFEST_NAME" \
+            --dir "$ROOT"
+
+          APK="$ROOT/$APK_NAME"
+          MANIFEST="$ROOT/$MANIFEST_NAME"
+          test -f "$APK"
+          test -f "$MANIFEST"
+          [[ "$(sha256sum "$APK" | awk '{print $1}')" == "$APK_SHA256" ]]
+          python3 scripts/release/android_release.py verify \
+            --tag "$RC_TAG" \
+            --manifest "$MANIFEST" \
+            --apk "$APK" \
+            --expected-source-commit "$SOURCE_SHA" >/dev/null
+
+          CERT="$(python3 - "$MANIFEST" "$TRUSTED_RELEASE_SIGNING_CERT_SHA256" <<'PY'
+          import json
+          import re
+          import sys
+          manifest = json.load(open(sys.argv[1], encoding="utf-8"))
+          expected = sys.argv[2]
+          cert = str((manifest.get("artifact") or {}).get("signing_certificate_sha256") or "").lower()
+          if not re.fullmatch(r"[0-9a-f]{64}", cert) or cert != expected:
+              raise SystemExit("release signing certificate does not match reviewed trust anchor")
+          print(cert)
+          PY
+          )"
+          echo "signing_cert_sha256=$CERT" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve unique successful harness run and artifact
+        id: harness-meta
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RC_TAG: ${{ steps.release-meta.outputs.rc_tag }}
+          SOURCE_SHA: ${{ steps.release-meta.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/e3-resolve"
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/android-release.yml/runs?event=workflow_dispatch&status=completed&head_sha=$SOURCE_SHA&per_page=100" > "$ROOT/runs.json"
+          RUN_ID="$(python3 - "$ROOT/runs.json" "$RC_TAG" "$SOURCE_SHA" <<'PY'
+          import json
+          import sys
+          data = json.load(open(sys.argv[1], encoding="utf-8"))
+          tag, source = sys.argv[2], sys.argv[3]
+          if int(data.get("total_count", -1)) > 100:
+              raise SystemExit("harness workflow-run search exceeded bounded result set")
+          matches = [
+              run for run in data.get("workflow_runs", [])
+              if run.get("name") == "Android Release Candidate"
+              and run.get("path") == ".github/workflows/android-release.yml"
+              and run.get("head_branch") == tag
+              and run.get("head_sha") == source
+              and run.get("event") == "workflow_dispatch"
+              and run.get("status") == "completed"
+              and run.get("conclusion") == "success"
+              and (run.get("actor") or {}).get("login") == "github-actions[bot]"
+          ]
+          if len(matches) != 1:
+              raise SystemExit("exact RC must have exactly one successful machine-owned release run")
+          print(matches[0]["id"])
+          PY
+          )"
+          [[ "$RUN_ID" =~ ^[1-9][0-9]*$ ]]
+
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100" > "$ROOT/artifacts.json"
+          python3 - "$ROOT/artifacts.json" "$RC_TAG" "$SOURCE_SHA" "$RUN_ID" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import re
+          import sys
+          path, tag, source, run_id, output = sys.argv[1:]
+          data = json.load(open(path, encoding="utf-8"))
+          if int(data.get("total_count", -1)) > 100:
+              raise SystemExit("harness artifact search exceeded bounded result set")
+          name = f"e3-harness-{tag}"
+          matches = [artifact for artifact in data.get("artifacts", []) if artifact.get("name") == name]
+          if len(matches) != 1:
+              raise SystemExit("exact RC must have exactly one named E3 harness artifact")
+          artifact = matches[0]
+          workflow_run = artifact.get("workflow_run") or {}
+          digest = str(artifact.get("digest") or "")
+          digest_match = re.fullmatch(r"sha256:([0-9a-f]{64})", digest)
+          if artifact.get("expired") is not False or not digest_match:
+              raise SystemExit("E3 harness artifact is expired or lacks canonical digest")
+          if str(workflow_run.get("id")) != run_id or workflow_run.get("head_branch") != tag or workflow_run.get("head_sha") != source:
+              raise SystemExit("E3 harness artifact workflow identity mismatch")
+          artifact_id = artifact.get("id")
+          if not isinstance(artifact_id, int) or artifact_id <= 0:
+              raise SystemExit("E3 harness artifact ID is invalid")
+          with open(output, "a", encoding="utf-8", newline="\n") as handle:
+              handle.write(f"run_id={run_id}\n")
+              handle.write(f"artifact_id={artifact_id}\n")
+              handle.write(f"artifact_name={name}\n")
+              handle.write(f"zip_sha256={digest_match.group(1)}\n")
+          PY
+
+      - name: Download exact harness projection for hosted identity verification
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ steps.harness-meta.outputs.artifact_id }}
+          path: ${{ runner.temp }}/e3-resolve/harness
+          github-token: ${{ github.token }}
+          repository: iamaman11/mobile-proxy-mish
+          run-id: ${{ steps.harness-meta.outputs.run_id }}
+
+      - name: Verify harness manifest/bytes and project test APK digest
+        id: harness-bytes
+        shell: bash
+        env:
+          RC_TAG: ${{ steps.release-meta.outputs.rc_tag }}
+          SOURCE_SHA: ${{ steps.release-meta.outputs.source_sha }}
+          APK_NAME: ${{ steps.release-meta.outputs.apk_name }}
+          SIGNING_CERT_SHA256: ${{ steps.release-bytes.outputs.signing_cert_sha256 }}
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/e3-resolve/harness"
+          mapfile -t MANIFESTS < <(find "$ROOT" -type f -name "mobile-proxy-mish-$RC_TAG-e3-harness.json" -print)
+          mapfile -t TEST_APKS < <(find "$ROOT" -type f -name "mobile-proxy-mish-$RC_TAG-e3-androidTest.apk" -print)
+          mapfile -t HARNESS_FILES < <(find "$ROOT" -type f -print)
+          [[ "${#MANIFESTS[@]}" -eq 1 ]]
+          [[ "${#TEST_APKS[@]}" -eq 1 ]]
+          [[ "${#HARNESS_FILES[@]}" -eq 2 ]]
+          python3 scripts/release/e3_harness.py verify \
+            --manifest "${MANIFESTS[0]}" \
+            --tag "$RC_TAG" \
+            --source-commit "$SOURCE_SHA" \
+            --signing-cert-sha256 "$SIGNING_CERT_SHA256" \
+            --product-apk "$RUNNER_TEMP/e3-resolve/release/$APK_NAME" \
+            --test-apk "${TEST_APKS[0]}"
+          TEST_SHA="$(sha256sum "${TEST_APKS[0]}" | awk '{print $1}')"
+          [[ "$TEST_SHA" =~ ^[0-9a-f]{64}$ ]]
+          echo "test_apk_sha256=$TEST_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Publish machine-owned E3 identity projection
+        shell: bash
+        env:
+          RC_TAG: ${{ steps.release-meta.outputs.rc_tag }}
+          SOURCE_SHA: ${{ steps.release-meta.outputs.source_sha }}
+          APK_SHA256: ${{ steps.release-meta.outputs.apk_sha256 }}
+          HARNESS_RUN_ID: ${{ steps.harness-meta.outputs.run_id }}
+          HARNESS_ARTIFACT_ID: ${{ steps.harness-meta.outputs.artifact_id }}
+          TEST_APK_SHA256: ${{ steps.harness-bytes.outputs.test_apk_sha256 }}
+        run: |
+          {
+            echo '### E3 exact RC projection'
+            echo "- RC tag: \`$RC_TAG\`"
+            echo "- Source: \`$SOURCE_SHA\`"
+            echo "- Product APK SHA-256: \`$APK_SHA256\`"
+            echo "- Harness run/artifact: \`$HARNESS_RUN_ID\` / \`$HARNESS_ARTIFACT_ID\`"
+            echo "- Test APK SHA-256: \`$TEST_APK_SHA256\`"
+            echo '- Projection source: **exact immutable tag + GitHub Release + exact successful release run/artifact**'
+            echo '- Human-copied source/digest/artifact tuple: **NO**'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   physical-cellular:
     name: E3 Physical Cellular Windows LAB
     if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected == true }}
-    needs: contract
+    needs: [contract, resolve-rc]
     runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
     timeout-minutes: 30
     env:
       LAB_POWERSHELL_EXE: C:\mish-lab\tools\powershell-7.6.6\pwsh.exe
       ADB_EXE: C:\mish-lab\tools\android-sdk\platform-tools\adb.exe
-      RC_TAG: v0.1.0-rc.4
-      RC_SOURCE: dcb49c04c7772481c84971855d7b453a2013d60d
-      RC_APK_SHA256: d429ab29c48a88092b153a3ea1ce4fe812d4f0636cecbf229713dea62eda4b66
-      RC_SIGNING_CERT_SHA256: 1958d474069ce0f8b8e5390c9c4ebecd6e306fb4e0f0f6e12d35c9b91cc67803
-      HARNESS_RUN_ID: 34537908351
-      HARNESS_ARTIFACT_ID: 10176464456
-      HARNESS_ARTIFACT_NAME: e3-harness-v0.1.0-rc.4
-      HARNESS_ZIP_SHA256: b4ced77017aadb606d64b454b0eb3e71b13f15e2db8320254aa628df9630abf2
-      HARNESS_TEST_APK_SHA256: 2d377cfce3f0827d6bc4efda313d6ebaeb6dac148303bb1eaff9a0b60c860c9c
+      RC_TAG: ${{ needs.resolve-rc.outputs.rc_tag }}
+      RC_SOURCE: ${{ needs.resolve-rc.outputs.source_sha }}
+      RC_APK_SHA256: ${{ needs.resolve-rc.outputs.apk_sha256 }}
+      RC_SIGNING_CERT_SHA256: ${{ needs.resolve-rc.outputs.signing_cert_sha256 }}
+      HARNESS_RUN_ID: ${{ needs.resolve-rc.outputs.harness_run_id }}
+      HARNESS_ARTIFACT_ID: ${{ needs.resolve-rc.outputs.harness_artifact_id }}
+      HARNESS_ARTIFACT_NAME: ${{ needs.resolve-rc.outputs.harness_artifact_name }}
+      HARNESS_ZIP_SHA256: ${{ needs.resolve-rc.outputs.harness_zip_sha256 }}
+      HARNESS_TEST_APK_SHA256: ${{ needs.resolve-rc.outputs.test_apk_sha256 }}
       E3_HOST: checkip.amazonaws.com
       E3_PORT: '80'
       E3_PATH: '/'
@@ -148,6 +401,7 @@ jobs:
           >>"%GITHUB_STEP_SUMMARY%" echo - Product APK SHA-256: `%RC_APK_SHA256%`
           >>"%GITHUB_STEP_SUMMARY%" echo - Harness run/artifact: `%HARNESS_RUN_ID%` / `%HARNESS_ARTIFACT_ID%`
           >>"%GITHUB_STEP_SUMMARY%" echo - Test APK SHA-256: `%HARNESS_TEST_APK_SHA256%`
+          >>"%GITHUB_STEP_SUMMARY%" echo - RC identity source: **machine projection from exact immutable tag**
           >>"%GITHUB_STEP_SUMMARY%" echo - Android product/test build on physical runner: **NO**
           >>"%GITHUB_STEP_SUMMARY%" echo - APK installation: **NO**
           >>"%GITHUB_STEP_SUMMARY%" echo - Durable evidence schema: `mish.lab.evidence/v1`

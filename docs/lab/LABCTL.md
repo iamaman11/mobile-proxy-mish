@@ -6,12 +6,13 @@ It is not a build system, daemon, scheduler, artifact registry, release selector
 
 ## Product artifact authority
 
+For generic LAB release-consumer operations, `labctl` still consumes an exact verified tuple:
+
 ```text
-exact authorized tuple
-  tag
-  source commit
-  APK SHA-256
-  signing-certificate SHA-256
+tag
+source commit
+APK SHA-256
+signing-certificate SHA-256
         ↓
 labctl release resolve
         ↓
@@ -26,7 +27,9 @@ android install may consume only those still-identical bytes
 
 `latest` is never a machine input. Android product builds never run through `labctl`.
 
-The signing certificate fingerprint in the authorized tuple is an identity fact already proven against the exact APK bytes by the restricted REL-1 release workflow. On the physical consumer, the exact APK SHA-256 binds the downloaded bytes to that accepted release proof; LAB-2 does not duplicate the Android signing implementation or require JDK/Android Build Tools merely to re-derive the same fact.
+For E3, the operator no longer copies that tuple manually. The E3 workflow accepts only an exact immutable `rc_tag` plus the execution `mode`, resolves the remaining release/harness identity on a hosted runner, and passes the resulting machine-owned tuple to the existing fail-closed `labctl` verifiers.
+
+The release signing-certificate fingerprint remains a reviewed stable trust anchor in the E3 consumer workflow. Per-RC source SHA, APK digest, ABI, harness run/artifact IDs, harness ZIP digest and test-APK digest are derived from the immutable tag/release/run rather than copied into the workflow for each candidate.
 
 ## Entry point
 
@@ -51,7 +54,46 @@ e3 execute
 
 `android install` requires a PASS `mish.lab.release-verification/v1` receipt, re-checks the exact authorized tuple, and re-hashes the APK immediately before invoking ADB. Changing the APK after verification therefore fails before installation.
 
-`evidence collect` is the single managed-LAB durable evidence projection. It emits `mish.lab.evidence/v1` through an explicit allowlist; arbitrary receipt fields, local paths, device identifiers, public-IP literals and secret-shaped data are not copied into durable evidence. For LAB-3B, the domain-specific E3 readiness receipt is an internal typed input only and is projected by this existing command into the accepted evidence envelope.
+`evidence collect` is the single managed-LAB durable evidence projection. It emits `mish.lab.evidence/v1` through an explicit allowlist; arbitrary receipt fields, local paths, device identifiers, public-IP literals and secret-shaped data are not copied into durable evidence.
+
+## E3 identity projection
+
+The E3 workflow has one hosted resolver job before the self-hosted Windows job. Its human release input is exactly:
+
+```text
+rc_tag = vMAJOR.MINOR.PATCH-rc.N
+```
+
+The hosted resolver proves:
+
+```text
+exact tag syntax
+ -> exact Git tag commit
+ -> commit is in accepted main lineage
+ -> published non-draft RC prerelease
+ -> canonical release asset set
+ -> GitHub APK SHA-256
+ -> downloaded APK SHA-256
+ -> mish.android-release/v1 manifest verification
+ -> reviewed release-signing certificate trust anchor
+ -> exactly one successful machine-owned Android Release Candidate run
+ -> exactly one named E3 harness artifact for that run/tag/source
+ -> non-expired artifact + canonical artifact digest
+ -> harness manifest/product/test byte verification
+ -> test APK SHA-256
+```
+
+Those facts become job outputs only for the current workflow run. They are not a new mutable release registry, status database, or second source of truth.
+
+The Windows physical job then independently repeats the existing consumer checks using those machine-owned values:
+
+```text
+labctl release resolve
+labctl release verify
+e3 verify
+```
+
+So simplification removes manual identity transcription, not verification depth.
 
 ## E3 bounded commands
 
@@ -59,26 +101,25 @@ The E3 surface changes execution/supply mechanics only; #10 remains the semantic
 
 ```text
 e3 verify
-  = verify the exact harness run/artifact/ZIP/manifest/test-APK identity
-    and the separately pinned exact test-APK SHA-256
-    against an already verified exact product RC
+  = verify exact harness run/artifact/ZIP/manifest/test-APK identity
+    against an already verified exact product RC and machine-projected digests
 
 e3 ready
   = create the pre-device domain readiness receipt after an explicit
     zero-ADB observation; this receipt is not durable evidence by itself
 
 e3 execute
-  = later PHONE-ON adapter for the original #10 full-root-toggle
-    positive -> negative -> recovery ceremony using exact accepted bytes
+  = PHONE-ON adapter for the #10 continuous full-root-toggle lifecycle
+    positive -> negative -> recovery using exact accepted bytes
 ```
 
-These are bounded stateless commands. They do not create a daemon, scheduler, status database, second E3 workflow, second CURRENT pointer, release selector, or parallel semantic owner.
+These are bounded stateless commands. They do not create a daemon, scheduler, status database, second E3 workflow, second CURRENT pointer, release registry, or parallel semantic owner.
 
-`NO_EVIDENCE_ESCALATION` is mandatory: `e3 verify`, hosted contract CI, and `e3 ready` with `device_count=0` cannot claim E3 PASS. The LAB-3B durable evidence remains `mish.lab.evidence/v1` and records `PHONE-ON READY`, `E3_PASS=NO`, and `NO_EVIDENCE_ESCALATION=PASS`.
+`NO_EVIDENCE_ESCALATION` is mandatory: hosted RC resolution, `e3 verify`, hosted contract CI, and `e3 ready` with `device_count=0` cannot claim E3 PASS.
 
 ## Physical execution gate
 
-The E3 workflow may run hosted validation on pull requests and on `push` to `main`, but its self-hosted physical job is authorized only by a separate manual `workflow_dispatch` on protected `main`:
+The E3 workflow may run hosted contract validation on pull requests and `push` to `main`, but its resolver and self-hosted physical job are admitted only by a manual `workflow_dispatch` on protected `main`:
 
 ```text
 github.event_name == workflow_dispatch
@@ -86,23 +127,90 @@ AND github.ref == refs/heads/main
 AND github.ref_protected == true
 ```
 
-Therefore a merge/push may validate the contract automatically but must never start the Windows physical LAB. The accepted physical runner remains `[self-hosted, windows, x64, mobile-proxy-mish-lab]`, and PowerShell is invoked only through `C:\mish-lab\tools\powershell-7.6.6\pwsh.exe` from `shell: cmd` steps. Physical commands use repository-owned `labctl.ps1` through `pwsh -File`; inline `pwsh -Command` glue is not part of the accepted physical boundary.
+A PR or merge therefore validates the contract automatically but must never start the Windows physical LAB.
 
-## LAB lifecycle boundary
-
-Phone remains absent through LAB-3 pre-device acceptance. `android install` and `e3 execute` are fail-closed primitives for PHONE-ON stages but are not executed during the pre-device dry proof.
-
-The LAB-3B accepted immutable candidate is:
+The accepted physical runner remains:
 
 ```text
-tag = v0.1.0-rc.3
-source = d057f267ffac5cbeca40839778783d462a51b7a0
-APK SHA-256 = 84d8a53857a20a5d55093604324770d00fdbd8a187a69c524e88920d00b323f0
-signing certificate SHA-256 = 1958d474069ce0f8b8e5390c9c4ebecd6e306fb4e0f0f6e12d35c9b91cc67803
-harness run = 34498778808
-harness artifact = 10161372180
-harness ZIP SHA-256 = 1c1758a5ce3672db76952627e4b1a61ac4e2e73744957f8c8b1f80b5efc01d36
-test APK SHA-256 = 2d377cfce3f0827d6bc4efda313d6ebaeb6dac148303bb1eaff9a0b60c860c9c
+[self-hosted, windows, x64, mobile-proxy-mish-lab]
 ```
 
-Hosted Windows CI verifies the contract without executing self-hosted PR code. After merge and hosted post-merge acceptance, an operator may authorize exactly one protected-main `pre-device-dry` dispatch while ADB device count is zero. Only its resulting durable evidence may advance #28 to `PHONE-ON READY`.
+PowerShell is invoked only through:
+
+```text
+C:\mish-lab\tools\powershell-7.6.6\pwsh.exe
+```
+
+from `shell: cmd` physical steps. Physical commands use repository-owned `labctl.ps1` through `pwsh -File`; inline arbitrary `pwsh -Command` is not part of the accepted boundary.
+
+The physical runner receives no Android release signing secret and performs no Gradle/Cargo/Rust/NDK Android build.
+
+## E3 operator protocol
+
+From accepted protected `main`:
+
+```text
+Actions -> E3 Physical Cellular -> Run workflow
+```
+
+Inputs:
+
+```text
+rc_tag = exact immutable RC tag
+mode   = pre-device-dry | full-root-toggle
+```
+
+The operator does **not** enter or copy:
+
+```text
+source commit
+APK SHA-256
+signing certificate per RC
+harness run ID
+harness artifact ID
+harness ZIP SHA-256
+test APK SHA-256
+```
+
+Those are resolved and verified from the exact immutable RC identity.
+
+`mode=pre-device-dry` requires zero ADB devices, installs nothing, and may only produce:
+
+```text
+PHONE-ON READY
+E3_PASS=NO
+NO_EVIDENCE_ESCALATION=PASS
+```
+
+`mode=full-root-toggle` requires the physical phone and executes the one-process continuous B2 lifecycle accepted in #65:
+
+```text
+request direct CELLULAR + INTERNET + NOT_VPN
+ -> positive admitted + exact-network DNS/socket proof
+ -> svc data disable
+ -> direct cellular lost / owner NOT_ADMITTED / old lease revoked
+ -> svc data enable
+ -> same request reacquires direct cellular
+ -> fresh owner authority / fresh lease
+ -> positive exact-network DNS/socket proof again
+```
+
+Wi-Fi is not a correctness prerequisite and cannot satisfy Cellular Egress. Cloudflare/VPN-derived networks cannot satisfy the `NOT_VPN` owner policy.
+
+## Trust and privacy rules
+
+The E3 simplification preserves all existing trust boundaries:
+
+```text
+NO untrusted PR execution on self-hosted runner
+NO arbitrary-ref physical execution
+NO release signing key on Windows LAB
+NO Android rebuild on Windows LAB
+NO latest/ambiguous RC selection
+NO human-copied per-RC digest/artifact tuple
+NO evidence escalation from hosted/pre-device proof
+NO carrier public-IP persistence
+NO device/SIM/network identifiers in durable public evidence
+```
+
+A missing, ambiguous, expired, mismatched, or non-canonical release/harness identity fails closed before physical execution.
