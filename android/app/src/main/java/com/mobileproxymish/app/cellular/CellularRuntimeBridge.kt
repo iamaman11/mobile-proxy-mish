@@ -51,24 +51,29 @@ sealed interface CellularRuntimeSnapshot {
  * This is deliberately not a second owner or readiness state. The Rust owner still
  * decides which handle is admitted; this cache only lets the policy adapter retrieve
  * the interface hint belonging to that exact owner-selected handle after reordered,
- * unrelated, or superseded callbacks.
+ * unrelated, or superseded callbacks. Access is synchronized because callback-side
+ * owner updates and executor-side shutdown cleanup intentionally run on different threads.
  */
 internal class CellularInterfaceHints {
     private val byNetwork = mutableMapOf<ULong, String>()
 
+    @Synchronized
     fun observed(networkHandle: ULong, interfaceName: String?) {
         if (interfaceName != null) {
             byNetwork[networkHandle] = interfaceName
         }
     }
 
+    @Synchronized
     fun lost(networkHandle: ULong) {
         byNetwork.remove(networkHandle)
     }
 
+    @Synchronized
     fun interfaceFor(admittedNetworkHandle: ULong?): String? =
         admittedNetworkHandle?.let(byNetwork::get)
 
+    @Synchronized
     fun clear() {
         byNetwork.clear()
     }
@@ -367,7 +372,7 @@ class CellularRuntimeBridge(
             false
         } else {
             try {
-                cleanup.get(CLOSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                cleanup.get(CLOSE_TIMEOUT_SECONDS, TimeUnit.SECONDS) == true
             } catch (_: InterruptedException) {
                 Thread.currentThread().interrupt()
                 false
