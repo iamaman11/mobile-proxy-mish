@@ -1,6 +1,8 @@
 package com.mobileproxymish.app.cellular
 
 import android.content.Context
+import android.os.Process
+import com.mobileproxymish.ffi.CellularAdmissionState
 import com.mobileproxymish.ffi.CellularAdmissionView
 import com.mobileproxymish.ffi.CellularController
 import java.io.Closeable
@@ -12,13 +14,15 @@ import kotlinx.coroutines.flow.asStateFlow
 enum class CellularBoundaryFailure {
     NativeLibraryUnavailable,
     ForeignCallFailed,
+    RootAuthorityUnavailable,
+    RootPolicyReconcileFailed,
 }
 
 /**
  * Read-only runtime projection crossing from the Rust owner toward Android consumers.
  *
  * `OwnerSnapshot` is the natural owner's typed projection. `BoundaryUnavailable`
- * represents failure of this adapter boundary and therefore cannot be treated as an
+ * represents failure of an adapter boundary and therefore cannot be treated as an
  * admitted or ready cellular path.
  */
 sealed interface CellularRuntimeSnapshot {
@@ -32,16 +36,16 @@ sealed interface CellularRuntimeSnapshot {
 }
 
 /**
- * One process-generation bridge between Android Network observations and the Rust owner.
- *
- * This class owns no cellular policy. It owns only the foreign controller handle,
- * observer lifetime, and a read-only StateFlow projection for Android presentation.
+ * One process-generation bridge between Android Network observations, the Rust owner,
+ * and the narrow root policy-routing adapter that realizes an already owner-admitted
+ * decision. This class owns no cellular admission policy.
  */
 class CellularRuntimeBridge(
     context: Context,
 ) : CellularObservationSink, Closeable {
     private val controller: CellularController?
     private val mutableSnapshot: MutableStateFlow<CellularRuntimeSnapshot>
+    private val rootPolicy = CellularRootPolicy(Process.myUid())
     private val observer = CellularNetworkObserver(context.applicationContext, this)
 
     val snapshot: StateFlow<CellularRuntimeSnapshot>
@@ -67,9 +71,28 @@ class CellularRuntimeBridge(
     }
 
     fun start() {
-        if (controller != null) {
-            observer.start()
+        if (controller == null) return
+
+        mutableSnapshot.value = when (rootPolicy.failClosed()) {
+            is CellularRootPolicyResult.AuthorityUnavailable ->
+                CellularRuntimeSnapshot.BoundaryUnavailable(
+                    CellularBoundaryFailure.RootAuthorityUnavailable,
+                )
+
+            is CellularRootPolicyResult.FailClosed -> {
+                val current = rootPolicy.failClosed()
+                if (current is CellularRootPolicyResult.FailClosed && current.reason == null) {
+                    mutableSnapshot.value
+                } else {
+                    CellularRuntimeSnapshot.BoundaryUnavailable(
+                        CellularBoundaryFailure.RootPolicyReconcileFailed,
+                    )
+                }
+            }
+
+            CellularRootPolicyResult.Enforced -> mutableSnapshot.value
         }
+        observer.start()
     }
 
     override fun onEvent(event: CellularNetworkEvent) {
@@ -96,12 +119,41 @@ class CellularRuntimeBridge(
                     networkHandle = event.networkHandle.toULong(),
                 )
             }
-            CellularRuntimeSnapshot.OwnerSnapshot(admission)
+
+            val interfaceName = (event as? CellularNetworkEvent.Observed)?.interfaceName
+            val policyResult = rootPolicy.reconcile(
+                admitted = admission.state == CellularAdmissionState.ADMITTED,
+                interfaceName = interfaceName,
+            )
+
+            when (policyResult) {
+                CellularRootPolicyResult.Enforced ->
+                    CellularRuntimeSnapshot.OwnerSnapshot(admission)
+
+                is CellularRootPolicyResult.FailClosed -> {
+                    if (admission.state != CellularAdmissionState.ADMITTED &&
+                        policyResult.reason == null
+                    ) {
+                        CellularRuntimeSnapshot.OwnerSnapshot(admission)
+                    } else {
+                        CellularRuntimeSnapshot.BoundaryUnavailable(
+                            CellularBoundaryFailure.RootPolicyReconcileFailed,
+                        )
+                    }
+                }
+
+                is CellularRootPolicyResult.AuthorityUnavailable ->
+                    CellularRuntimeSnapshot.BoundaryUnavailable(
+                        CellularBoundaryFailure.RootAuthorityUnavailable,
+                    )
+            }
         } catch (_: LinkageError) {
+            rootPolicy.failClosed()
             CellularRuntimeSnapshot.BoundaryUnavailable(
                 CellularBoundaryFailure.NativeLibraryUnavailable,
             )
         } catch (_: Exception) {
+            rootPolicy.failClosed()
             CellularRuntimeSnapshot.BoundaryUnavailable(
                 CellularBoundaryFailure.ForeignCallFailed,
             )
@@ -110,5 +162,6 @@ class CellularRuntimeBridge(
 
     override fun close() {
         observer.close()
+        rootPolicy.close()
     }
 }
