@@ -1,6 +1,7 @@
 package com.mobileproxymish.app.cellular
 
 import java.io.ByteArrayOutputStream
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Bounded Magisk authority boundary for cellular policy routing.
@@ -19,6 +20,9 @@ class MagiskRootAuthority private constructor(
         if (identity.timedOut) {
             return RootAuthorityStatus.InteractiveGrantRequired
         }
+        if (!identity.outputComplete) {
+            return RootAuthorityStatus.Incomplete
+        }
         if (identity.exitCode == 126 || identity.exitCode == 127) {
             return RootAuthorityStatus.Unavailable
         }
@@ -26,10 +30,15 @@ class MagiskRootAuthority private constructor(
             return RootAuthorityStatus.Denied
         }
 
-        // uid=0 alone is insufficient. The runtime must be able to inspect RPDB before
-        // the typed policy adapter is allowed to mutate exact PRODUCT-owned rules.
+        // uid=0 alone is insufficient. The runtime must be able to inspect a complete
+        // RPDB snapshot before the typed policy adapter may mutate exact PRODUCT rules.
         val rules = process.run(listOf("su", "-c", "ip -4 rule show"))
-        return if (!rules.timedOut && rules.exitCode == 0 && rules.stdout.isNotBlank()) {
+        return if (
+            !rules.timedOut &&
+            rules.outputComplete &&
+            rules.exitCode == 0 &&
+            rules.stdout.isNotBlank()
+        ) {
             RootAuthorityStatus.Ready
         } else {
             RootAuthorityStatus.Incomplete
@@ -54,27 +63,37 @@ internal interface RootProcess {
     fun run(arguments: List<String>): RootProcessResult
 }
 
+/**
+ * Bounded root-command result. `outputComplete=false` means the command output could not
+ * be represented completely inside the capture contract and therefore must never be
+ * parsed as authoritative kernel state.
+ */
 internal data class RootProcessResult(
     val exitCode: Int,
     val stdout: String,
     val timedOut: Boolean = false,
+    val outputComplete: Boolean = true,
 )
 
 /**
- * Root process implementation. Output is capped and consumed only to classify typed
- * adapter results; command output is never logged or persisted.
+ * Root process implementation. Output is bounded and never logged or persisted.
  *
  * Android's timed Process.waitFor and destroyForcibly APIs start at API 26, while the
  * product supports API 23. This implementation therefore uses only the API-23-safe
  * Process contract: a bounded exitValue poll, concurrent output draining to avoid pipe
  * back-pressure, and destroy() on timeout. The reader continues draining after the
  * capture cap so a verbose root command cannot deadlock the child process.
+ *
+ * Policy parsing must never consume partial command output. After the child exits we
+ * require both EOF within a bounded drain window and a non-overflowed capture. Any
+ * reader failure or overflow is represented as `outputComplete=false` and fails closed.
  */
 internal class SuProcess : RootProcess {
     override fun run(arguments: List<String>): RootProcessResult {
         var child: Process? = null
         var outputReader: Thread? = null
         val output = ByteArrayOutputStream()
+        val outputComplete = AtomicBoolean(true)
 
         return try {
             child = ProcessBuilder(arguments).redirectErrorStream(true).start()
@@ -91,15 +110,18 @@ internal class SuProcess : RootProcess {
 
                                 synchronized(output) {
                                     val remaining = MAX_OUTPUT_BYTES - output.size()
-                                    if (remaining > 0) {
-                                        output.write(buffer, 0, minOf(read, remaining))
+                                    val captured = minOf(read, remaining.coerceAtLeast(0))
+                                    if (captured > 0) {
+                                        output.write(buffer, 0, captured)
+                                    }
+                                    if (captured != read) {
+                                        outputComplete.set(false)
                                     }
                                 }
                             }
                         }
                     } catch (_: Exception) {
-                        // Process teardown may close the pipe while the reader is blocked.
-                        // The command result, not reader teardown, owns success/failure.
+                        outputComplete.set(false)
                     }
                 },
                 "mish-root-output",
@@ -125,19 +147,42 @@ internal class SuProcess : RootProcess {
             if (exitCode == null) {
                 runningChild.destroy()
                 outputReader.join(READER_JOIN_MILLIS)
-                RootProcessResult(exitCode = -1, stdout = "", timedOut = true)
+                RootProcessResult(
+                    exitCode = -1,
+                    stdout = "",
+                    timedOut = true,
+                    outputComplete = false,
+                )
             } else {
                 outputReader.join(READER_JOIN_MILLIS)
-                val stdout = synchronized(output) {
-                    output.toString(Charsets.UTF_8.name())
+                if (outputReader.isAlive) {
+                    RootProcessResult(
+                        exitCode = -1,
+                        stdout = "",
+                        timedOut = true,
+                        outputComplete = false,
+                    )
+                } else {
+                    val stdout = synchronized(output) {
+                        output.toString(Charsets.UTF_8.name())
+                    }
+                    RootProcessResult(
+                        exitCode = exitCode,
+                        stdout = stdout,
+                        outputComplete = outputComplete.get(),
+                    )
                 }
-                RootProcessResult(exitCode = exitCode, stdout = stdout)
             }
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
-            RootProcessResult(exitCode = -1, stdout = "", timedOut = true)
+            RootProcessResult(
+                exitCode = -1,
+                stdout = "",
+                timedOut = true,
+                outputComplete = false,
+            )
         } catch (_: Exception) {
-            RootProcessResult(exitCode = -1, stdout = "")
+            RootProcessResult(exitCode = -1, stdout = "", outputComplete = false)
         } finally {
             child?.destroy()
         }
@@ -146,7 +191,7 @@ internal class SuProcess : RootProcess {
     private companion object {
         const val PROBE_TIMEOUT_NANOS = 10_000_000_000L
         const val POLL_INTERVAL_MILLIS = 25L
-        const val READER_JOIN_MILLIS = 250L
+        const val READER_JOIN_MILLIS = 1_000L
         const val OUTPUT_BUFFER_BYTES = 256
         const val MAX_OUTPUT_BYTES = 4096
     }

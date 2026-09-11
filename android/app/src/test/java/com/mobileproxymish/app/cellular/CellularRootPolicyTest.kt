@@ -137,6 +137,23 @@ class CellularRootPolicyTest {
     }
 
     @Test
+    fun incompleteRpdbSnapshotFailsClosedInsteadOfLookingEmpty() {
+        val process = FakePolicyProcess().apply {
+            incompleteIpv4RuleReadAt = 2
+        }
+        val policy = policy(process)
+
+        val result = policy.reconcile(admitted = false, interfaceName = null)
+
+        assertEquals(
+            CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.RuleMutationFailed),
+            result,
+        )
+        assertFalse(process.ipv4Guard)
+        assertFalse(process.ipv4Selector)
+    }
+
+    @Test
     fun intentionalCloseRemovesOnlyExactProductRules() {
         val process = FakePolicyProcess()
         val policy = policy(process)
@@ -151,6 +168,28 @@ class CellularRootPolicyTest {
         assertFalse(process.ipv6Selector)
     }
 
+    @Test
+    fun cleanupFailureIsReportedWhileRemainingOwnedDeletesStillRun() {
+        val process = FakePolicyProcess()
+        val policy = policy(process)
+        assertEquals(
+            CellularRootPolicyResult.Enforced,
+            policy.reconcile(admitted = true, interfaceName = "rmnet_data0"),
+        )
+        process.failIpv4SelectorDelete = true
+
+        val cleaned = policy.cleanupExactOwnedRules()
+
+        assertFalse(cleaned)
+        assertNull(process.ipv4LookupTable)
+        assertTrue(process.ipv4Selector)
+        assertFalse(process.ipv6Selector)
+        assertFalse(process.ipv4Guard)
+        assertFalse(process.ipv6Guard)
+        assertTrue(process.commands.contains(IPV4_GUARD_DELETE))
+        assertTrue(process.commands.contains(IPV6_GUARD_DELETE))
+    }
+
     private fun policy(process: FakePolicyProcess): CellularRootPolicy = CellularRootPolicy(
         productUid = 10123,
         authority = MagiskRootAuthority.forTesting(process),
@@ -163,14 +202,24 @@ class CellularRootPolicyTest {
         var ipv4Guard = false
         var ipv6Guard = false
         var ipv4LookupTable: String? = null
+        var incompleteIpv4RuleReadAt: Int? = null
+        var failIpv4SelectorDelete = false
         val commands = mutableListOf<String>()
+        private var ipv4RuleReads = 0
 
         override fun run(arguments: List<String>): RootProcessResult {
             val command = arguments.last()
             commands += command
             return when {
                 command == "id -u" -> ok("0\n")
-                command == "ip -4 rule show" -> ok(ipv4Rules())
+                command == "ip -4 rule show" -> {
+                    ipv4RuleReads += 1
+                    RootProcessResult(
+                        exitCode = 0,
+                        stdout = ipv4Rules(),
+                        outputComplete = ipv4RuleReads != incompleteIpv4RuleReadAt,
+                    )
+                }
                 command == "ip -6 rule show" -> ok(ipv6Rules())
 
                 command.startsWith("iptables -t mangle -C OUTPUT") ->
@@ -180,7 +229,9 @@ class CellularRootPolicyTest {
                     ok()
                 }
                 command.startsWith("iptables -t mangle -D OUTPUT") -> {
-                    if (ipv4Selector) {
+                    if (failIpv4SelectorDelete) {
+                        fail()
+                    } else if (ipv4Selector) {
                         ipv4Selector = false
                         ok()
                     } else {
@@ -211,7 +262,7 @@ class CellularRootPolicyTest {
                     ipv6Guard = true
                     ok()
                 }
-                command == "ip -4 rule del pref 9501 fwmark 0x200000/0x200000 unreachable" -> {
+                command == IPV4_GUARD_DELETE -> {
                     if (ipv4Guard) {
                         ipv4Guard = false
                         ok()
@@ -219,7 +270,7 @@ class CellularRootPolicyTest {
                         fail()
                     }
                 }
-                command == "ip -6 rule del pref 9501 fwmark 0x200000/0x200000 unreachable" -> {
+                command == IPV6_GUARD_DELETE -> {
                     if (ipv6Guard) {
                         ipv6Guard = false
                         ok()
@@ -286,6 +337,10 @@ class CellularRootPolicyTest {
             "ip -4 rule add pref 9501 fwmark 0x200000/0x200000 unreachable"
         const val IPV6_GUARD_ADD =
             "ip -6 rule add pref 9501 fwmark 0x200000/0x200000 unreachable"
+        const val IPV4_GUARD_DELETE =
+            "ip -4 rule del pref 9501 fwmark 0x200000/0x200000 unreachable"
+        const val IPV6_GUARD_DELETE =
+            "ip -6 rule del pref 9501 fwmark 0x200000/0x200000 unreachable"
         const val IPV4_LOOKUP_ADD =
             "ip -4 rule add pref 9500 fwmark 0x200000/0x200000 lookup 1052"
         const val IPV4_LOOKUP_DELETE =

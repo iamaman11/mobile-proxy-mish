@@ -69,6 +69,21 @@ class CellularNetworkObserver(
         requested = true
     }
 
+    /**
+     * Read-only infrastructure fallback for the exact owner-selected Network handle.
+     *
+     * Android can transiently deliver a capability callback while a synchronous
+     * getLinkProperties() observation still returns null. That must not turn a valid
+     * owner-admitted Network into a permanently unresolved interface hint. This lookup
+     * does not choose a network: it resolves LinkProperties only for the exact handle
+     * already selected by the Rust owner.
+     */
+    internal fun interfaceNameFor(networkHandle: ULong): String? =
+        connectivityManager.allNetworks
+            .firstOrNull { network -> network.networkHandle.toULong() == networkHandle }
+            ?.let(connectivityManager::getLinkProperties)
+            ?.interfaceName
+
     @Synchronized
     override fun close() {
         if (!requested) {
