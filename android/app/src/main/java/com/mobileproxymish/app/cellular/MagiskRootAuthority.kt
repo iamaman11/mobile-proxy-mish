@@ -69,6 +69,11 @@ internal data class RootProcessResult(
  * Process contract: a bounded exitValue poll, concurrent output draining to avoid pipe
  * back-pressure, and destroy() on timeout. The reader continues draining after the
  * capture cap so a verbose root command cannot deadlock the child process.
+ *
+ * Policy parsing must never consume partial command output. After the child exits we
+ * therefore require the reader to observe EOF within a bounded drain window; otherwise
+ * the command is classified as timed out/fail-closed instead of returning a truncated
+ * `ip rule` or `ip route` snapshot.
  */
 internal class SuProcess : RootProcess {
     override fun run(arguments: List<String>): RootProcessResult {
@@ -128,10 +133,14 @@ internal class SuProcess : RootProcess {
                 RootProcessResult(exitCode = -1, stdout = "", timedOut = true)
             } else {
                 outputReader.join(READER_JOIN_MILLIS)
-                val stdout = synchronized(output) {
-                    output.toString(Charsets.UTF_8.name())
+                if (outputReader.isAlive) {
+                    RootProcessResult(exitCode = -1, stdout = "", timedOut = true)
+                } else {
+                    val stdout = synchronized(output) {
+                        output.toString(Charsets.UTF_8.name())
+                    }
+                    RootProcessResult(exitCode = exitCode, stdout = stdout)
                 }
-                RootProcessResult(exitCode = exitCode, stdout = stdout)
             }
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
@@ -146,7 +155,7 @@ internal class SuProcess : RootProcess {
     private companion object {
         const val PROBE_TIMEOUT_NANOS = 10_000_000_000L
         const val POLL_INTERVAL_MILLIS = 25L
-        const val READER_JOIN_MILLIS = 250L
+        const val READER_JOIN_MILLIS = 1_000L
         const val OUTPUT_BUFFER_BYTES = 256
         const val MAX_OUTPUT_BYTES = 4096
     }
