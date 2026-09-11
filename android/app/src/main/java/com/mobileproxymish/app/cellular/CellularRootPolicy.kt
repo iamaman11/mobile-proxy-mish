@@ -189,22 +189,32 @@ class CellularRootPolicy internal constructor(
             return PolicyIdentityResolution.Collision
         }
 
-        val materialized = POLICY_CANDIDATES.filter { candidate ->
-            val ipv4Matches = ipv4Chain.isEmpty() || ipv4Chain == ipv4OwnedChainLines(candidate)
-            val ipv6Matches = ipv6Chain.isEmpty() || ipv6Chain == ipv6OwnedChainLines(candidate)
-            (ipv4Chain.isNotEmpty() || ipv6Chain.isNotEmpty()) && ipv4Matches && ipv6Matches
+        // Detached partial state is a recoverable interrupted PRODUCT publication only when
+        // every present line is an ordered prefix of a known contract. A referenced partial
+        // chain may resolve its identity here, but ensureMangleFamily() will still refuse to
+        // flush/rewrite it while the OUTPUT jump is live.
+        val hasChainState = ipv4Chain.isNotEmpty() || ipv6Chain.isNotEmpty()
+        val compatible = POLICY_CANDIDATES.filter { candidate ->
+            val expectedIpv4 = ipv4OwnedChainLines(candidate)
+            val expectedIpv6 = ipv6OwnedChainLines(candidate)
+            val ipv4Matches = ipv4Chain.isEmpty() ||
+                (ipv4Chain.size <= expectedIpv4.size && ipv4Chain == expectedIpv4.take(ipv4Chain.size))
+            val ipv6Matches = ipv6Chain.isEmpty() ||
+                (ipv6Chain.size <= expectedIpv6.size && ipv6Chain == expectedIpv6.take(ipv6Chain.size))
+            ipv4Matches && ipv6Matches
         }
-        if (materialized.size > 1) {
-            activeIdentity = null
-            return PolicyIdentityResolution.Collision
-        }
-        if ((ipv4Chain.isNotEmpty() || ipv6Chain.isNotEmpty()) && materialized.size != 1) {
+        if (hasChainState && compatible.isEmpty()) {
             activeIdentity = null
             return PolicyIdentityResolution.Collision
         }
 
-        val preferred = materialized.singleOrNull() ?: activeIdentity
+        val candidates = if (hasChainState) compatible else POLICY_CANDIDATES
+        val preferred = activeIdentity
         if (preferred != null) {
+            if (preferred !in candidates) {
+                activeIdentity = null
+                return PolicyIdentityResolution.Collision
+            }
             activeIdentity = preferred
             if (auditReservedPolicySpace(ipv4Rules, ipv6Rules, ipv4Mangle, ipv6Mangle) ==
                 PolicySpaceAudit.Clean
@@ -215,7 +225,7 @@ class CellularRootPolicy internal constructor(
             return PolicyIdentityResolution.Collision
         }
 
-        for (candidate in POLICY_CANDIDATES) {
+        for (candidate in candidates) {
             activeIdentity = candidate
             if (auditReservedPolicySpace(ipv4Rules, ipv6Rules, ipv4Mangle, ipv6Mangle) ==
                 PolicySpaceAudit.Clean
@@ -686,8 +696,8 @@ class CellularRootPolicy internal constructor(
     )
 
     private companion object {
-        // Android 11 netd uses bits 0..20 on the accepted target. Use a small deterministic
-        // candidate set above that range and never dynamically allocate arbitrary policy state.
+        // Use one small deterministic candidate set; every mark/mask/priority tuple is
+        // accepted only after live RPDB/mangle collision audit on the target.
         val POLICY_CANDIDATES = listOf(
             PolicyIdentity("0x200000", 0x200000UL, 9500, 9501),
             PolicyIdentity("0x400000", 0x400000UL, 9520, 9521),

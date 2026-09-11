@@ -9,8 +9,10 @@ class MainUiStateTest {
     fun bootstrapStateDoesNotClaimReadiness() {
         val state = MainUiState()
 
-        assertTrue(state.overallStatus.contains("not implemented"))
+        assertTrue(state.overallStatus.contains("acceptance pending"))
         assertEquals("Unknown", state.cellularState)
         assertEquals("cellular.no_observation", state.cellularReasonCode)
+        assertEquals("Stopped", state.proxyState)
+        assertEquals(null, state.proxyReasonCode)
     }
 }
