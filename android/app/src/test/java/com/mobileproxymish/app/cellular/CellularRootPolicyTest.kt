@@ -23,7 +23,7 @@ class CellularRootPolicyTest {
     }
 
     @Test
-    fun admittedOwnerInstallsValidatedCellularLookupBeforeGuard() {
+    fun admittedOwnerInstallsValidatedCellularLookupAfterFailClosedBase() {
         val process = FakePolicyProcess()
         val policy = policy(process)
 
@@ -67,7 +67,7 @@ class CellularRootPolicyTest {
     }
 
     @Test
-    fun repeatedReconcileDoesNotDuplicateOwnedRules() {
+    fun repeatedOwnerGenerationRevokesOldLookupBeforeRediscovery() {
         val process = FakePolicyProcess()
         val policy = policy(process)
 
@@ -75,16 +75,32 @@ class CellularRootPolicyTest {
             CellularRootPolicyResult.Enforced,
             policy.reconcile(admitted = true, interfaceName = "rmnet_data0"),
         )
+        val secondGenerationStart = process.commands.size
+
         assertEquals(
             CellularRootPolicyResult.Enforced,
             policy.reconcile(admitted = true, interfaceName = "rmnet_data0"),
         )
 
+        assertEquals("1052", process.ipv4LookupTable)
+        assertTrue(process.ipv4Guard)
+        assertTrue(process.ipv6Guard)
+        assertTrue(process.ipv4Selector)
+        assertTrue(process.ipv6Selector)
         assertEquals(1, process.commands.count { it == IPV4_GUARD_ADD })
         assertEquals(1, process.commands.count { it == IPV6_GUARD_ADD })
         assertEquals(1, process.commands.count { it.startsWith("iptables -t mangle -A OUTPUT") })
         assertEquals(1, process.commands.count { it.startsWith("ip6tables -t mangle -A OUTPUT") })
-        assertEquals(1, process.commands.count { it == IPV4_LOOKUP_ADD })
+
+        val secondGeneration = process.commands.drop(secondGenerationStart)
+        val revoke = secondGeneration.indexOf(IPV4_LOOKUP_DELETE)
+        val discover = secondGeneration.indexOf("ip -4 route show table all dev rmnet_data0")
+        val install = secondGeneration.indexOf(IPV4_LOOKUP_ADD)
+        assertTrue(revoke >= 0)
+        assertTrue(discover >= 0)
+        assertTrue(install >= 0)
+        assertTrue(revoke < discover)
+        assertTrue(discover < install)
     }
 
     @Test
@@ -229,7 +245,7 @@ class CellularRootPolicyTest {
                     ipv4LookupTable = "1052"
                     ok()
                 }
-                command == "ip -4 rule del pref 9500 fwmark 0x200000/0x200000 lookup 1052" -> {
+                command == IPV4_LOOKUP_DELETE -> {
                     if (ipv4LookupTable == "1052") {
                         ipv4LookupTable = null
                         ok()
@@ -272,5 +288,7 @@ class CellularRootPolicyTest {
             "ip -6 rule add pref 9501 fwmark 0x200000/0x200000 unreachable"
         const val IPV4_LOOKUP_ADD =
             "ip -4 rule add pref 9500 fwmark 0x200000/0x200000 lookup 1052"
+        const val IPV4_LOOKUP_DELETE =
+            "ip -4 rule del pref 9500 fwmark 0x200000/0x200000 lookup 1052"
     }
 }
