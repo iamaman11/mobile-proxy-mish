@@ -15,6 +15,7 @@ sealed interface CellularNetworkEvent {
         val isCellular: Boolean,
         val hasInternet: Boolean,
         val isValidated: Boolean,
+        val isNotVpn: Boolean,
     ) : CellularNetworkEvent
 
     data class Lost(
