@@ -36,6 +36,58 @@ class CellularRootPolicyTest {
     }
 
     @Test
+    fun failClosedGuardsPrecedeSelectorsAndCellularLookup() {
+        val process = FakePolicyProcess()
+        val policy = policy(process)
+
+        assertEquals(
+            CellularRootPolicyResult.Enforced,
+            policy.reconcile(admitted = true, interfaceName = "rmnet_data0"),
+        )
+
+        val ipv4GuardAdd = process.commands.indexOf(IPV4_GUARD_ADD)
+        val ipv6GuardAdd = process.commands.indexOf(IPV6_GUARD_ADD)
+        val ipv4SelectorAdd = process.commands.indexOfFirst {
+            it.startsWith("iptables -t mangle -A OUTPUT")
+        }
+        val ipv6SelectorAdd = process.commands.indexOfFirst {
+            it.startsWith("ip6tables -t mangle -A OUTPUT")
+        }
+        val lookupAdd = process.commands.indexOf(IPV4_LOOKUP_ADD)
+
+        assertTrue(ipv4GuardAdd >= 0)
+        assertTrue(ipv6GuardAdd >= 0)
+        assertTrue(ipv4SelectorAdd >= 0)
+        assertTrue(ipv6SelectorAdd >= 0)
+        assertTrue(lookupAdd >= 0)
+        assertTrue(ipv4GuardAdd < ipv4SelectorAdd)
+        assertTrue(ipv6GuardAdd < ipv6SelectorAdd)
+        assertTrue(ipv4SelectorAdd < lookupAdd)
+        assertTrue(ipv6SelectorAdd < lookupAdd)
+    }
+
+    @Test
+    fun repeatedReconcileDoesNotDuplicateOwnedRules() {
+        val process = FakePolicyProcess()
+        val policy = policy(process)
+
+        assertEquals(
+            CellularRootPolicyResult.Enforced,
+            policy.reconcile(admitted = true, interfaceName = "rmnet_data0"),
+        )
+        assertEquals(
+            CellularRootPolicyResult.Enforced,
+            policy.reconcile(admitted = true, interfaceName = "rmnet_data0"),
+        )
+
+        assertEquals(1, process.commands.count { it == IPV4_GUARD_ADD })
+        assertEquals(1, process.commands.count { it == IPV6_GUARD_ADD })
+        assertEquals(1, process.commands.count { it.startsWith("iptables -t mangle -A OUTPUT") })
+        assertEquals(1, process.commands.count { it.startsWith("ip6tables -t mangle -A OUTPUT") })
+        assertEquals(1, process.commands.count { it == IPV4_LOOKUP_ADD })
+    }
+
+    @Test
     fun ownerLossRemovesLookupButKeepsSameMarkGuards() {
         val process = FakePolicyProcess()
         val policy = policy(process)
@@ -135,11 +187,11 @@ class CellularRootPolicyTest {
                     }
                 }
 
-                command == "ip -4 rule add pref 9501 fwmark 0x200000/0x200000 unreachable" -> {
+                command == IPV4_GUARD_ADD -> {
                     ipv4Guard = true
                     ok()
                 }
-                command == "ip -6 rule add pref 9501 fwmark 0x200000/0x200000 unreachable" -> {
+                command == IPV6_GUARD_ADD -> {
                     ipv6Guard = true
                     ok()
                 }
@@ -173,7 +225,7 @@ class CellularRootPolicyTest {
                         fail("RTNETLINK answers: Network is unreachable\n")
                     }
 
-                command == "ip -4 rule add pref 9500 fwmark 0x200000/0x200000 lookup 1052" -> {
+                command == IPV4_LOOKUP_ADD -> {
                     ipv4LookupTable = "1052"
                     ok()
                 }
@@ -211,5 +263,14 @@ class CellularRootPolicyTest {
 
         private fun ok(stdout: String = ""): RootProcessResult = RootProcessResult(0, stdout)
         private fun fail(stdout: String = ""): RootProcessResult = RootProcessResult(1, stdout)
+    }
+
+    private companion object {
+        const val IPV4_GUARD_ADD =
+            "ip -4 rule add pref 9501 fwmark 0x200000/0x200000 unreachable"
+        const val IPV6_GUARD_ADD =
+            "ip -6 rule add pref 9501 fwmark 0x200000/0x200000 unreachable"
+        const val IPV4_LOOKUP_ADD =
+            "ip -4 rule add pref 9500 fwmark 0x200000/0x200000 lookup 1052"
     }
 }
