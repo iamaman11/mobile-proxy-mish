@@ -424,10 +424,10 @@ fn bridge_accept_loop(
                 session_active.fetch_sub(1, Ordering::AcqRel);
             });
         if spawn.is_err() {
-            if let Ok(mut tracked_clients) = clients.lock() {
-                if let Some(stream) = tracked_clients.remove(&session_id) {
-                    let _ = stream.shutdown(Shutdown::Both);
-                }
+            if let Ok(mut tracked_clients) = clients.lock()
+                && let Some(stream) = tracked_clients.remove(&session_id)
+            {
+                let _ = stream.shutdown(Shutdown::Both);
             }
             active_sessions.fetch_sub(1, Ordering::AcqRel);
             healthy.store(false, Ordering::Release);
