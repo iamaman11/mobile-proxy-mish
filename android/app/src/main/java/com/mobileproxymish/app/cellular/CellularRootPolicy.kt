@@ -34,14 +34,16 @@ sealed interface CellularRootPolicyResult {
  * Narrow PRODUCT-owned root policy-routing adapter for Cellular Egress.
  *
  * The adapter deliberately owns no network admission state. The caller supplies the
- * owner's current decision plus a transient Android interface hint. Rules are ordered
- * fail-closed:
+ * owner's current decision plus a transient Android interface hint. The effective path
+ * is ordered as:
  *
  * PRODUCT UID + conntrack NEW -> reserved masked mark
  * mark -> current direct-cellular IPv4 table
  * mark -> unreachable guard
  *
- * IPv6 receives the same NEW-flow mark but only the unreachable guard until physical
+ * The unreachable guard is installed before the selector, so startup/reconciliation
+ * never has an interval where a PRODUCT mark can fall through Android default routing.
+ * IPv6 gets the same NEW-flow mark plus only the unreachable guard until physical
  * direct-cellular IPv6 evidence exists. Established inbound Mesh replies are not NEW,
  * so they are not redirected by this selector.
  */
@@ -80,7 +82,7 @@ class CellularRootPolicy internal constructor(
             }
         }
 
-        val iface = interfaceName?.takeIf(::isSafeInterfaceName)
+        val iface = interfaceName?.takeIf { isSafeInterfaceName(it) }
         if (iface == null) {
             removeOwnedIpv4Lookups()
             return CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.InvalidInterface)
@@ -116,19 +118,20 @@ class CellularRootPolicy internal constructor(
     override fun close() {
         if (authority.probe() != RootAuthorityStatus.Ready) return
         removeOwnedIpv4Lookups()
-        removeExactRule(IPV4_GUARD_DELETE)
-        removeExactRule(IPV6_GUARD_DELETE)
+        // Stop producing PRODUCT marks before removing the guards that contain them.
         removeExactRule(ipv4SelectorDelete())
         removeExactRule(ipv6SelectorDelete())
+        removeExactRule(IPV4_GUARD_DELETE)
+        removeExactRule(IPV6_GUARD_DELETE)
     }
 
     private fun ensureBaseFailClosedRules(): Boolean {
-        // Selector first, guard second. Until the selector exists there is no PRODUCT
-        // mark; once it exists, the guard is installed before any cellular lookup.
-        return ensureExactRule(ipv4SelectorCheck(), ipv4SelectorAdd()) &&
-            ensureExactRule(ipv6SelectorCheck(), ipv6SelectorAdd()) &&
-            ensureRpdbGuard(IPV4_RULE_SHOW, IPV4_GUARD_LINE, IPV4_GUARD_ADD) &&
-            ensureRpdbGuard(IPV6_RULE_SHOW, IPV6_GUARD_LINE, IPV6_GUARD_ADD)
+        // Guards first, selectors second. A partially completed startup is therefore
+        // either inert (no selector) or fail-closed (selector + guard), never fallback.
+        return ensureRpdbGuard(IPV4_RULE_SHOW, ::isOwnedIpv4Guard, IPV4_GUARD_ADD) &&
+            ensureRpdbGuard(IPV6_RULE_SHOW, ::isOwnedIpv6Guard, IPV6_GUARD_ADD) &&
+            ensureExactRule(ipv4SelectorCheck(), ipv4SelectorAdd()) &&
+            ensureExactRule(ipv6SelectorCheck(), ipv6SelectorAdd())
     }
 
     private fun verifyFailClosedBase(): Boolean =
@@ -168,7 +171,7 @@ class CellularRootPolicy internal constructor(
                     .find(line)
                     ?.groupValues
                     ?.get(1)
-                    ?.takeIf(::isSafeTableToken)
+                    ?.takeIf { isSafeTableToken(it) }
             }
             .distinct()
             .toList()
@@ -186,15 +189,13 @@ class CellularRootPolicy internal constructor(
     }
 
     private fun replaceIpv4Lookup(table: String): Boolean {
-        val currentLines = ruleOutput(IPV4_RULE_SHOW)
-        val existing = ownedIpv4LookupTables(currentLines)
+        val existing = ownedIpv4LookupTables(ruleOutput(IPV4_RULE_SHOW))
 
         for (stale in existing.filterNot { it == table }) {
             if (!commandSucceeded(ipv4LookupDelete(stale))) return false
         }
 
-        val afterCleanup = ruleOutput(IPV4_RULE_SHOW)
-        if (ownedIpv4LookupTables(afterCleanup).contains(table)) return true
+        if (ownedIpv4LookupTables(ruleOutput(IPV4_RULE_SHOW)).contains(table)) return true
 
         if (!commandSucceeded(ipv4LookupAdd(table))) return false
         return ownedIpv4LookupTables(ruleOutput(IPV4_RULE_SHOW)).contains(table)
@@ -220,7 +221,7 @@ class CellularRootPolicy internal constructor(
 
     private fun ownedIpv4LookupTables(lines: List<String>): List<String> = lines.mapNotNull { line ->
         OWNED_IPV4_LOOKUP_REGEX.matchEntire(line.trim())?.groupValues?.get(1)
-    }.filter(::isSafeTableToken).distinct()
+    }.filter { isSafeTableToken(it) }.distinct()
 
     private fun isOwnedIpv4Guard(line: String): Boolean =
         OWNED_IPV4_GUARD_REGEX.matches(line.trim())
@@ -284,7 +285,6 @@ class CellularRootPolicy internal constructor(
         const val MARK_HEX = "0x200000"
         const val MASK_HEX = "0x200000"
         const val LOOKUP_PRIORITY = 9500
-        const val GUARD_PRIORITY = 9501
         const val MAX_RECONCILE_PASSES = 8
 
         const val IPV4_RULE_SHOW = "ip -4 rule show"
