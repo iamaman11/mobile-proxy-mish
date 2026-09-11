@@ -514,6 +514,7 @@ mod tests {
             true,
             true,
             true,
+            true,
         ));
         owner
             .admitted_network_authority()
@@ -537,7 +538,6 @@ mod tests {
             Err(AndroidNetworkError::InvalidHostname)
         );
     }
-
     #[test]
     fn expired_connect_deadline_fails_before_platform_access() {
         let authority = authority();

@@ -252,7 +252,7 @@ function Invoke-E3FullRootToggle {
         $x=Invoke-E3Process $adb $args $TimeoutSeconds
         if($x.ExitCode -ne 0 -or $x.StdOut -notmatch 'OK \(1 test\)'){ Stop-E3 'E3_FAILED' "E3 $Mode instrumentation failed; device output is intentionally not persisted." }
     }
-    try { Set-MobileData 'enable'; Run-E3Case 'positive'; Set-MobileData 'disable'; Run-E3Case 'negative'; Set-MobileData 'enable'; Run-E3Case 'positive' }
+    try { Set-MobileData 'enable'; Run-E3Case 'lifecycle' }
     finally { try { [void](Invoke-E3Process $adb @('-s',$serial,'shell','su','-c','svc data enable') $TimeoutSeconds) } catch {} }
     return [pscustomobject]@{ result='PASS'; scenario='full-root-toggle'; e3_pass=$true; rc_tag=$r.tag; source_commit=$r.source; product_abi=$r.abi; test_apk_sha256=[string]$h.test_apk.sha256 }
 }

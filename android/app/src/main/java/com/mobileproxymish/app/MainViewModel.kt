@@ -55,6 +55,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         CellularAdmissionReason.NO_OBSERVATION -> "cellular.no_observation"
         CellularAdmissionReason.NOT_CELLULAR -> "cellular.not_cellular"
         CellularAdmissionReason.MISSING_INTERNET_CAPABILITY -> "cellular.missing_internet_capability"
+        CellularAdmissionReason.VPN_DERIVED_NETWORK -> "cellular.vpn_derived_network"
         CellularAdmissionReason.NOT_VALIDATED -> "cellular.not_validated"
         CellularAdmissionReason.NETWORK_LOST -> "cellular.network_lost"
     }

@@ -327,6 +327,7 @@ mod tests {
             true,
             true,
             true,
+            true,
         ));
         Arc::new(Mutex::new(owner))
     }

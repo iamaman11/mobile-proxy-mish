@@ -24,8 +24,10 @@ import org.junit.runner.RunWith
 /**
  * E3 physical-device acceptance harness for the Cellular Egress boundary.
  *
- * This test is intentionally not executed by ordinary hosted CI. Hosted CI only compiles
- * the androidTest APK. A self-hosted runner with a real rooted phone executes this class.
+ * Hosted CI only compiles this androidTest APK. A protected-main physical run executes
+ * the complete positive -> negative -> recovery lifecycle on one live controller and
+ * one live requestNetwork() registration so recovery proves the product contract rather
+ * than a fresh-process retry.
  */
 @RunWith(AndroidJUnit4::class)
 class CellularE3InstrumentedTest {
@@ -36,14 +38,12 @@ class CellularE3InstrumentedTest {
     @Test
     fun runPhysicalScenario() {
         val arguments = InstrumentationRegistry.getArguments()
-        when (val mode = arguments.getString("e3Mode") ?: "positive") {
-            "positive" -> runPositive(arguments)
-            "negative" -> runNegative()
-            else -> error("unsupported e3Mode=$mode")
-        }
+        val mode = arguments.getString("e3Mode") ?: "lifecycle"
+        require(mode == "lifecycle") { "unsupported e3Mode=$mode" }
+        runLifecycle(arguments)
     }
 
-    private fun runPositive(arguments: android.os.Bundle) {
+    private fun runLifecycle(arguments: android.os.Bundle) {
         val host = arguments.getString("e3Host") ?: "checkip.amazonaws.com"
         val port = arguments.getString("e3Port")?.toIntOrNull() ?: 80
         val path = arguments.getString("e3Path") ?: "/"
@@ -51,58 +51,96 @@ class CellularE3InstrumentedTest {
         require(port in 1..65535) { "e3Port must be in 1..65535" }
         require(path.startsWith('/')) { "e3Path must start with /" }
 
-        waitForValidatedTransport(NetworkCapabilities.TRANSPORT_WIFI, present = true)
-        waitForValidatedTransport(NetworkCapabilities.TRANSPORT_CELLULAR, present = true)
-
         val controller = CellularController()
         val observer = CellularNetworkObserver(context, forwardingSink(controller))
+        var mobileDataMayBeDisabled = false
         observer.start()
         try {
-            waitForAdmission(controller, CellularAdmissionState.ADMITTED)
-            val lease = controller.admittedNetworkLease()
-            val publicIp = performBoundHttpProbe(lease, host, port, path)
-
-            assertTrue("echo response must be a bare IPv4/IPv6 literal", isIpLiteral(publicIp))
+            // Positive: this same request lifetime must acquire the direct cellular
+            // Internet Network even while another default/VPN network may exist.
+            waitForAdmission(controller, CellularAdmissionState.ADMITTED, 60_000)
+            waitForDirectCellular(validated = true, present = true, timeoutMillis = 60_000)
+            val initialLease = controller.admittedNetworkLease()
+            val initialPublicIp = performBoundHttpProbe(initialLease, host, port, path)
+            assertTrue("echo response must be a bare IPv4/IPv6 literal", isIpLiteral(initialPublicIp))
             println(
-                "E3_EVIDENCE mode=positive wifi_validated=true cellular_validated=true " +
-                    "dns=lease socket_bind=lease public_ip=$publicIp",
+                "E3_EVIDENCE phase=positive direct_cellular_validated=true " +
+                    "not_vpn=owner_verified dns=lease socket_bind=lease public_ip_observed=true",
+            )
+
+            // Negative: the immutable test harness performs the same already-authorized
+            // root `svc data disable` effect used by LAB, while keeping this request and
+            // owner alive. onLost must revoke authority; Wi-Fi/VPN/IMS cannot substitute.
+            mobileDataMayBeDisabled = true
+            requireMobileDataTransition("disable")
+            waitForDirectCellular(validated = false, present = false, timeoutMillis = 60_000)
+            waitForAdmission(controller, CellularAdmissionState.NOT_ADMITTED, 60_000)
+            assertNoLease(controller)
+            assertLeaseRevoked(initialLease, host)
+            println(
+                "E3_EVIDENCE phase=negative direct_cellular_available=false " +
+                    "owner_not_admitted=true lease_issued=false old_lease_revoked=true",
+            )
+
+            // Recovery: only the user mobile-data setting is re-enabled. The still-live
+            // requestNetwork() registration must cause Android to recreate a matching
+            // direct cellular Network and the same owner must mint fresh authority.
+            requireMobileDataTransition("enable")
+            mobileDataMayBeDisabled = false
+            waitForAdmission(controller, CellularAdmissionState.ADMITTED, 120_000)
+            waitForDirectCellular(validated = true, present = true, timeoutMillis = 120_000)
+            val recoveryLease = controller.admittedNetworkLease()
+            val recoveryPublicIp = performBoundHttpProbe(recoveryLease, host, port, path)
+            assertTrue("recovery echo must be a bare IPv4/IPv6 literal", isIpLiteral(recoveryPublicIp))
+            println(
+                "E3_EVIDENCE phase=recovery direct_cellular_validated=true " +
+                    "not_vpn=owner_verified fresh_lease=true dns=lease socket_bind=lease " +
+                    "public_ip_observed=true",
             )
         } finally {
+            // Cleanup is best-effort here because any failure already prevents E3 PASS;
+            // the outer Windows harness performs a second bounded `svc data enable`.
+            if (mobileDataMayBeDisabled) {
+                runCatching { executeMobileDataTransition("enable") }
+            }
             observer.close()
         }
     }
 
-    private fun runNegative() {
-        waitForValidatedTransport(NetworkCapabilities.TRANSPORT_WIFI, present = true)
-        waitForValidatedTransport(NetworkCapabilities.TRANSPORT_CELLULAR, present = false)
+    private fun requireMobileDataTransition(state: String) {
+        assertTrue("root mobile-data transition failed", executeMobileDataTransition(state))
+    }
 
-        val controller = CellularController()
-        val observer = CellularNetworkObserver(context, forwardingSink(controller))
-        observer.start()
+    private fun executeMobileDataTransition(state: String): Boolean {
+        require(state == "enable" || state == "disable")
+        val command = "su -c 'svc data $state'; code=\$?; echo E3_ROOT_EXIT:\$code"
+        val descriptor = instrumentation.uiAutomation.executeShellCommand(command)
+        val output = ParcelFileDescriptor.AutoCloseInputStream(descriptor)
+            .bufferedReader(Charsets.UTF_8)
+            .use { it.readText() }
+        return Regex("(?m)^E3_ROOT_EXIT:0\\s*$").containsMatchIn(output)
+    }
+
+    private fun assertNoLease(controller: CellularController) {
+        var leaseIssued = false
         try {
-            // Give a cellular-only callback a bounded opportunity to contradict the
-            // platform precondition. Wi-Fi must never be projected into the owner.
-            SystemClock.sleep(1_500)
-            assertFalse(
-                "cellular owner must not become ADMITTED while validated cellular is absent",
-                controller.admissionSnapshot().state == CellularAdmissionState.ADMITTED,
-            )
-
-            var leaseIssued = false
-            try {
-                controller.admittedNetworkLease()
-                leaseIssued = true
-            } catch (_: Exception) {
-                // Expected fail-closed path: UNKNOWN/NOT_ADMITTED cannot mint a lease.
-            }
-            assertFalse("no cellular authority lease may be issued", leaseIssued)
-            println(
-                "E3_EVIDENCE mode=negative wifi_validated=true cellular_validated=false " +
-                    "lease_issued=false",
-            )
-        } finally {
-            observer.close()
+            controller.admittedNetworkLease()
+            leaseIssued = true
+        } catch (_: Exception) {
+            // Expected fail-closed path: NOT_ADMITTED cannot mint a lease.
         }
+        assertFalse("no cellular authority lease may be issued", leaseIssued)
+    }
+
+    private fun assertLeaseRevoked(lease: CellularNetworkLease, host: String) {
+        var staleLeaseWorked = false
+        try {
+            lease.resolveHost(host)
+            staleLeaseWorked = true
+        } catch (_: Exception) {
+            // Expected: owner generation changed before any platform DNS operation.
+        }
+        assertFalse("pre-loss cellular lease must be revoked", staleLeaseWorked)
     }
 
     private fun forwardingSink(controller: CellularController): CellularObservationSink =
@@ -114,6 +152,7 @@ class CellularE3InstrumentedTest {
                     isCellular = event.isCellular,
                     hasInternet = event.hasInternet,
                     isValidated = event.isValidated,
+                    isNotVpn = event.isNotVpn,
                 )
 
                 is CellularNetworkEvent.Lost -> controller.networkLost(
@@ -126,7 +165,7 @@ class CellularE3InstrumentedTest {
     private fun waitForAdmission(
         controller: CellularController,
         expected: CellularAdmissionState,
-        timeoutMillis: Long = 30_000,
+        timeoutMillis: Long,
     ) {
         val deadline = SystemClock.elapsedRealtime() + timeoutMillis
         do {
@@ -139,18 +178,23 @@ class CellularE3InstrumentedTest {
         assertEquals(expected, controller.admissionSnapshot().state)
     }
 
-    private fun waitForValidatedTransport(
-        transport: Int,
+    /**
+     * Observes only the direct cellular Internet path relevant to Cellular Egress.
+     * VPN-derived and IMS-only networks never satisfy this predicate.
+     */
+    private fun waitForDirectCellular(
+        validated: Boolean,
         present: Boolean,
-        timeoutMillis: Long = 30_000,
+        timeoutMillis: Long,
     ) {
         val deadline = SystemClock.elapsedRealtime() + timeoutMillis
         do {
             val observed = connectivityManager.allNetworks.any { network ->
                 val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return@any false
-                capabilities.hasTransport(transport) &&
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) &&
                     capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-                    capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                    capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) &&
+                    (!validated || capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED))
             }
             if (observed == present) {
                 return
@@ -158,12 +202,10 @@ class CellularE3InstrumentedTest {
             SystemClock.sleep(250)
         } while (SystemClock.elapsedRealtime() < deadline)
 
-        val label = when (transport) {
-            NetworkCapabilities.TRANSPORT_WIFI -> "Wi-Fi"
-            NetworkCapabilities.TRANSPORT_CELLULAR -> "cellular"
-            else -> "transport-$transport"
-        }
-        assertTrue("expected validated $label presence=$present", false)
+        assertTrue(
+            "expected direct cellular Internet presence=$present validated_required=$validated",
+            false,
+        )
     }
 
     private fun performBoundHttpProbe(
@@ -222,8 +264,6 @@ class CellularE3InstrumentedTest {
                 )
             }
 
-            // This exact fd is bound through the same opaque owner-issued lease that
-            // performed DNS above. No default process/network binding is used.
             lease.bindSocket(rawFd)
             Os.connect(socket.fileDescriptor, address, port)
 
