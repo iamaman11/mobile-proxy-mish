@@ -60,6 +60,7 @@ internal class MeshIngressRuntimeBridge(
     private val started = AtomicBoolean(false)
     private val closed = AtomicBoolean(false)
     private val callbackRegistered = AtomicBoolean(false)
+    private val ingressLock = Any()
     private val executor = Executors.newSingleThreadExecutor { task ->
         Thread(task, "mish-mesh-observer").apply { isDaemon = true }
     }
@@ -114,7 +115,7 @@ internal class MeshIngressRuntimeBridge(
             if (callbackRegistered.compareAndSet(true, false)) {
                 runCatching { connectivityManager.unregisterNetworkCallback(networkCallback) }
             }
-            runCatching { controller.stopIngress() }
+            stopIngressFailClosed(controller)
             throw IllegalStateException("Mesh VPN observer could not start", error)
         }
     }
@@ -124,7 +125,7 @@ internal class MeshIngressRuntimeBridge(
         try {
             executor.execute(::observeCurrentVpnSnapshot)
         } catch (_: RejectedExecutionException) {
-            runCatching { controller?.stopIngress() }
+            stopIngressFailClosed(controller)
         }
     }
 
@@ -132,7 +133,7 @@ internal class MeshIngressRuntimeBridge(
         val activeController = controller ?: return
         if (closed.get()) return
         if (sequence == Long.MAX_VALUE) {
-            runCatching { activeController.stopIngress() }
+            stopIngressFailClosed(activeController)
             return
         }
         sequence += 1
@@ -160,10 +161,10 @@ internal class MeshIngressRuntimeBridge(
                     activeController.observeVpnAmbiguous(sequence.toULong())
             }
         } catch (_: LinkageError) {
-            runCatching { activeController.stopIngress() }
+            stopIngressFailClosed(activeController)
             return
         } catch (_: Exception) {
-            runCatching { activeController.stopIngress() }
+            stopIngressFailClosed(activeController)
             return
         }
 
@@ -190,7 +191,12 @@ internal class MeshIngressRuntimeBridge(
     private fun reconcileIngress(
         activeController: MeshTransportController,
         view: MeshAdmissionView,
-    ) {
+    ) = synchronized(ingressLock) {
+        if (closed.get()) {
+            runCatching { activeController.stopIngress() }
+            return@synchronized
+        }
+
         try {
             val proxyReady = proxyRuntime.snapshot.value == ProxyRuntimeSnapshot.Running
             val epoch = view.admissionEpoch
@@ -210,6 +216,13 @@ internal class MeshIngressRuntimeBridge(
         }
     }
 
+    private fun stopIngressFailClosed(activeController: MeshTransportController?) {
+        if (activeController == null) return
+        synchronized(ingressLock) {
+            runCatching { activeController.stopIngress() }
+        }
+    }
+
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
 
@@ -221,8 +234,10 @@ internal class MeshIngressRuntimeBridge(
         }
 
         executor.shutdownNow()
-        controller?.let { activeController ->
-            clean = runCatching { activeController.stopIngress() }.isSuccess && clean
+        synchronized(ingressLock) {
+            controller?.let { activeController ->
+                clean = runCatching { activeController.stopIngress() }.isSuccess && clean
+            }
         }
 
         clean = try {
