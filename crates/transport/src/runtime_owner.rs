@@ -227,7 +227,10 @@ mod tests {
         let ambiguous = runtime
             .observe_vpn(2, MeshVpnObservation::AmbiguousVpn)
             .expect("ambiguous observation");
-        assert_eq!(ambiguous.admission().state(), MeshAdmissionState::NotAdmitted);
+        assert_eq!(
+            ambiguous.admission().state(),
+            MeshAdmissionState::NotAdmitted
+        );
         assert_eq!(ambiguous.admission().admission_epoch(), None);
     }
 
@@ -237,10 +240,7 @@ mod tests {
         let zero = runtime
             .observe_vpn(
                 1,
-                unique([
-                    Ipv4Addr::new(127, 0, 0, 1),
-                    Ipv4Addr::new(192, 168, 1, 4),
-                ]),
+                unique([Ipv4Addr::new(127, 0, 0, 1), Ipv4Addr::new(192, 168, 1, 4)]),
             )
             .expect("zero accepted");
         assert_eq!(zero.admission().state(), MeshAdmissionState::NotAdmitted);
@@ -248,10 +248,7 @@ mod tests {
         let one = runtime
             .observe_vpn(
                 2,
-                unique([
-                    Ipv4Addr::new(192, 168, 1, 4),
-                    Ipv4Addr::new(100, 96, 2, 4),
-                ]),
+                unique([Ipv4Addr::new(192, 168, 1, 4), Ipv4Addr::new(100, 96, 2, 4)]),
             )
             .expect("one accepted");
         assert_eq!(one.admission().state(), MeshAdmissionState::Admitted);
@@ -260,13 +257,13 @@ mod tests {
         let multiple = runtime
             .observe_vpn(
                 3,
-                unique([
-                    Ipv4Addr::new(100, 96, 2, 4),
-                    Ipv4Addr::new(100, 97, 2, 5),
-                ]),
+                unique([Ipv4Addr::new(100, 96, 2, 4), Ipv4Addr::new(100, 97, 2, 5)]),
             )
             .expect("multiple accepted");
-        assert_eq!(multiple.admission().state(), MeshAdmissionState::NotAdmitted);
+        assert_eq!(
+            multiple.admission().state(),
+            MeshAdmissionState::NotAdmitted
+        );
         assert_eq!(
             multiple.admission().reason(),
             Some(MeshAdmissionReason::MultipleAcceptedAddresses)
@@ -350,9 +347,11 @@ mod tests {
             .observe_vpn(1, unique([Ipv4Addr::LOCALHOST]))
             .expect("first");
         let first_epoch = first.admission().admission_epoch().expect("epoch");
-        assert!(runtime
-            .start_ingress(first_epoch, &[MeshPortForward::same(port)])
-            .expect("start ingress"));
+        assert!(
+            runtime
+                .start_ingress(first_epoch, &[MeshPortForward::same(port)])
+                .expect("start ingress")
+        );
         assert!(runtime.ingress_healthy().expect("healthy"));
 
         let lost = runtime
