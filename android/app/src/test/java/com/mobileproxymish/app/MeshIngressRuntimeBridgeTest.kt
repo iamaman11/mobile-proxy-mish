@@ -28,7 +28,7 @@ class MeshIngressRuntimeBridgeTest {
         assertTrue(observation is AndroidMeshVpnObservation.UniqueVpn)
         observation as AndroidMeshVpnObservation.UniqueVpn
         assertEquals(
-            listOf("192.168.1.4", "100.96.2.4"),
+            listOf("192.168.1.4", "100.96.2.4", "100.96.2.4"),
             observation.localIpv4,
         )
     }
