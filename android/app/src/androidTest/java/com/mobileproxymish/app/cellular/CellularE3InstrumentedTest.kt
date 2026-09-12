@@ -72,6 +72,7 @@ class CellularE3InstrumentedTest {
         val runtime = application.cellularRuntime
         var mobileDataMayBeDisabled = false
         var runtimeClosed = false
+        var primaryFailure: Throwable? = null
         var establishedFlow: SSLSocket? = null
 
         try {
@@ -174,25 +175,39 @@ class CellularE3InstrumentedTest {
             )
             requirePublicIpLiteral(recoveryPublicIp)
 
-            // Deliberate shutdown is part of the accepted PRODUCT lifecycle. Verify from
-            // the same PRODUCT UID/root grant that all exact #75 signatures disappeared;
-            // this is read-only verification after the production adapter performed delete.
+            // Deliberate shutdown follows the real composition dependency order: the proxy
+            // runtime releases its private Cellular bridge before root-policy quiescence and
+            // cleanup. Verification remains read-only after the production adapters stop.
+            application.proxyRuntime.close()
             runtime.close()
             runtimeClosed = true
-            verifyProductPolicyCleanup(Process.myUid())
+            verifyProductPolicyCleanup()
 
             println(
                 "E3_EVIDENCE phase=recovery owner_admitted=true fresh_generation=true " +
                     "product_root_policy=reconciled dns=uid_policy public_socket=uid_policy " +
                     "transport=https public_ip_observed=true cleanup_verified=true ipv6=fail_closed",
             )
+        } catch (failure: Throwable) {
+            primaryFailure = failure
+            throw failure
         } finally {
             runCatching { establishedFlow?.close() }
             if (mobileDataMayBeDisabled) {
                 runCatching { executeMobileDataTransition("enable") }
             }
             if (!runtimeClosed) {
-                runtime.close()
+                application.proxyRuntime.close()
+                val cleanupFailure = runCatching { runtime.close() }.exceptionOrNull()
+                if (cleanupFailure != null) {
+                    println(
+                        "E3_SAFE_FAILURE stage=root_policy_cleanup " +
+                            "class=${cleanupFailure.javaClass.name}",
+                    )
+                    if (primaryFailure == null) {
+                        throw cleanupFailure
+                    }
+                }
             }
         }
     }
@@ -573,7 +588,7 @@ class CellularE3InstrumentedTest {
         assertFalse("negative public socket escaped fail-closed policy", escaped)
     }
 
-    private fun verifyProductPolicyCleanup(productUid: Int) {
+    private fun verifyProductPolicyCleanup() {
         val identity = runProductRoot("id -u")
         if (identity.timedOut || identity.exitCode != 0 || identity.stdout.trim() != "0") {
             throw AssertionError("E3_SAFE_FAILURE stage=root_policy_cleanup root_authority_lost")
@@ -581,46 +596,48 @@ class CellularE3InstrumentedTest {
 
         val ipv4Rules = runProductRoot("ip -4 rule show")
         val ipv6Rules = runProductRoot("ip -6 rule show")
-        val ipv4Table = runProductRoot("iptables -t mangle -L OUTPUT -n")
-        val ipv6Table = runProductRoot("ip6tables -t mangle -L OUTPUT -n")
-        if (listOf(ipv4Rules, ipv6Rules, ipv4Table, ipv6Table).any {
+        val ipv4Mangle = runProductRoot("iptables -t mangle -S")
+        val ipv6Mangle = runProductRoot("ip6tables -t mangle -S")
+        if (listOf(ipv4Rules, ipv6Rules, ipv4Mangle, ipv6Mangle).any {
                 it.timedOut || it.exitCode != 0
             }
         ) {
             throw AssertionError("E3_SAFE_FAILURE stage=root_policy_cleanup inspection_failed")
         }
 
-        assertFalse(
-            "PRODUCT IPv4 lookup survived intentional cleanup",
-            OWNED_IPV4_LOOKUP.containsMatchIn(ipv4Rules.stdout),
-        )
-        assertFalse(
-            "PRODUCT IPv4 guard survived intentional cleanup",
-            OWNED_GUARD.containsMatchIn(ipv4Rules.stdout),
-        )
-        assertFalse(
-            "PRODUCT IPv6 guard survived intentional cleanup",
-            OWNED_GUARD.containsMatchIn(ipv6Rules.stdout),
-        )
-
-        val ipv4Selector = runProductRoot(selectorCheckCommand("iptables", productUid))
-        val ipv6Selector = runProductRoot(selectorCheckCommand("ip6tables", productUid))
-        if (ipv4Selector.timedOut || ipv6Selector.timedOut) {
-            throw AssertionError("E3_SAFE_FAILURE stage=root_policy_cleanup selector_check_timeout")
+        POLICY_IDENTITIES.forEach { policyIdentity ->
+            assertFalse(
+                "PRODUCT IPv4 lookup survived intentional cleanup for ${policyIdentity.mark}",
+                ownedIpv4Lookup(policyIdentity).containsMatchIn(ipv4Rules.stdout),
+            )
+            assertFalse(
+                "PRODUCT IPv4 guard survived intentional cleanup for ${policyIdentity.mark}",
+                ownedGuard(policyIdentity).containsMatchIn(ipv4Rules.stdout),
+            )
+            assertFalse(
+                "PRODUCT IPv6 guard survived intentional cleanup for ${policyIdentity.mark}",
+                ownedGuard(policyIdentity).containsMatchIn(ipv6Rules.stdout),
+            )
         }
-        assertTrue(
-            "PRODUCT IPv4 selector survived intentional cleanup",
-            ipv4Selector.exitCode != 0,
+        assertFalse(
+            "PRODUCT IPv4 mangle chain survived intentional cleanup",
+            ipv4Mangle.stdout.lineSequence().any { it.contains(MISH_CHAIN) },
         )
-        assertTrue(
-            "PRODUCT IPv6 selector survived intentional cleanup",
-            ipv6Selector.exitCode != 0,
+        assertFalse(
+            "PRODUCT IPv6 mangle chain survived intentional cleanup",
+            ipv6Mangle.stdout.lineSequence().any { it.contains(MISH_CHAIN) },
         )
     }
 
-    private fun selectorCheckCommand(binary: String, productUid: Int): String =
-        "$binary -t mangle -C OUTPUT -m owner --uid-owner $productUid " +
-            "-m conntrack --ctstate NEW -j MARK --set-xmark 0x200000/0x200000"
+    private fun ownedIpv4Lookup(identity: PolicyIdentityEvidence): Regex = Regex(
+        "(?m)^${identity.lookupPriority}:\\s+from\\s+all\\s+fwmark\\s+" +
+            "${Regex.escape(identity.mark)}/${Regex.escape(identity.mark)}\\s+lookup\\s+",
+    )
+
+    private fun ownedGuard(identity: PolicyIdentityEvidence): Regex = Regex(
+        "(?m)^${identity.guardPriority}:\\s+from\\s+all\\s+fwmark\\s+" +
+            "${Regex.escape(identity.mark)}/${Regex.escape(identity.mark)}\\s+unreachable",
+    )
 
     private fun runProductRoot(command: String): RootReadResult {
         val child = try {
@@ -729,6 +746,12 @@ class CellularE3InstrumentedTest {
         val timedOut: Boolean,
     )
 
+    private data class PolicyIdentityEvidence(
+        val mark: String,
+        val lookupPriority: Int,
+        val guardPriority: Int,
+    )
+
     private companion object {
         const val POSITIVE_TIMEOUT_MILLIS = 60_000L
         const val NEGATIVE_TIMEOUT_MILLIS = 60_000L
@@ -743,17 +766,18 @@ class CellularE3InstrumentedTest {
         const val HTTPS_PORT = 443
         const val ROOT_READ_TIMEOUT_MILLIS = 5_000L
         const val ROOT_READ_POLL_MILLIS = 25L
-        const val ROOT_READ_OUTPUT_MAX_CHARS = 8_192
+        const val ROOT_READ_OUTPUT_MAX_CHARS = 65_536
+        const val MISH_CHAIN = "MISH_EGRESS_V1"
 
         val HOST_PATTERN = Regex("^[A-Za-z0-9.-]+$")
         val IPV4_LITERAL = Regex(
             "^(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)(?:\\.(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)){3}$",
         )
-        val OWNED_IPV4_LOOKUP = Regex(
-            "(?m)^9500:\\s+from\\s+all\\s+fwmark\\s+0x200000/0x200000\\s+lookup\\s+",
-        )
-        val OWNED_GUARD = Regex(
-            "(?m)^9501:\\s+from\\s+all\\s+fwmark\\s+0x200000/0x200000\\s+unreachable",
+        val POLICY_IDENTITIES = listOf(
+            PolicyIdentityEvidence("0x200000", 9500, 9501),
+            PolicyIdentityEvidence("0x400000", 9520, 9521),
+            PolicyIdentityEvidence("0x800000", 9540, 9541),
+            PolicyIdentityEvidence("0x1000000", 9560, 9561),
         )
     }
 }
