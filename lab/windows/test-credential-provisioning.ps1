@@ -8,6 +8,7 @@ $testRoot = Join-Path $env:TEMP ('mish-credential-provisioning-' + [Guid]::NewGu
 [void][IO.Directory]::CreateDirectory($testRoot)
 $fakeAdbScript = Join-Path $testRoot 'fake-adb.ps1'
 $fakeAdbCommand = Join-Path $testRoot 'fake-adb.cmd'
+$fakeAdbStderrPath = Join-Path $testRoot 'fake-adb.stderr.txt'
 $storePath = Join-Path $testRoot 'client-store.dpapi'
 $badStorePath = Join-Path $testRoot 'bad-client-store.dpapi'
 $syntheticUser = 'mish-11111111111111111111111111111111'
@@ -105,12 +106,34 @@ finally {
     }
     @"
 @echo off
-"$pwshExe" -NoLogo -NoProfile -NonInteractive -File "$fakeAdbScript" %*
+"$pwshExe" -NoLogo -NoProfile -NonInteractive -File "$fakeAdbScript" %* 2>"$fakeAdbStderrPath"
+exit /b %ERRORLEVEL%
 "@ | Set-Content -LiteralPath $fakeAdbCommand -Encoding ASCII
 
-    $result = Invoke-MishExternalProxyCredentialProvisioning `
-        -AdbPath $fakeAdbCommand `
-        -StorePath $storePath
+    try {
+        $result = Invoke-MishExternalProxyCredentialProvisioning `
+            -AdbPath $fakeAdbCommand `
+            -StorePath $storePath
+    }
+    catch {
+        $diagnostic = '<no fake ADB stderr was captured>'
+        if (Test-Path -LiteralPath $fakeAdbStderrPath -PathType Leaf) {
+            $diagnostic = Get-Content -Raw -LiteralPath $fakeAdbStderrPath
+        }
+        $diagnostic = $diagnostic.Replace($syntheticUser, '<redacted-synthetic-user>')
+        $diagnostic = $diagnostic.Replace($syntheticPassword, '<redacted-synthetic-password>')
+        $diagnostic = [regex]::Replace(
+            $diagnostic,
+            '(?i)\b[0-9a-f]{64}\b',
+            '<redacted-hex64>'
+        )
+        $diagnostic = [regex]::Replace(
+            $diagnostic,
+            '(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{80,}={0,2}(?![A-Za-z0-9+/])',
+            '<redacted-base64>'
+        )
+        throw "Hosted fake ADB subprocess failed before provisioning parsing. Safe diagnostic:`n$diagnostic"
+    }
     if ($result.Schema -ne 'mish.credentials.v1.ExternalProxyProvisioningEnvelope') {
         throw 'Provisioning result schema drifted.'
     }
