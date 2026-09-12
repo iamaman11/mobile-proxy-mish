@@ -67,6 +67,7 @@ internal class MeshIngressRuntimeBridge(
     }
     private val vpnRequest = NetworkRequest.Builder()
         .addTransportType(NetworkCapabilities.TRANSPORT_VPN)
+        .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
         .build()
 
     private var sequence = 0L
@@ -179,7 +180,7 @@ internal class MeshIngressRuntimeBridge(
             val localIpv4 = connectivityManager.getLinkProperties(network)
                 ?.linkAddresses
                 ?.mapNotNull { linkAddress -> linkAddress.address as? Inet4Address }
-                ?.mapNotNull(Inet4Address::getHostAddress)
+                ?.mapNotNull { address -> address.hostAddress }
                 .orEmpty()
             currentVpns += localIpv4
         }
