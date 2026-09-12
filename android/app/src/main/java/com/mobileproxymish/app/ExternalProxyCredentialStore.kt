@@ -91,15 +91,19 @@ internal class ExternalProxyCredentialStore(
      */
     private fun loadOrInitialize(): StoredCredentialRoot {
         val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-        val encodedVersion = preferences.getString(KEY_VERSION, null)
+        val hasVersion = preferences.contains(KEY_VERSION)
+        val hasRevoked = preferences.contains(KEY_REVOKED)
+        check(hasVersion == hasRevoked) {
+            "external credential owner metadata is incomplete"
+        }
 
-        if (encodedVersion != null) {
+        if (hasVersion) {
             check(keyStore.containsAlias(ROOT_KEY_ALIAS)) {
                 "external credential root missing for persisted owner state"
             }
             val root = keyStore.getKey(ROOT_KEY_ALIAS, null) as? SecretKey
                 ?: error("Android Keystore external credential root has wrong key type")
-            val version = encodedVersion.toULongOrNull()
+            val version = preferences.getString(KEY_VERSION, null)?.toULongOrNull()
                 ?: error("persisted external credential version is invalid")
             val state = externalCredentialRestore(
                 version = version,
@@ -140,6 +144,7 @@ internal class ExternalProxyCredentialStore(
                 KeyProperties.PURPOSE_SIGN,
             )
                 .setDigests(KeyProperties.DIGEST_SHA256)
+                .setKeySize(ROOT_KEY_BITS)
                 .setUserAuthenticationRequired(false)
                 .build(),
         )
@@ -159,6 +164,7 @@ internal class ExternalProxyCredentialStore(
     private companion object {
         const val ANDROID_KEYSTORE = "AndroidKeyStore"
         const val ROOT_KEY_ALIAS = "mobile-proxy-mish.external-proxy-root.v1"
+        const val ROOT_KEY_BITS = 256
         const val PREFERENCES_NAME = "external-proxy-credential-state"
         const val KEY_VERSION = "version"
         const val KEY_REVOKED = "revoked"
