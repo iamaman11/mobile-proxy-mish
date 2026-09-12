@@ -61,6 +61,16 @@ class MangleOutputCollisionAuditTest {
     }
 
     @Test
+    fun unreachableMalformedMarkSemanticsAreNotCollisionAuthority() {
+        assertAudit(
+            MangleOutputCollisionAudit.Result.Clean,
+            "-N INPUT_HELPER",
+            "-A INPUT -j INPUT_HELPER",
+            "-A INPUT_HELPER -j MARK --set-xmark not-a-mark",
+        )
+    }
+
+    @Test
     fun reachableMalformedMarkSemanticsFailClosed() {
         assertAudit(
             MangleOutputCollisionAudit.Result.Ambiguous,
