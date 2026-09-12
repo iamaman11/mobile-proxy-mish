@@ -15,7 +15,8 @@ import org.junit.runner.RunWith
  *
  * This test never mutates RPDB/iptables state and never becomes a readiness owner. It emits
  * only bounded booleans for the accepted PRODUCT candidate set; foreign rule bodies, route
- * tables, addresses and credentials are deliberately not printed.
+ * tables, addresses and credentials are deliberately not printed. It also does not infer
+ * ownership of an observed RPDB rule: occupancy/touch facts remain pure observations.
  */
 @RunWith(AndroidJUnit4::class)
 class PhysicalCompositionDiagnosticTest {
@@ -59,12 +60,12 @@ class PhysicalCompositionDiagnosticTest {
         CANDIDATES.forEachIndexed { index, candidate ->
             println(
                 "PHYSICAL_POLICY_DIAGNOSTIC candidate=${index + 1} mark=${candidate.markHex} " +
-                    "ipv4_priority_collision=${priorityCollision(ipv4RuleLines, candidate)} " +
-                    "ipv6_priority_collision=${priorityCollision(ipv6RuleLines, candidate)} " +
-                    "ipv4_rpdb_mark_collision=${rpdbMarkCollision(ipv4RuleLines, candidate)} " +
-                    "ipv6_rpdb_mark_collision=${rpdbMarkCollision(ipv6RuleLines, candidate)} " +
-                    "ipv4_mangle_mark_collision=${mangleMarkCollision(ipv4MangleLines, candidate)} " +
-                    "ipv6_mangle_mark_collision=${mangleMarkCollision(ipv6MangleLines, candidate)} " +
+                    "ipv4_priority_occupied=${priorityOccupied(ipv4RuleLines, candidate)} " +
+                    "ipv6_priority_occupied=${priorityOccupied(ipv6RuleLines, candidate)} " +
+                    "ipv4_rpdb_mark_touched=${rpdbMarkTouched(ipv4RuleLines, candidate)} " +
+                    "ipv6_rpdb_mark_touched=${rpdbMarkTouched(ipv6RuleLines, candidate)} " +
+                    "ipv4_mangle_mark_touched=${mangleMarkTouched(ipv4MangleLines, candidate)} " +
+                    "ipv6_mangle_mark_touched=${mangleMarkTouched(ipv6MangleLines, candidate)} " +
                     "product_chain_present=$chainPresent",
             )
         }
@@ -106,34 +107,21 @@ class PhysicalCompositionDiagnosticTest {
         )
     }
 
-    private fun priorityCollision(lines: List<String>, candidate: Candidate): Boolean =
+    private fun priorityOccupied(lines: List<String>, candidate: Candidate): Boolean =
         lines.any { line ->
             val priority = line.substringBefore(':').trim().toIntOrNull()
-            (priority == candidate.lookupPriority || priority == candidate.guardPriority) &&
-                !isExactOwnedRule(line, candidate)
+            priority == candidate.lookupPriority || priority == candidate.guardPriority
         }
 
-    private fun rpdbMarkCollision(lines: List<String>, candidate: Candidate): Boolean =
+    private fun rpdbMarkTouched(lines: List<String>, candidate: Candidate): Boolean =
         lines.any { line ->
-            !isExactOwnedRule(line, candidate) &&
-                fwmarkSpec(line)?.let { specTouchesBit(it, candidate.markValue) } == true
+            fwmarkSpec(line)?.let { specTouchesBit(it, candidate.markValue) } == true
         }
 
-    private fun mangleMarkCollision(lines: List<String>, candidate: Candidate): Boolean =
+    private fun mangleMarkTouched(lines: List<String>, candidate: Candidate): Boolean =
         lines.any { line ->
             !line.contains(MISH_CHAIN) && lineTouchesBit(line, candidate.markValue)
         }
-
-    private fun isExactOwnedRule(line: String, candidate: Candidate): Boolean {
-        val trimmed = line.trim()
-        val priority = trimmed.substringBefore(':').trim().toIntOrNull() ?: return false
-        val expectedMark = "fwmark ${candidate.markHex}/${candidate.markHex}"
-        return when (priority) {
-            candidate.lookupPriority -> trimmed.contains(expectedMark) && trimmed.contains(" lookup ")
-            candidate.guardPriority -> trimmed.contains(expectedMark) && trimmed.contains(" unreachable")
-            else -> false
-        }
-    }
 
     private fun fwmarkSpec(line: String): String? {
         val tokens = line.trim().split(WHITESPACE)
