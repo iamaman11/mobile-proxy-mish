@@ -1,3 +1,6 @@
+import java.io.InputStream
+import java.security.MessageDigest
+import java.util.zip.ZipFile
 import org.gradle.api.tasks.Delete
 import org.gradle.api.tasks.Exec
 
@@ -216,6 +219,68 @@ android {
 
 tasks.named("preBuild") {
     dependsOn(buildAndroidUniFfi, materializeSingBoxAndroid)
+}
+
+fun digestSha256(input: InputStream): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    val buffer = ByteArray(64 * 1024)
+    while (true) {
+        val count = input.read(buffer)
+        if (count < 0) break
+        if (count > 0) digest.update(buffer, 0, count)
+    }
+    return digest.digest().joinToString("") { byte -> "%02x".format(byte) }
+}
+
+fun registerSingBoxPackagingVerifier(
+    taskName: String,
+    apkPath: String,
+) = tasks.register(taskName) {
+    dependsOn(materializeSingBoxAndroid)
+    val expectedPath = "$generatedSingBoxJniPath/$targetAbi/libsingbox.so"
+    inputs.file(expectedPath)
+    inputs.file(apkPath)
+    inputs.property("mishTargetAbi", targetAbi)
+
+    doLast {
+        val expectedFile = file(expectedPath)
+        val apkFile = file(apkPath)
+        if (!expectedFile.isFile) {
+            throw GradleException("Pinned sing-box materialization is missing: $expectedPath")
+        }
+        if (!apkFile.isFile) {
+            throw GradleException("APK packaging output is missing: $apkPath")
+        }
+
+        val expectedSha = expectedFile.inputStream().buffered().use(::digestSha256)
+        val entryName = "lib/$targetAbi/libsingbox.so"
+        val packagedSha = ZipFile(apkFile).use { zip ->
+            val entry = zip.getEntry(entryName)
+                ?: throw GradleException("APK is missing pinned sing-box entry: $entryName")
+            zip.getInputStream(entry).buffered().use(::digestSha256)
+        }
+        if (packagedSha != expectedSha) {
+            throw GradleException(
+                "APK sing-box bytes differ from pinned materialization: expected=$expectedSha actual=$packagedSha",
+            )
+        }
+    }
+}
+
+val verifyDebugSingBoxPackaging = registerSingBoxPackagingVerifier(
+    taskName = "verifyDebugSingBoxPackaging",
+    apkPath = layout.buildDirectory.file("outputs/apk/debug/app-debug.apk").get().asFile.absolutePath,
+)
+val verifyReleaseSingBoxPackaging = registerSingBoxPackagingVerifier(
+    taskName = "verifyReleaseSingBoxPackaging",
+    apkPath = layout.buildDirectory.file("outputs/apk/release/app-release.apk").get().asFile.absolutePath,
+)
+
+tasks.named("assembleDebug") {
+    finalizedBy(verifyDebugSingBoxPackaging)
+}
+tasks.named("assembleRelease") {
+    finalizedBy(verifyReleaseSingBoxPackaging)
 }
 
 dependencies {
