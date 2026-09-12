@@ -5,6 +5,13 @@ use crate::{
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MeshVpnObservation {
+    Absent,
+    UniqueVpn { local_ipv4: Vec<Ipv4Addr> },
+    AmbiguousVpn,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MeshTransportError {
     Owner(MeshOwnerError),
@@ -51,8 +58,8 @@ struct MeshTransportState {
 /// Natural-owner runtime coordination for one exact-address Mesh ingress generation.
 ///
 /// Admission semantics, ingress epoch ownership and sticky cleanup-failure disposition live here.
-/// Platform/FFI adapters may supply fresh local-address observations and an owner-approved port
-/// mapping, but they do not own independent lifecycle state.
+/// Platform/FFI adapters supply one complete typed current-VPN observation and an owner-approved
+/// port mapping, but they do not choose an endpoint or own independent lifecycle state.
 pub struct MeshTransportCoordinator {
     state: Mutex<MeshTransportState>,
 }
@@ -77,17 +84,20 @@ impl MeshTransportCoordinator {
         Ok(snapshot_locked(&state))
     }
 
-    pub fn observe_local_ipv4<I>(
+    pub fn observe_vpn(
         &self,
         sequence: u64,
-        addresses: I,
-    ) -> Result<MeshTransportSnapshot, MeshTransportError>
-    where
-        I: IntoIterator<Item = Ipv4Addr>,
-    {
+        observation: MeshVpnObservation,
+    ) -> Result<MeshTransportSnapshot, MeshTransportError> {
         let mut state = self.state()?;
+        let addresses = match observation {
+            MeshVpnObservation::Absent | MeshVpnObservation::AmbiguousVpn => Vec::new(),
+            MeshVpnObservation::UniqueVpn { local_ipv4 } => local_ipv4,
+        };
         let admission = state.owner.observe_local_ipv4(sequence, addresses)?;
         if state.ingress_epoch.is_some() && state.ingress_epoch != admission.admission_epoch() {
+            // The state mutex makes observation replacement atomic to every caller. Old listeners
+            // and sessions are closed before this method can publish/return the new owner view.
             stop_ingress_locked(&mut state)?;
         }
         Ok(snapshot_locked(&state))
@@ -188,32 +198,118 @@ fn snapshot_locked(state: &MeshTransportState) -> MeshTransportSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MeshAdmissionReason;
+    use std::net::TcpListener;
 
     fn coordinator() -> Arc<MeshTransportCoordinator> {
         MeshTransportCoordinator::new(Ipv4Addr::new(100, 96, 0, 0), 12)
             .expect("valid Mesh coordinator")
     }
 
+    fn unique(addresses: impl IntoIterator<Item = Ipv4Addr>) -> MeshVpnObservation {
+        MeshVpnObservation::UniqueVpn {
+            local_ipv4: addresses.into_iter().collect(),
+        }
+    }
+
     #[test]
-    fn coordinator_owns_admission_projection() {
+    fn zero_or_multiple_current_vpns_fail_closed() {
         let runtime = coordinator();
-        let view = runtime
-            .observe_local_ipv4(
+        let absent = runtime
+            .observe_vpn(1, MeshVpnObservation::Absent)
+            .expect("absent observation");
+        assert_eq!(absent.admission().state(), MeshAdmissionState::NotAdmitted);
+        assert_eq!(
+            absent.admission().reason(),
+            Some(MeshAdmissionReason::NoAcceptedAddress)
+        );
+
+        let ambiguous = runtime
+            .observe_vpn(2, MeshVpnObservation::AmbiguousVpn)
+            .expect("ambiguous observation");
+        assert_eq!(ambiguous.admission().state(), MeshAdmissionState::NotAdmitted);
+        assert_eq!(ambiguous.admission().admission_epoch(), None);
+    }
+
+    #[test]
+    fn unique_vpn_filters_zero_one_or_multiple_allowed_addresses() {
+        let runtime = coordinator();
+        let zero = runtime
+            .observe_vpn(
                 1,
-                [Ipv4Addr::new(127, 0, 0, 1), Ipv4Addr::new(100, 96, 2, 4)],
+                unique([
+                    Ipv4Addr::new(127, 0, 0, 1),
+                    Ipv4Addr::new(192, 168, 1, 4),
+                ]),
             )
-            .expect("observation");
-        assert_eq!(view.admission().state(), MeshAdmissionState::Admitted);
-        assert_eq!(view.admission().admission_epoch(), Some(1));
-        assert!(!view.ingress_running());
-        assert_eq!(view.active_sessions(), 0);
+            .expect("zero accepted");
+        assert_eq!(zero.admission().state(), MeshAdmissionState::NotAdmitted);
+
+        let one = runtime
+            .observe_vpn(
+                2,
+                unique([
+                    Ipv4Addr::new(192, 168, 1, 4),
+                    Ipv4Addr::new(100, 96, 2, 4),
+                ]),
+            )
+            .expect("one accepted");
+        assert_eq!(one.admission().state(), MeshAdmissionState::Admitted);
+        assert_eq!(one.admission().admission_epoch(), Some(1));
+
+        let multiple = runtime
+            .observe_vpn(
+                3,
+                unique([
+                    Ipv4Addr::new(100, 96, 2, 4),
+                    Ipv4Addr::new(100, 97, 2, 5),
+                ]),
+            )
+            .expect("multiple accepted");
+        assert_eq!(multiple.admission().state(), MeshAdmissionState::NotAdmitted);
+        assert_eq!(
+            multiple.admission().reason(),
+            Some(MeshAdmissionReason::MultipleAcceptedAddresses)
+        );
+    }
+
+    #[test]
+    fn loss_and_same_address_reappearance_create_fresh_epoch() {
+        let runtime = coordinator();
+        let first = runtime
+            .observe_vpn(1, unique([Ipv4Addr::new(100, 96, 2, 4)]))
+            .expect("first");
+        let first_epoch = first.admission().admission_epoch().expect("first epoch");
+
+        runtime
+            .observe_vpn(2, MeshVpnObservation::Absent)
+            .expect("loss");
+        let returned = runtime
+            .observe_vpn(3, unique([Ipv4Addr::new(100, 96, 2, 4)]))
+            .expect("return");
+        assert_ne!(returned.admission().admission_epoch(), Some(first_epoch));
+    }
+
+    #[test]
+    fn replacement_gets_fresh_epoch() {
+        let runtime = coordinator();
+        let first = runtime
+            .observe_vpn(1, unique([Ipv4Addr::new(100, 96, 2, 4)]))
+            .expect("first");
+        let changed = runtime
+            .observe_vpn(2, unique([Ipv4Addr::new(100, 96, 2, 5)]))
+            .expect("replacement");
+        assert_ne!(
+            changed.admission().admission_epoch(),
+            first.admission().admission_epoch()
+        );
     }
 
     #[test]
     fn cleanup_failure_taint_blocks_fresh_ingress_in_same_generation() {
         let runtime = coordinator();
         let admitted = runtime
-            .observe_local_ipv4(1, [Ipv4Addr::new(100, 96, 2, 4)])
+            .observe_vpn(1, unique([Ipv4Addr::new(100, 96, 2, 4)]))
             .expect("observation");
         let epoch = admitted.admission().admission_epoch().expect("epoch");
         runtime.state().expect("state").cleanup_failed = true;
@@ -230,14 +326,45 @@ mod tests {
     }
 
     #[test]
-    fn stale_observation_is_still_rejected_by_endpoint_owner() {
+    fn stale_observation_is_rejected_without_replacing_current_admission() {
         let runtime = coordinator();
-        runtime
-            .observe_local_ipv4(2, [Ipv4Addr::new(100, 96, 2, 4)])
+        let current = runtime
+            .observe_vpn(2, unique([Ipv4Addr::new(100, 96, 2, 4)]))
             .expect("current");
         assert_eq!(
-            runtime.observe_local_ipv4(1, [Ipv4Addr::new(100, 96, 2, 5)]),
+            runtime.observe_vpn(1, MeshVpnObservation::Absent),
             Err(MeshTransportError::Owner(MeshOwnerError::StaleObservation))
         );
+        assert_eq!(runtime.snapshot().expect("snapshot"), current);
+    }
+
+    #[test]
+    fn loss_stops_listener_before_same_endpoint_can_receive_fresh_epoch() {
+        let runtime = MeshTransportCoordinator::new(Ipv4Addr::new(127, 0, 0, 0), 8)
+            .expect("loopback test coordinator");
+        let reserve = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("reserve");
+        let port = reserve.local_addr().expect("address").port();
+        drop(reserve);
+
+        let first = runtime
+            .observe_vpn(1, unique([Ipv4Addr::LOCALHOST]))
+            .expect("first");
+        let first_epoch = first.admission().admission_epoch().expect("epoch");
+        assert!(runtime
+            .start_ingress(first_epoch, &[MeshPortForward::same(port)])
+            .expect("start ingress"));
+        assert!(runtime.ingress_healthy().expect("healthy"));
+
+        let lost = runtime
+            .observe_vpn(2, MeshVpnObservation::Absent)
+            .expect("loss");
+        assert!(!lost.ingress_running());
+        assert_eq!(lost.active_sessions(), 0);
+
+        let returned = runtime
+            .observe_vpn(3, unique([Ipv4Addr::LOCALHOST]))
+            .expect("return");
+        assert_ne!(returned.admission().admission_epoch(), Some(first_epoch));
+        assert!(!returned.ingress_running());
     }
 }
