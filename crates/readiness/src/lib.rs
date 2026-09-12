@@ -81,7 +81,7 @@ pub struct RuntimeReadinessFact {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProxyReadinessFact {
     pub runtime_generation: RuntimeGeneration,
-    pub serving_generation: ProxyServingGeneration,
+    pub serving_generation: Option<ProxyServingGeneration>,
     pub credential_version: CredentialVersion,
     pub healthy: bool,
 }
@@ -95,7 +95,7 @@ pub struct CredentialReadinessFact {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MeshReadinessFact {
     pub runtime_generation: RuntimeGeneration,
-    pub admission_epoch: MeshAdmissionEpoch,
+    pub admission_epoch: Option<MeshAdmissionEpoch>,
     pub admitted: bool,
     pub ingress_running: bool,
 }
@@ -108,7 +108,7 @@ pub struct ProductReadinessInput {
     pub proxy: Option<ProxyReadinessFact>,
     pub credential: Option<CredentialReadinessFact>,
     pub mesh: Option<MeshReadinessFact>,
-    pub expected_freshness: FreshnessMarker,
+    pub expected_freshness: Option<FreshnessMarker>,
     pub probe: Option<EgressProbeObservation>,
 }
 
@@ -142,17 +142,25 @@ pub fn project(input: ProductReadinessInput) -> Readiness {
         return Readiness::Unknown;
     }
 
+    let (Some(proxy_serving_generation), Some(mesh_admission_epoch)) =
+        (proxy.serving_generation, mesh.admission_epoch)
+    else {
+        return Readiness::Unknown;
+    };
+    let Some(expected_freshness) = input.expected_freshness else {
+        return Readiness::Unknown;
+    };
     let Some(probe) = input.probe else {
         return Readiness::Unknown;
     };
     let current_binding = ProbeBinding {
         cellular_owner_generation: cellular.owner_generation,
         runtime_generation: runtime.generation,
-        proxy_serving_generation: proxy.serving_generation,
-        mesh_admission_epoch: mesh.admission_epoch,
+        proxy_serving_generation,
+        mesh_admission_epoch,
         credential_version: credential.version,
     };
-    if probe.binding != current_binding || probe.freshness != input.expected_freshness {
+    if probe.binding != current_binding || probe.freshness != expected_freshness {
         return Readiness::Unknown;
     }
 
@@ -214,7 +222,7 @@ mod tests {
             }),
             proxy: Some(ProxyReadinessFact {
                 runtime_generation: binding.runtime_generation,
-                serving_generation: binding.proxy_serving_generation,
+                serving_generation: Some(binding.proxy_serving_generation),
                 credential_version: binding.credential_version,
                 healthy: true,
             }),
@@ -224,11 +232,11 @@ mod tests {
             }),
             mesh: Some(MeshReadinessFact {
                 runtime_generation: binding.runtime_generation,
-                admission_epoch: binding.mesh_admission_epoch,
+                admission_epoch: Some(binding.mesh_admission_epoch),
                 admitted: true,
                 ingress_running: true,
             }),
-            expected_freshness: freshness(61),
+            expected_freshness: Some(freshness(61)),
             probe: Some(EgressProbeObservation {
                 outcome: ProbeOutcome::Succeeded,
                 binding,
@@ -243,7 +251,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_leaf_or_probe_is_unknown() {
+    fn missing_leaf_probe_or_freshness_is_unknown() {
         let mut missing_leaf = ready_input();
         missing_leaf.mesh = None;
         assert_eq!(project(missing_leaf), Readiness::Unknown);
@@ -251,10 +259,14 @@ mod tests {
         let mut missing_probe = ready_input();
         missing_probe.probe = None;
         assert_eq!(project(missing_probe), Readiness::Unknown);
+
+        let mut missing_freshness = ready_input();
+        missing_freshness.expected_freshness = None;
+        assert_eq!(project(missing_freshness), Readiness::Unknown);
     }
 
     #[test]
-    fn explicit_leaf_failure_is_not_ready() {
+    fn explicit_leaf_failure_is_not_ready_even_without_serving_epoch() {
         let mut input = ready_input();
         input
             .cellular
@@ -264,7 +276,15 @@ mod tests {
         assert_eq!(project(input), Readiness::NotReady);
 
         let mut input = ready_input();
-        input.mesh.as_mut().expect("mesh").ingress_running = false;
+        let mesh = input.mesh.as_mut().expect("mesh");
+        mesh.ingress_running = false;
+        mesh.admission_epoch = None;
+        assert_eq!(project(input), Readiness::NotReady);
+
+        let mut input = ready_input();
+        let proxy = input.proxy.as_mut().expect("proxy");
+        proxy.healthy = false;
+        proxy.serving_generation = None;
         assert_eq!(project(input), Readiness::NotReady);
 
         let mut input = ready_input();
