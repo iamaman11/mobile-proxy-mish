@@ -98,6 +98,10 @@ class MishRuntimeController internal constructor(
     internal val currentProxyRuntime: ProxyRuntimeSupervisor
         get() = generation.value.proxyRuntime
 
+    /** Read-only bounded snapshot for the permission-gated Windows provisioning transaction. */
+    internal fun currentExternalCredentialProvisioningSnapshot(): ExternalProxyCredentialSnapshot? =
+        externalCredentialStore.currentProvisioningSnapshot()
+
     val isRunning: Boolean
         get() = synchronized(lock) { lifecycleState != LifecycleState.STOPPED }
 
