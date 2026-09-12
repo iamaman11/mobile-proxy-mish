@@ -2,7 +2,8 @@
 //!
 //! This crate owns no leaf product facts. D2 adds the bounded authenticated DNS+TLS probe as a
 //! genuine cross-owner use-case. The concrete platform/network effect is injected; this layer
-//! binds its observation to exact owner generations/versions and an explicit freshness marker.
+//! binds observations to exact owner generations/versions and owns only the monotonic freshness
+//! sequence needed to reject stale asynchronous probe completions.
 
 use mish_readiness::{EgressProbeObservation, FreshnessMarker, ProbeBinding, ProbeOutcome};
 use std::time::{Duration, Instant};
@@ -11,6 +12,90 @@ use std::time::{Duration, Instant};
 pub enum EgressProbeError {
     ZeroBudget,
     DeadlineOverflow,
+    FreshnessExhausted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProbeTicket {
+    binding: ProbeBinding,
+    freshness: FreshnessMarker,
+}
+
+impl ProbeTicket {
+    pub const fn binding(self) -> ProbeBinding {
+        self.binding
+    }
+
+    pub const fn freshness(self) -> FreshnessMarker {
+        self.freshness
+    }
+}
+
+/// Application-use-case coordinator only. It owns no readiness value and no leaf fact; its sole
+/// state is a monotonic freshness sequence plus the exact currently issued probe ticket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EgressProbeCoordinator {
+    last_freshness: u64,
+    current: Option<ProbeTicket>,
+}
+
+impl Default for EgressProbeCoordinator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl EgressProbeCoordinator {
+    pub const fn new() -> Self {
+        Self {
+            last_freshness: 0,
+            current: None,
+        }
+    }
+
+    pub fn begin(&mut self, binding: ProbeBinding) -> Result<ProbeTicket, EgressProbeError> {
+        let freshness = self.next_freshness()?;
+        let ticket = ProbeTicket { binding, freshness };
+        self.current = Some(ticket);
+        Ok(ticket)
+    }
+
+    /// Invalidates any in-flight/completed observation when structural owner facts change before
+    /// a fresh probe can be issued. A late completion from the previous ticket is then ignored.
+    pub fn invalidate(&mut self) -> Result<FreshnessMarker, EgressProbeError> {
+        let freshness = self.next_freshness()?;
+        self.current = None;
+        Ok(freshness)
+    }
+
+    pub const fn expected_freshness(self) -> Option<FreshnessMarker> {
+        FreshnessMarker::new(self.last_freshness)
+    }
+
+    pub fn complete(
+        &self,
+        ticket: ProbeTicket,
+        outcome: ProbeOutcome,
+    ) -> Option<EgressProbeObservation> {
+        if self.current != Some(ticket) {
+            return None;
+        }
+        Some(EgressProbeObservation {
+            outcome,
+            binding: ticket.binding,
+            freshness: ticket.freshness,
+        })
+    }
+
+    fn next_freshness(&mut self) -> Result<FreshnessMarker, EgressProbeError> {
+        let raw = self
+            .last_freshness
+            .checked_add(1)
+            .ok_or(EgressProbeError::FreshnessExhausted)?;
+        let freshness = FreshnessMarker::new(raw).ok_or(EgressProbeError::FreshnessExhausted)?;
+        self.last_freshness = raw;
+        Ok(freshness)
+    }
 }
 
 /// Injected concrete authenticated DNS+TLS effect. The effect must finish under `deadline` and
@@ -72,6 +157,35 @@ mod tests {
             mesh_admission_epoch: MeshAdmissionEpoch::new(4).expect("mesh"),
             credential_version: CredentialVersion::new(5).expect("credential"),
         }
+    }
+
+    #[test]
+    fn coordinator_invalidates_late_completion_on_owner_change() {
+        let mut coordinator = EgressProbeCoordinator::new();
+        let old = coordinator.begin(binding()).expect("ticket");
+        let invalidated = coordinator.invalidate().expect("invalidate");
+        assert_ne!(invalidated, old.freshness());
+        assert_eq!(
+            coordinator.complete(old, ProbeOutcome::Succeeded),
+            None,
+        );
+        assert_eq!(coordinator.expected_freshness(), Some(invalidated));
+    }
+
+    #[test]
+    fn newer_ticket_rejects_older_completion() {
+        let mut coordinator = EgressProbeCoordinator::new();
+        let old = coordinator.begin(binding()).expect("old ticket");
+        let current = coordinator.begin(binding()).expect("current ticket");
+        assert_eq!(coordinator.complete(old, ProbeOutcome::Succeeded), None);
+        let observation = coordinator
+            .complete(current, ProbeOutcome::Succeeded)
+            .expect("current observation");
+        assert_eq!(observation.freshness, current.freshness());
+        assert_eq!(
+            coordinator.expected_freshness(),
+            Some(current.freshness()),
+        );
     }
 
     #[test]
