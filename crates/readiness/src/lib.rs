@@ -11,7 +11,11 @@ macro_rules! generation_key {
 
         impl $name {
             pub const fn new(raw: u64) -> Option<Self> {
-                if raw == 0 { None } else { Some(Self(raw)) }
+                if raw == 0 {
+                    None
+                } else {
+                    Some(Self(raw))
+                }
             }
 
             pub const fn raw(self) -> u64 {
@@ -46,6 +50,7 @@ pub enum ProbeOutcome {
     Timeout,
 }
 
+/// Exact non-secret owner keys captured for one authenticated egress probe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProbeBinding {
     pub cellular_owner_generation: CellularOwnerGeneration,
@@ -55,6 +60,8 @@ pub struct ProbeBinding {
     pub credential_version: CredentialVersion,
 }
 
+/// One immutable DNS+TLS+authentication effect observation. Successful DNS is represented only
+/// here rather than as a separately cached readiness fact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EgressProbeObservation {
     pub outcome: ProbeOutcome,
@@ -67,7 +74,6 @@ pub struct CellularReadinessFact {
     pub owner_generation: CellularOwnerGeneration,
     pub admitted: bool,
     pub root_policy_verified: bool,
-    pub dns_effect_available: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +104,7 @@ pub struct MeshReadinessFact {
     pub ingress_running: bool,
 }
 
+/// Ephemeral projection input assembled from natural-owner observations. No value is stored here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProductReadinessInput {
     pub cellular: Option<CellularReadinessFact>,
@@ -123,7 +130,6 @@ pub fn project(input: ProductReadinessInput) -> Readiness {
 
     if !cellular.admitted
         || !cellular.root_policy_verified
-        || !cellular.dns_effect_available
         || !runtime.private_bridge_healthy
         || !proxy.healthy
         || !credential.active
@@ -205,7 +211,6 @@ mod tests {
                 owner_generation: binding.cellular_owner_generation,
                 admitted: true,
                 root_policy_verified: true,
-                dns_effect_available: true,
             }),
             runtime: Some(RuntimeReadinessFact {
                 generation: binding.runtime_generation,
@@ -255,7 +260,11 @@ mod tests {
     #[test]
     fn explicit_leaf_failure_is_not_ready() {
         let mut input = ready_input();
-        input.cellular.as_mut().expect("cellular").root_policy_verified = false;
+        input
+            .cellular
+            .as_mut()
+            .expect("cellular")
+            .root_policy_verified = false;
         assert_eq!(project(input), Readiness::NotReady);
 
         let mut input = ready_input();
@@ -278,7 +287,12 @@ mod tests {
         assert_eq!(project(input), Readiness::Unknown);
 
         let mut input = ready_input();
-        input.probe.as_mut().expect("probe").binding.mesh_admission_epoch = mesh_epoch(42);
+        input
+            .probe
+            .as_mut()
+            .expect("probe")
+            .binding
+            .mesh_admission_epoch = mesh_epoch(42);
         assert_eq!(project(input), Readiness::Unknown);
     }
 
