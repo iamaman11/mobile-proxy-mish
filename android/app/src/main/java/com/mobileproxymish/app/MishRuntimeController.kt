@@ -15,6 +15,17 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 
+/** Runs both cleanup effects in dependency order and reports whether both completed cleanly. */
+internal fun closeRuntimeGenerationExact(
+    closeProxy: () -> Unit,
+    closeCellular: () -> Unit,
+): Boolean {
+    var clean = true
+    if (runCatching(closeProxy).isFailure) clean = false
+    if (runCatching(closeCellular).isFailure) clean = false
+    return clean
+}
+
 /**
  * Process-local lifecycle composition for one foreground-service-owned runtime generation.
  *
@@ -210,12 +221,10 @@ class MishRuntimeController internal constructor(
         val cellularRuntime: CellularRuntimeBridge,
         val proxyRuntime: ProxyRuntimeSupervisor,
     ) {
-        fun closeExact(): Boolean {
-            var clean = true
-            if (runCatching { proxyRuntime.close() }.isFailure) clean = false
-            if (runCatching { cellularRuntime.close() }.isFailure) clean = false
-            return clean
-        }
+        fun closeExact(): Boolean = closeRuntimeGenerationExact(
+            closeProxy = proxyRuntime::close,
+            closeCellular = cellularRuntime::close,
+        )
     }
 
     private enum class LifecycleState {
