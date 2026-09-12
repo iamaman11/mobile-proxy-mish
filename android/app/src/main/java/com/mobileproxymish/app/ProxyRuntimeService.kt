@@ -8,7 +8,9 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 
 /**
  * User-visible Android lifecycle owner for the mobile-proxy runtime.
@@ -17,6 +19,8 @@ import android.os.IBinder
  * Cellular Egress admission, root-policy semantics, Mesh state, or readiness truth.
  */
 class ProxyRuntimeService : Service() {
+    private val mainHandler = Handler(Looper.getMainLooper())
+
     override fun onCreate() {
         super.onCreate()
         ensureNotificationChannel()
@@ -24,13 +28,26 @@ class ProxyRuntimeService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
+        val app = application as? MishApplication
+        if (app == null) {
             stopSelf(startId)
             return START_NOT_STICKY
         }
 
-        val app = application as? MishApplication
-        if (app == null || !app.runtimeController.start() && !app.runtimeController.isRunning) {
+        if (intent?.action == ACTION_STOP) {
+            app.runtimeController.stop {
+                mainHandler.post {
+                    // A start request may have raced with cleanup. In that case the controller
+                    // owns a fresh generation and the foreground Service must remain alive.
+                    if (!app.runtimeController.isRunning) {
+                        stopSelfResult(startId)
+                    }
+                }
+            }
+            return START_NOT_STICKY
+        }
+
+        if (!app.runtimeController.start()) {
             stopSelf(startId)
             return START_NOT_STICKY
         }
@@ -38,6 +55,8 @@ class ProxyRuntimeService : Service() {
     }
 
     override fun onDestroy() {
+        // System destruction is best-effort because Android may kill the process immediately.
+        // A later Service restart performs fresh startup reconciliation before readiness.
         (application as? MishApplication)?.runtimeController?.stop()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -95,8 +114,13 @@ class ProxyRuntimeService : Service() {
         private const val NOTIFICATION_ID = 1108
 
         /** Best-effort start request. Failure is fail-closed: no runtime is started implicitly. */
-        fun requestStart(context: Context): Boolean {
-            val intent = Intent(context, ProxyRuntimeService::class.java).setAction(ACTION_START)
+        fun requestStart(context: Context): Boolean = requestCommand(context, ACTION_START)
+
+        /** Normal stop keeps the foreground Service alive until exact cleanup completes. */
+        fun requestStop(context: Context): Boolean = requestCommand(context, ACTION_STOP)
+
+        private fun requestCommand(context: Context, action: String): Boolean {
+            val intent = Intent(context, ProxyRuntimeService::class.java).setAction(action)
             return try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     context.startForegroundService(intent)
@@ -109,12 +133,6 @@ class ProxyRuntimeService : Service() {
             } catch (_: SecurityException) {
                 false
             }
-        }
-
-        fun requestStop(context: Context): Boolean = try {
-            context.stopService(Intent(context, ProxyRuntimeService::class.java))
-        } catch (_: SecurityException) {
-            false
         }
     }
 }
