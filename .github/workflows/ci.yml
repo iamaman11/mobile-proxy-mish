@@ -27,6 +27,7 @@ jobs:
           python3 tools/qa81_effect_gate_patch.py
           cargo fmt --all
           cargo test --workspace --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
           git diff --check
           test "$(git status --short | wc -l)" -eq 5
       - name: Commit source changes and remove helper
@@ -43,5 +44,5 @@ jobs:
             docs/architecture/CELLULAR_ROOT_POLICY.md \
             tools/qa81_effect_gate_patch.py
           test "$(git diff --cached --name-only | wc -l)" -eq 6
-          git commit -m 'Runtime: gate outbound effects on proven root policy'
+          git commit -m 'Runtime: gate outbound effects on proven owner generation'
           git push origin HEAD:qa/81-remediation
