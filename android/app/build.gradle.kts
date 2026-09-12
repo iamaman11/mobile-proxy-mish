@@ -278,10 +278,10 @@ val verifyReleaseSingBoxPackaging = registerSingBoxPackagingVerifier(
     apkPath = layout.buildDirectory.file("outputs/apk/release/app-release.apk").get().asFile.absolutePath,
 )
 
-tasks.named("assembleDebug") {
+tasks.matching { it.name == "assembleDebug" }.configureEach {
     finalizedBy(verifyDebugSingBoxPackaging)
 }
-tasks.named("assembleRelease") {
+tasks.matching { it.name == "assembleRelease" }.configureEach {
     finalizedBy(verifyReleaseSingBoxPackaging)
 }
 
