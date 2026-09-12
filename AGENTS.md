@@ -33,7 +33,7 @@ Merge to `main` only when at least one of these is true:
 
 Keep an implementation PR in Draft while the milestone is under construction.
 
-Do not run expensive hosted CI after every small edit. Accumulate a coherent bounded batch first.
+Do not run hosted CI after every small edit. Accumulate a coherent bounded batch first.
 
 When several repository files must change through GitHub, prefer:
 
@@ -50,11 +50,17 @@ A push should represent a coherent reviewable batch, not an editor save point.
 
 ## CI rule
 
-Heavy CI is deliberate evidence, not an edit loop.
+CI is deliberate evidence, not an edit loop.
 
-While an integration PR is Draft, ordinary PR updates may perform only cheap impact/policy work; the expensive Rust/Android jobs are intentionally skipped. A deliberate `workflow_dispatch` may still run full CI on an exact draft head when a meaningful batch needs hosted validation.
+Ordinary `synchronize` pushes to a PR do **not** trigger the CI workflow. While the integration PR is Draft, batch work without creating workflow runs. Full CI is allowed only through one of these deliberate boundaries:
 
-Before merge, mark the PR ready for review and require complete CI PASS on the exact PR head. After any change to a previously validated ready-for-review head, exact-head CI must pass again.
+- `workflow_dispatch` on an exact meaningful checkpoint head;
+- `ready_for_review` for the final milestone head;
+- `push` to protected `main` after merge.
+
+Before merge, mark the PR ready for review and require complete CI PASS on the exact PR head.
+
+If the PR head changes after a ready-for-review validation, return it to Draft, accumulate the correction batch, then mark it ready again for a fresh exact-head CI. A deliberate manual exact-head checkpoint is also allowed when justified.
 
 ## Main rule
 

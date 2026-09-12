@@ -44,9 +44,19 @@ When GitHub APIs are used for several files, prefer one Git tree, one commit and
 
 ## CI granularity
 
-Draft PR synchronization must not repeatedly execute expensive Rust/Android CI. Draft updates may run cheap impact/policy checks; full CI is intentional through `workflow_dispatch` for a meaningful checkpoint.
+Ordinary PR `synchronize` pushes do **not** trigger CI. This prevents workflow-run noise while a draft integration milestone is still being assembled.
 
-Before merge the PR must be ready for review and complete required CI must pass on the exact head. Any later head change invalidates that evidence and requires fresh exact-head CI.
+Full CI is intentionally created only by:
+
+```text
+workflow_dispatch on an exact checkpoint head
+ready_for_review on the final milestone head
+push to protected main after merge
+```
+
+Before merge the PR must be ready for review and complete required CI must pass on the exact head.
+
+If a validated ready-for-review head changes, move the PR back to Draft, accumulate the correction batch, then mark it ready again. Do not reintroduce per-push `synchronize` CI merely to automate that transition.
 
 ## Main and LAB
 
