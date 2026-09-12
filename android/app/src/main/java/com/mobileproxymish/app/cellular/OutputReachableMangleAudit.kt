@@ -1,5 +1,7 @@
 package com.mobileproxymish.app.cellular
 
+import java.util.ArrayDeque
+
 /**
  * Candidate-specific collision audit for the mangle paths that can actually process PRODUCT
  * OUTPUT traffic. The full table snapshot is still retained by [CellularRootPolicy] for exact
@@ -18,10 +20,6 @@ internal object OutputReachableMangleAudit {
     ): Boolean {
         val snapshot = lines.map(String::trim).filter(String::isNotEmpty)
 
-        // PRODUCT-owned chain identity is global ownership state, not merely candidate mark
-        // collision state. Any unexpected reference/content must remain fail-closed even when
-        // it is outside OUTPUT reachability, otherwise a detached rebuild could mutate a chain
-        // referenced by foreign policy.
         if (snapshot.any { line ->
                 referencesOwnedChain(line, ownedChain) && line !in allowedProductLines
             }
@@ -62,8 +60,6 @@ internal object OutputReachableMangleAudit {
                 if (target in declaredUserChains) {
                     reachable.addLast(target)
                 } else if (target !in builtInChains && rulesByChain.containsKey(target)) {
-                    // A reachable transfer points at chain-shaped snapshot material that lacks
-                    // an unambiguous user-chain declaration. Treat that topology as unsafe.
                     return true
                 }
             }
@@ -177,9 +173,6 @@ internal object OutputReachableMangleAudit {
         val markTarget = transferTarget == "MARK" || transferTarget == "CONNMARK"
         if (markTarget && !markSemanticsSeen) return ParsedRule(ambiguous = true)
         if (markMatchDeclared && tokens.none { it == "--mark" }) return ParsedRule(ambiguous = true)
-
-        // CONNMARK save/restore defaults both masks to all bits. If either explicit mask is
-        // absent, that default necessarily overlaps every bounded candidate bit.
         if (restoreOrSave && (!nfMaskSeen || !ctMaskSeen)) touchesReservedMark = true
 
         return ParsedRule(
