@@ -347,6 +347,9 @@ dependencies = [
 [[package]]
 name = "mish-application"
 version = "0.1.0"
+dependencies = [
+ "mish-readiness",
+]
 
 [[package]]
 name = "mish-cellular"
