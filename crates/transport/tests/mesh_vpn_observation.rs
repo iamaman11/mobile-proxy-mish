@@ -1,8 +1,9 @@
 use mish_transport::{MeshPortForward, MeshTransportCoordinator, MeshVpnObservation};
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
+use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[test]
 fn vpn_loss_closes_active_session_before_same_endpoint_gets_fresh_epoch() {
@@ -19,11 +20,13 @@ fn vpn_loss_closes_active_session_before_same_endpoint_gets_fresh_epoch() {
         .port();
     drop(ingress_reservation);
 
+    let (backend_received, backend_receipt) = mpsc::sync_channel(1);
     let backend_worker = thread::spawn(move || {
         let (mut stream, _) = backend.accept().expect("backend accept");
         let mut first = [0_u8; 1];
         stream.read_exact(&mut first).expect("initial backend read");
         assert_eq!(first, [0x41]);
+        backend_received.send(()).expect("backend receipt signal");
 
         let mut drain = [0_u8; 1];
         loop {
@@ -58,12 +61,10 @@ fn vpn_loss_closes_active_session_before_same_endpoint_gets_fresh_epoch() {
 
     let mut client = TcpStream::connect((endpoint, ingress_port)).expect("connect ingress");
     client.write_all(&[0x41]).expect("write through ingress");
-
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while runtime.snapshot().expect("snapshot").active_sessions() == 0 {
-        assert!(Instant::now() < deadline, "session did not become active");
-        thread::sleep(Duration::from_millis(10));
-    }
+    backend_receipt
+        .recv_timeout(Duration::from_secs(2))
+        .expect("backend did not receive initial byte");
+    assert_eq!(runtime.snapshot().expect("snapshot").active_sessions(), 1);
 
     let lost = runtime
         .observe_vpn(2, MeshVpnObservation::Absent)
