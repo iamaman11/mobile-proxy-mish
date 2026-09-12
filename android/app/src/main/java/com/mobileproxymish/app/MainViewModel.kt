@@ -25,17 +25,19 @@ data class MainUiState(
 /** Presentation projection only; it neither owns nor mutates cellular/proxy runtime state. */
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application as MishApplication
-    private val cellularRuntime = app.cellularRuntime
-    private val proxyRuntime = app.proxyRuntime
+    private val runtimeController = app.runtimeController
 
     val state: StateFlow<MainUiState> = combine(
-        cellularRuntime.snapshot,
-        proxyRuntime.snapshot,
+        runtimeController.cellularSnapshot,
+        runtimeController.proxySnapshot,
         ::toUiState,
     ).stateIn(
         scope = viewModelScope,
         started = SharingStarted.Eagerly,
-        initialValue = toUiState(cellularRuntime.snapshot.value, proxyRuntime.snapshot.value),
+        initialValue = toUiState(
+            runtimeController.cellularSnapshot.value,
+            runtimeController.proxySnapshot.value,
+        ),
     )
 
     private fun toUiState(
