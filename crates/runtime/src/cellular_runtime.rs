@@ -525,9 +525,17 @@ mod tests {
                 true,
             ))
             .expect("observe");
-        assert!(runtime.authorize_root_policy(sequence(1), handle(42)).expect("authorize"));
+        assert!(
+            runtime
+                .authorize_root_policy(sequence(1), handle(42))
+                .expect("authorize")
+        );
         runtime.network_lost(sequence(2), handle(42)).expect("loss");
-        assert!(!runtime.authorize_root_policy(sequence(1), handle(42)).expect("stale"));
+        assert!(
+            !runtime
+                .authorize_root_policy(sequence(1), handle(42))
+                .expect("stale")
+        );
     }
 
     #[test]

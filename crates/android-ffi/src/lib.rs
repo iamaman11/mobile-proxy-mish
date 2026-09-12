@@ -120,7 +120,10 @@ impl CellularDnsResolver for AndroidDnsResolver {
         mish_android_network::resolve_host(authority, hostname)
             .map_err(map_android_network_error)?
             .into_iter()
-            .map(|raw| raw.parse::<IpAddr>().map_err(|_| OutboundConnectError::Failed))
+            .map(|raw| {
+                raw.parse::<IpAddr>()
+                    .map_err(|_| OutboundConnectError::Failed)
+            })
             .collect()
     }
 }

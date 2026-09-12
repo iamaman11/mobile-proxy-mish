@@ -116,7 +116,10 @@ mod tests {
             "100.96.0.0/7",
             "2001:db8::/64",
         ] {
-            assert!(MeshAcceptedCidr::parse(invalid).is_err(), "accepted {invalid}");
+            assert!(
+                MeshAcceptedCidr::parse(invalid).is_err(),
+                "accepted {invalid}"
+            );
         }
     }
 
