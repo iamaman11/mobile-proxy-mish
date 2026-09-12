@@ -90,6 +90,12 @@ class ProxyRuntimeService : Service() {
         val pendingFlags = PendingIntent.FLAG_UPDATE_CURRENT or
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
         val launchPendingIntent = PendingIntent.getActivity(this, 0, launchIntent, pendingFlags)
+        val stopPendingIntent = PendingIntent.getService(
+            this,
+            STOP_REQUEST_CODE,
+            Intent(this, ProxyRuntimeService::class.java).setAction(ACTION_STOP),
+            pendingFlags,
+        )
 
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, CHANNEL_ID)
@@ -102,6 +108,13 @@ class ProxyRuntimeService : Service() {
             .setContentTitle(getString(R.string.proxy_runtime_notification_title))
             .setContentText(getString(R.string.proxy_runtime_notification_text))
             .setContentIntent(launchPendingIntent)
+            .addAction(
+                Notification.Action.Builder(
+                    null,
+                    getString(R.string.proxy_runtime_stop_action),
+                    stopPendingIntent,
+                ).build(),
+            )
             .setOngoing(true)
             .setCategory(Notification.CATEGORY_SERVICE)
             .build()
@@ -112,6 +125,7 @@ class ProxyRuntimeService : Service() {
         private const val ACTION_STOP = "com.mobileproxymish.app.action.RUNTIME_STOP"
         private const val CHANNEL_ID = "proxy_runtime"
         private const val NOTIFICATION_ID = 1108
+        private const val STOP_REQUEST_CODE = 1109
 
         /** Best-effort start request. Failure is fail-closed: no runtime is started implicitly. */
         fun requestStart(context: Context): Boolean = requestCommand(context, ACTION_START)
