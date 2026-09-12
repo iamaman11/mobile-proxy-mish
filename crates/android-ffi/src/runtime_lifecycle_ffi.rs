@@ -1,12 +1,10 @@
 use mish_runtime::{
     RuntimeCleanupDisposition as OwnerCleanupDisposition,
-    RuntimeLifecycle as OwnerRuntimeLifecycle,
-    RuntimeLifecycleState as OwnerRuntimeLifecycleState,
+    RuntimeLifecycle as OwnerRuntimeLifecycle, RuntimeLifecycleState as OwnerRuntimeLifecycleState,
     RuntimeProcessFailure as OwnerRuntimeProcessFailure,
     RuntimeProcessLifecycle as OwnerRuntimeProcessLifecycle,
     RuntimeProcessSnapshot as OwnerRuntimeProcessSnapshot,
-    RuntimeProcessState as OwnerRuntimeProcessState,
-    RuntimeStartAction as OwnerRuntimeStartAction,
+    RuntimeProcessState as OwnerRuntimeProcessState, RuntimeStartAction as OwnerRuntimeStartAction,
     RuntimeStartCompletion as OwnerRuntimeStartCompletion,
     RuntimeStopAction as OwnerRuntimeStopAction,
 };
@@ -181,7 +179,8 @@ impl RuntimeProcessLifecycleController {
     }
 
     pub fn mark_failed(&self, failure: RuntimeProcessFailure) {
-        self.owner_mut().mark_failed(map_process_failure_in(failure));
+        self.owner_mut()
+            .mark_failed(map_process_failure_in(failure));
     }
 
     pub fn mark_stopped(&self) {
@@ -232,9 +231,7 @@ fn map_start_completion(completion: OwnerRuntimeStartCompletion) -> RuntimeStart
     }
 }
 
-fn map_cleanup_disposition(
-    disposition: OwnerCleanupDisposition,
-) -> RuntimeCleanupDispositionView {
+fn map_cleanup_disposition(disposition: OwnerCleanupDisposition) -> RuntimeCleanupDispositionView {
     RuntimeCleanupDispositionView {
         install_fresh_generation_now: disposition.install_fresh_generation_now(),
         require_fresh_generation_before_next_explicit_start: disposition
@@ -257,7 +254,9 @@ fn map_process_snapshot(snapshot: OwnerRuntimeProcessSnapshot) -> RuntimeProcess
 
 fn map_process_failure_out(failure: OwnerRuntimeProcessFailure) -> RuntimeProcessFailure {
     match failure {
-        OwnerRuntimeProcessFailure::NativeRuntimeMissing => RuntimeProcessFailure::NativeRuntimeMissing,
+        OwnerRuntimeProcessFailure::NativeRuntimeMissing => {
+            RuntimeProcessFailure::NativeRuntimeMissing
+        }
         OwnerRuntimeProcessFailure::StaleProcessIdentityMismatch => {
             RuntimeProcessFailure::StaleProcessIdentityMismatch
         }
@@ -282,7 +281,9 @@ fn map_process_failure_out(failure: OwnerRuntimeProcessFailure) -> RuntimeProces
 
 fn map_process_failure_in(failure: RuntimeProcessFailure) -> OwnerRuntimeProcessFailure {
     match failure {
-        RuntimeProcessFailure::NativeRuntimeMissing => OwnerRuntimeProcessFailure::NativeRuntimeMissing,
+        RuntimeProcessFailure::NativeRuntimeMissing => {
+            OwnerRuntimeProcessFailure::NativeRuntimeMissing
+        }
         RuntimeProcessFailure::StaleProcessIdentityMismatch => {
             OwnerRuntimeProcessFailure::StaleProcessIdentityMismatch
         }
@@ -314,8 +315,15 @@ mod tests {
         let controller = RuntimeLifecycleController::new();
         assert_eq!(controller.state(), RuntimeLifecycleState::Stopped);
         assert_eq!(controller.request_start(), RuntimeStartAction::StartNow);
-        assert_eq!(controller.request_start(), RuntimeStartAction::AlreadyActive);
-        assert!(!controller.complete_start(true, true).install_fresh_generation_now);
+        assert_eq!(
+            controller.request_start(),
+            RuntimeStartAction::AlreadyActive
+        );
+        assert!(
+            !controller
+                .complete_start(true, true)
+                .install_fresh_generation_now
+        );
         assert_eq!(controller.state(), RuntimeLifecycleState::Running);
         assert_eq!(controller.request_stop(), RuntimeStopAction::StopNow);
         let disposition = controller.complete_stop(false);

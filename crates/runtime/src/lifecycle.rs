@@ -334,7 +334,12 @@ mod tests {
     fn failed_cleanup_never_installs_fresh_generation_or_auto_restarts() {
         let mut owner = RuntimeLifecycle::new();
         assert_eq!(owner.request_start(), RuntimeStartAction::StartNow);
-        assert!(owner.complete_start(true, true).install_fresh_generation_now() == false);
+        assert!(
+            owner
+                .complete_start(true, true)
+                .install_fresh_generation_now()
+                == false
+        );
         assert_eq!(owner.request_stop(), RuntimeStopAction::StopNow);
         assert_eq!(owner.request_start(), RuntimeStartAction::QueuedAfterStop);
 
@@ -353,7 +358,12 @@ mod tests {
         assert_eq!(owner.request_start(), RuntimeStartAction::StartNow);
         assert!(owner.take_generation_replacement_for_start());
         assert!(!owner.generation_requires_replacement());
-        assert!(owner.complete_start(true, true).install_fresh_generation_now() == false);
+        assert!(
+            owner
+                .complete_start(true, true)
+                .install_fresh_generation_now()
+                == false
+        );
         assert_eq!(owner.state(), RuntimeLifecycleState::Running);
     }
 
@@ -394,7 +404,10 @@ mod tests {
         assert!(owner.mark_running());
         owner.mark_failed(RuntimeProcessFailure::ChildExited);
         assert_eq!(owner.snapshot().state(), RuntimeProcessState::Failed);
-        assert_eq!(owner.snapshot().failure(), Some(RuntimeProcessFailure::ChildExited));
+        assert_eq!(
+            owner.snapshot().failure(),
+            Some(RuntimeProcessFailure::ChildExited)
+        );
         assert!(owner.request_start());
         owner.mark_stopped();
         assert_eq!(owner.snapshot().state(), RuntimeProcessState::Stopped);

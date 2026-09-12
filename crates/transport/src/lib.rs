@@ -679,10 +679,7 @@ mod tests {
 
     #[test]
     fn product_ports_are_not_owned_by_transport() {
-        let mappings = [
-            MeshPortForward::same(40001),
-            MeshPortForward::same(40002),
-        ];
+        let mappings = [MeshPortForward::same(40001), MeshPortForward::same(40002)];
         assert_eq!(mappings[0].ingress_port(), 40001);
         assert_eq!(mappings[0].backend_port(), 40001);
         assert_eq!(mappings[1].ingress_port(), 40002);

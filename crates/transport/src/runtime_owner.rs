@@ -200,10 +200,7 @@ mod tests {
         let view = runtime
             .observe_local_ipv4(
                 1,
-                [
-                    Ipv4Addr::new(127, 0, 0, 1),
-                    Ipv4Addr::new(100, 96, 2, 4),
-                ],
+                [Ipv4Addr::new(127, 0, 0, 1), Ipv4Addr::new(100, 96, 2, 4)],
             )
             .expect("observation");
         assert_eq!(view.admission().state(), MeshAdmissionState::Admitted);

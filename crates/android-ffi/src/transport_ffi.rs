@@ -136,9 +136,7 @@ impl MeshTransportController {
     }
 
     pub fn ingress_healthy(&self) -> Result<bool, MeshTransportBoundaryError> {
-        self.runtime
-            .ingress_healthy()
-            .map_err(map_transport_error)
+        self.runtime.ingress_healthy().map_err(map_transport_error)
     }
 }
 

@@ -645,7 +645,10 @@ mod tests {
         }
         let active_deadline = Instant::now() + Duration::from_secs(1);
         while active.load(Ordering::SeqCst) < RESOLVER_WORKER_COUNT {
-            assert!(Instant::now() < active_deadline, "resolver workers did not become active");
+            assert!(
+                Instant::now() < active_deadline,
+                "resolver workers did not become active"
+            );
             thread::yield_now();
         }
         for queued_index in 0..RESOLVER_QUEUE_CAPACITY {
