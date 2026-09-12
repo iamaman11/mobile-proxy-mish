@@ -33,23 +33,24 @@ new = '''            bridge_claimed: Arc::new(AtomicBool::new(false)),
         })'''
 assert old in text
 text = text.replace(old, new, 1)
+
 anchor = '''    pub fn admission_snapshot(&self) -> Result<CellularAdmissionView, CellularBridgeError> {
         Ok(map_snapshot(self.owner()?.admission()))
     }
 '''
 addition = anchor + '''
-    /// Infrastructure-only gate for ordinary PRODUCT-UID socket effects. Admission remains
-    /// owned by Cellular Egress; Android opens this gate only after exact root-policy proof.
-    pub fn set_root_policy_ready(&self, ready: bool) -> Result<(), AndroidRuntimeError> {
-        if self.root_policy_effect_gate.set_ready(ready) {
+    /// Closes the infrastructure-only gate for ordinary PRODUCT-UID socket effects.
+    /// Closing cannot make any network admissible and therefore owns no cellular semantics.
+    pub fn close_root_policy_gate(&self) -> Result<(), AndroidRuntimeError> {
+        if self.root_policy_effect_gate.set_ready(false) {
             Ok(())
         } else {
             Err(AndroidRuntimeError::BridgeStateUnavailable)
         }
     }
 
-    /// Waits until connect operations that acquired the preceding root-policy generation have
-    /// released their bounded permits. Root mutation is forbidden until this returns true.
+    /// Waits until connect operations admitted by the preceding root-policy generation have
+    /// released their bounded permits. Kernel policy mutation is forbidden until quiesced.
     pub fn await_root_policy_quiesced(
         &self,
         timeout_ms: u64,
@@ -61,9 +62,62 @@ addition = anchor + '''
             .wait_quiesced(Duration::from_millis(timeout_ms))
             .ok_or(AndroidRuntimeError::BridgeStateUnavailable)
     }
+
+    /// Opens the infrastructure effect gate only while holding the same owner mutex used by
+    /// observation/loss. A stale Kotlin reconcile therefore cannot authorize a newer owner
+    /// generation between its final currentness check and gate publication.
+    pub fn authorize_root_policy(
+        &self,
+        sequence: u64,
+        network_handle: u64,
+    ) -> Result<bool, AndroidRuntimeError> {
+        let Some(sequence) = ObservationSequence::new(sequence) else {
+            return Ok(false);
+        };
+        let Some(network_handle) = NetworkHandle::new(network_handle) else {
+            return Ok(false);
+        };
+        let owner = self
+            .owner
+            .lock()
+            .map_err(|_| AndroidRuntimeError::BridgeStateUnavailable)?;
+        let snapshot = owner.admission();
+        let current = snapshot.state() == OwnerAdmissionState::Admitted
+            && snapshot.last_sequence() == Some(sequence)
+            && snapshot.admitted_network() == Some(network_handle);
+        if !current {
+            if !self.root_policy_effect_gate.set_ready(false) {
+                return Err(AndroidRuntimeError::BridgeStateUnavailable);
+            }
+            return Ok(false);
+        }
+        if !self.root_policy_effect_gate.set_ready(true) {
+            return Err(AndroidRuntimeError::BridgeStateUnavailable);
+        }
+        Ok(true)
+    }
 '''
 assert anchor in text
 text = text.replace(anchor, addition, 1)
+
+old = '''        let mut owner = self.owner()?;
+        owner.observe(observation);'''
+new = '''        let mut owner = self.owner()?;
+        if !self.root_policy_effect_gate.set_ready(false) {
+            return Err(CellularBridgeError::OwnerUnavailable);
+        }
+        owner.observe(observation);'''
+assert old in text
+text = text.replace(old, new, 1)
+old = '''        let mut owner = self.owner()?;
+        owner.lost(sequence, network_handle);'''
+new = '''        let mut owner = self.owner()?;
+        if !self.root_policy_effect_gate.set_ready(false) {
+            return Err(CellularBridgeError::OwnerUnavailable);
+        }
+        owner.lost(sequence, network_handle);'''
+assert old in text
+text = text.replace(old, new, 1)
 old = '''            Arc::clone(&self.bridge_claimed),
             username,'''
 new = '''            Arc::clone(&self.bridge_claimed),
@@ -112,11 +166,11 @@ impl RootPolicyEffectGate {
 
     fn wait_quiesced(&self, timeout: Duration) -> Option<bool> {
         let state = self.state.lock().ok()?;
-        let (state, wait) = self
+        let (state, _) = self
             .quiesced
             .wait_timeout_while(state, timeout, |state| state.in_flight != 0)
             .ok()?;
-        Some(state.in_flight == 0 && !wait.timed_out() || state.in_flight == 0)
+        Some(state.in_flight == 0)
     }
 }
 
@@ -185,6 +239,26 @@ new = '''            let connector = RootPolicyGatedConnector::new(
             );'''
 assert old in text
 text = text.replace(old, new, 1)
+old = '''fn bridge_accept_loop(
+    listener: Arc<BridgeListener>,
+    connector: AndroidCellularOutboundConnector,'''
+new = '''fn bridge_accept_loop<C>(
+    listener: Arc<BridgeListener>,
+    connector: C,'''
+assert old in text
+text = text.replace(old, new, 1)
+old = ''') {
+    while !stop_requested.load(Ordering::Acquire) {'''
+new = ''') where
+    C: CellularOutboundConnector + Clone + 'static,
+{
+    while !stop_requested.load(Ordering::Acquire) {'''
+# Only replace the bridge_accept_loop terminator occurrence: use split around function anchor.
+idx = text.index('fn bridge_accept_loop<C>(')
+tail = text[idx:]
+assert old in tail
+tail = tail.replace(old, new, 1)
+text = text[:idx] + tail
 
 test_anchor = '''    #[test]
     fn one_owner_allows_only_one_private_bridge_and_releases_claim_on_stop() {'''
@@ -201,6 +275,23 @@ gate_test = '''    #[test]
         assert!(gate.acquire().is_none());
     }
 
+    #[test]
+    fn stale_generation_cannot_reopen_root_policy_effect_gate() {
+        let controller = CellularController::new();
+        controller
+            .observe_network(1, 42, true, true, true, true)
+            .expect("first observation");
+        assert!(controller.authorize_root_policy(1, 42).expect("authorize first"));
+        controller
+            .observe_network(2, 43, true, true, true, true)
+            .expect("newer observation");
+        assert!(!controller.authorize_root_policy(1, 42).expect("reject stale"));
+        assert!(controller.root_policy_effect_gate.acquire().is_none());
+        assert!(controller.authorize_root_policy(2, 43).expect("authorize current"));
+        assert!(controller.root_policy_effect_gate.acquire().is_some());
+        controller.close_root_policy_gate().expect("close gate");
+    }
+
 '''
 assert test_anchor in text
 text = text.replace(test_anchor, gate_test + test_anchor, 1)
@@ -208,25 +299,6 @@ ffi.write_text(text)
 
 bridge = Path('android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRuntimeBridge.kt')
 text = bridge.read_text()
-event_anchor = '''        val admission = try {
-            when (event) {'''
-event_replacement = '''        try {
-            // Close the infrastructure effect gate before the owner generation can change.
-            // Policy work waits for pre-existing connect permits before any root mutation.
-            activeController.setRootPolicyReady(false)
-        } catch (_: LinkageError) {
-            enqueueOwnerBoundaryFailure(CellularBoundaryFailure.NativeLibraryUnavailable)
-            return
-        } catch (_: Exception) {
-            enqueueOwnerBoundaryFailure(CellularBoundaryFailure.ForeignCallFailed)
-            return
-        }
-
-        val admission = try {
-            when (event) {'''
-assert event_anchor in text
-text = text.replace(event_anchor, event_replacement, 1)
-
 reconcile_anchor = '''        val policyResult = rootPolicy.reconcile(
             admitted = admission.state == CellularAdmissionState.ADMITTED,
             interfaceName = interfaceName,
@@ -254,21 +326,29 @@ text = text.replace(reconcile_anchor, reconcile_replacement, 1)
 
 enforced = '''            CellularRootPolicyResult.Enforced ->
                 CellularRuntimeSnapshot.OwnerSnapshot(admission)'''
-enforced_replacement = '''            CellularRootPolicyResult.Enforced -> try {
-                activeController.setRootPolicyReady(true)
-                CellularRuntimeSnapshot.OwnerSnapshot(admission)
-            } catch (_: LinkageError) {
-                snapshotForFailClosed(
-                    preferredFailure = CellularBoundaryFailure.NativeLibraryUnavailable,
-                ) ?: CellularRuntimeSnapshot.BoundaryUnavailable(
-                    CellularBoundaryFailure.NativeLibraryUnavailable,
-                )
-            } catch (_: Exception) {
-                snapshotForFailClosed(
-                    preferredFailure = CellularBoundaryFailure.ForeignCallFailed,
-                ) ?: CellularRuntimeSnapshot.BoundaryUnavailable(
-                    CellularBoundaryFailure.ForeignCallFailed,
-                )
+enforced_replacement = '''            CellularRootPolicyResult.Enforced -> {
+                val sequence = admission.lastSequence
+                val handle = admission.admittedNetworkHandle
+                val authorized = if (sequence != null && handle != null) {
+                    try {
+                        activeController.authorizeRootPolicy(sequence, handle)
+                    } catch (_: LinkageError) {
+                        false
+                    } catch (_: Exception) {
+                        false
+                    }
+                } else {
+                    false
+                }
+                if (authorized) {
+                    CellularRuntimeSnapshot.OwnerSnapshot(admission)
+                } else {
+                    snapshotForFailClosed(
+                        preferredFailure = CellularBoundaryFailure.RootPolicyGenerationChanged,
+                    ) ?: CellularRuntimeSnapshot.BoundaryUnavailable(
+                        CellularBoundaryFailure.RootPolicyGenerationChanged,
+                    )
+                }
             }'''
 assert enforced in text
 text = text.replace(enforced, enforced_replacement, 1)
@@ -282,7 +362,7 @@ snapshot_replacement = '''    private fun snapshotForFailClosed(
         preserveOnCleanFailClosed: Boolean = false,
     ): CellularRuntimeSnapshot? {
         val quiesced = try {
-            controller?.setRootPolicyReady(false)
+            controller?.closeRootPolicyGate()
             controller?.awaitRootPolicyQuiesced(EFFECT_DRAIN_TIMEOUT_MS.toULong()) ?: true
         } catch (_: Exception) {
             false
@@ -325,7 +405,7 @@ close_anchor = '''    override fun close() {
 close_replacement = '''    override fun close() {
         if (!closed.compareAndSet(false, true)) return
 
-        runCatching { controller?.setRootPolicyReady(false) }
+        runCatching { controller?.closeRootPolicyGate() }
         observer.close()
         val cleanup = try {
             policyExecutor.submit {
@@ -386,15 +466,31 @@ collision_replacement = '''            PolicyIdentityResolution.Collision -> {
             }'''
 assert collision in text
 text = text.replace(collision, collision_replacement, 1)
-old = '''            if (preferred !in candidates) {
+# Preserve a previously published identity across every collision path so exact lookup
+# revocation/cleanup still knows what PRODUCT owns. Initial trial selection remains cleared
+# only after the bounded candidate loop proves that no safe candidate exists.
+for old in [
+    '''        if ((!ipv4ChainExists && ipv4JumpCount != 0) || (!ipv6ChainExists && ipv6JumpCount != 0)) {
+            activeIdentity = null
+            return PolicyIdentityResolution.Collision
+        }''',
+    '''        if ((ipv4JumpCount != 0 && ipv4Chain.isEmpty()) ||
+            (ipv6JumpCount != 0 && ipv6Chain.isEmpty())
+        ) {
+            activeIdentity = null
+            return PolicyIdentityResolution.Collision
+        }''',
+    '''        if (hasChainState && compatible.isEmpty()) {
+            activeIdentity = null
+            return PolicyIdentityResolution.Collision
+        }''',
+    '''            if (preferred !in candidates) {
                 activeIdentity = null
                 return PolicyIdentityResolution.Collision
-            }'''
-new = '''            if (preferred !in candidates) {
-                return PolicyIdentityResolution.Collision
-            }'''
-assert old in text
-text = text.replace(old, new, 1)
+            }''',
+]:
+    assert old in text
+    text = text.replace(old, old.replace('            activeIdentity = null\n', '').replace('                activeIdentity = null\n', ''), 1)
 old = '''            activeIdentity = null
             return PolicyIdentityResolution.Collision
         }
@@ -440,6 +536,25 @@ test = '''    @Test
         assertEquals(FIRST.lookup, process.ipv4Lookup?.lookup)
     }
 
+    @Test
+    fun malformedPublishedChainStillRevokesLookupUsingRetainedIdentity() {
+        val process = FakePolicyProcess()
+        val policy = policy(process)
+        assertEquals(
+            CellularRootPolicyResult.Enforced,
+            policy.reconcile(admitted = true, interfaceName = "rmnet_data0"),
+        )
+        process.ipv4ChainRules += "-A $CHAIN -j MARK --set-xmark 0xdead/0xdead"
+
+        assertEquals(
+            CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.ReservedPolicyCollision),
+            policy.reconcile(admitted = true, interfaceName = "rmnet_data0"),
+        )
+        assertNull(process.ipv4Lookup)
+        assertEquals(FIRST.mark, process.ipv4Guard?.mark)
+        assertTrue(process.ipv4ChainRules.any { it.contains("0xdead/0xdead") })
+    }
+
 '''
 assert test_anchor in text
 text = text.replace(test_anchor, test + test_anchor, 1)
@@ -450,7 +565,7 @@ text = docs.read_text()
 anchor = '''The same `CellularController` / `CellularEgress` instance is also supplied to the private loopback egress bridge used by the Android proxy runtime. Starting the proxy bridge must not instantiate a second Cellular Egress owner or a second admission/generation state machine.
 '''
 addition = anchor + '''
-Ordinary PRODUCT-UID outbound socket effects are additionally protected by a process-local infrastructure gate. The gate is default-closed, is closed synchronously before any owner observation can advance the generation, and opens only after exact root-policy enforcement for that same generation. A connect operation holds a bounded RAII permit for its DNS/connect transaction; the policy executor must observe permit quiescence before mutating or revoking kernel routing state. This gate is not admission/readiness state and cannot make a network admissible; it only prevents the runtime adapter from issuing a new ordinary socket effect while root-policy realization is unproven or changing.
+Ordinary PRODUCT-UID outbound socket effects are additionally protected by a process-local infrastructure gate. The gate is default-closed. The same Rust `CellularController` mutex that serializes owner observations also closes the gate before an observation/loss mutates the owner and authorizes reopening only when the expected sequence/network handle is still the exact current ADMITTED generation. A connect transaction holds a bounded RAII permit; the Kotlin policy executor must observe permit quiescence before mutating or revoking kernel routing state. This gate is not admission/readiness state and cannot make a network admissible; it only prevents the runtime adapter from issuing a new ordinary socket effect while root-policy realization is unproven or changing.
 '''
 assert anchor in text
 text = text.replace(anchor, addition, 1)
