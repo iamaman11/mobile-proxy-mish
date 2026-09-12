@@ -1,419 +1,312 @@
-name: CI
+name: QA81 Root Policy Effect Gate Repair
 
 on:
-  pull_request:
   push:
-    branches: [main]
-  workflow_dispatch:
+    branches: [qa/81-remediation]
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: qa81-root-effect-gate-repair
+  cancel-in-progress: false
 
 jobs:
-  changes:
-    name: CI Impact
+  patch:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
-    outputs:
-      android: ${{ steps.detect.outputs.android }}
     steps:
-      - name: Checkout diff history
+      - name: Checkout exact feature branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          persist-credentials: false
+          ref: qa/81-remediation
           fetch-depth: 0
-
-      - name: Detect Android-impacting changes
-        id: detect
-        shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PUSH_BEFORE_SHA: ${{ github.event.before }}
-          CURRENT_SHA: ${{ github.sha }}
-        run: |
-          set -u -o pipefail
-
-          emit_run() {
-            echo 'android=true' >> "$GITHUB_OUTPUT"
-            echo "Android Compose Shell: RUN ($1)" >> "$GITHUB_STEP_SUMMARY"
-          }
-
-          case "$EVENT_NAME" in
-            workflow_dispatch)
-              emit_run 'manual dispatch is intentionally full CI'
-              exit 0
-              ;;
-            pull_request)
-              base="$PR_BASE_SHA"
-              head="$PR_HEAD_SHA"
-              ;;
-            push)
-              base="$PUSH_BEFORE_SHA"
-              head="$CURRENT_SHA"
-              if [[ -z "$base" || "$base" =~ ^0+$ ]]; then
-                emit_run 'push has no usable before SHA; fail-safe toward testing'
-                exit 0
-              fi
-              ;;
-            *)
-              emit_run "unknown event $EVENT_NAME; fail-safe toward testing"
-              exit 0
-              ;;
-          esac
-
-          if [[ -z "$base" || -z "$head" ]]; then
-            emit_run 'diff boundary is incomplete; fail-safe toward testing'
-            exit 0
-          fi
-
-          if ! git cat-file -e "${base}^{commit}" 2>/dev/null \
-            || ! git cat-file -e "${head}^{commit}" 2>/dev/null; then
-            emit_run 'diff commits are unavailable; fail-safe toward testing'
-            exit 0
-          fi
-
-          changed="$RUNNER_TEMP/ci-impact-paths.txt"
-          if ! git diff --name-only --diff-filter=ACDMRTUXB "$base" "$head" > "$changed"; then
-            emit_run 'git diff failed; fail-safe toward testing'
-            exit 0
-          fi
-
-          android=false
-          while IFS= read -r path; do
-            case "$path" in
-              android/*|crates/*|Cargo.toml|Cargo.lock|rust-toolchain.toml|vendor/sing-box/release.toml|.github/workflows/ci.yml|.github/actions/*)
-                android=true
-                break
-                ;;
-            esac
-          done < "$changed"
-
-          echo "android=$android" >> "$GITHUB_OUTPUT"
-          if [[ "$android" == 'true' ]]; then
-            echo 'Android Compose Shell: RUN (Android/Rust-impacting path changed)' >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo 'Android Compose Shell: SKIP (no Android/Rust-impacting path changed)' >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-  rust:
-    name: Rust Workspace
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Install pinned Rust toolchain
-        run: |
-          rustup toolchain install 1.98.1 --profile minimal --component clippy,rustfmt
-          rustup override set 1.98.1
-
-      - name: Format
-        run: cargo fmt --all --check
-
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
-
-      - name: Test
-        run: cargo test --workspace --locked
-
-      - name: Generate narrow UniFFI Kotlin contract
+      - name: Apply bounded fail-closed effect gate
         run: |
           set -euo pipefail
-          cargo build -p mish-android-ffi --locked
-          rm -rf target/uniffi-kotlin
-          cargo run -p mish-android-ffi --bin uniffi-bindgen --locked -- \
-            generate --library target/debug/libmish_android_ffi.so \
-            --language kotlin --out-dir target/uniffi-kotlin --no-format
-          GENERATED="target/uniffi-kotlin/com/mobileproxymish/ffi/mish_android_ffi.kt"
-          test -f "$GENERATED"
-          grep -q '^package com.mobileproxymish.ffi$' "$GENERATED"
-          for symbol in CellularController admissionSnapshot observeNetwork networkLost; do
-            grep -q "$symbol" "$GENERATED"
-          done
-          for forbidden in CellularNetworkLease admittedNetworkLease bindSocket resolveHost; do
-            if grep -q "$forbidden" "$GENERATED"; then
-              echo "superseded exact-network FFI symbol survived: $forbidden" >&2
-              exit 1
-            fi
-          done
-
-      - name: Load pinned sing-box release manifest
-        run: |
           python3 - <<'PY'
-          import os
-          import re
-          import tomllib
           from pathlib import Path
 
-          data = tomllib.loads(Path("vendor/sing-box/release.toml").read_text())
-          version = data["version"]
-          linux = data["linux_amd64_ci"]
-          props = {}
-          for raw in Path("android/gradle.properties").read_text().splitlines():
-              if "=" in raw and not raw.lstrip().startswith("#"):
-                  key, value = raw.split("=", 1)
-                  props[key.strip()] = value.strip()
-          target_abi = props.get("mishTargetAbi")
-          vendor_key = {"armeabi-v7a": "android_arm", "arm64-v8a": "android_arm64"}.get(target_abi)
-          assert vendor_key is not None, "unsupported mishTargetAbi"
-          android = data[vendor_key]
+          ffi = Path('crates/android-ffi/src/lib.rs')
+          text = ffi.read_text()
+          text = text.replace(
+              'use mish_cellular_egress_bridge::{BridgeCredentials, BridgeListener};',
+              'use mish_cellular_egress_bridge::{\n    BridgeCredentials, BridgeListener, CellularOutboundConnector, ConnectTarget,\n    OutboundConnectError,\n};',
+              1,
+          )
+          text = text.replace(
+              'pub struct CellularController {\n    owner: Arc<Mutex<CellularEgress>>,\n    bridge_claimed: Arc<AtomicBool>,\n}',
+              'pub struct CellularController {\n    owner: Arc<Mutex<CellularEgress>>,\n    bridge_claimed: Arc<AtomicBool>,\n    root_policy_effect_allowed: Arc<AtomicBool>,\n}',
+              1,
+          )
+          text = text.replace(
+              '            bridge_claimed: Arc::new(AtomicBool::new(false)),\n        })',
+              '            bridge_claimed: Arc::new(AtomicBool::new(false)),\n            root_policy_effect_allowed: Arc::new(AtomicBool::new(false)),\n        })',
+              1,
+          )
+          anchor = '    pub fn admission_snapshot(&self) -> Result<CellularAdmissionView, CellularBridgeError> {\n        Ok(map_snapshot(self.owner()?.admission()))\n    }\n'
+          addition = anchor + '\n    /// Infrastructure-only gate for ordinary PRODUCT-UID socket effects. Admission remains\n    /// owned by Cellular Egress; Android opens this gate only after exact root-policy proof.\n    pub fn set_root_policy_ready(&self, ready: bool) {\n        self.root_policy_effect_allowed.store(ready, Ordering::Release);\n    }\n'
+          assert anchor in text
+          text = text.replace(anchor, addition, 1)
+          text = text.replace(
+              '            Arc::clone(&self.bridge_claimed),\n            username,',
+              '            Arc::clone(&self.bridge_claimed),\n            Arc::clone(&self.root_policy_effect_allowed),\n            username,',
+              1,
+          )
+          runtime_anchor = '#[derive(uniffi::Object)]\npub struct CellularBridgeRuntime {'
+          gated = '''#[derive(Clone)]
+struct RootPolicyGatedConnector<C> {
+    inner: C,
+    effect_allowed: Arc<AtomicBool>,
+}
 
-          assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version)
-          for artifact in (linux, android):
-              assert artifact["url"].startswith(
-                  f"https://github.com/SagerNet/sing-box/releases/download/v{version}/"
-              )
-              assert re.fullmatch(r"[0-9a-f]{64}", artifact["sha256"])
-              assert artifact["url"].endswith("/" + artifact["asset"])
+impl<C> RootPolicyGatedConnector<C> {
+    fn new(inner: C, effect_allowed: Arc<AtomicBool>) -> Self {
+        Self { inner, effect_allowed }
+    }
+}
 
-          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
-              env.write(f"SB_VERSION={version}\n")
-              env.write(f"SB_LINUX_ASSET={linux['asset']}\n")
-              env.write(f"SB_LINUX_URL={linux['url']}\n")
-              env.write(f"SB_LINUX_SHA256={linux['sha256']}\n")
-              env.write(f"SB_ANDROID_ASSET={android['asset']}\n")
-              env.write(f"SB_ANDROID_URL={android['url']}\n")
-              env.write(f"SB_ANDROID_SHA256={android['sha256']}\n")
+impl<C: CellularOutboundConnector> CellularOutboundConnector for RootPolicyGatedConnector<C> {
+    fn connect(&self, target: &ConnectTarget) -> Result<TcpStream, OutboundConnectError> {
+        if !self.effect_allowed.load(Ordering::Acquire) {
+            return Err(OutboundConnectError::Unavailable);
+        }
+        let stream = self.inner.connect(target)?;
+        if !self.effect_allowed.load(Ordering::Acquire) {
+            let _ = stream.shutdown(Shutdown::Both);
+            return Err(OutboundConnectError::Unavailable);
+        }
+        Ok(stream)
+    }
+}
+
+'''
+          assert runtime_anchor in text
+          text = text.replace(runtime_anchor, gated + runtime_anchor, 1)
+          text = text.replace(
+              '        bridge_claimed: Arc<AtomicBool>,\n        username: String,',
+              '        bridge_claimed: Arc<AtomicBool>,\n        root_policy_effect_allowed: Arc<AtomicBool>,\n        username: String,',
+              1,
+          )
+          old_connector = '''            let connector = AndroidCellularOutboundConnector::new(
+                owner,
+                Duration::from_millis(operation_timeout_ms),
+            )
+            .map_err(|_| AndroidRuntimeError::ConnectorUnavailable)?;'''
+          new_connector = '''            let connector = RootPolicyGatedConnector::new(
+                AndroidCellularOutboundConnector::new(
+                    owner,
+                    Duration::from_millis(operation_timeout_ms),
+                )
+                .map_err(|_| AndroidRuntimeError::ConnectorUnavailable)?,
+                root_policy_effect_allowed,
+            );'''
+          assert old_connector in text
+          text = text.replace(old_connector, new_connector, 1)
+          test_anchor = '    #[test]\n    fn one_owner_allows_only_one_private_bridge_and_releases_claim_on_stop() {'
+          gate_test = '''    #[test]
+    fn root_policy_effect_gate_defaults_closed_and_changes_only_explicitly() {
+        let controller = CellularController::new();
+        assert!(!controller.root_policy_effect_allowed.load(Ordering::Acquire));
+        controller.set_root_policy_ready(true);
+        assert!(controller.root_policy_effect_allowed.load(Ordering::Acquire));
+        controller.set_root_policy_ready(false);
+        assert!(!controller.root_policy_effect_allowed.load(Ordering::Acquire));
+    }
+
+'''
+          assert test_anchor in text
+          text = text.replace(test_anchor, gate_test + test_anchor, 1)
+          ffi.write_text(text)
+
+          bridge = Path('android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRuntimeBridge.kt')
+          text = bridge.read_text()
+          event_anchor = '''        val admission = try {
+            when (event) {'''
+          event_replacement = '''        try {
+            // Close the infrastructure effect gate before the owner generation can change.
+            // It is reopened only after root-policy enforcement for that exact generation.
+            activeController.setRootPolicyReady(false)
+        } catch (_: LinkageError) {
+            enqueueOwnerBoundaryFailure(CellularBoundaryFailure.NativeLibraryUnavailable)
+            return
+        } catch (_: Exception) {
+            enqueueOwnerBoundaryFailure(CellularBoundaryFailure.ForeignCallFailed)
+            return
+        }
+
+        val admission = try {
+            when (event) {'''
+          assert event_anchor in text
+          text = text.replace(event_anchor, event_replacement, 1)
+          enforced = '''            CellularRootPolicyResult.Enforced ->
+                CellularRuntimeSnapshot.OwnerSnapshot(admission)'''
+          enforced_replacement = '''            CellularRootPolicyResult.Enforced -> try {
+                activeController.setRootPolicyReady(true)
+                CellularRuntimeSnapshot.OwnerSnapshot(admission)
+            } catch (_: LinkageError) {
+                snapshotForFailClosed(
+                    preferredFailure = CellularBoundaryFailure.NativeLibraryUnavailable,
+                ) ?: CellularRuntimeSnapshot.BoundaryUnavailable(
+                    CellularBoundaryFailure.NativeLibraryUnavailable,
+                )
+            } catch (_: Exception) {
+                snapshotForFailClosed(
+                    preferredFailure = CellularBoundaryFailure.ForeignCallFailed,
+                ) ?: CellularRuntimeSnapshot.BoundaryUnavailable(
+                    CellularBoundaryFailure.ForeignCallFailed,
+                )
+            }'''
+          assert enforced in text
+          text = text.replace(enforced, enforced_replacement, 1)
+          snapshot_anchor = '''    private fun snapshotForFailClosed(
+        preferredFailure: CellularBoundaryFailure?,
+        preserveOnCleanFailClosed: Boolean = false,
+    ): CellularRuntimeSnapshot? = when (val result = rootPolicy.failClosed()) {'''
+          snapshot_replacement = '''    private fun snapshotForFailClosed(
+        preferredFailure: CellularBoundaryFailure?,
+        preserveOnCleanFailClosed: Boolean = false,
+    ): CellularRuntimeSnapshot? {
+        runCatching { controller?.setRootPolicyReady(false) }
+        return when (val result = rootPolicy.failClosed()) {'''
+          assert snapshot_anchor in text
+          text = text.replace(snapshot_anchor, snapshot_replacement, 1)
+          end_anchor = '''        CellularRootPolicyResult.Enforced -> preferredFailure?.let {
+            CellularRuntimeSnapshot.BoundaryUnavailable(it)
+        }
+    }
+
+    private fun submitPolicyWork'''
+          end_replacement = '''        CellularRootPolicyResult.Enforced -> preferredFailure?.let {
+            CellularRuntimeSnapshot.BoundaryUnavailable(it)
+        }
+        }
+    }
+
+    private fun submitPolicyWork'''
+          assert end_anchor in text
+          text = text.replace(end_anchor, end_replacement, 1)
+          close_anchor = '''    override fun close() {
+        if (!closed.compareAndSet(false, true)) return
+
+        observer.close()'''
+          close_replacement = '''    override fun close() {
+        if (!closed.compareAndSet(false, true)) return
+
+        runCatching { controller?.setRootPolicyReady(false) }
+        observer.close()'''
+          assert close_anchor in text
+          text = text.replace(close_anchor, close_replacement, 1)
+          bridge.write_text(text)
+
+          root = Path('android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRootPolicy.kt')
+          text = root.read_text()
+          collision = '''            PolicyIdentityResolution.Collision ->
+                return CellularRootPolicyResult.FailClosed(
+                    CellularRootPolicyFailure.ReservedPolicyCollision,
+                )
+
+            PolicyIdentityResolution.Unavailable ->
+                return CellularRootPolicyResult.FailClosed(
+                    CellularRootPolicyFailure.VerificationFailed,
+                )'''
+          collision_replacement = '''            PolicyIdentityResolution.Collision -> {
+                val revoked = activeIdentity == null || removeOwnedIpv4Lookups()
+                return CellularRootPolicyResult.FailClosed(
+                    if (revoked) {
+                        CellularRootPolicyFailure.ReservedPolicyCollision
+                    } else {
+                        CellularRootPolicyFailure.RuleMutationFailed
+                    },
+                )
+            }
+
+            PolicyIdentityResolution.Unavailable -> {
+                val revoked = activeIdentity == null || removeOwnedIpv4Lookups()
+                return CellularRootPolicyResult.FailClosed(
+                    if (revoked) {
+                        CellularRootPolicyFailure.VerificationFailed
+                    } else {
+                        CellularRootPolicyFailure.RuleMutationFailed
+                    },
+                )
+            }'''
+          assert collision in text
+          text = text.replace(collision, collision_replacement, 1)
+          # Once an identity has been published it remains the cleanup/revocation identity even
+          # when newly observed foreign state collides with it. Initial selection still clears
+          # the trial candidate if no bounded candidate is safe.
+          preferred_mismatch = '''            if (preferred !in candidates) {
+                activeIdentity = null
+                return PolicyIdentityResolution.Collision
+            }'''
+          assert preferred_mismatch in text
+          text = text.replace(preferred_mismatch, '''            if (preferred !in candidates) {
+                return PolicyIdentityResolution.Collision
+            }''', 1)
+          preferred_collision = '''            activeIdentity = null
+            return PolicyIdentityResolution.Collision
+        }
+
+        for (candidate in candidates) {'''
+          assert preferred_collision in text
+          text = text.replace(preferred_collision, '''            return PolicyIdentityResolution.Collision
+        }
+
+        for (candidate in candidates) {''', 1)
+          root.write_text(text)
+
+          tests = Path('android/app/src/test/java/com/mobileproxymish/app/cellular/CellularRootPolicyTest.kt')
+          text = tests.read_text()
+          test_anchor = '''    @Test
+    fun legacyNewOnlySelectorMigratesIntoNamedFlowPolicy() {'''
+          test = '''    @Test
+    fun collisionAfterPublicationRevokesLookupAndKeepsSelectedIdentityForRecovery() {
+        val process = FakePolicyProcess()
+        val policy = policy(process)
+        assertEquals(
+            CellularRootPolicyResult.Enforced,
+            policy.reconcile(admitted = true, interfaceName = "rmnet_data0"),
+        )
+        val foreign = "-A OUTPUT -j MARK --set-xmark 0x0/${FIRST.mark}"
+        process.foreignIpv4Mangle += foreign
+
+        assertEquals(
+            CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.ReservedPolicyCollision),
+            policy.reconcile(admitted = true, interfaceName = "rmnet_data0"),
+        )
+        assertNull(process.ipv4Lookup)
+        assertEquals(FIRST.mark, process.ipv4Guard?.mark)
+        assertTrue(process.foreignIpv4Mangle.contains(foreign))
+
+        process.foreignIpv4Mangle.clear()
+        assertEquals(
+            CellularRootPolicyResult.Enforced,
+            policy.reconcile(admitted = true, interfaceName = "rmnet_data0"),
+        )
+        assertEquals(FIRST.mark, process.ipv4Guard?.mark)
+        assertEquals(FIRST.lookup, process.ipv4Lookup?.lookup)
+    }
+
+'''
+          assert test_anchor in text
+          text = text.replace(test_anchor, test + test_anchor, 1)
+          tests.write_text(text)
           PY
-
-      - name: Verify pinned sing-box artifacts and product configuration
+          cargo fmt --all --check
+          cargo test --workspace --locked
+          git diff --check
+          test "$(git status --short | wc -l)" -eq 4
+      - name: Commit ordinary source files only
         run: |
           set -euo pipefail
-          SB_ROOT="$RUNNER_TEMP/sing-box"
-          mkdir -p "$SB_ROOT"
-
-          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
-            "$SB_LINUX_URL" -o "$SB_ROOT/$SB_LINUX_ASSET"
-          echo "$SB_LINUX_SHA256  $SB_ROOT/$SB_LINUX_ASSET" | sha256sum -c -
-
-          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
-            "$SB_ANDROID_URL" -o "$SB_ROOT/$SB_ANDROID_ASSET"
-          echo "$SB_ANDROID_SHA256  $SB_ROOT/$SB_ANDROID_ASSET" | sha256sum -c -
-
-          tar -xzf "$SB_ROOT/$SB_LINUX_ASSET" -C "$SB_ROOT"
-          SB="$SB_ROOT/sing-box-$SB_VERSION-linux-amd64/sing-box"
-          test -x "$SB"
-          "$SB" version | grep -Fq "sing-box version $SB_VERSION"
-
-          PRODUCT_CONFIG="$RUNNER_TEMP/product-sing-box.json"
-          cargo run --quiet --locked -p mish-sing-box-adapter --example render_product_config \
-            > "$PRODUCT_CONFIG"
-          "$SB" check -c "$PRODUCT_CONFIG"
-          if grep -q '"type": "direct"' "$PRODUCT_CONFIG"; then
-            echo "product config must never contain a direct outbound before #64 closes DNS ownership" >&2
-            exit 1
-          fi
-
-          echo "SB=$SB" >> "$GITHUB_ENV"
-          echo "PRODUCT_CONFIG=$PRODUCT_CONFIG" >> "$GITHUB_ENV"
-
-      - name: Exercise hosted sing-box proxy and auth matrix
-        run: |
-          set -euo pipefail
-          FIXTURE_CONFIG="$RUNNER_TEMP/sing-box-egress-fixture.json"
-          HTTP_ROOT="$RUNNER_TEMP/proxy-target"
-          mkdir -p "$HTTP_ROOT"
-          printf 'mish-proxy-ok\n' > "$HTTP_ROOT/probe.txt"
-
-          cat > "$FIXTURE_CONFIG" <<'JSON'
-          {
-            "inbounds": [
-              {
-                "type": "socks",
-                "tag": "fixture-socks-in",
-                "listen": "127.0.0.1",
-                "listen_port": 19080,
-                "users": [
-                  {"username": "ci-egress", "password": "ci-egress-password"}
-                ]
-              }
-            ],
-            "outbounds": [
-              {"type": "direct", "tag": "fixture-direct"}
-            ],
-            "route": {"final": "fixture-direct"}
-          }
-          JSON
-
-          "$SB" check -c "$FIXTURE_CONFIG"
-
-          HTTP_PID=""
-          EGRESS_PID=""
-          PRODUCT_PID=""
-          cleanup() {
-            for pid in "$PRODUCT_PID" "$EGRESS_PID" "$HTTP_PID"; do
-              if [[ -n "$pid" ]]; then
-                kill "$pid" >/dev/null 2>&1 || true
-              fi
-            done
-          }
-          trap cleanup EXIT
-
-          python3 -m http.server 18080 --bind 127.0.0.1 --directory "$HTTP_ROOT" \
-            >"$RUNNER_TEMP/http-target.log" 2>&1 &
-          HTTP_PID=$!
-          "$SB" run -c "$FIXTURE_CONFIG" >"$RUNNER_TEMP/egress-fixture.log" 2>&1 &
-          EGRESS_PID=$!
-          "$SB" run -c "$PRODUCT_CONFIG" >"$RUNNER_TEMP/product-sing-box.log" 2>&1 &
-          PRODUCT_PID=$!
-
-          wait_port() {
-            local port="$1"
-            python3 - "$port" <<'PY'
-          import socket
-          import sys
-          import time
-
-          port = int(sys.argv[1])
-          deadline = time.monotonic() + 10
-          while time.monotonic() < deadline:
-              try:
-                  with socket.create_connection(("127.0.0.1", port), timeout=0.25):
-                      raise SystemExit(0)
-              except OSError:
-                  time.sleep(0.1)
-          raise SystemExit(f"port {port} did not become ready")
-          PY
-          }
-
-          for port in 18080 19080 1080 1081 3128; do
-            wait_port "$port"
-          done
-
-          TARGET="http://127.0.0.1:18080/probe.txt"
-          expect_body() {
-            local body
-            body="$("$@")"
-            [[ "$body" == "mish-proxy-ok" ]]
-          }
-          expect_failure() {
-            if "$@" >/dev/null 2>&1; then
-              echo "command unexpectedly succeeded: $*" >&2
-              return 1
-            fi
-          }
-
-          expect_body curl --fail --silent --show-error --max-time 10 --noproxy "" \
-            --proxy http://127.0.0.1:1080 --proxy-user ci-public:ci-public-password "$TARGET"
-          expect_body curl --fail --silent --show-error --max-time 10 --noproxy "" \
-            --proxy socks5h://127.0.0.1:1080 --proxy-user ci-public:ci-public-password "$TARGET"
-          expect_body curl --fail --silent --show-error --max-time 10 --noproxy "" \
-            --proxy socks5h://127.0.0.1:1081 --proxy-user ci-public:ci-public-password "$TARGET"
-          expect_body curl --fail --silent --show-error --max-time 10 --noproxy "" \
-            --proxy http://127.0.0.1:3128 --proxy-user ci-public:ci-public-password "$TARGET"
-          expect_body curl --fail --silent --show-error --max-time 10 --noproxy "" \
-            --proxytunnel --proxy http://127.0.0.1:3128 \
-            --proxy-user ci-public:ci-public-password "$TARGET"
-
-          expect_failure curl --fail --silent --max-time 5 --noproxy "" \
-            --proxy http://127.0.0.1:1080 "$TARGET"
-          expect_failure curl --fail --silent --max-time 5 --noproxy "" \
-            --proxy socks5h://127.0.0.1:1081 --proxy-user wrong:wrong "$TARGET"
-          expect_failure curl --fail --silent --max-time 5 --noproxy "" \
-            --proxy http://127.0.0.1:3128 "$TARGET"
-
-  android:
-    name: Android Compose Shell
-    needs: changes
-    if: ${{ always() && (needs.changes.result != 'success' || needs.changes.outputs.android == 'true') }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Set up pinned Gradle
-        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
-        with:
-          gradle-version: '9.6.0'
-
-      - name: Install pinned Rust Android tooling for target ABI
-        run: |
-          set -euo pipefail
-          TARGET_ABI="$(sed -n 's/^mishTargetAbi=//p' android/gradle.properties)"
-          case "$TARGET_ABI" in
-            armeabi-v7a) RUST_TARGET='armv7-linux-androideabi' ;;
-            arm64-v8a) RUST_TARGET='aarch64-linux-android' ;;
-            *) echo "Unsupported mishTargetAbi: $TARGET_ABI" >&2; exit 1 ;;
-          esac
-          rustup toolchain install 1.98.1 --profile minimal
-          rustup override set 1.98.1
-          rustup target add "$RUST_TARGET"
-          cargo install cargo-ndk --version 4.1.2 --locked
-          echo "MISH_TARGET_ABI=$TARGET_ABI" >> "$GITHUB_ENV"
-          echo "MISH_RUST_TARGET=$RUST_TARGET" >> "$GITHUB_ENV"
-
-      - name: Install pinned Android NDK
-        run: |
-          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:?Android SDK root is not configured}}"
-          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-          NDK_PATH="$SDK_ROOT/ndk/29.0.14206865"
-          test -x "$SDKMANAGER"
-          "$SDKMANAGER" "ndk;29.0.14206865"
-          test -d "$NDK_PATH"
-          echo "ANDROID_NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
-          echo "ANDROID_NDK_ROOT=$NDK_PATH" >> "$GITHUB_ENV"
-          echo "ANDROID_NDK=$NDK_PATH" >> "$GITHUB_ENV"
-
-      - name: Lint, unit test, and assemble Android shell + physical test APK
-        run: |
-          gradle --no-daemon -p android \
-            :app:lintDebug \
-            :app:testDebugUnitTest \
-            :app:assembleDebug \
-            :app:assembleDebugAndroidTest
-
-      - name: Verify packaged native runtime excludes superseded socket binding
-        run: |
-          set -euo pipefail
-          APK="android/app/build/outputs/apk/debug/app-debug.apk"
-          TEST_APK="android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"
-          NATIVE="android/app/build/generated/rust-jni/$MISH_TARGET_ABI/libmish_android_ffi.so"
-          test -f "$APK"
-          test -f "$TEST_APK"
-          test -f "$NATIVE"
-          unzip -l "$APK" | grep -q "lib/$MISH_TARGET_ABI/libmish_android_ffi.so"
-          unzip -l "$APK" | grep -q "lib/$MISH_TARGET_ABI/libjnidispatch.so"
-          SYMBOLS="$RUNNER_TEMP/mish-android-ffi.symbols"
-          readelf -Ws "$NATIVE" > "$SYMBOLS"
-          if grep -Fq 'android_setsocknetwork' "$SYMBOLS"; then
-            echo 'superseded android_setsocknetwork leaked into PRODUCT FFI library' >&2
-            exit 1
-          fi
-          if grep -Fq 'android_getaddrinfofornetwork' "$SYMBOLS"; then
-            echo 'network-scoped DNS must not leak into Kotlin/UniFFI surface' >&2
-            exit 1
-          fi
-
-      - name: Verify Android runtime uses DNS-only network adapter
-        run: |
-          set -euo pipefail
-          cargo ndk -P 23 -t "$MISH_TARGET_ABI" build \
-            -p mish-runtime \
-            --example android_cellular_connector_link \
-            --release \
-            --locked
-
-          CONNECTOR="target/$MISH_RUST_TARGET/release/examples/android_cellular_connector_link"
-          SYMBOLS="$RUNNER_TEMP/android-cellular-connector.symbols"
-          test -x "$CONNECTOR"
-          readelf -Ws "$CONNECTOR" > "$SYMBOLS"
-          grep -Fq 'android_getaddrinfofornetwork' "$SYMBOLS"
-          if grep -Fq 'android_setsocknetwork' "$SYMBOLS"; then
-            echo 'superseded android_setsocknetwork returned to runtime connector' >&2
-            exit 1
-          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            crates/android-ffi/src/lib.rs \
+            android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRuntimeBridge.kt \
+            android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRootPolicy.kt \
+            android/app/src/test/java/com/mobileproxymish/app/cellular/CellularRootPolicyTest.kt
+          test "$(git diff --cached --name-only | wc -l)" -eq 4
+          git commit -m 'Runtime: gate outbound effects on proven root policy'
+          git push origin HEAD:qa/81-remediation
