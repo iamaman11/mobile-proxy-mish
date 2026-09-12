@@ -268,7 +268,10 @@ mod tests {
     fn materialization_requires_exact_hmac_sha256_outputs() {
         let state = ExternalCredentialState::initial();
         assert_eq!(
-            state.materialize(&[1; DERIVATION_OUTPUT_BYTES - 1], &[2; DERIVATION_OUTPUT_BYTES]),
+            state.materialize(
+                &[1; DERIVATION_OUTPUT_BYTES - 1],
+                &[2; DERIVATION_OUTPUT_BYTES]
+            ),
             Err(ExternalCredentialError::InvalidDerivationOutput)
         );
         let material = state
@@ -285,6 +288,9 @@ mod tests {
     fn version_exhaustion_fails_closed() {
         let state = ExternalCredentialState::new(u64::MAX, ExternalCredentialStatus::Active)
             .expect("max version is representable");
-        assert_eq!(state.rotate(), Err(ExternalCredentialError::VersionExhausted));
+        assert_eq!(
+            state.rotate(),
+            Err(ExternalCredentialError::VersionExhausted)
+        );
     }
 }

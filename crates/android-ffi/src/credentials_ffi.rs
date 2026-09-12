@@ -180,12 +180,7 @@ mod tests {
     fn ffi_materialization_rejects_bad_hmac_length() {
         let state = external_credential_initial_state();
         assert_eq!(
-            external_credential_materialize(
-                state.version,
-                state.revoked,
-                vec![1; 31],
-                vec![2; 32],
-            ),
+            external_credential_materialize(state.version, state.revoked, vec![1; 31], vec![2; 32],),
             Err(ExternalCredentialBoundaryError::InvalidDerivationOutput)
         );
     }
