@@ -8,7 +8,6 @@ $testRoot = Join-Path $env:TEMP ('mish-credential-provisioning-' + [Guid]::NewGu
 [void][IO.Directory]::CreateDirectory($testRoot)
 $fakeAdbScript = Join-Path $testRoot 'fake-adb.ps1'
 $fakeAdbCommand = Join-Path $testRoot 'fake-adb.cmd'
-$fakeAdbStderrPath = Join-Path $testRoot 'fake-adb.stderr.txt'
 $storePath = Join-Path $testRoot 'client-store.dpapi'
 $badStorePath = Join-Path $testRoot 'bad-client-store.dpapi'
 $syntheticUser = 'mish-11111111111111111111111111111111'
@@ -32,7 +31,9 @@ function Get-ArgumentValue {
 
 function Add-ProtoVarint {
     param(
-        [Parameter(Mandatory)][System.Collections.Generic.List[byte]] $Buffer,
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [System.Collections.Generic.List[byte]] $Buffer,
         [Parameter(Mandatory)][uint64] $Value
     )
     $remaining = $Value
@@ -45,7 +46,9 @@ function Add-ProtoVarint {
 
 function Add-ProtoVarintField {
     param(
-        [Parameter(Mandatory)][System.Collections.Generic.List[byte]] $Buffer,
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [System.Collections.Generic.List[byte]] $Buffer,
         [Parameter(Mandatory)][int] $FieldNumber,
         [Parameter(Mandatory)][uint64] $Value
     )
@@ -55,7 +58,9 @@ function Add-ProtoVarintField {
 
 function Add-ProtoBytesField {
     param(
-        [Parameter(Mandatory)][System.Collections.Generic.List[byte]] $Buffer,
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [System.Collections.Generic.List[byte]] $Buffer,
         [Parameter(Mandatory)][int] $FieldNumber,
         [Parameter(Mandatory)][byte[]] $Value
     )
@@ -67,7 +72,7 @@ function Add-ProtoBytesField {
 $publicKeyBase64 = Get-ArgumentValue -Name 'client_public_key_spki_b64'
 $challengeHex = Get-ArgumentValue -Name 'challenge_hex'
 if ($env:MISH_FAKE_BAD_CHALLENGE -eq '1') {
-    $challengeHex = '00' * 32
+    $challengeHex = ('00' * 32) -join ''
 }
 
 $rsa = [Security.Cryptography.RSA]::Create()
@@ -106,34 +111,12 @@ finally {
     }
     @"
 @echo off
-"$pwshExe" -NoLogo -NoProfile -NonInteractive -File "$fakeAdbScript" %* 2>"$fakeAdbStderrPath"
-exit /b %ERRORLEVEL%
+"$pwshExe" -NoLogo -NoProfile -NonInteractive -File "$fakeAdbScript" %*
 "@ | Set-Content -LiteralPath $fakeAdbCommand -Encoding ASCII
 
-    try {
-        $result = Invoke-MishExternalProxyCredentialProvisioning `
-            -AdbPath $fakeAdbCommand `
-            -StorePath $storePath
-    }
-    catch {
-        $diagnostic = '<no fake ADB stderr was captured>'
-        if (Test-Path -LiteralPath $fakeAdbStderrPath -PathType Leaf) {
-            $diagnostic = Get-Content -Raw -LiteralPath $fakeAdbStderrPath
-        }
-        $diagnostic = $diagnostic.Replace($syntheticUser, '<redacted-synthetic-user>')
-        $diagnostic = $diagnostic.Replace($syntheticPassword, '<redacted-synthetic-password>')
-        $diagnostic = [regex]::Replace(
-            $diagnostic,
-            '(?i)\b[0-9a-f]{64}\b',
-            '<redacted-hex64>'
-        )
-        $diagnostic = [regex]::Replace(
-            $diagnostic,
-            '(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{80,}={0,2}(?![A-Za-z0-9+/])',
-            '<redacted-base64>'
-        )
-        throw "Hosted fake ADB subprocess failed before provisioning parsing. Safe diagnostic:`n$diagnostic"
-    }
+    $result = Invoke-MishExternalProxyCredentialProvisioning `
+        -AdbPath $fakeAdbCommand `
+        -StorePath $storePath
     if ($result.Schema -ne 'mish.credentials.v1.ExternalProxyProvisioningEnvelope') {
         throw 'Provisioning result schema drifted.'
     }
@@ -192,6 +175,9 @@ exit /b %ERRORLEVEL%
             -StorePath $badStorePath)
     }
     catch {
+        if ($_.Exception.Message -cne 'Provisioned credential challenge does not match this session.') {
+            throw
+        }
         $failedClosed = $true
     }
     finally {
