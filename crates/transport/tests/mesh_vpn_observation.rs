@@ -47,12 +47,14 @@ fn vpn_loss_closes_active_session_before_same_endpoint_gets_fresh_epoch() {
         .admission()
         .admission_epoch()
         .expect("initial admission epoch");
-    assert!(runtime
-        .start_ingress(
-            first_epoch,
-            &[MeshPortForward::new(ingress_port, backend_port)],
-        )
-        .expect("start ingress"));
+    assert!(
+        runtime
+            .start_ingress(
+                first_epoch,
+                &[MeshPortForward::new(ingress_port, backend_port)],
+            )
+            .expect("start ingress")
+    );
 
     let mut client = TcpStream::connect((endpoint, ingress_port)).expect("connect ingress");
     client.write_all(&[0x41]).expect("write through ingress");

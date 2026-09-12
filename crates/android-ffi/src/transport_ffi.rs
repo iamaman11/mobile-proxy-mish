@@ -277,10 +277,7 @@ mod tests {
         assert_eq!(ambiguous.state, MeshAdmissionState::NotAdmitted);
 
         let multiple = controller
-            .observe_unique_vpn(
-                3,
-                vec!["100.96.2.4".to_owned(), "100.97.2.5".to_owned()],
-            )
+            .observe_unique_vpn(3, vec!["100.96.2.4".to_owned(), "100.97.2.5".to_owned()])
             .expect("observation");
         assert_eq!(multiple.state, MeshAdmissionState::NotAdmitted);
         assert_eq!(
