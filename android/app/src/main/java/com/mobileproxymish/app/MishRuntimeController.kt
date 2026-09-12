@@ -226,7 +226,10 @@ class MishRuntimeController internal constructor(
             cellularRuntime = cellularRuntime,
             publicCredentials = externalCredentialStore,
         )
-        val meshRuntime = MeshIngressRuntimeBridge(proxyRuntime)
+        val meshRuntime = MeshIngressRuntimeBridge(
+            context = appContext,
+            proxyRuntime = proxyRuntime,
+        )
         return RuntimeGeneration(cellularRuntime, proxyRuntime, meshRuntime)
     }
 
