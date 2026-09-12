@@ -6,9 +6,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::io;
-use std::net::{
-    IpAddr, Ipv4Addr, Shutdown, SocketAddr, SocketAddrV4, TcpListener, TcpStream,
-};
+use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, SocketAddrV4, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -143,7 +141,11 @@ impl MeshEndpointOwner {
         if sequence == 0 {
             return Err(MeshOwnerError::InvalidObservationSequence);
         }
-        if self.snapshot.last_sequence.is_some_and(|last| sequence <= last) {
+        if self
+            .snapshot
+            .last_sequence
+            .is_some_and(|last| sequence <= last)
+        {
             return Err(MeshOwnerError::StaleObservation);
         }
 
@@ -340,7 +342,10 @@ impl MeshIngressRuntime {
     pub fn is_healthy(&self) -> bool {
         !self.stop.load(Ordering::Acquire)
             && !self.listeners.is_empty()
-            && self.listeners.iter().all(|listener| !listener.is_finished())
+            && self
+                .listeners
+                .iter()
+                .all(|listener| !listener.is_finished())
     }
 
     pub fn active_sessions(&self) -> usize {
@@ -404,9 +409,10 @@ impl MeshIngressRuntime {
             let worker_stop = Arc::clone(&stop);
             let worker_sessions = Arc::clone(&sessions);
             let name = format!("mish-mesh-listener-{}", mapping.ingress_port);
-            match thread::Builder::new().name(name).spawn(move || {
-                listener_loop(listener, mapping, worker_stop, worker_sessions)
-            }) {
+            match thread::Builder::new()
+                .name(name)
+                .spawn(move || listener_loop(listener, mapping, worker_stop, worker_sessions))
+            {
                 Ok(worker) => listeners.push(worker),
                 Err(_) => {
                     stop.store(true, Ordering::Release);
@@ -447,20 +453,16 @@ fn listener_loop(
                     let _ = client.shutdown(Shutdown::Both);
                     continue;
                 }
-                let backend_address = SocketAddr::new(
-                    IpAddr::V4(Ipv4Addr::LOCALHOST),
-                    mapping.backend_port,
-                );
-                let backend = match TcpStream::connect_timeout(
-                    &backend_address,
-                    BACKEND_CONNECT_TIMEOUT,
-                ) {
-                    Ok(stream) => stream,
-                    Err(_) => {
-                        let _ = client.shutdown(Shutdown::Both);
-                        continue;
-                    }
-                };
+                let backend_address =
+                    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), mapping.backend_port);
+                let backend =
+                    match TcpStream::connect_timeout(&backend_address, BACKEND_CONNECT_TIMEOUT) {
+                        Ok(stream) => stream,
+                        Err(_) => {
+                            let _ = client.shutdown(Shutdown::Both);
+                            continue;
+                        }
+                    };
                 let _ = client.set_nodelay(true);
                 let _ = backend.set_nodelay(true);
                 let Some(session_id) = sessions.register(&client, &backend) else {
@@ -547,7 +549,10 @@ mod tests {
             )
             .expect("observe");
         assert_eq!(snapshot.state(), MeshAdmissionState::Admitted);
-        assert_eq!(snapshot.admitted_endpoint(), Some(Ipv4Addr::new(100, 96, 4, 8)));
+        assert_eq!(
+            snapshot.admitted_endpoint(),
+            Some(Ipv4Addr::new(100, 96, 4, 8))
+        );
         assert_eq!(snapshot.admission_epoch(), Some(1));
 
         let ambiguous = owner
@@ -650,8 +655,8 @@ mod tests {
             .expect("start mapped ingress");
         assert!(runtime.is_healthy());
 
-        let mut client = TcpStream::connect((Ipv4Addr::LOCALHOST, ingress_port))
-            .expect("connect ingress");
+        let mut client =
+            TcpStream::connect((Ipv4Addr::LOCALHOST, ingress_port)).expect("connect ingress");
         client.write_all(b"ping").expect("client write");
         let mut response = [0_u8; 4];
         client.read_exact(&mut response).expect("client read");
