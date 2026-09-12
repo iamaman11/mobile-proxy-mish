@@ -175,7 +175,7 @@ internal object CredentialProvisioningEnvelope {
     }
 
     private fun ByteArray.toHex(): String = buildString(size * 2) {
-        forEach { byte ->
+        this@toHex.forEach { byte ->
             val value = byte.toInt() and 0xff
             append(HEX[value ushr 4])
             append(HEX[value and 0x0f])
