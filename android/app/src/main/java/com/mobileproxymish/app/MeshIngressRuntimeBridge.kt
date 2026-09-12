@@ -28,16 +28,14 @@ internal sealed interface AndroidMeshVpnObservation {
 }
 
 /**
- * Pure cardinality projection only. Android does not filter the configured Mesh CIDR or choose
- * an endpoint; it reports the raw IPv4 facts of exactly one current VPN Network when one exists.
+ * Pure cardinality projection only. Android does not filter the configured Mesh CIDR, normalize
+ * addresses or choose an endpoint; it reports the raw IPv4 facts of exactly one current VPN.
  */
 internal fun classifyMeshVpnNetworks(
     currentVpnLocalIpv4: List<List<String>>,
 ): AndroidMeshVpnObservation = when (currentVpnLocalIpv4.size) {
     0 -> AndroidMeshVpnObservation.Absent
-    1 -> AndroidMeshVpnObservation.UniqueVpn(
-        currentVpnLocalIpv4.single().toCollection(linkedSetOf()).toList(),
-    )
+    1 -> AndroidMeshVpnObservation.UniqueVpn(currentVpnLocalIpv4.single().toList())
     else -> AndroidMeshVpnObservation.AmbiguousVpn
 }
 
