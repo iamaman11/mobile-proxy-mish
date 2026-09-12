@@ -4,25 +4,35 @@ This document explains how implementation work is batched between accepted `main
 
 ## Core distinction
 
-An implementation stage is not automatically a merge boundary.
+Three units are intentionally different:
 
-The default unit of integration is an **evidence milestone**: the largest coherent batch that can be completed and validated at E1/E2 before the next missing fact genuinely requires accepted `main`, LAB, provider mutation, or a release boundary.
+```text
+commit batch != review slice != main evidence milestone
+```
+
+A small implementation stage is not automatically a PR, and a review PR is not automatically a `main` merge boundary.
+
+Canonical flow:
 
 ```text
 accepted main
- -> draft integration PR
- -> several E1/E2-completable implementation stages
- -> deliberate exact-head CI checkpoint(s)
- -> one milestone merge
+ -> Draft M1 integration branch / PR
+ -> short-lived slice branch
+ -> coherent commit batch(es)
+ -> slice PR -> M1 integration branch
+ -> repeat bounded slices
+ -> deliberate integration CI when justified
+ -> final M1 ready-for-review exact-head CI
+ -> one milestone merge to main
  -> accepted green main
  -> main-only LAB/provider/release boundary when actually required
 ```
 
-Do not turn `main` into a progress ledger.
+Do not turn `main` into a progress ledger and do not turn the final M1 PR into the everyday working diff.
 
 ## Current product milestone
 
-Until Issue #86 changes the gate, keep these adjacent changes in the same draft integration PR:
+Until Issue #86 changes the gate, M1 contains:
 
 ```text
 production Android lifecycle
@@ -32,43 +42,75 @@ production Android lifecycle
  -> TCP-only client hardening
 ```
 
-Finish every E1/E2 fact that can be proven without DEVICE-1 before crossing the next `main -> LAB` boundary.
+These remain one eventual `main` evidence milestone, but they should be implemented and audited as bounded review slices.
 
-Root-policy, One Agent/DNS, exact Mesh-address behavior, reboot/background survival and cellular loss/recovery remain physical facts where code evidence is insufficient.
+## Commit-only phase
 
-## Commit and push granularity
+A slice begins as a short-lived branch from the exact current M1 integration head.
 
-Prepare related edits together. A remote push should represent one coherent reviewable batch, not an editor save point.
+While implementation is incomplete, use coherent commits without opening a PR for every edit. A remote push should represent a reviewable batch, not an editor save point.
 
 When GitHub APIs are used for several files, prefer one Git tree, one commit and one ref update.
 
+## Slice PR boundary
+
+Create a slice PR when the change is coherent enough to review independently. Its base is the M1 integration branch, not `main`.
+
+Default slice budget:
+
+- one natural owner;
+- at most one required adapter/composition boundary;
+- direct tests for those semantics.
+
+A slice that crosses more than two semantic owners or grows beyond roughly eight implementation/test files should be split unless the coupling is inseparable and documented.
+
+Only one slice is active by default. Slice PRs provide durable context checkpoints and must state owner, goal, base SHA, invariants, touched boundaries, tests/evidence, what remains unproven and follow-up work.
+
+After review, squash-merge the slice into the integration branch. That synchronization does not trigger a `main` merge, LAB run or ordinary CI cycle.
+
+## Context budget
+
+During slice work, an executor should load only:
+
+```text
+#86 current checkpoint
+current slice PR/branch
+relevant natural-owner issue/contracts
+one required adapter boundary
+corresponding direct tests
+```
+
+The entire M1 diff is read only for final cross-slice integration review or when a concrete dependency requires it.
+
+After each slice merge, #86 records the completed slice, next slice and current integration pointer. This prevents chat/session memory from becoming a hidden source of truth.
+
 ## CI granularity
 
-Ordinary PR `synchronize` pushes do **not** trigger CI. This prevents workflow-run noise while a draft integration milestone is still being assembled.
+Ordinary PR `synchronize` pushes do **not** trigger CI.
 
 Full CI is intentionally created only by:
 
 ```text
-workflow_dispatch on an exact checkpoint head
-ready_for_review on the final milestone head
+workflow_dispatch on an exact checkpoint head when justified
+ready_for_review on the final M1 head
 push to protected main after merge
 ```
 
-Before merge the PR must be ready for review and complete required CI must pass on the exact head.
+Slice PR existence alone is not a CI boundary. A deliberate manual checkpoint is justified when the slice changes a material cross-language/build contract or otherwise cannot be safely validated by review plus direct tests alone.
 
-If a validated ready-for-review head changes, move the PR back to Draft, accumulate the correction batch, then mark it ready again. Do not reintroduce per-push `synchronize` CI merely to automate that transition.
+Before the M1 merge, the M1 PR must be ready for review and complete required CI must pass on the exact head. If that head later changes, return it to Draft, batch corrections, then mark ready again.
 
 ## Main and LAB
 
-Development LAB accepts only an exact accepted green PRODUCT `main` SHA. PR branches are not LAB source identity.
+Development LAB accepts only an exact accepted green PRODUCT `main` SHA. PR and integration branches are not LAB source identity.
 
 Therefore the merge decision is:
 
 ```text
 Can the next required fact be established correctly at E1/E2?
-  YES -> keep working in the draft integration PR; do not merge for progress.
-  NO  -> finish all independent E1/E2 work, validate the exact head, merge once,
-         verify main, then request the bounded main-only physical fact.
+  YES -> keep working through bounded slices on the M1 integration branch.
+  NO  -> finish all independent E1/E2 slices, validate the final exact M1 head,
+         merge once, verify main, then request the bounded main-only physical fact.
 ```
 
 A LAB run is not triggered merely because a PR merged. Issue #86 must identify the physical fact and why it is required.
@@ -79,9 +121,10 @@ When a main-only physical run reveals a defect:
 
 ```text
 typed/redacted physical finding
- -> bounded correction batch on a branch
- -> deliberate exact-head CI
- -> one merge
+ -> bounded correction slice
+ -> slice review
+ -> deliberate exact-head CI when justified
+ -> one milestone merge
  -> main-only physical re-proof only when necessary
 ```
 
