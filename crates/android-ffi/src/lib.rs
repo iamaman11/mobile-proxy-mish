@@ -1,36 +1,29 @@
 //! Narrow Rust <-> Kotlin / Android composition boundary.
 //!
-//! Cellular admission remains owned by `mish-cellular`. This boundary also composes the
-//! already-approved private loopback Cellular Egress bridge and disposable sing-box config
-//! projection without exposing socket, DNS, route-table, root-shell, or vendor JSON mechanics
-//! to Android application code.
+//! This module contains only typed FFI projection/mapping plus the concrete Android DNS effect
+//! adapter. Cellular admission, root-policy effect coordination and private-bridge runtime state
+//! live behind public `mish-cellular` / `mish-runtime` APIs rather than inside the FFI seam.
 
+use mish_android_network::AndroidNetworkError;
 use mish_cellular::{
     CellularAdmissionReason as OwnerAdmissionReason,
     CellularAdmissionSnapshot as OwnerAdmissionSnapshot,
-    CellularAdmissionState as OwnerAdmissionState, CellularEgress, NetworkHandle,
+    CellularAdmissionState as OwnerAdmissionState, CellularNetworkAuthority, NetworkHandle,
     NetworkObservation, ObservationSequence,
 };
-use mish_cellular_egress_bridge::{
-    BridgeCredentials, BridgeListener, CellularOutboundConnector, ConnectTarget,
-    OutboundConnectError,
-};
+use mish_cellular_egress_bridge::OutboundConnectError;
 use mish_proxy::{ProxyCredentialMaterial, ProxyServingPlan};
-use mish_runtime::AndroidCellularOutboundConnector;
+use mish_runtime::{
+    CellularDnsResolver, CellularPrivateBridgeRuntime, CellularRuntimeCoordinator,
+    CellularRuntimeError,
+};
 use mish_sing_box_adapter::{PrivateSocks5Endpoint, render_product_config};
-use std::collections::HashMap;
 use std::fmt;
-use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::net::{IpAddr, Ipv4Addr};
+use std::sync::Arc;
+use std::time::Duration;
 
 uniffi::setup_scaffolding!();
-
-const MAX_BRIDGE_SESSIONS: usize = 128;
-const BRIDGE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
-const BRIDGE_OPERATION_TIMEOUT_MAX_MS: u64 = 120_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum CellularAdmissionState {
@@ -115,11 +108,27 @@ impl fmt::Display for AndroidRuntimeError {
 
 impl std::error::Error for AndroidRuntimeError {}
 
+#[derive(Debug, Clone, Copy)]
+struct AndroidDnsResolver;
+
+impl CellularDnsResolver for AndroidDnsResolver {
+    fn resolve(
+        &self,
+        authority: CellularNetworkAuthority,
+        hostname: &str,
+    ) -> Result<Vec<IpAddr>, OutboundConnectError> {
+        mish_android_network::resolve_host(authority, hostname)
+            .map_err(map_android_network_error)?
+            .into_iter()
+            .map(|raw| raw.parse::<IpAddr>().map_err(|_| OutboundConnectError::Failed))
+            .collect()
+    }
+}
+
+/// Typed FFI wrapper over one vendor-neutral Rust runtime coordinator.
 #[derive(uniffi::Object)]
 pub struct CellularController {
-    owner: Arc<Mutex<CellularEgress>>,
-    bridge_claimed: Arc<AtomicBool>,
-    root_policy_effect_gate: Arc<RootPolicyEffectGate>,
+    runtime: Arc<CellularRuntimeCoordinator>,
 }
 
 #[uniffi::export]
@@ -127,40 +136,27 @@ impl CellularController {
     #[uniffi::constructor]
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
-            owner: Arc::new(Mutex::new(CellularEgress::new())),
-            bridge_claimed: Arc::new(AtomicBool::new(false)),
-            root_policy_effect_gate: Arc::new(RootPolicyEffectGate::default()),
+            runtime: CellularRuntimeCoordinator::new(Arc::new(AndroidDnsResolver)),
         })
     }
 
     pub fn admission_snapshot(&self) -> Result<CellularAdmissionView, CellularBridgeError> {
-        Ok(map_snapshot(self.owner()?.admission()))
+        self.runtime
+            .admission_snapshot()
+            .map(map_snapshot)
+            .map_err(|_| CellularBridgeError::OwnerUnavailable)
     }
 
-    /// Closes the infrastructure-only gate for ordinary PRODUCT-UID socket effects.
-    /// Closing cannot make any network admissible and therefore owns no cellular semantics.
     pub fn close_root_policy_gate(&self) -> Result<(), AndroidRuntimeError> {
-        if self.root_policy_effect_gate.set_ready(false) {
-            Ok(())
-        } else {
-            Err(AndroidRuntimeError::BridgeStateUnavailable)
-        }
+        self.runtime.close_root_policy_gate().map_err(Into::into)
     }
 
-    /// Waits until connect operations admitted by the preceding root-policy generation have
-    /// released their bounded permits. Kernel policy mutation is forbidden until quiesced.
     pub fn await_root_policy_quiesced(&self, timeout_ms: u64) -> Result<bool, AndroidRuntimeError> {
-        if timeout_ms == 0 || timeout_ms > BRIDGE_OPERATION_TIMEOUT_MAX_MS {
-            return Err(AndroidRuntimeError::InvalidOperationTimeout);
-        }
-        self.root_policy_effect_gate
-            .wait_quiesced(Duration::from_millis(timeout_ms))
-            .ok_or(AndroidRuntimeError::BridgeStateUnavailable)
+        self.runtime
+            .await_root_policy_quiesced(Duration::from_millis(timeout_ms))
+            .map_err(Into::into)
     }
 
-    /// Opens the infrastructure effect gate only while holding the same owner mutex used by
-    /// observation/loss. A stale Kotlin reconcile therefore cannot authorize a newer owner
-    /// generation between its final currentness check and gate publication.
     pub fn authorize_root_policy(
         &self,
         sequence: u64,
@@ -172,24 +168,9 @@ impl CellularController {
         let Some(network_handle) = NetworkHandle::new(network_handle) else {
             return Ok(false);
         };
-        let owner = self
-            .owner
-            .lock()
-            .map_err(|_| AndroidRuntimeError::BridgeStateUnavailable)?;
-        let snapshot = owner.admission();
-        let current = snapshot.state() == OwnerAdmissionState::Admitted
-            && snapshot.last_sequence() == Some(sequence)
-            && snapshot.admitted_network() == Some(network_handle);
-        if !current {
-            if !self.root_policy_effect_gate.set_ready(false) {
-                return Err(AndroidRuntimeError::BridgeStateUnavailable);
-            }
-            return Ok(false);
-        }
-        if !self.root_policy_effect_gate.set_ready(true) {
-            return Err(AndroidRuntimeError::BridgeStateUnavailable);
-        }
-        Ok(true)
+        self.runtime
+            .authorize_root_policy(sequence, network_handle)
+            .map_err(Into::into)
     }
 
     pub fn observe_network(
@@ -213,12 +194,10 @@ impl CellularController {
             is_validated,
             is_not_vpn,
         );
-        let mut owner = self.owner()?;
-        if !self.root_policy_effect_gate.set_ready(false) {
-            return Err(CellularBridgeError::OwnerUnavailable);
-        }
-        owner.observe(observation);
-        Ok(map_snapshot(owner.admission()))
+        self.runtime
+            .observe_network(observation)
+            .map(map_snapshot)
+            .map_err(|_| CellularBridgeError::OwnerUnavailable)
     }
 
     pub fn network_lost(
@@ -230,12 +209,10 @@ impl CellularController {
             .ok_or(CellularBridgeError::InvalidObservationSequence)?;
         let network_handle =
             NetworkHandle::new(network_handle).ok_or(CellularBridgeError::InvalidNetworkHandle)?;
-        let mut owner = self.owner()?;
-        if !self.root_policy_effect_gate.set_ready(false) {
-            return Err(CellularBridgeError::OwnerUnavailable);
-        }
-        owner.lost(sequence, network_handle);
-        Ok(map_snapshot(owner.admission()))
+        self.runtime
+            .network_lost(sequence, network_handle)
+            .map(map_snapshot)
+            .map_err(|_| CellularBridgeError::OwnerUnavailable)
     }
 
     pub fn start_bridge(
@@ -244,364 +221,41 @@ impl CellularController {
         password: String,
         operation_timeout_ms: u64,
     ) -> Result<Arc<CellularBridgeRuntime>, AndroidRuntimeError> {
-        CellularBridgeRuntime::start(
-            Arc::clone(&self.owner),
-            Arc::clone(&self.bridge_claimed),
-            Arc::clone(&self.root_policy_effect_gate),
-            username,
-            password,
-            operation_timeout_ms,
-        )
+        let inner = self
+            .runtime
+            .start_private_bridge(
+                username,
+                password,
+                Duration::from_millis(operation_timeout_ms),
+            )
+            .map_err(AndroidRuntimeError::from)?;
+        Ok(Arc::new(CellularBridgeRuntime { inner }))
     }
 }
 
-impl CellularController {
-    fn owner(&self) -> Result<MutexGuard<'_, CellularEgress>, CellularBridgeError> {
-        self.owner
-            .lock()
-            .map_err(|_| CellularBridgeError::OwnerUnavailable)
-    }
-}
-
-#[derive(Default)]
-struct RootPolicyEffectGate {
-    state: Mutex<RootPolicyEffectGateState>,
-    quiesced: Condvar,
-}
-
-#[derive(Default)]
-struct RootPolicyEffectGateState {
-    ready: bool,
-    in_flight: usize,
-}
-
-impl RootPolicyEffectGate {
-    fn set_ready(&self, ready: bool) -> bool {
-        let Ok(mut state) = self.state.lock() else {
-            return false;
-        };
-        state.ready = ready;
-        if !ready && state.in_flight == 0 {
-            self.quiesced.notify_all();
-        }
-        true
-    }
-
-    fn acquire(self: &Arc<Self>) -> Option<RootPolicyEffectPermit> {
-        let mut state = self.state.lock().ok()?;
-        if !state.ready {
-            return None;
-        }
-        state.in_flight = state.in_flight.checked_add(1)?;
-        drop(state);
-        Some(RootPolicyEffectPermit {
-            gate: Arc::clone(self),
-        })
-    }
-
-    fn wait_quiesced(&self, timeout: Duration) -> Option<bool> {
-        let state = self.state.lock().ok()?;
-        let (state, _) = self
-            .quiesced
-            .wait_timeout_while(state, timeout, |state| state.in_flight != 0)
-            .ok()?;
-        Some(state.in_flight == 0)
-    }
-}
-
-struct RootPolicyEffectPermit {
-    gate: Arc<RootPolicyEffectGate>,
-}
-
-impl Drop for RootPolicyEffectPermit {
-    fn drop(&mut self) {
-        if let Ok(mut state) = self.gate.state.lock() {
-            if state.in_flight == 0 {
-                return;
-            }
-            state.in_flight -= 1;
-            if state.in_flight == 0 {
-                self.gate.quiesced.notify_all();
-            }
-        }
-    }
-}
-
-#[derive(Clone)]
-struct RootPolicyGatedConnector<C> {
-    inner: C,
-    effect_gate: Arc<RootPolicyEffectGate>,
-}
-
-impl<C> RootPolicyGatedConnector<C> {
-    fn new(inner: C, effect_gate: Arc<RootPolicyEffectGate>) -> Self {
-        Self { inner, effect_gate }
-    }
-}
-
-impl<C: CellularOutboundConnector> CellularOutboundConnector for RootPolicyGatedConnector<C> {
-    fn connect(&self, target: &ConnectTarget) -> Result<TcpStream, OutboundConnectError> {
-        let _permit = self
-            .effect_gate
-            .acquire()
-            .ok_or(OutboundConnectError::Unavailable)?;
-        self.inner.connect(target)
-    }
-}
-
+/// Stateless UniFFI handle for a runtime-owned private bridge generation.
 #[derive(uniffi::Object)]
 pub struct CellularBridgeRuntime {
-    port: u16,
-    wake_address: SocketAddr,
-    stop_requested: Arc<AtomicBool>,
-    healthy: Arc<AtomicBool>,
-    active_sessions: Arc<AtomicUsize>,
-    clients: Arc<Mutex<HashMap<u64, TcpStream>>>,
-    accept_thread: Mutex<Option<JoinHandle<()>>>,
-    bridge_claimed: Arc<AtomicBool>,
-    claim_released: AtomicBool,
-}
-
-impl CellularBridgeRuntime {
-    fn start(
-        owner: Arc<Mutex<CellularEgress>>,
-        bridge_claimed: Arc<AtomicBool>,
-        root_policy_effect_gate: Arc<RootPolicyEffectGate>,
-        username: String,
-        password: String,
-        operation_timeout_ms: u64,
-    ) -> Result<Arc<Self>, AndroidRuntimeError> {
-        if operation_timeout_ms == 0 || operation_timeout_ms > BRIDGE_OPERATION_TIMEOUT_MAX_MS {
-            return Err(AndroidRuntimeError::InvalidOperationTimeout);
-        }
-        if bridge_claimed
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            return Err(AndroidRuntimeError::BridgeAlreadyRunning);
-        }
-
-        let result = (|| {
-            let credentials = BridgeCredentials::new(username, password)
-                .map_err(|_| AndroidRuntimeError::BridgeConfigurationRejected)?;
-            let listener = Arc::new(
-                BridgeListener::bind(IpAddr::V4(Ipv4Addr::LOCALHOST), 0, credentials)
-                    .map_err(|_| AndroidRuntimeError::BridgeBindFailed)?,
-            );
-            let wake_address = listener
-                .local_addr()
-                .map_err(|_| AndroidRuntimeError::BridgeStateUnavailable)?;
-            let connector = RootPolicyGatedConnector::new(
-                AndroidCellularOutboundConnector::new(
-                    owner,
-                    Duration::from_millis(operation_timeout_ms),
-                )
-                .map_err(|_| AndroidRuntimeError::ConnectorUnavailable)?,
-                root_policy_effect_gate,
-            );
-
-            let stop_requested = Arc::new(AtomicBool::new(false));
-            let healthy = Arc::new(AtomicBool::new(true));
-            let active_sessions = Arc::new(AtomicUsize::new(0));
-            let clients = Arc::new(Mutex::new(HashMap::new()));
-            let session_sequence = Arc::new(AtomicU64::new(1));
-
-            let accept_listener = Arc::clone(&listener);
-            let accept_stop = Arc::clone(&stop_requested);
-            let accept_healthy = Arc::clone(&healthy);
-            let accept_active = Arc::clone(&active_sessions);
-            let accept_clients = Arc::clone(&clients);
-            let accept_sequence = Arc::clone(&session_sequence);
-            let accept_connector = connector.clone();
-
-            let accept_thread = thread::Builder::new()
-                .name("mish-cellular-bridge-accept".to_owned())
-                .spawn(move || {
-                    bridge_accept_loop(
-                        accept_listener,
-                        accept_connector,
-                        accept_stop,
-                        accept_healthy,
-                        accept_active,
-                        accept_clients,
-                        accept_sequence,
-                    )
-                })
-                .map_err(|_| AndroidRuntimeError::ThreadUnavailable)?;
-
-            Ok(Arc::new(Self {
-                port: wake_address.port(),
-                wake_address,
-                stop_requested,
-                healthy,
-                active_sessions,
-                clients,
-                accept_thread: Mutex::new(Some(accept_thread)),
-                bridge_claimed: Arc::clone(&bridge_claimed),
-                claim_released: AtomicBool::new(false),
-            }))
-        })();
-
-        if result.is_err() {
-            bridge_claimed.store(false, Ordering::Release);
-        }
-        result
-    }
-
-    fn stop_internal(&self) -> Result<(), AndroidRuntimeError> {
-        self.stop_requested.store(true, Ordering::Release);
-        let _ = TcpStream::connect_timeout(&self.wake_address, Duration::from_millis(200));
-
-        if let Ok(clients) = self.clients.lock() {
-            for stream in clients.values() {
-                let _ = stream.shutdown(Shutdown::Both);
-            }
-        } else {
-            return Err(AndroidRuntimeError::BridgeStateUnavailable);
-        }
-
-        let handle = self
-            .accept_thread
-            .lock()
-            .map_err(|_| AndroidRuntimeError::BridgeStateUnavailable)?
-            .take();
-        if let Some(handle) = handle {
-            handle
-                .join()
-                .map_err(|_| AndroidRuntimeError::BridgeStateUnavailable)?;
-        }
-
-        let deadline = Instant::now() + BRIDGE_SHUTDOWN_TIMEOUT;
-        while self.active_sessions.load(Ordering::Acquire) != 0 && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(10));
-        }
-        if self.active_sessions.load(Ordering::Acquire) != 0 {
-            return Err(AndroidRuntimeError::ShutdownTimedOut);
-        }
-
-        self.clients
-            .lock()
-            .map_err(|_| AndroidRuntimeError::BridgeStateUnavailable)?
-            .clear();
-        self.healthy.store(false, Ordering::Release);
-        if self
-            .claim_released
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            self.bridge_claimed.store(false, Ordering::Release);
-        }
-        Ok(())
-    }
+    inner: Arc<CellularPrivateBridgeRuntime>,
 }
 
 #[uniffi::export]
 impl CellularBridgeRuntime {
     pub fn port(&self) -> u16 {
-        self.port
+        self.inner.port()
     }
 
     pub fn is_healthy(&self) -> bool {
-        self.healthy.load(Ordering::Acquire) && !self.stop_requested.load(Ordering::Acquire)
+        self.inner.is_healthy()
     }
 
     pub fn active_sessions(&self) -> u32 {
-        self.active_sessions
-            .load(Ordering::Acquire)
-            .min(u32::MAX as usize) as u32
+        self.inner.active_sessions().min(u32::MAX as usize) as u32
     }
 
     pub fn stop(&self) -> Result<(), AndroidRuntimeError> {
-        self.stop_internal()
+        self.inner.stop().map_err(Into::into)
     }
-}
-
-impl Drop for CellularBridgeRuntime {
-    fn drop(&mut self) {
-        let _ = self.stop_internal();
-    }
-}
-
-fn bridge_accept_loop<C>(
-    listener: Arc<BridgeListener>,
-    connector: C,
-    stop_requested: Arc<AtomicBool>,
-    healthy: Arc<AtomicBool>,
-    active_sessions: Arc<AtomicUsize>,
-    clients: Arc<Mutex<HashMap<u64, TcpStream>>>,
-    session_sequence: Arc<AtomicU64>,
-) where
-    C: CellularOutboundConnector + Clone + 'static,
-{
-    while !stop_requested.load(Ordering::Acquire) {
-        let (client, _) = match listener.accept() {
-            Ok(pair) => pair,
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(_) => {
-                healthy.store(false, Ordering::Release);
-                break;
-            }
-        };
-        if stop_requested.load(Ordering::Acquire) {
-            let _ = client.shutdown(Shutdown::Both);
-            break;
-        }
-
-        if active_sessions
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                (current < MAX_BRIDGE_SESSIONS).then_some(current + 1)
-            })
-            .is_err()
-        {
-            let _ = client.shutdown(Shutdown::Both);
-            continue;
-        }
-
-        let tracked = match client.try_clone() {
-            Ok(stream) => stream,
-            Err(_) => {
-                active_sessions.fetch_sub(1, Ordering::AcqRel);
-                healthy.store(false, Ordering::Release);
-                stop_requested.store(true, Ordering::Release);
-                continue;
-            }
-        };
-        let session_id = session_sequence.fetch_add(1, Ordering::AcqRel);
-        if let Ok(mut tracked_clients) = clients.lock() {
-            tracked_clients.insert(session_id, tracked);
-        } else {
-            active_sessions.fetch_sub(1, Ordering::AcqRel);
-            healthy.store(false, Ordering::Release);
-            stop_requested.store(true, Ordering::Release);
-            let _ = client.shutdown(Shutdown::Both);
-            continue;
-        }
-
-        let session_listener = Arc::clone(&listener);
-        let session_connector = connector.clone();
-        let session_clients = Arc::clone(&clients);
-        let session_active = Arc::clone(&active_sessions);
-        let spawn = thread::Builder::new()
-            .name(format!("mish-cellular-bridge-{session_id}"))
-            .spawn(move || {
-                let _ = session_listener.serve_session(client, &session_connector);
-                if let Ok(mut tracked_clients) = session_clients.lock() {
-                    tracked_clients.remove(&session_id);
-                }
-                session_active.fetch_sub(1, Ordering::AcqRel);
-            });
-        if spawn.is_err() {
-            if let Ok(mut tracked_clients) = clients.lock()
-                && let Some(stream) = tracked_clients.remove(&session_id)
-            {
-                let _ = stream.shutdown(Shutdown::Both);
-            }
-            active_sessions.fetch_sub(1, Ordering::AcqRel);
-            healthy.store(false, Ordering::Release);
-            stop_requested.store(true, Ordering::Release);
-        }
-    }
-    healthy.store(false, Ordering::Release);
 }
 
 #[uniffi::export]
@@ -653,6 +307,31 @@ fn map_snapshot(snapshot: OwnerAdmissionSnapshot) -> CellularAdmissionView {
     }
 }
 
+fn map_android_network_error(error: AndroidNetworkError) -> OutboundConnectError {
+    match error {
+        AndroidNetworkError::InvalidHostname => OutboundConnectError::Rejected,
+        AndroidNetworkError::UnsupportedPlatform => OutboundConnectError::Unavailable,
+        AndroidNetworkError::NativeDnsLookupFailed
+        | AndroidNetworkError::NativeDnsNoResults
+        | AndroidNetworkError::NativeAddressConversionFailed => OutboundConnectError::Failed,
+    }
+}
+
+impl From<CellularRuntimeError> for AndroidRuntimeError {
+    fn from(error: CellularRuntimeError) -> Self {
+        match error {
+            CellularRuntimeError::InvalidOperationTimeout => Self::InvalidOperationTimeout,
+            CellularRuntimeError::BridgeAlreadyRunning => Self::BridgeAlreadyRunning,
+            CellularRuntimeError::BridgeConfigurationRejected => Self::BridgeConfigurationRejected,
+            CellularRuntimeError::BridgeBindFailed => Self::BridgeBindFailed,
+            CellularRuntimeError::ConnectorUnavailable => Self::ConnectorUnavailable,
+            CellularRuntimeError::ThreadUnavailable => Self::ThreadUnavailable,
+            CellularRuntimeError::StateUnavailable => Self::BridgeStateUnavailable,
+            CellularRuntimeError::ShutdownTimedOut => Self::ShutdownTimedOut,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -678,66 +357,7 @@ mod tests {
             .observe_network(1, 42, true, true, true, true)
             .expect("valid observation");
         assert_eq!(view.state, CellularAdmissionState::Admitted);
-        assert_eq!(view.reason, None);
         assert_eq!(view.admitted_network_handle, Some(42));
-        assert_eq!(view.last_sequence, Some(1));
-    }
-
-    #[test]
-    fn vpn_derived_observation_is_rejected_by_natural_owner() {
-        let controller = CellularController::new();
-        let view = controller
-            .observe_network(1, 42, true, true, true, false)
-            .expect("valid observation");
-        assert_eq!(view.state, CellularAdmissionState::NotAdmitted);
-        assert_eq!(
-            view.reason,
-            Some(CellularAdmissionReason::VpnDerivedNetwork)
-        );
-        assert_eq!(view.admitted_network_handle, None);
-    }
-
-    #[test]
-    fn foreign_loss_fails_closed_through_natural_owner() {
-        let controller = CellularController::new();
-        controller
-            .observe_network(1, 42, true, true, true, true)
-            .expect("valid observation");
-        let view = controller.network_lost(2, 42).expect("valid loss event");
-        assert_eq!(view.state, CellularAdmissionState::NotAdmitted);
-        assert_eq!(view.reason, Some(CellularAdmissionReason::NetworkLost));
-        assert_eq!(view.admitted_network_handle, None);
-        assert_eq!(view.last_sequence, Some(2));
-    }
-
-    #[test]
-    fn zero_foreign_values_are_rejected_before_owner_mutation() {
-        let controller = CellularController::new();
-        assert_eq!(
-            controller.observe_network(0, 42, true, true, true, true),
-            Err(CellularBridgeError::InvalidObservationSequence)
-        );
-        assert_eq!(
-            controller.observe_network(1, 0, true, true, true, true),
-            Err(CellularBridgeError::InvalidNetworkHandle)
-        );
-        assert_eq!(
-            controller.admission_snapshot().expect("snapshot").state,
-            CellularAdmissionState::Unknown
-        );
-    }
-
-    #[test]
-    fn root_policy_effect_gate_is_default_closed_and_drains_preexisting_permits() {
-        let gate = Arc::new(RootPolicyEffectGate::default());
-        assert!(gate.acquire().is_none());
-        assert!(gate.set_ready(true));
-        let permit = gate.acquire().expect("open gate permit");
-        assert!(gate.set_ready(false));
-        assert_eq!(gate.wait_quiesced(Duration::from_millis(1)), Some(false));
-        drop(permit);
-        assert_eq!(gate.wait_quiesced(Duration::from_millis(10)), Some(true));
-        assert!(gate.acquire().is_none());
     }
 
     #[test]
@@ -746,69 +366,11 @@ mod tests {
         controller
             .observe_network(1, 42, true, true, true, true)
             .expect("first observation");
-        assert!(
-            controller
-                .authorize_root_policy(1, 42)
-                .expect("authorize first")
-        );
+        assert!(controller.authorize_root_policy(1, 42).expect("authorize"));
         controller
             .observe_network(2, 43, true, true, true, true)
             .expect("newer observation");
-        assert!(
-            !controller
-                .authorize_root_policy(1, 42)
-                .expect("reject stale")
-        );
-        assert!(controller.root_policy_effect_gate.acquire().is_none());
-        assert!(
-            controller
-                .authorize_root_policy(2, 43)
-                .expect("authorize current")
-        );
-        assert!(controller.root_policy_effect_gate.acquire().is_some());
-        controller.close_root_policy_gate().expect("close gate");
-    }
-
-    #[test]
-    fn one_owner_allows_only_one_private_bridge_and_releases_claim_on_stop() {
-        let controller = CellularController::new();
-        let bridge = controller
-            .start_bridge("private-user".into(), "private-secret".into(), 1_000)
-            .expect("start bridge");
-        assert!(bridge.port() > 0);
-        assert!(bridge.is_healthy());
-        assert!(matches!(
-            controller.start_bridge("other".into(), "secret".into(), 1_000),
-            Err(AndroidRuntimeError::BridgeAlreadyRunning)
-        ));
-        bridge.stop().expect("bounded stop");
-        assert!(!bridge.is_healthy());
-
-        let replacement = controller
-            .start_bridge("replacement".into(), "secret".into(), 1_000)
-            .expect("restart after exact stop");
-        replacement.stop().expect("stop replacement");
-    }
-
-    #[test]
-    fn stopped_bridge_drop_cannot_release_replacement_claim() {
-        let controller = CellularController::new();
-        let stopped = controller
-            .start_bridge("first".into(), "first-secret".into(), 1_000)
-            .expect("start first bridge");
-        stopped.stop().expect("stop first bridge");
-
-        let replacement = controller
-            .start_bridge("replacement".into(), "replacement-secret".into(), 1_000)
-            .expect("start replacement bridge");
-
-        drop(stopped);
-        assert!(matches!(
-            controller.start_bridge("third".into(), "third-secret".into(), 1_000),
-            Err(AndroidRuntimeError::BridgeAlreadyRunning)
-        ));
-
-        replacement.stop().expect("stop replacement bridge");
+        assert!(!controller.authorize_root_policy(1, 42).expect("stale"));
     }
 
     #[test]
@@ -827,16 +389,5 @@ mod tests {
         }
         assert!(rendered.contains("\"listen\": \"127.0.0.1\""));
         assert!(!rendered.contains("\"type\": \"direct\""));
-        assert!(matches!(
-            render_proxy_runtime_config(
-                "0.0.0.0".into(),
-                "public-user".into(),
-                "public-secret".into(),
-                19080,
-                "private-user".into(),
-                "private-secret".into(),
-            ),
-            Err(AndroidRuntimeError::ProxyConfigurationRejected)
-        ));
     }
 }

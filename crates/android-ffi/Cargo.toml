@@ -16,6 +16,7 @@ name = "uniffi-bindgen"
 path = "src/bin/uniffi-bindgen.rs"
 
 [dependencies]
+mish-android-network = { path = "../android-network" }
 mish-cellular = { path = "../cellular" }
 mish-cellular-egress-bridge = { path = "../cellular-egress-bridge" }
 mish-credentials = { path = "../credentials" }
