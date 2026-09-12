@@ -5,4 +5,5 @@
     <string name="proxy_runtime_channel_description">Keeps the authenticated mobile proxy runtime available.</string>
     <string name="proxy_runtime_notification_title">Mobile Proxy MISH is running</string>
     <string name="proxy_runtime_notification_text">Proxy runtime is active and remains fail-closed without cellular egress.</string>
+    <string name="proxy_runtime_stop_action">Stop proxy</string>
 </resources>
