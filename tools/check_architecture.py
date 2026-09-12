@@ -79,6 +79,26 @@ def main() -> None:
     ):
         forbid(ffi, symbol, "android-ffi must remain a typed adapter rather than a runtime owner")
 
+    # Mesh Transport runtime/lifecycle state belongs to crates/transport, never the FFI seam.
+    mesh_ffi = "crates/android-ffi/src/transport_ffi.rs"
+    require(
+        mesh_ffi,
+        "MeshTransportCoordinator",
+        "Mesh FFI must delegate runtime coordination to the Transport owner",
+    )
+    for symbol in (
+        "struct MeshTransportState",
+        "MeshEndpointOwner",
+        "MeshIngressRuntime",
+        "ingress_epoch",
+        "cleanup_failed",
+    ):
+        forbid(
+            mesh_ffi,
+            symbol,
+            "Mesh admission/ingress lifecycle state must not drift back into android-ffi",
+        )
+
     # Proxy Serving is the sole product listener-fact owner.
     proxy = "crates/proxy/src/lib.rs"
     require(proxy, "pub const fn canonical_listeners", "Proxy Serving must expose its canonical listener contract")

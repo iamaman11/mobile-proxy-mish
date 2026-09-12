@@ -196,7 +196,7 @@ impl RuntimeLifecycle {
         disposition
     }
 
-    pub const fn can_mutate_stopped_generation(self) -> bool {
+    pub fn can_mutate_stopped_generation(self) -> bool {
         self.state == RuntimeLifecycleState::Stopped && !self.generation_requires_replacement
     }
 
