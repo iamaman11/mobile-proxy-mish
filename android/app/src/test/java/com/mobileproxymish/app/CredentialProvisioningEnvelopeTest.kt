@@ -1,18 +1,33 @@
 package com.mobileproxymish.app
 
-import java.nio.charset.StandardCharsets
 import java.security.KeyPairGenerator
 import java.security.spec.MGF1ParameterSpec
 import javax.crypto.Cipher
 import javax.crypto.spec.OAEPParameterSpec
 import javax.crypto.spec.PSource
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CredentialProvisioningEnvelopeTest {
     @Test
-    fun envelopeBindsExactOwnerVersionAndEphemeralChallenge() {
+    fun protobufStateRoundTripsCanonicalOwnerMetadata() {
+        assertArrayEquals(byteArrayOf(0x08, 0x07), CredentialContractV1.encodeState(7uL, false))
+        assertArrayEquals(
+            byteArrayOf(0x08, 0x07, 0x10, 0x01),
+            CredentialContractV1.encodeState(7uL, true),
+        )
+        assertEquals(
+            CredentialContractV1.State(version = 7uL, revoked = true),
+            CredentialContractV1.decodeState(byteArrayOf(0x08, 0x07, 0x10, 0x01)),
+        )
+        assertTrue(runCatching { CredentialContractV1.decodeState(byteArrayOf(0x10, 0x01)) }.isFailure)
+    }
+
+    @Test
+    fun envelopeBindsExactOwnerVersionAndEphemeralChallengeAsProtobuf() {
         val keyPair = rsaKeyPair(3072)
         val snapshot = ExternalProxyCredentialSnapshot(
             version = 7uL,
@@ -30,20 +45,17 @@ class CredentialProvisioningEnvelopeTest {
             clientPublicKeyDer = keyPair.public.encoded,
         )
         val plaintext = decrypt(ciphertext, keyPair.private.encoded)
+        val decoded = CredentialContractV1.decodeProvisioningEnvelope(plaintext)
 
-        assertTrue(plaintext.contains("\"v\":1"))
-        assertTrue(plaintext.contains("\"cv\":\"7\""))
-        assertTrue(plaintext.contains("\"id\":\"external-proxy-v7\""))
-        assertTrue(
-            plaintext.contains(
-                "\"c\":\"000102030405060708090a0b0c0d0e0f" +
-                    "101112131415161718191a1b1c1d1e1f\"",
-            ),
-        )
-        assertTrue(plaintext.contains("\"u\":\"${snapshot.credentials.username}\""))
-        assertTrue(plaintext.contains("\"p\":\"${snapshot.credentials.password}\""))
+        assertEquals(1u, decoded.schemaVersion)
+        assertEquals(7uL, decoded.credentialVersion)
+        assertEquals("external-proxy-v7", decoded.credentialId)
+        assertArrayEquals(challenge, decoded.challenge)
+        assertEquals(snapshot.credentials.username, decoded.username)
+        assertEquals(snapshot.credentials.password, decoded.password)
         assertFalse(snapshot.toString().contains(snapshot.credentials.username))
         assertFalse(snapshot.toString().contains(snapshot.credentials.password))
+        assertFalse(String(plaintext, Charsets.UTF_8).startsWith("{"))
 
         val unrelatedKey = rsaKeyPair(3072)
         val wrongKeyDecrypt = runCatching {
@@ -53,7 +65,7 @@ class CredentialProvisioningEnvelopeTest {
     }
 
     @Test
-    fun envelopeRejectsWeakKeyAndMalformedChallenge() {
+    fun envelopeRejectsWeakKeyMalformedChallengeAndIdentityMismatch() {
         val snapshot = ExternalProxyCredentialSnapshot(
             version = 1uL,
             credentialId = "external-proxy-v1",
@@ -83,13 +95,24 @@ class CredentialProvisioningEnvelopeTest {
                 )
             }.isFailure,
         )
+        assertTrue(
+            runCatching {
+                CredentialContractV1.encodeProvisioningEnvelope(
+                    credentialVersion = 1uL,
+                    credentialId = "external-proxy-v2",
+                    challenge = ByteArray(32),
+                    username = snapshot.credentials.username,
+                    password = snapshot.credentials.password,
+                )
+            }.isFailure,
+        )
     }
 
     private fun rsaKeyPair(bits: Int) = KeyPairGenerator.getInstance("RSA")
         .apply { initialize(bits) }
         .generateKeyPair()
 
-    private fun decrypt(ciphertext: ByteArray, privateKeyDer: ByteArray): String {
+    private fun decrypt(ciphertext: ByteArray, privateKeyDer: ByteArray): ByteArray {
         val privateKey = java.security.KeyFactory.getInstance("RSA")
             .generatePrivate(java.security.spec.PKCS8EncodedKeySpec(privateKeyDer))
         val cipher = Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding")
@@ -103,6 +126,6 @@ class CredentialProvisioningEnvelopeTest {
                 PSource.PSpecified.DEFAULT,
             ),
         )
-        return String(cipher.doFinal(ciphertext), StandardCharsets.UTF_8)
+        return cipher.doFinal(ciphertext)
     }
 }
