@@ -32,6 +32,17 @@
                 android:value="authenticated mobile proxy runtime" />
         </service>
 
+        <!--
+             Deliberately exported only to callers holding the platform DUMP permission. The ADB
+             shell holds that development-tool permission; ordinary third-party apps do not. No
+             intent filter is declared, so provisioning also requires this exact component name.
+        -->
+        <receiver
+            android:name=".CredentialProvisioningReceiver"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
+
         <receiver
             android:name=".ProxyRuntimeStartReceiver"
             android:enabled="true"

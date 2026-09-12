@@ -15,12 +15,21 @@ import javax.crypto.KeyGenerator
 import javax.crypto.Mac
 import javax.crypto.SecretKey
 
+/** Exact owner version plus in-memory external proxy material for one bounded provisioning read. */
+internal class ExternalProxyCredentialSnapshot(
+    val version: ULong,
+    val credentialId: String,
+    val credentials: ProxyRuntimeCredentials,
+) {
+    override fun toString(): String = "ExternalProxyCredentialSnapshot(<redacted>)"
+}
+
 /**
  * Narrow Android platform adapter for the Rust Credentials / Secrets natural owner.
  *
  * Durable secret bytes are represented only by a non-exportable Android Keystore HMAC root.
  * SharedPreferences contains owner-approved non-secret version/revocation metadata only. Derived
- * proxy username/password values exist in memory only for the current runtime start transaction.
+ * proxy username/password values exist in memory only for a bounded runtime/provisioning read.
  */
 internal class ExternalProxyCredentialStore(
     context: Context,
@@ -32,26 +41,16 @@ internal class ExternalProxyCredentialStore(
 
     @Synchronized
     override fun currentCredential(): ProxyRuntimeCredentials? = runCatching {
-        val stored = loadOrInitialize()
-        val derivation = externalCredentialDerivation(
-            version = stored.state.version,
-            revoked = stored.state.revoked,
-        )
-        check(stored.root.encoded == null) {
-            "Android Keystore HMAC root unexpectedly exportable"
-        }
-        val usernameMac = hmac(stored.root, derivation.usernameContext)
-        val passwordMac = hmac(stored.root, derivation.passwordContext)
-        val material = externalCredentialMaterialize(
-            version = stored.state.version,
-            revoked = stored.state.revoked,
-            usernameMac = usernameMac,
-            passwordMac = passwordMac,
-        )
-        ProxyRuntimeCredentials(
-            username = material.username,
-            password = material.password,
-        )
+        materializeCurrent().credentials
+    }.getOrNull()
+
+    /**
+     * Returns one exact owner-version snapshot for the ADB-only Windows provisioning transaction.
+     * This is read-only and serialized with rotation/revocation by this store's monitor.
+     */
+    @Synchronized
+    fun currentProvisioningSnapshot(): ExternalProxyCredentialSnapshot? = runCatching {
+        materializeCurrent()
     }.getOrNull()
 
     /**
@@ -83,6 +82,33 @@ internal class ExternalProxyCredentialStore(
             ),
         )
     }.getOrDefault(false)
+
+    private fun materializeCurrent(): ExternalProxyCredentialSnapshot {
+        val stored = loadOrInitialize()
+        val derivation = externalCredentialDerivation(
+            version = stored.state.version,
+            revoked = stored.state.revoked,
+        )
+        check(stored.root.encoded == null) {
+            "Android Keystore HMAC root unexpectedly exportable"
+        }
+        val usernameMac = hmac(stored.root, derivation.usernameContext)
+        val passwordMac = hmac(stored.root, derivation.passwordContext)
+        val material = externalCredentialMaterialize(
+            version = stored.state.version,
+            revoked = stored.state.revoked,
+            usernameMac = usernameMac,
+            passwordMac = passwordMac,
+        )
+        return ExternalProxyCredentialSnapshot(
+            version = stored.state.version,
+            credentialId = stored.state.credentialId,
+            credentials = ProxyRuntimeCredentials(
+                username = material.username,
+                password = material.password,
+            ),
+        )
+    }
 
     /**
      * Creates the Keystore root only for the first complete owner state. Once metadata exists,
