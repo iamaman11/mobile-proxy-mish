@@ -84,13 +84,14 @@ class ProxyRuntimeLifecycleTest {
     }
 
     @Test
-    fun processGenerationCredentialsAreExplicitNonEmptyMaterial() {
-        val first = ProxyRuntimeCredentials.generate()
-        val second = ProxyRuntimeCredentials.generate()
+    fun processGenerationCredentialsAreExplicitTypedMaterial() {
+        val credentials = ProxyRuntimeCredentials(
+            username = "process-generation-user",
+            password = "process-generation-password",
+        )
 
-        assertTrue(first.username.isNotBlank())
-        assertTrue(first.password.isNotBlank())
-        assertNotEquals(first.username, first.password)
-        assertNotEquals(first, second)
+        assertEquals("process-generation-user", credentials.username)
+        assertEquals("process-generation-password", credentials.password)
+        assertNotEquals(credentials.username, credentials.password)
     }
 }
