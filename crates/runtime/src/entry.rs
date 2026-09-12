@@ -1,7 +1,7 @@
 //! Runtime Lifecycle natural-owner capability.
 //!
-//! The crate root keeps vendor-neutral lifecycle policy separate from the transitional
-//! cellular connector implementation while preserving the existing public connector API.
+//! Vendor-neutral lifecycle and Cellular Egress runtime coordination live here. Platform DNS,
+//! Android process APIs, root-shell mechanics, UI and vendor JSON remain outside this crate.
 
 mod lifecycle;
 pub use lifecycle::*;
@@ -9,3 +9,6 @@ pub use lifecycle::*;
 #[path = "lib.rs"]
 mod cellular_connector;
 pub use cellular_connector::*;
+
+mod cellular_runtime;
+pub use cellular_runtime::*;
