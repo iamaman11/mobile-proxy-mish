@@ -48,7 +48,9 @@ mark 0x800000  -> IPv4 lookup 9540 -> guard 9541
 mark 0x1000000 -> IPv4 lookup 9560 -> guard 9561
 ```
 
-The adapter snapshots the complete relevant RPDB/mangle state and selects the first candidate whose mark bit and priority pair do not overlap any foreign object. The selected identity is retained for the live policy lifecycle and can be rediscovered from the exact materialized `MISH_EGRESS_V1` rules after process restart. If no candidate is clean, or materialized PRODUCT state is ambiguous, reconciliation returns typed `ReservedPolicyCollision` and publishes nothing new.
+The adapter snapshots the complete IPv4/IPv6 RPDB and complete mangle tables, but those snapshots have two different audit scopes. Candidate lookup/guard priorities and `fwmark` masks are audited against the **complete RPDB**. Candidate mangle MARK/CONNMARK collision authority is only `OUTPUT` plus every user-defined chain transitively reachable from `OUTPUT` through actual jump/goto edges. An overlapping foreign rule that exists only under unreachable `INPUT` or `FORWARD` state is therefore not, by itself, a candidate collision. Reachable malformed or ambiguous mark/chain semantics fail closed. Exact `MISH_EGRESS_V1` ownership remains globally strict so a foreign reference cannot make PRODUCT rewrite a chain used outside its own OUTPUT path.
+
+The first candidate clean under those audits is selected. The selected identity is retained for the live policy lifecycle and can be rediscovered from the exact materialized `MISH_EGRESS_V1` rules after process restart. If no candidate is clean, or materialized PRODUCT state is ambiguous, reconciliation returns typed `ReservedPolicyCollision` and publishes nothing new.
 
 This is intentionally **not** a generic mark allocator or registry. Candidate count/order is versioned product code; there is no durable mutable allocation database and no search outside the bounded set.
 
@@ -102,13 +104,14 @@ This avoids relying on unproven Android-specific `iptables-restore` transaction 
 
 For each candidate, both its mark bit and its lookup/guard priorities are reserved only after a fresh complete audit. Collision includes:
 
-- a foreign RPDB object at either candidate priority;
-- any foreign RPDB `fwmark` whose mask overlaps the candidate bit;
-- any foreign mangle MARK/CONNMARK rule whose read/write mask overlaps the candidate bit, even if the foreign value for that bit is zero;
-- foreign or mismatched content under `MISH_EGRESS_V1`;
+- a foreign RPDB object at either candidate priority anywhere in the complete RPDB;
+- any foreign RPDB `fwmark` whose mask overlaps the candidate bit anywhere in the complete RPDB;
+- any foreign mangle MARK/CONNMARK rule whose read/write mask overlaps the candidate bit **and whose chain is `OUTPUT` or transitively reachable from `OUTPUT`**;
+- malformed/ambiguous mark or jump/goto semantics on that reachable mangle path;
+- foreign or mismatched content under `MISH_EGRESS_V1`, or any unexpected foreign reference to that PRODUCT-owned chain;
 - contradictory candidate-specific materialized state.
 
-PRODUCT never deletes, rewrites, reorders or repurposes a foreign object merely to make a candidate fit. Collision of one candidate advances only to the next bounded candidate. Collision/ambiguity of all candidates fails closed without publication.
+Unreachable foreign `INPUT`/`FORWARD` mark state is preserved and does not consume a candidate merely because its mask overlaps. PRODUCT never deletes, rewrites, reorders or repurposes a foreign object merely to make a candidate fit. Collision of one candidate advances only to the next bounded candidate. Collision/ambiguity of all candidates fails closed without publication.
 
 The original NEW-only `0x200000` selector is recognized only as a narrow one-way migration signature and is removed after the named flow policy is safely established. It does not grant ownership over arbitrary foreign `0x200000` state.
 

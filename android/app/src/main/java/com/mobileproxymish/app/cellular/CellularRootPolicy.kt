@@ -291,12 +291,12 @@ class CellularRootPolicy internal constructor(
     private fun containsForeignReservedMangle(
         lines: List<String>,
         allowed: Set<String>,
-    ): Boolean = lines.any { line ->
-        val trimmed = line.trim()
-        val touchesIdentity = trimmed.contains(MISH_CHAIN)
-        val touchesReservedMark = lineTouchesReservedMark(trimmed)
-        (touchesIdentity || touchesReservedMark) && trimmed !in allowed
-    }
+    ): Boolean = OutputReachableMangleAudit.hasReservedCollision(
+        lines = lines,
+        allowedProductLines = allowed,
+        reservedMark = MARK_VALUE,
+        ownedChain = MISH_CHAIN,
+    )
 
     private fun rpdbLineTouchesReservedMark(line: String): Boolean {
         val tokens = line.split(WHITESPACE_REGEX)
