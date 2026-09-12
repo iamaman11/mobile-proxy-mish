@@ -44,6 +44,50 @@ enum class ProxyRuntimeFailure {
 }
 
 /**
+ * Pure process-generation lifecycle owner used by the Android effect supervisor.
+ *
+ * It owns only runtime lifecycle projection. It does not own proxy protocol/auth, cellular
+ * admission, root-policy currentness, child-process effects, or persistence.
+ */
+internal class ProxyRuntimeLifecycle {
+    private val mutableSnapshot = MutableStateFlow<ProxyRuntimeSnapshot>(ProxyRuntimeSnapshot.Stopped)
+
+    val snapshot: StateFlow<ProxyRuntimeSnapshot>
+        get() = mutableSnapshot.asStateFlow()
+
+    @Synchronized
+    fun requestStart(): Boolean = when (mutableSnapshot.value) {
+        ProxyRuntimeSnapshot.Starting,
+        ProxyRuntimeSnapshot.Running,
+        -> false
+
+        ProxyRuntimeSnapshot.Stopped,
+        is ProxyRuntimeSnapshot.Failed,
+        -> {
+            mutableSnapshot.value = ProxyRuntimeSnapshot.Starting
+            true
+        }
+    }
+
+    @Synchronized
+    fun markRunning(): Boolean {
+        if (mutableSnapshot.value != ProxyRuntimeSnapshot.Starting) return false
+        mutableSnapshot.value = ProxyRuntimeSnapshot.Running
+        return true
+    }
+
+    @Synchronized
+    fun markFailed(reason: ProxyRuntimeFailure) {
+        mutableSnapshot.value = ProxyRuntimeSnapshot.Failed(reason)
+    }
+
+    @Synchronized
+    fun markStopped() {
+        mutableSnapshot.value = ProxyRuntimeSnapshot.Stopped
+    }
+}
+
+/**
  * Small Android composition owner for the already-approved runtime pieces:
  *
  * loopback sing-box (:1080/:1081/:3128)
@@ -63,7 +107,7 @@ class ProxyRuntimeSupervisor(
     private val configFile = File(runtimeDir, CONFIG_FILE)
     private val pidFile = File(runtimeDir, PID_FILE)
     private val binaryFile = File(appContext.applicationInfo.nativeLibraryDir, SING_BOX_LIBRARY)
-    private val mutableSnapshot = MutableStateFlow<ProxyRuntimeSnapshot>(ProxyRuntimeSnapshot.Stopped)
+    private val lifecycle = ProxyRuntimeLifecycle()
     private val closed = AtomicBoolean(false)
     private val lock = Any()
     private val executor = Executors.newSingleThreadExecutor { task ->
@@ -77,25 +121,14 @@ class ProxyRuntimeSupervisor(
     private var stopping = false
 
     val snapshot: StateFlow<ProxyRuntimeSnapshot>
-        get() = mutableSnapshot.asStateFlow()
+        get() = lifecycle.snapshot
 
     fun start() {
-        if (closed.get()) return
-        synchronized(lock) {
-            when (mutableSnapshot.value) {
-                ProxyRuntimeSnapshot.Starting,
-                ProxyRuntimeSnapshot.Running,
-                -> return
-
-                ProxyRuntimeSnapshot.Stopped,
-                is ProxyRuntimeSnapshot.Failed,
-                -> mutableSnapshot.value = ProxyRuntimeSnapshot.Starting
-            }
-        }
+        if (closed.get() || !lifecycle.requestStart()) return
         try {
             executor.execute(::startBlocking)
         } catch (_: RejectedExecutionException) {
-            mutableSnapshot.value = ProxyRuntimeSnapshot.Failed(ProxyRuntimeFailure.ChildLaunchFailed)
+            lifecycle.markFailed(ProxyRuntimeFailure.ChildLaunchFailed)
         }
     }
 
@@ -103,21 +136,15 @@ class ProxyRuntimeSupervisor(
         synchronized(lock) {
             if (closed.get()) return
             if (!runtimeDir.isDirectory && !runtimeDir.mkdirs()) {
-                mutableSnapshot.value = ProxyRuntimeSnapshot.Failed(
-                    ProxyRuntimeFailure.ConfigurationRejected,
-                )
+                lifecycle.markFailed(ProxyRuntimeFailure.ConfigurationRejected)
                 return
             }
             if (!binaryFile.isFile || !binaryFile.canExecute()) {
-                mutableSnapshot.value = ProxyRuntimeSnapshot.Failed(
-                    ProxyRuntimeFailure.NativeRuntimeMissing,
-                )
+                lifecycle.markFailed(ProxyRuntimeFailure.NativeRuntimeMissing)
                 return
             }
             if (!cleanupStaleChild()) {
-                mutableSnapshot.value = ProxyRuntimeSnapshot.Failed(
-                    ProxyRuntimeFailure.StaleProcessIdentityMismatch,
-                )
+                lifecycle.markFailed(ProxyRuntimeFailure.StaleProcessIdentityMismatch)
                 return
             }
 
@@ -133,9 +160,7 @@ class ProxyRuntimeSupervisor(
                     operationTimeoutMs = OUTBOUND_TIMEOUT_MS.toULong(),
                 )
             } catch (_: Exception) {
-                mutableSnapshot.value = ProxyRuntimeSnapshot.Failed(
-                    ProxyRuntimeFailure.PrivateBridgeUnavailable,
-                )
+                lifecycle.markFailed(ProxyRuntimeFailure.PrivateBridgeUnavailable)
                 return
             }
 
@@ -150,17 +175,13 @@ class ProxyRuntimeSupervisor(
                 )
             } catch (_: Exception) {
                 runCatching { newBridge.stop() }
-                mutableSnapshot.value = ProxyRuntimeSnapshot.Failed(
-                    ProxyRuntimeFailure.ConfigurationRejected,
-                )
+                lifecycle.markFailed(ProxyRuntimeFailure.ConfigurationRejected)
                 return
             }
 
             if (!writePrivateConfig(config)) {
                 runCatching { newBridge.stop() }
-                mutableSnapshot.value = ProxyRuntimeSnapshot.Failed(
-                    ProxyRuntimeFailure.ConfigurationRejected,
-                )
+                lifecycle.markFailed(ProxyRuntimeFailure.ConfigurationRejected)
                 return
             }
 
@@ -177,9 +198,7 @@ class ProxyRuntimeSupervisor(
             } catch (_: Exception) {
                 deleteIfPresent(configFile)
                 runCatching { newBridge.stop() }
-                mutableSnapshot.value = ProxyRuntimeSnapshot.Failed(
-                    ProxyRuntimeFailure.ChildLaunchFailed,
-                )
+                lifecycle.markFailed(ProxyRuntimeFailure.ChildLaunchFailed)
                 return
             }
 
@@ -188,9 +207,7 @@ class ProxyRuntimeSupervisor(
                 terminateProcess(newChild, newPid)
                 deleteIfPresent(configFile)
                 runCatching { newBridge.stop() }
-                mutableSnapshot.value = ProxyRuntimeSnapshot.Failed(
-                    ProxyRuntimeFailure.ChildLaunchFailed,
-                )
+                lifecycle.markFailed(ProxyRuntimeFailure.ChildLaunchFailed)
                 return
             }
             drainOutput(newChild)
@@ -200,9 +217,7 @@ class ProxyRuntimeSupervisor(
                 deleteIfPresent(pidFile)
                 deleteIfPresent(configFile)
                 runCatching { newBridge.stop() }
-                mutableSnapshot.value = ProxyRuntimeSnapshot.Failed(
-                    ProxyRuntimeFailure.HealthCheckFailed,
-                )
+                lifecycle.markFailed(ProxyRuntimeFailure.HealthCheckFailed)
                 return
             }
 
@@ -212,9 +227,15 @@ class ProxyRuntimeSupervisor(
                 terminateProcess(newChild, newPid)
                 deleteIfPresent(pidFile)
                 runCatching { newBridge.stop() }
-                mutableSnapshot.value = ProxyRuntimeSnapshot.Failed(
-                    ProxyRuntimeFailure.CleanupFailed,
-                )
+                lifecycle.markFailed(ProxyRuntimeFailure.CleanupFailed)
+                return
+            }
+
+            if (closed.get()) {
+                terminateProcess(newChild, newPid)
+                deleteIfPresent(pidFile)
+                runCatching { newBridge.stop() }
+                lifecycle.markStopped()
                 return
             }
 
@@ -222,7 +243,7 @@ class ProxyRuntimeSupervisor(
             childPid = newPid
             bridge = newBridge
             stopping = false
-            mutableSnapshot.value = ProxyRuntimeSnapshot.Running
+            check(lifecycle.markRunning()) { "proxy runtime left STARTING before health publication" }
             startMonitor(newChild, newBridge)
         }
     }
@@ -240,7 +261,7 @@ class ProxyRuntimeSupervisor(
                     synchronized(lock) {
                         if (!stopping && child === expectedChild) {
                             val cleanupOk = cleanupCurrentLocked()
-                            mutableSnapshot.value = ProxyRuntimeSnapshot.Failed(
+                            lifecycle.markFailed(
                                 if (cleanupOk) reason else ProxyRuntimeFailure.CleanupFailed,
                             )
                         }
@@ -411,14 +432,14 @@ class ProxyRuntimeSupervisor(
         try {
             executor.execute {
                 val clean = synchronized(lock) { cleanupCurrentLocked() }
-                mutableSnapshot.value = if (clean) {
-                    ProxyRuntimeSnapshot.Stopped
+                if (clean) {
+                    lifecycle.markStopped()
                 } else {
-                    ProxyRuntimeSnapshot.Failed(ProxyRuntimeFailure.CleanupFailed)
+                    lifecycle.markFailed(ProxyRuntimeFailure.CleanupFailed)
                 }
             }
         } catch (_: RejectedExecutionException) {
-            mutableSnapshot.value = ProxyRuntimeSnapshot.Failed(ProxyRuntimeFailure.CleanupFailed)
+            lifecycle.markFailed(ProxyRuntimeFailure.CleanupFailed)
         }
     }
 
@@ -445,10 +466,10 @@ class ProxyRuntimeSupervisor(
         }
         executor.shutdownNow()
         monitor?.interrupt()
-        mutableSnapshot.value = if (clean) {
-            ProxyRuntimeSnapshot.Stopped
+        if (clean) {
+            lifecycle.markStopped()
         } else {
-            ProxyRuntimeSnapshot.Failed(ProxyRuntimeFailure.CleanupFailed)
+            lifecycle.markFailed(ProxyRuntimeFailure.CleanupFailed)
         }
     }
 
