@@ -118,10 +118,7 @@ impl MeshTransportController {
     }
 
     /// Starts the exact-address ingress only for the caller's still-current admission epoch.
-    pub fn start_ingress(
-        &self,
-        admission_epoch: u64,
-    ) -> Result<bool, MeshTransportBoundaryError> {
+    pub fn start_ingress(&self, admission_epoch: u64) -> Result<bool, MeshTransportBoundaryError> {
         let mut state = self.state()?;
         let snapshot = state.owner.snapshot();
         if snapshot.state() != OwnerAdmissionState::Admitted
@@ -175,9 +172,7 @@ impl MeshTransportController {
     }
 }
 
-fn stop_ingress_locked(
-    state: &mut MeshTransportState,
-) -> Result<(), MeshTransportBoundaryError> {
+fn stop_ingress_locked(state: &mut MeshTransportState) -> Result<(), MeshTransportBoundaryError> {
     state.ingress_epoch = None;
     let Some(mut ingress) = state.ingress.take() else {
         return Ok(());
@@ -242,8 +237,8 @@ mod tests {
 
     #[test]
     fn boundary_delegates_exact_candidate_admission_to_owner() {
-        let controller = MeshTransportController::new("100.96.0.0".to_owned(), 12)
-            .expect("controller");
+        let controller =
+            MeshTransportController::new("100.96.0.0".to_owned(), 12).expect("controller");
         let admitted = controller
             .observe_local_ipv4(
                 1,
@@ -262,13 +257,10 @@ mod tests {
 
     #[test]
     fn boundary_fails_closed_on_multiple_mesh_addresses() {
-        let controller = MeshTransportController::new("100.96.0.0".to_owned(), 12)
-            .expect("controller");
+        let controller =
+            MeshTransportController::new("100.96.0.0".to_owned(), 12).expect("controller");
         let view = controller
-            .observe_local_ipv4(
-                1,
-                vec!["100.96.2.4".to_owned(), "100.97.2.5".to_owned()],
-            )
+            .observe_local_ipv4(1, vec!["100.96.2.4".to_owned(), "100.97.2.5".to_owned()])
             .expect("observation");
         assert_eq!(view.state, MeshAdmissionState::NotAdmitted);
         assert_eq!(
@@ -279,8 +271,8 @@ mod tests {
 
     #[test]
     fn stale_boundary_observation_is_rejected() {
-        let controller = MeshTransportController::new("100.96.0.0".to_owned(), 12)
-            .expect("controller");
+        let controller =
+            MeshTransportController::new("100.96.0.0".to_owned(), 12).expect("controller");
         controller
             .observe_local_ipv4(2, vec!["100.96.2.4".to_owned()])
             .expect("current");
