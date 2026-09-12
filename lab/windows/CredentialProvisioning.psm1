@@ -1,3 +1,5 @@
+using namespace System.IO
+
 Set-StrictMode -Version Latest
 
 $script:ProvisioningAction = 'com.mobileproxymish.app.action.PROVISION_EXTERNAL_PROXY_V1'

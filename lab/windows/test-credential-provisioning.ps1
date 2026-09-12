@@ -31,7 +31,9 @@ function Get-ArgumentValue {
 
 function Add-ProtoVarint {
     param(
-        [Parameter(Mandatory)][System.Collections.Generic.List[byte]] $Buffer,
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [System.Collections.Generic.List[byte]] $Buffer,
         [Parameter(Mandatory)][uint64] $Value
     )
     $remaining = $Value
@@ -44,7 +46,9 @@ function Add-ProtoVarint {
 
 function Add-ProtoVarintField {
     param(
-        [Parameter(Mandatory)][System.Collections.Generic.List[byte]] $Buffer,
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [System.Collections.Generic.List[byte]] $Buffer,
         [Parameter(Mandatory)][int] $FieldNumber,
         [Parameter(Mandatory)][uint64] $Value
     )
@@ -54,7 +58,9 @@ function Add-ProtoVarintField {
 
 function Add-ProtoBytesField {
     param(
-        [Parameter(Mandatory)][System.Collections.Generic.List[byte]] $Buffer,
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [System.Collections.Generic.List[byte]] $Buffer,
         [Parameter(Mandatory)][int] $FieldNumber,
         [Parameter(Mandatory)][byte[]] $Value
     )
@@ -66,7 +72,7 @@ function Add-ProtoBytesField {
 $publicKeyBase64 = Get-ArgumentValue -Name 'client_public_key_spki_b64'
 $challengeHex = Get-ArgumentValue -Name 'challenge_hex'
 if ($env:MISH_FAKE_BAD_CHALLENGE -eq '1') {
-    $challengeHex = '00' * 32
+    $challengeHex = ('00' * 32) -join ''
 }
 
 $rsa = [Security.Cryptography.RSA]::Create()
@@ -169,6 +175,9 @@ finally {
             -StorePath $badStorePath)
     }
     catch {
+        if ($_.Exception.Message -cne 'Provisioned credential challenge does not match this session.') {
+            throw
+        }
         $failedClosed = $true
     }
     finally {
