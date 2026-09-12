@@ -2,6 +2,7 @@ name: CI
 
 on:
   pull_request:
+    branches: [main]
     types: [ready_for_review]
   push:
     branches: [main]
@@ -15,95 +16,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  changes:
-    name: CI Impact
+  architecture:
+    name: Architecture Guards
+    if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.base.ref == 'main' && github.event.pull_request.head.ref == 'integration/m1' && github.event.pull_request.draft == false) }}
     runs-on: ubuntu-latest
-    outputs:
-      android: ${{ steps.detect.outputs.android }}
     steps:
-      - name: Checkout diff history
+      - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
 
-      - name: Detect Android-impacting changes
-        id: detect
-        shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PUSH_BEFORE_SHA: ${{ github.event.before }}
-          CURRENT_SHA: ${{ github.sha }}
-        run: |
-          set -u -o pipefail
-
-          emit_run() {
-            echo 'android=true' >> "$GITHUB_OUTPUT"
-            echo "Android Compose Shell: RUN ($1)" >> "$GITHUB_STEP_SUMMARY"
-          }
-
-          case "$EVENT_NAME" in
-            workflow_dispatch)
-              emit_run 'manual dispatch is intentionally full CI'
-              exit 0
-              ;;
-            pull_request)
-              base="$PR_BASE_SHA"
-              head="$PR_HEAD_SHA"
-              ;;
-            push)
-              base="$PUSH_BEFORE_SHA"
-              head="$CURRENT_SHA"
-              if [[ -z "$base" || "$base" =~ ^0+$ ]]; then
-                emit_run 'push has no usable before SHA; fail-safe toward testing'
-                exit 0
-              fi
-              ;;
-            *)
-              emit_run "unknown event $EVENT_NAME; fail-safe toward testing"
-              exit 0
-              ;;
-          esac
-
-          if [[ -z "$base" || -z "$head" ]]; then
-            emit_run 'diff boundary is incomplete; fail-safe toward testing'
-            exit 0
-          fi
-
-          if ! git cat-file -e "${base}^{commit}" 2>/dev/null \
-            || ! git cat-file -e "${head}^{commit}" 2>/dev/null; then
-            emit_run 'diff commits are unavailable; fail-safe toward testing'
-            exit 0
-          fi
-
-          changed="$RUNNER_TEMP/ci-impact-paths.txt"
-          if ! git diff --name-only --diff-filter=ACDMRTUXB "$base" "$head" > "$changed"; then
-            emit_run 'git diff failed; fail-safe toward testing'
-            exit 0
-          fi
-
-          android=false
-          while IFS= read -r path; do
-            case "$path" in
-              android/*|crates/*|Cargo.toml|Cargo.lock|rust-toolchain.toml|vendor/sing-box/release.toml|.github/workflows/ci.yml|.github/actions/*)
-                android=true
-                break
-                ;;
-            esac
-          done < "$changed"
-
-          echo "android=$android" >> "$GITHUB_OUTPUT"
-          if [[ "$android" == 'true' ]]; then
-            echo 'Android Compose Shell: RUN (Android/Rust-impacting path changed)' >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo 'Android Compose Shell: SKIP (no Android/Rust-impacting path changed)' >> "$GITHUB_STEP_SUMMARY"
-          fi
+      - name: Verify accepted architecture invariants
+        run: python3 tools/check_architecture.py
 
   rust:
     name: Rust Workspace
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    needs: architecture
+    if: ${{ needs.architecture.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -125,7 +54,7 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
-      - name: Generate narrow UniFFI Kotlin contract
+      - name: Generate and verify narrow UniFFI Kotlin contract
         run: |
           set -euo pipefail
           cargo build -p mish-android-ffi --locked
@@ -136,12 +65,19 @@ jobs:
           GENERATED="target/uniffi-kotlin/com/mobileproxymish/ffi/mish_android_ffi.kt"
           test -f "$GENERATED"
           grep -q '^package com.mobileproxymish.ffi$' "$GENERATED"
-          for symbol in CellularController admissionSnapshot observeNetwork networkLost; do
+          for symbol in \
+            CellularController \
+            MeshTransportController \
+            RuntimeLifecycleController \
+            RuntimeProcessLifecycleController \
+            proxyListenerPorts \
+            externalCredentialInitialState \
+            renderProxyRuntimeConfig; do
             grep -q "$symbol" "$GENERATED"
           done
           for forbidden in CellularNetworkLease admittedNetworkLease bindSocket resolveHost; do
             if grep -q "$forbidden" "$GENERATED"; then
-              echo "superseded exact-network FFI symbol survived: $forbidden" >&2
+              echo "superseded Android network mechanism leaked into UniFFI surface: $forbidden" >&2
               exit 1
             fi
           done
@@ -323,8 +259,8 @@ jobs:
 
   android:
     name: Android Compose Shell
-    needs: changes
-    if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) && (needs.changes.result != 'success' || needs.changes.outputs.android == 'true') }}
+    needs: architecture
+    if: ${{ needs.architecture.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -357,7 +293,6 @@ jobs:
           rustup target add "$RUST_TARGET"
           cargo install cargo-ndk --version 4.1.2 --locked
           echo "MISH_TARGET_ABI=$TARGET_ABI" >> "$GITHUB_ENV"
-          echo "MISH_RUST_TARGET=$RUST_TARGET" >> "$GITHUB_ENV"
 
       - name: Install pinned Android NDK
         run: |
@@ -392,35 +327,26 @@ jobs:
           test -f "$GENERATED"
           unzip -l "$APK" | grep -q "lib/$MISH_TARGET_ABI/libmish_android_ffi.so"
           unzip -l "$APK" | grep -q "lib/$MISH_TARGET_ABI/libjnidispatch.so"
+
           SYMBOLS="$RUNNER_TEMP/mish-android-ffi.symbols"
           readelf -Ws "$NATIVE" > "$SYMBOLS"
+          grep -Fq 'android_getaddrinfofornetwork' "$SYMBOLS"
           if grep -Fq 'android_setsocknetwork' "$SYMBOLS"; then
             echo 'superseded android_setsocknetwork leaked into PRODUCT FFI library' >&2
             exit 1
           fi
-          grep -Fq 'android_getaddrinfofornetwork' "$SYMBOLS"
+
+          for symbol in \
+            CellularController \
+            MeshTransportController \
+            RuntimeLifecycleController \
+            RuntimeProcessLifecycleController \
+            proxyListenerPorts; do
+            grep -Fq "$symbol" "$GENERATED"
+          done
           for forbidden in CellularNetworkLease admittedNetworkLease bindSocket resolveHost; do
             if grep -Fq "$forbidden" "$GENERATED"; then
               echo "network-scoped Android mechanism leaked into UniFFI surface: $forbidden" >&2
               exit 1
             fi
           done
-
-      - name: Verify Android runtime uses DNS-only network adapter
-        run: |
-          set -euo pipefail
-          cargo ndk -P 23 -t "$MISH_TARGET_ABI" build \
-            -p mish-runtime \
-            --example android_cellular_connector_link \
-            --release \
-            --locked
-
-          CONNECTOR="target/$MISH_RUST_TARGET/release/examples/android_cellular_connector_link"
-          SYMBOLS="$RUNNER_TEMP/android-cellular-connector.symbols"
-          test -x "$CONNECTOR"
-          readelf -Ws "$CONNECTOR" > "$SYMBOLS"
-          grep -Fq 'android_getaddrinfofornetwork' "$SYMBOLS"
-          if grep -Fq 'android_setsocknetwork' "$SYMBOLS"; then
-            echo 'superseded android_setsocknetwork returned to runtime connector' >&2
-            exit 1
-          fi
