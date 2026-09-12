@@ -52,7 +52,9 @@ class ProxyRuntimeService : Service() {
 
     private fun promoteToForeground() {
         val notification = buildNotification()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            // `specialUse` is an API-34 foreground-service type. Android 11 DEVICE-1 therefore
+            // stays on the legacy overload, while API 34+ explicitly uses the manifest type.
             startForeground(
                 NOTIFICATION_ID,
                 notification,
