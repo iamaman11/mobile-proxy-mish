@@ -335,10 +335,9 @@ mod tests {
         let mut owner = RuntimeLifecycle::new();
         assert_eq!(owner.request_start(), RuntimeStartAction::StartNow);
         assert!(
-            owner
+            !owner
                 .complete_start(true, true)
                 .install_fresh_generation_now()
-                == false
         );
         assert_eq!(owner.request_stop(), RuntimeStopAction::StopNow);
         assert_eq!(owner.request_start(), RuntimeStartAction::QueuedAfterStop);
@@ -359,10 +358,9 @@ mod tests {
         assert!(owner.take_generation_replacement_for_start());
         assert!(!owner.generation_requires_replacement());
         assert!(
-            owner
+            !owner
                 .complete_start(true, true)
                 .install_fresh_generation_now()
-                == false
         );
         assert_eq!(owner.state(), RuntimeLifecycleState::Running);
     }
