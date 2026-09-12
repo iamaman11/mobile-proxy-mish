@@ -44,6 +44,31 @@ enum class ProxyRuntimeFailure {
 }
 
 /**
+ * Process-generation proxy credential material owned by the Android composition root.
+ *
+ * This is intentionally only a typed input boundary. Durable storage, provisioning and
+ * rotation remain outside this remediation transaction and must be assigned to their
+ * natural owner before Mesh/client acceptance. Secrets are never projected to UI/log state.
+ */
+internal data class ProxyRuntimeCredentials(
+    val username: String,
+    val password: String,
+) {
+    companion object {
+        fun generate(): ProxyRuntimeCredentials = ProxyRuntimeCredentials(
+            username = randomCredential(),
+            password = randomCredential(),
+        )
+    }
+}
+
+private fun randomCredential(): String {
+    val bytes = ByteArray(CREDENTIAL_BYTES)
+    SECURE_RANDOM.nextBytes(bytes)
+    return Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+}
+
+/**
  * Pure process-generation lifecycle owner used by the Android effect supervisor.
  *
  * It owns only runtime lifecycle projection. It does not own proxy protocol/auth, cellular
@@ -101,6 +126,7 @@ internal class ProxyRuntimeLifecycle {
 class ProxyRuntimeSupervisor(
     context: Context,
     private val cellularRuntime: CellularRuntimeBridge,
+    private val publicCredentials: ProxyRuntimeCredentials,
 ) : Closeable {
     private val appContext = context.applicationContext
     private val runtimeDir = File(appContext.noBackupFilesDir, RUNTIME_DIR)
@@ -150,8 +176,6 @@ class ProxyRuntimeSupervisor(
 
             val privateUsername = randomCredential()
             val privatePassword = randomCredential()
-            val publicUsername = randomCredential()
-            val publicPassword = randomCredential()
 
             val newBridge = try {
                 cellularRuntime.startPrivateBridge(
@@ -167,8 +191,8 @@ class ProxyRuntimeSupervisor(
             val config = try {
                 renderProxyRuntimeConfig(
                     listenAddress = LOOPBACK,
-                    publicUsername = publicUsername,
-                    publicPassword = publicPassword,
+                    publicUsername = publicCredentials.username,
+                    publicPassword = publicCredentials.password,
                     bridgePort = newBridge.port(),
                     bridgeUsername = privateUsername,
                     bridgePassword = privatePassword,
@@ -473,12 +497,6 @@ class ProxyRuntimeSupervisor(
         }
     }
 
-    private fun randomCredential(): String {
-        val bytes = ByteArray(CREDENTIAL_BYTES)
-        SECURE_RANDOM.nextBytes(bytes)
-        return Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
-    }
-
     private companion object {
         const val RUNTIME_DIR = "proxy-runtime"
         const val CONFIG_FILE = "sing-box.json"
@@ -494,9 +512,10 @@ class ProxyRuntimeSupervisor(
         const val FORCED_STOP_TIMEOUT_SECONDS = 2L
         const val STALE_KILL_TIMEOUT_SECONDS = 2L
         const val CLOSE_TIMEOUT_SECONDS = 10L
-        const val CREDENTIAL_BYTES = 24
         const val PRIVATE_FILE_MODE = 384 // 0600
         val PUBLIC_PORTS = listOf(1080, 1081, 3128)
-        val SECURE_RANDOM = SecureRandom()
     }
 }
+
+private const val CREDENTIAL_BYTES = 24
+private val SECURE_RANDOM = SecureRandom()
