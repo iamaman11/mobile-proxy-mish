@@ -2,6 +2,7 @@ package com.mobileproxymish.app
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -80,5 +81,16 @@ class ProxyRuntimeLifecycleTest {
             ProxyRuntimeSnapshot.Failed(ProxyRuntimeFailure.HealthCheckFailed),
             lifecycle.snapshot.value,
         )
+    }
+
+    @Test
+    fun processGenerationCredentialsAreExplicitNonEmptyMaterial() {
+        val first = ProxyRuntimeCredentials.generate()
+        val second = ProxyRuntimeCredentials.generate()
+
+        assertTrue(first.username.isNotBlank())
+        assertTrue(first.password.isNotBlank())
+        assertNotEquals(first.username, first.password)
+        assertNotEquals(first, second)
     }
 }
