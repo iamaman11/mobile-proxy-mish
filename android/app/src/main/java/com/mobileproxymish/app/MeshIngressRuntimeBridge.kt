@@ -13,10 +13,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * Android observation/composition adapter for the Rust Transport Reachability owner.
  *
- * This class does not choose a Mesh endpoint. It reports all locally assigned IPv4 addresses to
- * the Rust owner, which alone filters the deployment-approved Mesh CIDR, requires uniqueness,
- * creates admission epochs and owns exact-address listeners. The adapter also gates listener
- * start on the existing loopback proxy generation being healthy.
+ * This class does not choose a Mesh endpoint or accepted range. It reports all locally assigned
+ * IPv4 addresses to the Rust owner, which consumes the validated Desired Configuration CIDR,
+ * requires uniqueness, creates admission epochs and owns exact-address listeners. The adapter
+ * also gates listener start on the existing loopback proxy generation being healthy.
  */
 internal class MeshIngressRuntimeBridge(
     private val proxyRuntime: ProxyRuntimeSupervisor,
@@ -32,10 +32,7 @@ internal class MeshIngressRuntimeBridge(
 
     init {
         controller = try {
-            MeshTransportController(
-                DEPLOYMENT_ACCEPTED_MESH_NETWORK,
-                DEPLOYMENT_ACCEPTED_MESH_PREFIX.toUByte(),
-            )
+            MeshTransportController()
         } catch (_: LinkageError) {
             null
         } catch (_: Exception) {
@@ -159,10 +156,6 @@ internal class MeshIngressRuntimeBridge(
     }
 
     private companion object {
-        // Account/device contract physically re-verified before Stage C implementation. This is
-        // an admission range only; the Rust owner still binds one exact currently observed IP.
-        const val DEPLOYMENT_ACCEPTED_MESH_NETWORK = "100.96.0.0"
-        const val DEPLOYMENT_ACCEPTED_MESH_PREFIX = 12
         const val MESH_OBSERVATION_POLL_MS = 250L
         const val MESH_CLOSE_TIMEOUT_SECONDS = 6L
     }
