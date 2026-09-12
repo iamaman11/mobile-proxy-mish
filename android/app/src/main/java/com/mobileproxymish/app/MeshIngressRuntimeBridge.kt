@@ -66,8 +66,10 @@ internal class MeshIngressRuntimeBridge(
         Thread(task, "mish-mesh-observer").apply { isDaemon = true }
     }
     private val vpnRequest = NetworkRequest.Builder()
-        .addTransportType(NetworkCapabilities.TRANSPORT_VPN)
+        .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
+        .removeCapability(NetworkCapabilities.NET_CAPABILITY_TRUSTED)
         .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+        .addTransportType(NetworkCapabilities.TRANSPORT_VPN)
         .build()
 
     private var sequence = 0L
