@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Process
 import com.mobileproxymish.ffi.CellularAdmissionState
 import com.mobileproxymish.ffi.CellularAdmissionView
+import com.mobileproxymish.ffi.CellularBridgeRuntime
 import com.mobileproxymish.ffi.CellularController
 import java.io.Closeable
 import java.util.concurrent.Executors
@@ -28,13 +29,6 @@ sealed interface CellularBoundaryFailure {
     ) : CellularBoundaryFailure
 }
 
-/**
- * Read-only runtime projection crossing from the Rust owner toward Android consumers.
- *
- * `OwnerSnapshot` is the natural owner's typed projection after the infrastructure
- * mechanism has been reconciled for that exact owner generation. `BoundaryUnavailable`
- * represents adapter failure and therefore cannot be interpreted as admitted readiness.
- */
 sealed interface CellularRuntimeSnapshot {
     data class OwnerSnapshot(
         val admission: CellularAdmissionView,
@@ -45,15 +39,6 @@ sealed interface CellularRuntimeSnapshot {
     ) : CellularRuntimeSnapshot
 }
 
-/**
- * Transient Android infrastructure hints keyed by the exact platform Network handle.
- *
- * This is deliberately not a second owner or readiness state. The Rust owner still
- * decides which handle is admitted; this cache only lets the policy adapter retrieve
- * the interface hint belonging to that exact owner-selected handle after reordered,
- * unrelated, or superseded callbacks. Access is synchronized because callback-side
- * owner updates and executor-side shutdown cleanup intentionally run on different threads.
- */
 internal class CellularInterfaceHints {
     private val byNetwork = mutableMapOf<ULong, String>()
 
@@ -79,7 +64,6 @@ internal class CellularInterfaceHints {
     }
 }
 
-/** Exact owner-generation comparison used only to reject stale infrastructure effects. */
 internal fun sameCellularOwnerGeneration(
     expected: CellularAdmissionView,
     current: CellularAdmissionView,
@@ -92,11 +76,6 @@ internal fun sameCellularOwnerGeneration(
  * One process-generation bridge between Android observations, the Rust natural owner,
  * and the narrow root policy-routing adapter that realizes an already owner-admitted
  * decision. This class owns no cellular admission policy.
- *
- * Owner mutation is deliberately fast and occurs synchronously in callback submission
- * order. Bounded root operations remain on one private serial executor. This allows a
- * newer Android observation to advance Rust owner currentness even while an older root
- * transaction is in flight, so stale platform effects can be detected and revoked.
  */
 class CellularRuntimeBridge(
     context: Context,
@@ -134,6 +113,20 @@ class CellularRuntimeBridge(
         mutableSnapshot = MutableStateFlow(initialSnapshot)
     }
 
+    /**
+     * Starts the private bridge from the exact same Rust Cellular Egress owner instance.
+     * This is composition only: it neither copies nor mutates admission policy.
+     */
+    internal fun startPrivateBridge(
+        username: String,
+        password: String,
+        operationTimeoutMs: ULong,
+    ): CellularBridgeRuntime {
+        check(!closed.get()) { "cellular runtime is closed" }
+        val activeController = controller ?: error("Cellular Egress owner is unavailable")
+        return activeController.startBridge(username, password, operationTimeoutMs)
+    }
+
     fun start() {
         if (controller == null || closed.get() || !started.compareAndSet(false, true)) return
 
@@ -154,10 +147,6 @@ class CellularRuntimeBridge(
         }
     }
 
-    /**
-     * Applies the semantic event to the Rust owner immediately in callback submission
-     * order, then delegates only the bounded infrastructure effect to the root executor.
-     */
     override fun onEvent(event: CellularNetworkEvent) {
         if (closed.get()) return
 
@@ -251,6 +240,20 @@ class CellularRuntimeBridge(
             return
         }
 
+        val quiesced = try {
+            activeController.awaitRootPolicyQuiesced(EFFECT_DRAIN_TIMEOUT_MS.toULong())
+        } catch (_: LinkageError) {
+            false
+        } catch (_: Exception) {
+            false
+        }
+        if (!quiesced) {
+            mutableSnapshot.value = CellularRuntimeSnapshot.BoundaryUnavailable(
+                CellularBoundaryFailure.RootPolicyReconcileFailed,
+            )
+            return
+        }
+
         val policyResult = rootPolicy.reconcile(
             admitted = admission.state == CellularAdmissionState.ADMITTED,
             interfaceName = interfaceName,
@@ -275,8 +278,30 @@ class CellularRuntimeBridge(
         }
 
         mutableSnapshot.value = when (policyResult) {
-            CellularRootPolicyResult.Enforced ->
-                CellularRuntimeSnapshot.OwnerSnapshot(admission)
+            CellularRootPolicyResult.Enforced -> {
+                val sequence = admission.lastSequence
+                val handle = admission.admittedNetworkHandle
+                val authorized = if (sequence != null && handle != null) {
+                    try {
+                        activeController.authorizeRootPolicy(sequence, handle)
+                    } catch (_: LinkageError) {
+                        false
+                    } catch (_: Exception) {
+                        false
+                    }
+                } else {
+                    false
+                }
+                if (authorized) {
+                    CellularRuntimeSnapshot.OwnerSnapshot(admission)
+                } else {
+                    snapshotForFailClosed(
+                        preferredFailure = CellularBoundaryFailure.RootPolicyGenerationChanged,
+                    ) ?: CellularRuntimeSnapshot.BoundaryUnavailable(
+                        CellularBoundaryFailure.RootPolicyGenerationChanged,
+                    )
+                }
+            }
 
             is CellularRootPolicyResult.FailClosed -> {
                 if (admission.state != CellularAdmissionState.ADMITTED &&
@@ -322,7 +347,21 @@ class CellularRuntimeBridge(
     private fun snapshotForFailClosed(
         preferredFailure: CellularBoundaryFailure?,
         preserveOnCleanFailClosed: Boolean = false,
-    ): CellularRuntimeSnapshot? = when (val result = rootPolicy.failClosed()) {
+    ): CellularRuntimeSnapshot? {
+        val quiesced = try {
+            controller?.closeRootPolicyGate()
+            controller?.awaitRootPolicyQuiesced(EFFECT_DRAIN_TIMEOUT_MS.toULong()) ?: true
+        } catch (_: Exception) {
+            false
+        } catch (_: LinkageError) {
+            false
+        }
+        if (!quiesced) {
+            return CellularRuntimeSnapshot.BoundaryUnavailable(
+                preferredFailure ?: CellularBoundaryFailure.RootPolicyReconcileFailed,
+            )
+        }
+        return when (val result = rootPolicy.failClosed()) {
         is CellularRootPolicyResult.AuthorityUnavailable ->
             CellularRuntimeSnapshot.BoundaryUnavailable(
                 CellularBoundaryFailure.RootAuthorityUnavailable,
@@ -343,26 +382,33 @@ class CellularRuntimeBridge(
         CellularRootPolicyResult.Enforced -> preferredFailure?.let {
             CellularRuntimeSnapshot.BoundaryUnavailable(it)
         }
+        }
     }
 
     private fun submitPolicyWork(block: () -> Unit) {
         try {
             policyExecutor.execute(block)
         } catch (_: RejectedExecutionException) {
-            // close() owns executor shutdown. Work racing with closure is intentionally
-            // dropped because the observer is already being revoked and exact cleanup
-            // is serialized as the final executor effect.
+            // close() owns executor shutdown. Work racing with closure is intentionally dropped.
         }
     }
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
 
+        runCatching { controller?.closeRootPolicyGate() }
         observer.close()
         val cleanup = try {
             policyExecutor.submit {
                 interfaceHints.clear()
-                rootPolicy.cleanupExactOwnedRules()
+                val quiesced = try {
+                    controller?.awaitRootPolicyQuiesced(EFFECT_DRAIN_TIMEOUT_MS.toULong()) ?: true
+                } catch (_: Exception) {
+                    false
+                } catch (_: LinkageError) {
+                    false
+                }
+                quiesced && rootPolicy.cleanupExactOwnedRules()
             }
         } catch (_: RejectedExecutionException) {
             null
@@ -392,8 +438,7 @@ class CellularRuntimeBridge(
     }
 
     private companion object {
-        // Includes one potentially in-flight bounded root reconciliation plus the final
-        // exact cleanup transaction. This is a shutdown-only path, never UI/callback work.
         const val CLOSE_TIMEOUT_SECONDS = 60L
+        const val EFFECT_DRAIN_TIMEOUT_MS = 20_000L
     }
 }
