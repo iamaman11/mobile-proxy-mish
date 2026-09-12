@@ -85,7 +85,18 @@ class PhysicalCompositionDiagnosticTest {
             ProxyRuntimeSnapshot.Running -> "RUNNING"
             is ProxyRuntimeSnapshot.Failed -> "FAILED_${snapshot.reason.name}"
         }
-        println("PHYSICAL_PROXY_DIAGNOSTIC runtime_state=$state")
+        val runtimeObservation = application.proxyRuntime.diagnosticObservation()
+        val privateBridgePort = runtimeObservation.privateBridgePort
+        val privateBridgeDistinct = privateBridgePort != null &&
+            privateBridgePort in 1..65535 &&
+            privateBridgePort !in PUBLIC_PORTS
+        println(
+            "PHYSICAL_PROXY_DIAGNOSTIC runtime_state=$state " +
+                "child_alive=${runtimeObservation.childAlive} " +
+                "private_bridge_present=${privateBridgePort != null} " +
+                "private_bridge_healthy=${runtimeObservation.privateBridgeHealthy} " +
+                "private_bridge_distinct=$privateBridgeDistinct",
+        )
 
         val sockets = runProductRoot("ss -ltnpe")
         if (!sockets.ok) {
@@ -98,11 +109,8 @@ class PhysicalCompositionDiagnosticTest {
             .filter { it.contains("LISTEN") && it.contains("127.0.0.1:") && lineOwnedByUid(it, uid) }
             .mapNotNull(::extractLoopbackPort)
             .toSet()
-        val publicPresent = PUBLIC_PORTS.all(ownedLoopbackPorts::contains)
-        val privateCandidates = ownedLoopbackPorts - PUBLIC_PORTS
         println(
-            "PHYSICAL_PROXY_DIAGNOSTIC public_loopback_present=$publicPresent " +
-                "distinct_private_loopback_present=${privateCandidates.isNotEmpty()} " +
+            "PHYSICAL_PROXY_DIAGNOSTIC public_loopback_present=${PUBLIC_PORTS.all(ownedLoopbackPorts::contains)} " +
                 "owned_loopback_listener_count=${ownedLoopbackPorts.size}",
         )
     }
