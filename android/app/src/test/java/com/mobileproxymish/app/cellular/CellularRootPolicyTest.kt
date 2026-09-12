@@ -224,10 +224,14 @@ class CellularRootPolicyTest {
         val result = policy(process).reconcile(admitted = false, interfaceName = null)
 
         assertEquals(
-            CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.RuleMutationFailed),
+            CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.VerificationFailed),
             result,
         )
         assertNull(process.ipv4Lookup)
+        assertNull(process.ipv4Guard)
+        assertNull(process.ipv6Guard)
+        assertEquals(0, process.ipv4JumpCount)
+        assertEquals(0, process.ipv6JumpCount)
     }
 
     @Test
