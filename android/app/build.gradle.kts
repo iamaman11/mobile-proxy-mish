@@ -203,6 +203,9 @@ android {
             // The pinned sing-box executable is packaged as a native-library asset so Android
             // extracts it into the executable nativeLibraryDir rather than app data (noexec).
             useLegacyPackaging = true
+            // sing-box is a pinned executable artifact, not a build output. AGP must not strip
+            // or otherwise rewrite it: the APK verifier below requires byte-for-byte identity.
+            keepDebugSymbols += "**/libsingbox.so"
         }
     }
 
