@@ -1,3 +1,4 @@
+import java.io.File
 import java.io.InputStream
 import java.security.MessageDigest
 import java.util.zip.ZipFile
@@ -221,30 +222,31 @@ tasks.named("preBuild") {
     dependsOn(buildAndroidUniFfi, materializeSingBoxAndroid)
 }
 
-fun digestSha256(input: InputStream): String {
-    val digest = MessageDigest.getInstance("SHA-256")
-    val buffer = ByteArray(64 * 1024)
-    while (true) {
-        val count = input.read(buffer)
-        if (count < 0) break
-        if (count > 0) digest.update(buffer, 0, count)
-    }
-    return digest.digest().joinToString("") { byte -> "%02x".format(byte) }
-}
-
 fun registerSingBoxPackagingVerifier(
     taskName: String,
     apkPath: String,
 ) = tasks.register(taskName) {
     dependsOn(materializeSingBoxAndroid)
-    val expectedPath = "$generatedSingBoxJniPath/$targetAbi/libsingbox.so"
+    val abi = targetAbi
+    val expectedPath = "$generatedSingBoxJniPath/$abi/libsingbox.so"
     inputs.file(expectedPath)
     inputs.file(apkPath)
-    inputs.property("mishTargetAbi", targetAbi)
+    inputs.property("mishTargetAbi", abi)
 
     doLast {
-        val expectedFile = file(expectedPath)
-        val apkFile = file(apkPath)
+        fun digestSha256(input: InputStream): String {
+            val digest = MessageDigest.getInstance("SHA-256")
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                if (count > 0) digest.update(buffer, 0, count)
+            }
+            return digest.digest().joinToString("") { byte -> "%02x".format(byte) }
+        }
+
+        val expectedFile = File(expectedPath)
+        val apkFile = File(apkPath)
         if (!expectedFile.isFile) {
             throw GradleException("Pinned sing-box materialization is missing: $expectedPath")
         }
@@ -253,7 +255,7 @@ fun registerSingBoxPackagingVerifier(
         }
 
         val expectedSha = expectedFile.inputStream().buffered().use(::digestSha256)
-        val entryName = "lib/$targetAbi/libsingbox.so"
+        val entryName = "lib/$abi/libsingbox.so"
         val packagedSha = ZipFile(apkFile).use { zip ->
             val entry = zip.getEntry(entryName)
                 ?: throw GradleException("APK is missing pinned sing-box entry: $entryName")
