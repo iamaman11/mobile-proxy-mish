@@ -6,6 +6,10 @@ import android.system.Os
 import android.util.Base64
 import com.mobileproxymish.app.cellular.CellularRuntimeBridge
 import com.mobileproxymish.ffi.CellularBridgeRuntime
+import com.mobileproxymish.ffi.RuntimeProcessFailure
+import com.mobileproxymish.ffi.RuntimeProcessLifecycleController
+import com.mobileproxymish.ffi.RuntimeProcessSnapshotView
+import com.mobileproxymish.ffi.RuntimeProcessState
 import com.mobileproxymish.ffi.renderProxyRuntimeConfig
 import java.io.Closeable
 import java.io.File
@@ -27,21 +31,8 @@ sealed interface ProxyRuntimeSnapshot {
     data object Running : ProxyRuntimeSnapshot
 
     data class Failed(
-        val reason: ProxyRuntimeFailure,
+        val reason: RuntimeProcessFailure,
     ) : ProxyRuntimeSnapshot
-}
-
-enum class ProxyRuntimeFailure {
-    NativeRuntimeMissing,
-    StaleProcessIdentityMismatch,
-    ExternalCredentialUnavailable,
-    PrivateBridgeUnavailable,
-    ConfigurationRejected,
-    ChildLaunchFailed,
-    HealthCheckFailed,
-    ChildExited,
-    PrivateBridgeUnhealthy,
-    CleanupFailed,
 }
 
 /**
@@ -76,59 +67,14 @@ private fun randomCredential(): String {
 }
 
 /**
- * Pure process-generation lifecycle owner used by the Android effect supervisor.
- *
- * It owns only runtime lifecycle projection. It does not own proxy protocol/auth, cellular
- * admission, root-policy currentness, child-process effects, or persistence.
- */
-internal class ProxyRuntimeLifecycle {
-    private val mutableSnapshot = MutableStateFlow<ProxyRuntimeSnapshot>(ProxyRuntimeSnapshot.Stopped)
-
-    val snapshot: StateFlow<ProxyRuntimeSnapshot>
-        get() = mutableSnapshot.asStateFlow()
-
-    @Synchronized
-    fun requestStart(): Boolean = when (mutableSnapshot.value) {
-        ProxyRuntimeSnapshot.Starting,
-        ProxyRuntimeSnapshot.Running,
-        -> false
-
-        ProxyRuntimeSnapshot.Stopped,
-        is ProxyRuntimeSnapshot.Failed,
-        -> {
-            mutableSnapshot.value = ProxyRuntimeSnapshot.Starting
-            true
-        }
-    }
-
-    @Synchronized
-    fun markRunning(): Boolean {
-        if (mutableSnapshot.value != ProxyRuntimeSnapshot.Starting) return false
-        mutableSnapshot.value = ProxyRuntimeSnapshot.Running
-        return true
-    }
-
-    @Synchronized
-    fun markFailed(reason: ProxyRuntimeFailure) {
-        mutableSnapshot.value = ProxyRuntimeSnapshot.Failed(reason)
-    }
-
-    @Synchronized
-    fun markStopped() {
-        mutableSnapshot.value = ProxyRuntimeSnapshot.Stopped
-    }
-}
-
-/**
- * Small Android composition owner for the already-approved runtime pieces:
+ * Android child-process effect adapter for the Rust Runtime Lifecycle natural owner.
  *
  * loopback sing-box (:1080/:1081/:3128)
  *   -> private loopback SOCKS bridge
  *   -> the exact Cellular Egress owner
  *
- * The public protocol/auth contract remains owned by `mish-proxy` + sing-box adapter. This
- * class owns only process-generation start/health/stop/reconciliation. It deliberately binds
- * loopback until the separate Mesh-ingress stage supplies an accepted non-wildcard address.
+ * ProcessBuilder/files/Android PID effects remain here. STARTING/RUNNING/FAILED/STOPPED and
+ * failure reason state are owned by `mish-runtime` and exposed through the typed UniFFI seam.
  */
 class ProxyRuntimeSupervisor internal constructor(
     context: Context,
@@ -140,7 +86,8 @@ class ProxyRuntimeSupervisor internal constructor(
     private val configFile = File(runtimeDir, CONFIG_FILE)
     private val pidFile = File(runtimeDir, PID_FILE)
     private val binaryFile = File(appContext.applicationInfo.nativeLibraryDir, SING_BOX_LIBRARY)
-    private val lifecycle = ProxyRuntimeLifecycle()
+    private val lifecycle = RuntimeProcessLifecycleController()
+    private val mutableSnapshot = MutableStateFlow(projectLifecycle(lifecycle.snapshot()))
     private val closed = AtomicBoolean(false)
     private val lock = Any()
     private val executor = Executors.newSingleThreadExecutor { task ->
@@ -154,7 +101,7 @@ class ProxyRuntimeSupervisor internal constructor(
     private var stopping = false
 
     val snapshot: StateFlow<ProxyRuntimeSnapshot>
-        get() = lifecycle.snapshot
+        get() = mutableSnapshot.asStateFlow()
 
     internal fun diagnosticObservation(): ProxyRuntimeDiagnosticObservation = synchronized(lock) {
         val currentChild = child
@@ -170,10 +117,11 @@ class ProxyRuntimeSupervisor internal constructor(
 
     fun start() {
         if (closed.get() || !lifecycle.requestStart()) return
+        publishLifecycle()
         try {
             executor.execute(::startBlocking)
         } catch (_: RejectedExecutionException) {
-            lifecycle.markFailed(ProxyRuntimeFailure.ChildLaunchFailed)
+            failLifecycle(RuntimeProcessFailure.CHILD_LAUNCH_FAILED)
         }
     }
 
@@ -181,28 +129,26 @@ class ProxyRuntimeSupervisor internal constructor(
         synchronized(lock) {
             if (closed.get()) return
             if (!runtimeDir.isDirectory && !runtimeDir.mkdirs()) {
-                lifecycle.markFailed(ProxyRuntimeFailure.ConfigurationRejected)
+                failLifecycle(RuntimeProcessFailure.CONFIGURATION_REJECTED)
                 return
             }
             if (!binaryFile.isFile || !binaryFile.canExecute()) {
-                lifecycle.markFailed(ProxyRuntimeFailure.NativeRuntimeMissing)
+                failLifecycle(RuntimeProcessFailure.NATIVE_RUNTIME_MISSING)
                 return
             }
             if (!cleanupStaleChild()) {
-                lifecycle.markFailed(ProxyRuntimeFailure.StaleProcessIdentityMismatch)
+                failLifecycle(RuntimeProcessFailure.STALE_PROCESS_IDENTITY_MISMATCH)
                 return
             }
 
             // Resolve durable external material before opening the private Cellular Egress bridge.
-            // Missing, corrupted or revoked credential state therefore fails closed before any
-            // authenticated client path can reach Cellular Egress.
             val publicCredential = try {
                 publicCredentials.currentCredential()
             } catch (_: Exception) {
                 null
             }
             if (publicCredential == null) {
-                lifecycle.markFailed(ProxyRuntimeFailure.ExternalCredentialUnavailable)
+                failLifecycle(RuntimeProcessFailure.EXTERNAL_CREDENTIAL_UNAVAILABLE)
                 return
             }
 
@@ -217,7 +163,7 @@ class ProxyRuntimeSupervisor internal constructor(
                     operationTimeoutMs = OUTBOUND_TIMEOUT_MS.toULong(),
                 )
             } catch (_: Exception) {
-                lifecycle.markFailed(ProxyRuntimeFailure.PrivateBridgeUnavailable)
+                failLifecycle(RuntimeProcessFailure.PRIVATE_BRIDGE_UNAVAILABLE)
                 return
             }
 
@@ -232,13 +178,13 @@ class ProxyRuntimeSupervisor internal constructor(
                 )
             } catch (_: Exception) {
                 runCatching { newBridge.stop() }
-                lifecycle.markFailed(ProxyRuntimeFailure.ConfigurationRejected)
+                failLifecycle(RuntimeProcessFailure.CONFIGURATION_REJECTED)
                 return
             }
 
             if (!writePrivateConfig(config)) {
                 runCatching { newBridge.stop() }
-                lifecycle.markFailed(ProxyRuntimeFailure.ConfigurationRejected)
+                failLifecycle(RuntimeProcessFailure.CONFIGURATION_REJECTED)
                 return
             }
 
@@ -255,7 +201,7 @@ class ProxyRuntimeSupervisor internal constructor(
             } catch (_: Exception) {
                 deleteIfPresent(configFile)
                 runCatching { newBridge.stop() }
-                lifecycle.markFailed(ProxyRuntimeFailure.ChildLaunchFailed)
+                failLifecycle(RuntimeProcessFailure.CHILD_LAUNCH_FAILED)
                 return
             }
 
@@ -264,7 +210,7 @@ class ProxyRuntimeSupervisor internal constructor(
                 terminateProcess(newChild, newPid)
                 deleteIfPresent(configFile)
                 runCatching { newBridge.stop() }
-                lifecycle.markFailed(ProxyRuntimeFailure.ChildLaunchFailed)
+                failLifecycle(RuntimeProcessFailure.CHILD_LAUNCH_FAILED)
                 return
             }
             drainOutput(newChild)
@@ -274,7 +220,7 @@ class ProxyRuntimeSupervisor internal constructor(
                 deleteIfPresent(pidFile)
                 deleteIfPresent(configFile)
                 runCatching { newBridge.stop() }
-                lifecycle.markFailed(ProxyRuntimeFailure.HealthCheckFailed)
+                failLifecycle(RuntimeProcessFailure.HEALTH_CHECK_FAILED)
                 return
             }
 
@@ -284,7 +230,7 @@ class ProxyRuntimeSupervisor internal constructor(
                 terminateProcess(newChild, newPid)
                 deleteIfPresent(pidFile)
                 runCatching { newBridge.stop() }
-                lifecycle.markFailed(ProxyRuntimeFailure.CleanupFailed)
+                failLifecycle(RuntimeProcessFailure.CLEANUP_FAILED)
                 return
             }
 
@@ -292,7 +238,7 @@ class ProxyRuntimeSupervisor internal constructor(
                 terminateProcess(newChild, newPid)
                 deleteIfPresent(pidFile)
                 runCatching { newBridge.stop() }
-                lifecycle.markStopped()
+                stopLifecycle()
                 return
             }
 
@@ -301,6 +247,7 @@ class ProxyRuntimeSupervisor internal constructor(
             bridge = newBridge
             stopping = false
             check(lifecycle.markRunning()) { "proxy runtime left STARTING before health publication" }
+            publishLifecycle()
             startMonitor(newChild, newBridge)
         }
     }
@@ -309,17 +256,17 @@ class ProxyRuntimeSupervisor internal constructor(
         val thread = Thread({
             while (!closed.get()) {
                 val reason = when {
-                    !isAlive(expectedChild) -> ProxyRuntimeFailure.ChildExited
+                    !isAlive(expectedChild) -> RuntimeProcessFailure.CHILD_EXITED
                     !runCatching { expectedBridge.isHealthy() }.getOrDefault(false) ->
-                        ProxyRuntimeFailure.PrivateBridgeUnhealthy
+                        RuntimeProcessFailure.PRIVATE_BRIDGE_UNHEALTHY
                     else -> null
                 }
                 if (reason != null) {
                     synchronized(lock) {
                         if (!stopping && child === expectedChild) {
                             val cleanupOk = cleanupCurrentLocked()
-                            lifecycle.markFailed(
-                                if (cleanupOk) reason else ProxyRuntimeFailure.CleanupFailed,
+                            failLifecycle(
+                                if (cleanupOk) reason else RuntimeProcessFailure.CLEANUP_FAILED,
                             )
                         }
                     }
@@ -490,15 +437,39 @@ class ProxyRuntimeSupervisor internal constructor(
             executor.execute {
                 val clean = synchronized(lock) { cleanupCurrentLocked() }
                 if (clean) {
-                    lifecycle.markStopped()
+                    stopLifecycle()
                 } else {
-                    lifecycle.markFailed(ProxyRuntimeFailure.CleanupFailed)
+                    failLifecycle(RuntimeProcessFailure.CLEANUP_FAILED)
                 }
             }
         } catch (_: RejectedExecutionException) {
-            lifecycle.markFailed(ProxyRuntimeFailure.CleanupFailed)
+            failLifecycle(RuntimeProcessFailure.CLEANUP_FAILED)
         }
     }
+
+    private fun publishLifecycle() {
+        mutableSnapshot.value = projectLifecycle(lifecycle.snapshot())
+    }
+
+    private fun failLifecycle(reason: RuntimeProcessFailure) {
+        lifecycle.markFailed(reason)
+        publishLifecycle()
+    }
+
+    private fun stopLifecycle() {
+        lifecycle.markStopped()
+        publishLifecycle()
+    }
+
+    private fun projectLifecycle(view: RuntimeProcessSnapshotView): ProxyRuntimeSnapshot =
+        when (view.state) {
+            RuntimeProcessState.STOPPED -> ProxyRuntimeSnapshot.Stopped
+            RuntimeProcessState.STARTING -> ProxyRuntimeSnapshot.Starting
+            RuntimeProcessState.RUNNING -> ProxyRuntimeSnapshot.Running
+            RuntimeProcessState.FAILED -> ProxyRuntimeSnapshot.Failed(
+                checkNotNull(view.failure) { "failed runtime process must carry a typed reason" },
+            )
+        }
 
     private fun deleteIfPresent(file: File): Boolean = !file.exists() || file.delete() || !file.exists()
 
@@ -524,9 +495,9 @@ class ProxyRuntimeSupervisor internal constructor(
         executor.shutdownNow()
         monitor?.interrupt()
         if (clean) {
-            lifecycle.markStopped()
+            stopLifecycle()
         } else {
-            lifecycle.markFailed(ProxyRuntimeFailure.CleanupFailed)
+            failLifecycle(RuntimeProcessFailure.CLEANUP_FAILED)
         }
     }
 

@@ -3,6 +3,10 @@ package com.mobileproxymish.app
 import android.content.Context
 import com.mobileproxymish.app.cellular.CellularRuntimeBridge
 import com.mobileproxymish.app.cellular.CellularRuntimeSnapshot
+import com.mobileproxymish.ffi.RuntimeLifecycleController
+import com.mobileproxymish.ffi.RuntimeLifecycleState
+import com.mobileproxymish.ffi.RuntimeStartAction
+import com.mobileproxymish.ffi.RuntimeStopAction
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import kotlinx.coroutines.CoroutineScope
@@ -28,43 +32,19 @@ internal fun closeRuntimeGenerationExact(
     return clean
 }
 
-/** Pure lifecycle decision used to keep failed cleanup fail-closed. */
-internal data class RuntimeCleanupDisposition(
-    val installFreshGenerationNow: Boolean,
-    val requireFreshGenerationBeforeNextExplicitStart: Boolean,
-    val restartNow: Boolean,
-)
-
-internal fun runtimeCleanupDisposition(
-    clean: Boolean,
-    restartRequested: Boolean,
-): RuntimeCleanupDisposition = if (clean) {
-    RuntimeCleanupDisposition(
-        installFreshGenerationNow = true,
-        requireFreshGenerationBeforeNextExplicitStart = false,
-        restartNow = restartRequested,
-    )
-} else {
-    RuntimeCleanupDisposition(
-        installFreshGenerationNow = false,
-        requireFreshGenerationBeforeNextExplicitStart = true,
-        restartNow = false,
-    )
-}
-
 /**
- * Process-local lifecycle composition for one foreground-service-owned runtime generation.
+ * Android effect/composition adapter for the Rust Runtime Lifecycle natural owner.
  *
- * Semantic ownership does not move here: Transport Reachability remains owned by the Rust
- * transport owner, Cellular Egress remains owned by the Rust cellular owner, credentials
- * lifecycle remains owned by the Rust credentials owner, and proxy protocol/auth remains owned
- * by sing-box. This class only serializes lifecycle composition.
+ * The Rust owner owns start/stop/restart/generation-replacement decisions. This class only
+ * serializes Android/process effects, stores platform callback closures, and publishes owner
+ * projections from the currently installed runtime generation.
  */
 class MishRuntimeController internal constructor(
     context: Context,
 ) {
     private val appContext = context.applicationContext
     private val lock = Any()
+    private val lifecycle = RuntimeLifecycleController()
     private val lifecycleExecutor = Executors.newSingleThreadExecutor { task ->
         Thread(task, "mish-runtime-lifecycle").apply { isDaemon = true }
     }
@@ -72,10 +52,6 @@ class MishRuntimeController internal constructor(
     private val externalCredentialStore = ExternalProxyCredentialStore(appContext)
     private val generation = MutableStateFlow(newGeneration())
     private val stopCallbacks = mutableListOf<(Boolean) -> Unit>()
-
-    private var lifecycleState = LifecycleState.STOPPED
-    private var restartAfterStop = false
-    private var generationRequiresReplacement = false
 
     @OptIn(ExperimentalCoroutinesApi::class)
     val cellularSnapshot: StateFlow<CellularRuntimeSnapshot> = generation
@@ -106,37 +82,24 @@ class MishRuntimeController internal constructor(
         externalCredentialStore.currentProvisioningSnapshot()
 
     val isRunning: Boolean
-        get() = synchronized(lock) { lifecycleState != LifecycleState.STOPPED }
+        get() = synchronized(lock) { lifecycle.state() != RuntimeLifecycleState.STOPPED }
 
     /**
-     * Requests one serialized start. Duplicate starts are idempotent; a start racing with a
-     * successful stop is remembered. A failed cleanup explicitly suppresses automatic restart.
+     * Requests one serialized start through the Rust owner. Duplicate starts are idempotent and a
+     * start racing with STOPPING is remembered by the owner, not by a parallel Kotlin state machine.
      */
     fun start(): Boolean {
-        val shouldSubmit = synchronized(lock) {
-            when (lifecycleState) {
-                LifecycleState.RUNNING,
-                LifecycleState.STARTING,
-                -> return true
+        val action = synchronized(lock) { lifecycle.requestStart() }
+        when (action) {
+            RuntimeStartAction.ALREADY_ACTIVE,
+            RuntimeStartAction.QUEUED_AFTER_STOP,
+            -> return true
 
-                LifecycleState.STOPPING -> {
-                    restartAfterStop = true
-                    return true
-                }
-
-                LifecycleState.STOPPED -> {
-                    lifecycleState = LifecycleState.STARTING
-                    true
-                }
-            }
+            RuntimeStartAction.START_NOW -> Unit
         }
 
-        if (!shouldSubmit || submit(::startBlocking)) return true
-        synchronized(lock) {
-            if (lifecycleState == LifecycleState.STARTING) {
-                lifecycleState = LifecycleState.STOPPED
-            }
-        }
+        if (submit(::startBlocking)) return true
+        synchronized(lock) { lifecycle.startSubmissionFailed() }
         return false
     }
 
@@ -145,49 +108,34 @@ class MishRuntimeController internal constructor(
      * after Mesh ingress -> proxy -> Cellular Egress/root-policy cleanup has completed or failed.
      */
     fun stop(onComplete: (Boolean) -> Unit = {}) {
-        var completeImmediately: Boolean? = null
-        val shouldSubmit = synchronized(lock) {
-            when (lifecycleState) {
-                LifecycleState.STOPPED -> {
-                    completeImmediately = true
-                    false
-                }
-
-                LifecycleState.STOPPING -> {
-                    stopCallbacks += onComplete
-                    false
-                }
-
-                LifecycleState.STARTING,
-                LifecycleState.RUNNING,
-                -> {
-                    lifecycleState = LifecycleState.STOPPING
-                    stopCallbacks += onComplete
-                    true
-                }
+        var completeImmediately = false
+        val action = synchronized(lock) {
+            val requested = lifecycle.requestStop()
+            when (requested) {
+                RuntimeStopAction.ALREADY_STOPPED -> completeImmediately = true
+                RuntimeStopAction.ALREADY_STOPPING -> stopCallbacks += onComplete
+                RuntimeStopAction.STOP_NOW -> stopCallbacks += onComplete
             }
+            requested
         }
 
-        completeImmediately?.let {
-            onComplete(it)
+        if (completeImmediately) {
+            onComplete(true)
             return
         }
-        if (!shouldSubmit) return
+        if (action != RuntimeStopAction.STOP_NOW) return
         if (submit(::stopBlocking)) return
 
         val callbacks = synchronized(lock) {
-            // Executor rejection means cleanup never ran. Keep STOPPING as a terminal fail-closed
-            // state for this controller instead of pretending a fresh generation is safe.
-            restartAfterStop = false
+            // Cleanup never ran. The Rust owner intentionally keeps STOPPING terminal/fail-closed.
+            lifecycle.stopSubmissionFailed()
             stopCallbacks.toList().also { stopCallbacks.clear() }
         }
         callbacks.forEach { callback -> runCatching { callback(false) } }
     }
 
     /**
-     * Explicit rotation is accepted only from an exactly stopped, clean generation. This keeps
-     * cutover atomic: no old sing-box or Mesh ingress generation remains active when the owner
-     * version changes.
+     * Explicit rotation is accepted only from an exactly stopped, clean owner generation.
      */
     internal fun rotateExternalCredentialWhileStopped(): Boolean =
         mutateExternalCredentialWhileStopped(externalCredentialStore::rotateWhileStopped)
@@ -198,16 +146,14 @@ class MishRuntimeController internal constructor(
 
     private fun mutateExternalCredentialWhileStopped(mutation: () -> Boolean): Boolean =
         synchronized(lock) {
-            if (lifecycleState != LifecycleState.STOPPED || generationRequiresReplacement) {
-                return false
-            }
+            if (!lifecycle.canMutateStoppedGeneration()) return false
             val current = generation.value
             if (!current.closeExact()) {
-                generationRequiresReplacement = true
+                lifecycle.markStoppedGenerationDirty()
                 return false
             }
             if (!mutation()) {
-                generationRequiresReplacement = true
+                lifecycle.markStoppedGenerationDirty()
                 return false
             }
             generation.value = newGeneration()
@@ -216,20 +162,17 @@ class MishRuntimeController internal constructor(
 
     private fun startBlocking() {
         val current = synchronized(lock) {
-            if (generationRequiresReplacement) {
-                // This replacement is allowed only because this task exists due to a later,
-                // explicit start() after the failed-cleanup state transition.
+            if (lifecycle.takeGenerationReplacementForStart()) {
+                // Replacement is authorized only by the later explicit start transition.
                 generation.value = newGeneration()
-                generationRequiresReplacement = false
             }
             generation.value
         }
         val started = try {
             current.cellularRuntime.start()
             current.proxyRuntime.start()
-            // The Mesh adapter waits for proxyRuntime=Running before asking the Rust owner to
-            // bind exact Mesh listeners. Starting observation here therefore cannot expose a
-            // listener ahead of the loopback proxy generation.
+            // The Mesh adapter waits for proxyRuntime=Running before asking the Rust transport
+            // owner to bind exact Mesh listeners.
             current.meshRuntime.start()
             true
         } catch (_: Exception) {
@@ -239,23 +182,12 @@ class MishRuntimeController internal constructor(
         val cleanAfterFailedStart = if (started) true else current.closeExact()
 
         synchronized(lock) {
-            when {
-                started && lifecycleState == LifecycleState.STARTING -> {
-                    lifecycleState = LifecycleState.RUNNING
-                }
-
-                !started && lifecycleState == LifecycleState.STARTING -> {
-                    if (cleanAfterFailedStart) {
-                        generation.value = newGeneration()
-                        generationRequiresReplacement = false
-                    } else {
-                        generationRequiresReplacement = true
-                    }
-                    lifecycleState = LifecycleState.STOPPED
-                }
-
-                // STOPPING is handled by the stop task already queued after this one.
-                else -> Unit
+            val completion = lifecycle.completeStart(
+                started = started,
+                cleanAfterFailedStart = cleanAfterFailedStart,
+            )
+            if (completion.installFreshGenerationNow) {
+                generation.value = newGeneration()
             }
         }
     }
@@ -267,18 +199,11 @@ class MishRuntimeController internal constructor(
         val restart: Boolean
         val callbacks: List<(Boolean) -> Unit>
         synchronized(lock) {
-            val disposition = runtimeCleanupDisposition(
-                clean = clean,
-                restartRequested = restartAfterStop,
-            )
+            val disposition = lifecycle.completeStop(clean)
             if (disposition.installFreshGenerationNow) {
                 generation.value = newGeneration()
             }
-            generationRequiresReplacement =
-                disposition.requireFreshGenerationBeforeNextExplicitStart
-            lifecycleState = LifecycleState.STOPPED
             restart = disposition.restartNow
-            restartAfterStop = false
             callbacks = stopCallbacks.toList()
             stopCallbacks.clear()
         }
@@ -315,12 +240,5 @@ class MishRuntimeController internal constructor(
             closeProxy = proxyRuntime::close,
             closeCellular = cellularRuntime::close,
         )
-    }
-
-    private enum class LifecycleState {
-        STOPPED,
-        STARTING,
-        RUNNING,
-        STOPPING,
     }
 }
