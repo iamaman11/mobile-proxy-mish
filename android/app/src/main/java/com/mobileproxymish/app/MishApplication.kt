@@ -14,13 +14,21 @@ class MishApplication : Application() {
     lateinit var cellularRuntime: CellularRuntimeBridge
         private set
 
+    internal lateinit var proxyCredentials: ProxyRuntimeCredentials
+        private set
+
     lateinit var proxyRuntime: ProxyRuntimeSupervisor
         private set
 
     override fun onCreate() {
         super.onCreate()
         cellularRuntime = CellularRuntimeBridge(this).also(CellularRuntimeBridge::start)
-        proxyRuntime = ProxyRuntimeSupervisor(this, cellularRuntime).also(ProxyRuntimeSupervisor::start)
+        proxyCredentials = ProxyRuntimeCredentials.generate()
+        proxyRuntime = ProxyRuntimeSupervisor(
+            context = this,
+            cellularRuntime = cellularRuntime,
+            publicCredentials = proxyCredentials,
+        ).also(ProxyRuntimeSupervisor::start)
     }
 
     override fun onTerminate() {
