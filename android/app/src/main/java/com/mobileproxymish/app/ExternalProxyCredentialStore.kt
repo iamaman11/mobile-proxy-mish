@@ -32,18 +32,19 @@ internal class ExternalProxyCredentialStore(
 
     @Synchronized
     override fun currentCredential(): ProxyRuntimeCredentials? = runCatching {
-        val state = loadOrCreateState()
+        val stored = loadOrInitialize()
         val derivation = externalCredentialDerivation(
-            version = state.version,
-            revoked = state.revoked,
+            version = stored.state.version,
+            revoked = stored.state.revoked,
         )
-        val root = loadOrCreateRootKey()
-        check(root.encoded == null) { "Android Keystore HMAC root unexpectedly exportable" }
-        val usernameMac = hmac(root, derivation.usernameContext)
-        val passwordMac = hmac(root, derivation.passwordContext)
+        check(stored.root.encoded == null) {
+            "Android Keystore HMAC root unexpectedly exportable"
+        }
+        val usernameMac = hmac(stored.root, derivation.usernameContext)
+        val passwordMac = hmac(stored.root, derivation.passwordContext)
         val material = externalCredentialMaterialize(
-            version = state.version,
-            revoked = state.revoked,
+            version = stored.state.version,
+            revoked = stored.state.revoked,
             usernameMac = usernameMac,
             passwordMac = passwordMac,
         )
@@ -59,7 +60,7 @@ internal class ExternalProxyCredentialStore(
      */
     @Synchronized
     fun rotateWhileStopped(): Boolean = runCatching {
-        val current = loadOrCreateState()
+        val current = loadOrInitialize().state
         persistState(
             externalCredentialRotate(
                 version = current.version,
@@ -74,7 +75,7 @@ internal class ExternalProxyCredentialStore(
      */
     @Synchronized
     fun revokeWhileStopped(): Boolean = runCatching {
-        val current = loadOrCreateState()
+        val current = loadOrInitialize().state
         persistState(
             externalCredentialRevoke(
                 version = current.version,
@@ -83,20 +84,43 @@ internal class ExternalProxyCredentialStore(
         )
     }.getOrDefault(false)
 
-    private fun loadOrCreateState(): ExternalCredentialStateView {
+    /**
+     * Creates the Keystore root only for the first complete owner state. Once metadata exists,
+     * a missing root is corruption and must fail closed rather than silently changing material
+     * under the same credential version.
+     */
+    private fun loadOrInitialize(): StoredCredentialRoot {
+        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
         val encodedVersion = preferences.getString(KEY_VERSION, null)
-        if (encodedVersion == null) {
-            val initial = externalCredentialInitialState()
-            check(persistState(initial)) { "failed to persist initial credential metadata" }
-            return initial
+
+        if (encodedVersion != null) {
+            check(keyStore.containsAlias(ROOT_KEY_ALIAS)) {
+                "external credential root missing for persisted owner state"
+            }
+            val root = keyStore.getKey(ROOT_KEY_ALIAS, null) as? SecretKey
+                ?: error("Android Keystore external credential root has wrong key type")
+            val version = encodedVersion.toULongOrNull()
+                ?: error("persisted external credential version is invalid")
+            val state = externalCredentialRestore(
+                version = version,
+                revoked = preferences.getBoolean(KEY_REVOKED, false),
+            )
+            return StoredCredentialRoot(state, root)
         }
 
-        val version = encodedVersion.toULongOrNull()
-            ?: error("persisted external credential version is invalid")
-        return externalCredentialRestore(
-            version = version,
-            revoked = preferences.getBoolean(KEY_REVOKED, false),
-        )
+        // A key without owner metadata is ambiguous (for example interrupted initialization or
+        // lost metadata). Never guess a version because doing so could resurrect old material.
+        check(!keyStore.containsAlias(ROOT_KEY_ALIAS)) {
+            "external credential root exists without owner metadata"
+        }
+
+        val root = generateRootKey()
+        val initial = externalCredentialInitialState()
+        if (!persistState(initial)) {
+            runCatching { keyStore.deleteEntry(ROOT_KEY_ALIAS) }
+            error("failed to persist initial credential metadata")
+        }
+        return StoredCredentialRoot(initial, root)
     }
 
     private fun persistState(state: ExternalCredentialStateView): Boolean = preferences
@@ -105,14 +129,7 @@ internal class ExternalProxyCredentialStore(
         .putBoolean(KEY_REVOKED, state.revoked)
         .commit()
 
-    private fun loadOrCreateRootKey(): SecretKey {
-        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-        val existing = keyStore.getKey(ROOT_KEY_ALIAS, null)
-        if (existing != null) {
-            return existing as? SecretKey
-                ?: error("Android Keystore external credential root has wrong key type")
-        }
-
+    private fun generateRootKey(): SecretKey {
         val generator = KeyGenerator.getInstance(
             KeyProperties.KEY_ALGORITHM_HMAC_SHA256,
             ANDROID_KEYSTORE,
@@ -133,6 +150,11 @@ internal class ExternalProxyCredentialStore(
         .getInstance(KeyProperties.KEY_ALGORITHM_HMAC_SHA256)
         .apply { init(key) }
         .doFinal(context)
+
+    private data class StoredCredentialRoot(
+        val state: ExternalCredentialStateView,
+        val root: SecretKey,
+    )
 
     private companion object {
         const val ANDROID_KEYSTORE = "AndroidKeyStore"
