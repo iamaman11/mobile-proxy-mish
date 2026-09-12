@@ -74,6 +74,10 @@ internal object MangleOutputCollisionAudit {
                                 Result.Clean -> Unit
                                 else -> return nested
                             }
+                        } else if (rulesByChain.containsKey(target.value)) {
+                            // A rule-bearing chain without its canonical `-N` definition means
+                            // the snapshot cannot prove a complete reachability graph.
+                            return Result.Ambiguous
                         }
                     }
                 }
@@ -173,7 +177,7 @@ internal object MangleOutputCollisionAudit {
     private fun parseUnsigned(raw: String?): ULong? {
         if (raw.isNullOrBlank()) return null
         return if (raw.startsWith("0x", ignoreCase = true)) {
-            raw.substring(2).takeIf(String::isNotEmpty)?.toULongOrNull(16)
+            raw.substring(2).takeIf { it.isNotEmpty() }?.toULongOrNull(16)
         } else {
             raw.toULongOrNull()
         }
