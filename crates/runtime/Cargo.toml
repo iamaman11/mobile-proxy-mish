@@ -7,6 +7,9 @@ rust-version.workspace = true
 repository.workspace = true
 publish = false
 
+[lib]
+path = "src/entry.rs"
+
 [dependencies]
 mish-android-network = { path = "../android-network" }
 mish-cellular = { path = "../cellular" }
