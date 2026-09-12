@@ -44,6 +44,18 @@ enum class ProxyRuntimeFailure {
 }
 
 /**
+ * Non-secret read-only observation of the exact currently owned runtime generation.
+ *
+ * This is diagnostic evidence only. It carries no credentials, no configuration and no
+ * readiness authority; the existing lifecycle and Cellular Egress owners remain authoritative.
+ */
+internal data class ProxyRuntimeDiagnosticObservation(
+    val childAlive: Boolean,
+    val privateBridgePort: Int?,
+    val privateBridgeHealthy: Boolean,
+)
+
+/**
  * Process-generation proxy credential material owned by the Android composition root.
  *
  * This is intentionally only a typed input boundary. Durable storage, provisioning and
@@ -148,6 +160,18 @@ class ProxyRuntimeSupervisor internal constructor(
 
     val snapshot: StateFlow<ProxyRuntimeSnapshot>
         get() = lifecycle.snapshot
+
+    internal fun diagnosticObservation(): ProxyRuntimeDiagnosticObservation = synchronized(lock) {
+        val currentChild = child
+        val currentBridge = bridge
+        ProxyRuntimeDiagnosticObservation(
+            childAlive = currentChild?.let(::isAlive) == true,
+            privateBridgePort = runCatching { currentBridge?.port()?.toInt() }.getOrNull(),
+            privateBridgeHealthy = currentBridge?.let {
+                runCatching { it.isHealthy() }.getOrDefault(false)
+            } == true,
+        )
+    }
 
     fun start() {
         if (closed.get() || !lifecycle.requestStart()) return
