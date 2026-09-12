@@ -22,6 +22,10 @@ pub struct ProbeTicket {
 }
 
 impl ProbeTicket {
+    pub const fn from_parts(binding: ProbeBinding, freshness: FreshnessMarker) -> Self {
+        Self { binding, freshness }
+    }
+
     pub const fn binding(self) -> ProbeBinding {
         self.binding
     }
@@ -55,7 +59,7 @@ impl EgressProbeCoordinator {
 
     pub fn begin(&mut self, binding: ProbeBinding) -> Result<ProbeTicket, EgressProbeError> {
         let freshness = self.next_freshness()?;
-        let ticket = ProbeTicket { binding, freshness };
+        let ticket = ProbeTicket::from_parts(binding, freshness);
         self.current = Some(ticket);
         Ok(ticket)
     }
@@ -165,10 +169,7 @@ mod tests {
         let old = coordinator.begin(binding()).expect("ticket");
         let invalidated = coordinator.invalidate().expect("invalidate");
         assert_ne!(invalidated, old.freshness());
-        assert_eq!(
-            coordinator.complete(old, ProbeOutcome::Succeeded),
-            None,
-        );
+        assert_eq!(coordinator.complete(old, ProbeOutcome::Succeeded), None);
         assert_eq!(coordinator.expected_freshness(), Some(invalidated));
     }
 
