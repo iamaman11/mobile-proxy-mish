@@ -10,6 +10,7 @@ import com.mobileproxymish.ffi.RuntimeProcessFailure
 import com.mobileproxymish.ffi.RuntimeProcessLifecycleController
 import com.mobileproxymish.ffi.RuntimeProcessSnapshotView
 import com.mobileproxymish.ffi.RuntimeProcessState
+import com.mobileproxymish.ffi.proxyListenerPorts
 import com.mobileproxymish.ffi.renderProxyRuntimeConfig
 import java.io.Closeable
 import java.io.File
@@ -69,7 +70,7 @@ private fun randomCredential(): String {
 /**
  * Android child-process effect adapter for the Rust Runtime Lifecycle natural owner.
  *
- * loopback sing-box (:1080/:1081/:3128)
+ * canonical loopback sing-box listeners
  *   -> private loopback SOCKS bridge
  *   -> the exact Cellular Egress owner
  *
@@ -288,12 +289,21 @@ class ProxyRuntimeSupervisor internal constructor(
         process: Process,
         privateBridge: CellularBridgeRuntime,
     ): Boolean {
+        val publicPorts = try {
+            proxyListenerPorts().map { it.toInt() }
+        } catch (_: LinkageError) {
+            return false
+        } catch (_: Exception) {
+            return false
+        }
+        if (publicPorts.isEmpty()) return false
+
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(START_HEALTH_TIMEOUT_SECONDS)
         while (System.nanoTime() < deadline) {
             if (!isAlive(process) || !runCatching { privateBridge.isHealthy() }.getOrDefault(false)) {
                 return false
             }
-            if (PUBLIC_PORTS.all(::canConnectLoopback)) return true
+            if (publicPorts.all(::canConnectLoopback)) return true
             Thread.sleep(HEALTH_RETRY_MS)
         }
         return false
@@ -517,7 +527,6 @@ class ProxyRuntimeSupervisor internal constructor(
         const val STALE_KILL_TIMEOUT_SECONDS = 2L
         const val CLOSE_TIMEOUT_SECONDS = 10L
         const val PRIVATE_FILE_MODE = 384 // 0600
-        val PUBLIC_PORTS = listOf(1080, 1081, 3128)
     }
 }
 

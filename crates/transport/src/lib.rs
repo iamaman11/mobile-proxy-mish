@@ -1,8 +1,9 @@
 //! Transport Reachability natural-owner capability.
 //!
 //! Owns exact admitted Mesh endpoint facts and the deliberately small TCP ingress that exposes
-//! only those exact endpoints to the existing loopback proxy runtime. It does not own proxy
-//! protocols, authentication, Cloudflare/VPN configuration, DNS, or public Internet egress.
+//! only those exact endpoints to an explicitly supplied loopback backend mapping. It does not own
+//! proxy protocols, proxy listener ports, authentication, Cloudflare/VPN configuration, DNS, or
+//! public Internet egress.
 
 use std::collections::{BTreeSet, HashMap};
 use std::io;
@@ -12,7 +13,6 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-pub const PRODUCT_PROXY_PORTS: [u16; 3] = [1080, 1081, 3128];
 pub const MAX_MESH_SESSIONS: usize = 128;
 
 const ACCEPT_POLL: Duration = Duration::from_millis(20);
@@ -207,18 +207,34 @@ pub enum MeshIngressError {
     ShutdownTimedOut,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct PortForward {
+/// One explicit transport-only ingress/backend mapping supplied by a composition adapter.
+///
+/// Transport does not know which product protocol owns the port; it only validates non-zero
+/// endpoints and forwards TCP bytes between the exact Mesh listener and loopback backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeshPortForward {
     ingress_port: u16,
     backend_port: u16,
 }
 
-impl PortForward {
-    const fn same(port: u16) -> Self {
+impl MeshPortForward {
+    pub const fn new(ingress_port: u16, backend_port: u16) -> Self {
         Self {
-            ingress_port: port,
-            backend_port: port,
+            ingress_port,
+            backend_port,
         }
+    }
+
+    pub const fn same(port: u16) -> Self {
+        Self::new(port, port)
+    }
+
+    pub const fn ingress_port(self) -> u16 {
+        self.ingress_port
+    }
+
+    pub const fn backend_port(self) -> u16 {
+        self.backend_port
     }
 }
 
@@ -316,8 +332,8 @@ impl SessionRegistry {
 /// Exact-address TCP ingress for one owner admission epoch.
 ///
 /// The runtime binds only the exact admitted endpoint. Every accepted stream is forwarded to the
-/// corresponding loopback sing-box port. There is no protocol parsing, authentication, UDP,
-/// wildcard bind, route mutation, or VPN ownership here.
+/// explicitly supplied loopback backend mapping. There is no protocol parsing, authentication,
+/// UDP, wildcard bind, route mutation, VPN ownership, or proxy-port policy here.
 pub struct MeshIngressRuntime {
     endpoint: Ipv4Addr,
     stop: Arc<AtomicBool>,
@@ -326,13 +342,11 @@ pub struct MeshIngressRuntime {
 }
 
 impl MeshIngressRuntime {
-    pub fn start_product(endpoint: Ipv4Addr) -> Result<Self, MeshIngressError> {
-        let mappings = [
-            PortForward::same(PRODUCT_PROXY_PORTS[0]),
-            PortForward::same(PRODUCT_PROXY_PORTS[1]),
-            PortForward::same(PRODUCT_PROXY_PORTS[2]),
-        ];
-        Self::start_mapped(endpoint, &mappings, MAX_MESH_SESSIONS)
+    pub fn start(
+        endpoint: Ipv4Addr,
+        mappings: &[MeshPortForward],
+    ) -> Result<Self, MeshIngressError> {
+        Self::start_mapped(endpoint, mappings, MAX_MESH_SESSIONS)
     }
 
     pub fn endpoint(&self) -> Ipv4Addr {
@@ -373,7 +387,7 @@ impl MeshIngressRuntime {
 
     fn start_mapped(
         endpoint: Ipv4Addr,
-        mappings: &[PortForward],
+        mappings: &[MeshPortForward],
         max_sessions: usize,
     ) -> Result<Self, MeshIngressError> {
         if endpoint.is_unspecified() || endpoint.is_multicast() || endpoint == Ipv4Addr::BROADCAST {
@@ -442,7 +456,7 @@ impl Drop for MeshIngressRuntime {
 
 fn listener_loop(
     listener: TcpListener,
-    mapping: PortForward,
+    mapping: MeshPortForward,
     stop: Arc<AtomicBool>,
     sessions: Arc<SessionRegistry>,
 ) {
@@ -647,10 +661,7 @@ mod tests {
             stream.write_all(b"pong").expect("backend write");
         });
 
-        let mapping = [PortForward {
-            ingress_port,
-            backend_port,
-        }];
+        let mapping = [MeshPortForward::new(ingress_port, backend_port)];
         let mut runtime = MeshIngressRuntime::start_mapped(Ipv4Addr::LOCALHOST, &mapping, 4)
             .expect("start mapped ingress");
         assert!(runtime.is_healthy());
@@ -664,5 +675,16 @@ mod tests {
         drop(client);
         backend_worker.join().expect("backend worker");
         runtime.stop().expect("clean stop");
+    }
+
+    #[test]
+    fn product_ports_are_not_owned_by_transport() {
+        let mappings = [
+            MeshPortForward::same(40001),
+            MeshPortForward::same(40002),
+        ];
+        assert_eq!(mappings[0].ingress_port(), 40001);
+        assert_eq!(mappings[0].backend_port(), 40001);
+        assert_eq!(mappings[1].ingress_port(), 40002);
     }
 }

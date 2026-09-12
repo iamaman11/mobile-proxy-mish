@@ -38,6 +38,14 @@ const CANONICAL_LISTENERS: [ProxyListener; 3] = [
     },
 ];
 
+/// Returns the single canonical product listener contract.
+///
+/// Composition adapters may project these facts into transport mappings or platform health
+/// checks, but must not duplicate the port values or redefine protocol ownership.
+pub const fn canonical_listeners() -> &'static [ProxyListener; 3] {
+    &CANONICAL_LISTENERS
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct ProxyCredentialMaterial {
     username: String,
@@ -109,7 +117,7 @@ impl ProxyServingPlan {
     }
 
     pub fn listeners(&self) -> &'static [ProxyListener; 3] {
-        &CANONICAL_LISTENERS
+        canonical_listeners()
     }
 
     /// Runtime-resolved material consumed by the serving adapter. This capability owns
@@ -149,11 +157,8 @@ mod tests {
 
     #[test]
     fn canonical_listener_contract_is_fixed() {
-        let plan = ProxyServingPlan::canonical(IpAddr::from([127, 0, 0, 1]), credentials())
-            .expect("explicit address");
-
         assert_eq!(
-            plan.listeners(),
+            canonical_listeners(),
             &[
                 ProxyListener {
                     protocol: ProxyProtocol::Mixed,
@@ -169,6 +174,9 @@ mod tests {
                 },
             ],
         );
+        let plan = ProxyServingPlan::canonical(IpAddr::from([127, 0, 0, 1]), credentials())
+            .expect("explicit address");
+        assert_eq!(plan.listeners(), canonical_listeners());
     }
 
     #[test]
