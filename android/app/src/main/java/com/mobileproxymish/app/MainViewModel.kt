@@ -104,6 +104,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun proxyReasonCode(reason: ProxyRuntimeFailure): String = when (reason) {
         ProxyRuntimeFailure.NativeRuntimeMissing -> "proxy.native_runtime_missing"
         ProxyRuntimeFailure.StaleProcessIdentityMismatch -> "proxy.stale_process_identity_mismatch"
+        ProxyRuntimeFailure.ExternalCredentialUnavailable -> "proxy.external_credential_unavailable"
         ProxyRuntimeFailure.PrivateBridgeUnavailable -> "proxy.private_bridge_unavailable"
         ProxyRuntimeFailure.ConfigurationRejected -> "proxy.configuration_rejected"
         ProxyRuntimeFailure.ChildLaunchFailed -> "proxy.child_launch_failed"

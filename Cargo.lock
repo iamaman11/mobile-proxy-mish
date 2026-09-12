@@ -325,6 +325,7 @@ version = "0.1.0"
 dependencies = [
  "mish-cellular",
  "mish-cellular-egress-bridge",
+ "mish-credentials",
  "mish-proxy",
  "mish-runtime",
  "mish-sing-box-adapter",

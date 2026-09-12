@@ -2,7 +2,6 @@ package com.mobileproxymish.app
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -113,14 +112,39 @@ class ProxyRuntimeLifecycleTest {
     }
 
     @Test
-    fun processGenerationCredentialsAreExplicitTypedMaterial() {
-        val credentials = ProxyRuntimeCredentials(
-            username = "process-generation-user",
-            password = "process-generation-password",
+    fun successfulCleanupMayInstallFreshGenerationAndHonorQueuedRestart() {
+        val disposition = runtimeCleanupDisposition(
+            clean = true,
+            restartRequested = true,
         )
 
-        assertEquals("process-generation-user", credentials.username)
-        assertEquals("process-generation-password", credentials.password)
-        assertNotEquals(credentials.username, credentials.password)
+        assertTrue(disposition.installFreshGenerationNow)
+        assertFalse(disposition.requireFreshGenerationBeforeNextExplicitStart)
+        assertTrue(disposition.restartNow)
+    }
+
+    @Test
+    fun failedCleanupNeverInstallsFreshGenerationOrAutoRestarts() {
+        val disposition = runtimeCleanupDisposition(
+            clean = false,
+            restartRequested = true,
+        )
+
+        assertFalse(disposition.installFreshGenerationNow)
+        assertTrue(disposition.requireFreshGenerationBeforeNextExplicitStart)
+        assertFalse(disposition.restartNow)
+    }
+
+    @Test
+    fun externalCredentialMaterialIsRedactedFromStringProjection() {
+        val credentials = ProxyRuntimeCredentials(
+            username = "external-user-secret",
+            password = "external-password-secret",
+        )
+
+        assertEquals("external-user-secret", credentials.username)
+        assertEquals("external-password-secret", credentials.password)
+        assertFalse(credentials.toString().contains(credentials.username))
+        assertFalse(credentials.toString().contains(credentials.password))
     }
 }

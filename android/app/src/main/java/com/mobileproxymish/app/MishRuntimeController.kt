@@ -26,13 +26,36 @@ internal fun closeRuntimeGenerationExact(
     return clean
 }
 
+/** Pure lifecycle decision used to keep failed cleanup fail-closed. */
+internal data class RuntimeCleanupDisposition(
+    val installFreshGenerationNow: Boolean,
+    val requireFreshGenerationBeforeNextExplicitStart: Boolean,
+    val restartNow: Boolean,
+)
+
+internal fun runtimeCleanupDisposition(
+    clean: Boolean,
+    restartRequested: Boolean,
+): RuntimeCleanupDisposition = if (clean) {
+    RuntimeCleanupDisposition(
+        installFreshGenerationNow = true,
+        requireFreshGenerationBeforeNextExplicitStart = false,
+        restartNow = restartRequested,
+    )
+} else {
+    RuntimeCleanupDisposition(
+        installFreshGenerationNow = false,
+        requireFreshGenerationBeforeNextExplicitStart = true,
+        restartNow = false,
+    )
+}
+
 /**
  * Process-local lifecycle composition for one foreground-service-owned runtime generation.
  *
  * Semantic ownership does not move here: Cellular Egress remains owned by the Rust cellular
- * owner and proxy protocol/auth remains owned by sing-box. This class only makes start/stop
- * restartable inside one Android process so a destroyed Service never leaves the application
- * pointing at permanently closed runtime objects.
+ * owner, credentials lifecycle remains owned by the Rust credentials owner, and proxy protocol
+ * auth remains owned by sing-box. This class only serializes lifecycle composition.
  */
 class MishRuntimeController internal constructor(
     context: Context,
@@ -43,11 +66,13 @@ class MishRuntimeController internal constructor(
         Thread(task, "mish-runtime-lifecycle").apply { isDaemon = true }
     }
     private val observationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val externalCredentialStore = ExternalProxyCredentialStore(appContext)
     private val generation = MutableStateFlow(newGeneration())
     private val stopCallbacks = mutableListOf<(Boolean) -> Unit>()
 
     private var lifecycleState = LifecycleState.STOPPED
     private var restartAfterStop = false
+    private var generationRequiresReplacement = false
 
     @OptIn(ExperimentalCoroutinesApi::class)
     val cellularSnapshot: StateFlow<CellularRuntimeSnapshot> = generation
@@ -78,7 +103,7 @@ class MishRuntimeController internal constructor(
 
     /**
      * Requests one serialized start. Duplicate starts are idempotent; a start racing with a
-     * stop is remembered and begins only after exact cleanup installed a fresh generation.
+     * successful stop is remembered. A failed cleanup explicitly suppresses automatic restart.
      */
     fun start(): Boolean {
         val shouldSubmit = synchronized(lock) {
@@ -110,7 +135,7 @@ class MishRuntimeController internal constructor(
 
     /**
      * Requests exact stop without blocking the Android main thread. The completion callback is
-     * invoked after proxy -> Cellular Egress/root-policy cleanup and fresh-generation install.
+     * invoked only after proxy -> Cellular Egress/root-policy cleanup has completed or failed.
      */
     fun stop(onComplete: (Boolean) -> Unit = {}) {
         var completeImmediately: Boolean? = null
@@ -144,15 +169,53 @@ class MishRuntimeController internal constructor(
         if (submit(::stopBlocking)) return
 
         val callbacks = synchronized(lock) {
-            lifecycleState = LifecycleState.STOPPED
+            // Executor rejection means cleanup never ran. Keep STOPPING as a terminal fail-closed
+            // state for this controller instead of pretending a fresh generation is safe.
             restartAfterStop = false
             stopCallbacks.toList().also { stopCallbacks.clear() }
         }
         callbacks.forEach { callback -> runCatching { callback(false) } }
     }
 
+    /**
+     * Explicit rotation is accepted only from an exactly stopped, clean generation. This keeps
+     * cutover atomic: no old sing-box generation remains active when the owner version changes.
+     */
+    internal fun rotateExternalCredentialWhileStopped(): Boolean =
+        mutateExternalCredentialWhileStopped(externalCredentialStore::rotateWhileStopped)
+
+    /** Revocation uses the same stopped-only cutover rule and never auto-restarts the runtime. */
+    internal fun revokeExternalCredentialWhileStopped(): Boolean =
+        mutateExternalCredentialWhileStopped(externalCredentialStore::revokeWhileStopped)
+
+    private fun mutateExternalCredentialWhileStopped(mutation: () -> Boolean): Boolean =
+        synchronized(lock) {
+            if (lifecycleState != LifecycleState.STOPPED || generationRequiresReplacement) {
+                return false
+            }
+            val current = generation.value
+            if (!current.closeExact()) {
+                generationRequiresReplacement = true
+                return false
+            }
+            if (!mutation()) {
+                generationRequiresReplacement = true
+                return false
+            }
+            generation.value = newGeneration()
+            true
+        }
+
     private fun startBlocking() {
-        val current = synchronized(lock) { generation.value }
+        val current = synchronized(lock) {
+            if (generationRequiresReplacement) {
+                // This replacement is allowed only because this task exists due to a later,
+                // explicit start() after the failed-cleanup state transition.
+                generation.value = newGeneration()
+                generationRequiresReplacement = false
+            }
+            generation.value
+        }
         val started = try {
             current.cellularRuntime.start()
             current.proxyRuntime.start()
@@ -161,7 +224,7 @@ class MishRuntimeController internal constructor(
             false
         }
 
-        if (!started) current.closeExact()
+        val cleanAfterFailedStart = if (started) true else current.closeExact()
 
         synchronized(lock) {
             when {
@@ -170,7 +233,12 @@ class MishRuntimeController internal constructor(
                 }
 
                 !started && lifecycleState == LifecycleState.STARTING -> {
-                    generation.value = newGeneration()
+                    if (cleanAfterFailedStart) {
+                        generation.value = newGeneration()
+                        generationRequiresReplacement = false
+                    } else {
+                        generationRequiresReplacement = true
+                    }
                     lifecycleState = LifecycleState.STOPPED
                 }
 
@@ -187,9 +255,17 @@ class MishRuntimeController internal constructor(
         val restart: Boolean
         val callbacks: List<(Boolean) -> Unit>
         synchronized(lock) {
-            generation.value = newGeneration()
+            val disposition = runtimeCleanupDisposition(
+                clean = clean,
+                restartRequested = restartAfterStop,
+            )
+            if (disposition.installFreshGenerationNow) {
+                generation.value = newGeneration()
+            }
+            generationRequiresReplacement =
+                disposition.requireFreshGenerationBeforeNextExplicitStart
             lifecycleState = LifecycleState.STOPPED
-            restart = restartAfterStop
+            restart = disposition.restartNow
             restartAfterStop = false
             callbacks = stopCallbacks.toList()
             stopCallbacks.clear()
@@ -208,11 +284,10 @@ class MishRuntimeController internal constructor(
 
     private fun newGeneration(): RuntimeGeneration {
         val cellularRuntime = CellularRuntimeBridge(appContext)
-        val credentials = ProxyRuntimeCredentials.generate()
         val proxyRuntime = ProxyRuntimeSupervisor(
             context = appContext,
             cellularRuntime = cellularRuntime,
-            publicCredentials = credentials,
+            publicCredentials = externalCredentialStore,
         )
         return RuntimeGeneration(cellularRuntime, proxyRuntime)
     }

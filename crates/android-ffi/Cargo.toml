@@ -9,6 +9,7 @@ publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]
+path = "src/entry.rs"
 
 [[bin]]
 name = "uniffi-bindgen"
@@ -17,6 +18,7 @@ path = "src/bin/uniffi-bindgen.rs"
 [dependencies]
 mish-cellular = { path = "../cellular" }
 mish-cellular-egress-bridge = { path = "../cellular-egress-bridge" }
+mish-credentials = { path = "../credentials" }
 mish-proxy = { path = "../proxy" }
 mish-runtime = { path = "../runtime" }
 mish-sing-box-adapter = { path = "../sing-box-adapter" }
