@@ -296,7 +296,7 @@ fn connect_host_with<T>(
     let authority = issue_authority(owner)?;
     let candidates = match host {
         TargetHost::Ipv4(address) => vec![IpAddr::V4(*address)],
-        TargetHost::Ipv6(address) => vec![IpAddr::V6(*address)],
+        TargetHost::Ipv6(_) => return Err(OutboundConnectError::Rejected),
         TargetHost::Domain(domain) => {
             ensure_deadline(deadline)?;
             let addresses = resolve(authority, domain, deadline)?;
@@ -484,29 +484,149 @@ mod tests {
     }
 
     #[test]
-    fn numeric_targets_skip_dns_and_connect_once() {
-        for host in [
-            TargetHost::Ipv4(Ipv4Addr::new(203, 0, 113, 10)),
-            TargetHost::Ipv6(Ipv6Addr::LOCALHOST),
-        ] {
+    fn no_authority_prevents_dns_and_connect_effects() {
+        let owner = Arc::new(Mutex::new(CellularEgress::new()));
+        let resolved = Cell::new(false);
+        let connected = Cell::new(false);
+        let result = connect_host_with(
+            &owner,
+            &TargetHost::Domain("example.invalid".into()),
+            443,
+            deadline(),
+            |_, _, _| {
+                resolved.set(true);
+                Ok(vec![IpAddr::V4(Ipv4Addr::new(203, 0, 113, 10))])
+            },
+            |_, _, _| {
+                connected.set(true);
+                Ok(())
+            },
+        );
+        assert_eq!(result, Err(OutboundConnectError::Unavailable));
+        assert!(!resolved.get());
+        assert!(!connected.get());
+    }
+
+    #[test]
+    fn numeric_ipv4_skips_dns_and_connects_once() {
+        let owner = admitted_owner();
+        let calls = Cell::new(0_u8);
+        let result = connect_host_with(
+            &owner,
+            &TargetHost::Ipv4(Ipv4Addr::new(203, 0, 113, 10)),
+            8443,
+            deadline(),
+            |_, _, _| -> Result<Vec<IpAddr>, OutboundConnectError> {
+                panic!("numeric IPv4 target must never invoke DNS")
+            },
+            |_, _, _| {
+                calls.set(calls.get() + 1);
+                Ok(())
+            },
+        );
+        assert_eq!(result, Ok(()));
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn literal_ipv6_fails_closed_before_dns_or_connect() {
+        let owner = admitted_owner();
+        let resolved = Cell::new(false);
+        let connected = Cell::new(false);
+        let result = connect_host_with(
+            &owner,
+            &TargetHost::Ipv6(Ipv6Addr::LOCALHOST),
+            8443,
+            deadline(),
+            |_, _, _| {
+                resolved.set(true);
+                Ok(vec![IpAddr::V4(Ipv4Addr::new(203, 0, 113, 10))])
+            },
+            |_, _, _| {
+                connected.set(true);
+                Ok(())
+            },
+        );
+        assert_eq!(result, Err(OutboundConnectError::Rejected));
+        assert!(!resolved.get());
+        assert!(!connected.get());
+    }
+
+    #[test]
+    fn lookup_error_empty_or_aaaa_only_never_connects() {
+        let outcomes = [
+            Err(OutboundConnectError::Failed),
+            Ok(Vec::new()),
+            Ok(vec![IpAddr::V6(Ipv6Addr::LOCALHOST)]),
+        ];
+        for outcome in outcomes {
             let owner = admitted_owner();
-            let calls = Cell::new(0_u8);
+            let connected = Cell::new(false);
             let result = connect_host_with(
                 &owner,
-                &host,
-                8443,
+                &TargetHost::Domain("example.invalid".into()),
+                443,
                 deadline(),
-                |_, _, _| -> Result<Vec<IpAddr>, OutboundConnectError> {
-                    panic!("numeric target must never invoke DNS")
-                },
+                move |_, _, _| outcome,
                 |_, _, _| {
-                    calls.set(calls.get() + 1);
+                    connected.set(true);
                     Ok(())
                 },
             );
-            assert_eq!(result, Ok(()));
-            assert_eq!(calls.get(), 1);
+            assert!(result.is_err());
+            assert!(!connected.get());
         }
+    }
+
+    #[test]
+    fn lookup_timeout_never_connects() {
+        let owner = admitted_owner();
+        let connected = Cell::new(false);
+        let operation_deadline = Instant::now() + Duration::from_millis(5);
+        let result = connect_host_with(
+            &owner,
+            &TargetHost::Domain("slow.invalid".into()),
+            443,
+            operation_deadline,
+            |_, _, _| {
+                thread::sleep(Duration::from_millis(20));
+                Ok(vec![IpAddr::V4(Ipv4Addr::new(203, 0, 113, 10))])
+            },
+            |_, _, _| {
+                connected.set(true);
+                Ok(())
+            },
+        );
+        assert_eq!(result, Err(OutboundConnectError::Unavailable));
+        assert!(!connected.get());
+    }
+
+    #[test]
+    fn ipv4_candidate_retry_is_bounded_by_one_absolute_deadline() {
+        let owner = admitted_owner();
+        let attempts = Cell::new(0_usize);
+        let operation_deadline = Instant::now() + Duration::from_secs(1);
+        let result = connect_host_with(
+            &owner,
+            &TargetHost::Domain("retry.invalid".into()),
+            443,
+            operation_deadline,
+            |_, _, _| {
+                Ok(vec![
+                    IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1)),
+                    IpAddr::V4(Ipv4Addr::new(203, 0, 113, 2)),
+                    IpAddr::V4(Ipv4Addr::new(203, 0, 113, 3)),
+                ])
+            },
+            |_, address, attempt_deadline| {
+                assert!(address.is_ipv4());
+                assert!(attempt_deadline <= operation_deadline);
+                attempts.set(attempts.get() + 1);
+                Err::<(), _>(OutboundConnectError::Failed)
+            },
+        );
+        assert_eq!(result, Err(OutboundConnectError::Failed));
+        assert_eq!(attempts.get(), 3);
     }
 
     #[test]

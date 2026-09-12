@@ -69,6 +69,45 @@ def main() -> None:
         "cleanup disposition policy belongs to crates/runtime",
     )
 
+    # Proxy-target DNS stays one Cellular Egress consumer path with no default/process fallback.
+    runtime_dns = "crates/runtime/src/lib.rs"
+    require(
+        runtime_dns,
+        "pub trait CellularDnsResolver",
+        "Runtime must keep one injected Cellular Egress DNS consumer port",
+    )
+    android_dns = "crates/android-network/src/lib.rs"
+    require(
+        android_dns,
+        "android_getaddrinfofornetwork(",
+        "Android proxy-target DNS must remain scoped to the owner-issued network handle",
+    )
+    for product_path in (
+        runtime_dns,
+        "crates/android-ffi/src/lib.rs",
+        "crates/sing-box-adapter/src/lib.rs",
+    ):
+        for fallback in ("ToSocketAddrs", "lookup_host("):
+            forbid(
+                product_path,
+                fallback,
+                "proxy-target DNS must not gain an uncontrolled default resolver fallback",
+            )
+    for kotlin_path in ROOT.glob("android/app/src/main/java/**/*.kt"):
+        kotlin = kotlin_path.read_text(encoding="utf-8")
+        for fallback in (
+            "bindProcessToNetwork(",
+            "setProcessDefaultNetwork(",
+            "InetAddress.getAllByName(",
+            "Network.bindSocket(",
+        ):
+            if fallback in kotlin:
+                relative = kotlin_path.relative_to(ROOT)
+                raise SystemExit(
+                    "architecture guard: proxy-target DNS/public egress must not gain "
+                    f"process/default/per-socket network fallback: {relative} contains {fallback!r}"
+                )
+
     # Stateful private-bridge/root-policy coordination must not drift back into FFI.
     ffi = "crates/android-ffi/src/lib.rs"
     for symbol in (
