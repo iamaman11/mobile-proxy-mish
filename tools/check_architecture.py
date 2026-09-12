@@ -108,6 +108,62 @@ def main() -> None:
                     f"process/default/per-socket network fallback: {relative} contains {fallback!r}"
                 )
 
+    # Readiness is one pure Rust terminal projection; the application probe is orchestration only.
+    readiness = "crates/readiness/src/lib.rs"
+    require(readiness, "pub enum Readiness", "Readiness must expose one terminal projection type")
+    require(readiness, "pub fn project(", "Readiness must remain a pure projection function")
+    require(
+        readiness,
+        "pub struct EgressProbeObservation",
+        "Readiness must consume one typed generation-bound probe observation",
+    )
+    forbid(
+        "crates/readiness/Cargo.toml",
+        "[dependencies]",
+        "Readiness projection must not acquire effect-owner dependencies",
+    )
+    for effect_token in (
+        "std::net",
+        "TcpStream",
+        "UdpSocket",
+        "std::thread",
+        "Mutex",
+        "RwLock",
+        "Atomic",
+        "Instant",
+        "SystemTime",
+    ):
+        forbid(
+            readiness,
+            effect_token,
+            "Readiness must not own sockets, timers, threads, or mutable state",
+        )
+    application = "crates/application/src/lib.rs"
+    require(
+        application,
+        "run_authenticated_egress_probe",
+        "Cross-owner bounded authenticated DNS+TLS probe belongs to crates/application",
+    )
+    require(
+        application,
+        "ProbeBinding",
+        "Application probe observation must remain generation/version bound",
+    )
+    for kotlin_path in ROOT.glob("android/app/src/main/java/**/*.kt"):
+        kotlin = kotlin_path.read_text(encoding="utf-8")
+        for mutable_readiness_owner in (
+            "MutableStateFlow<Readiness",
+            "class ReadinessRepository",
+            "object ReadinessRepository",
+            "RoomDatabase.*Readiness",
+        ):
+            if mutable_readiness_owner in kotlin:
+                relative = kotlin_path.relative_to(ROOT)
+                raise SystemExit(
+                    "architecture guard: Kotlin must not own a parallel mutable readiness state: "
+                    f"{relative} contains {mutable_readiness_owner!r}"
+                )
+
     # Stateful private-bridge/root-policy coordination must not drift back into FFI.
     ffi = "crates/android-ffi/src/lib.rs"
     for symbol in (
