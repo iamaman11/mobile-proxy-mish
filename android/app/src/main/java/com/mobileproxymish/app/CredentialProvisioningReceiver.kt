@@ -4,7 +4,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Base64
-import java.nio.charset.StandardCharsets
 import java.security.KeyFactory
 import java.security.interfaces.RSAPublicKey
 import java.security.spec.MGF1ParameterSpec
@@ -99,7 +98,6 @@ class CredentialProvisioningReceiver : BroadcastReceiver() {
 
 /** Pure crypto/envelope boundary shared by direct JVM tests and the Android receiver. */
 internal object CredentialProvisioningEnvelope {
-    private const val PROTOCOL_VERSION = 1
     private const val MIN_RSA_BITS = 3072
     private const val CHALLENGE_BYTES = 32
     private const val MAX_RSA_3072_OAEP_SHA256_PLAINTEXT = 318
@@ -118,11 +116,17 @@ internal object CredentialProvisioningEnvelope {
             "provisioning RSA key is below the minimum size"
         }
 
-        val plaintext = renderPayload(snapshot, challenge).toByteArray(StandardCharsets.UTF_8)
+        val plaintext = CredentialContractV1.encodeProvisioningEnvelope(
+            credentialVersion = snapshot.version,
+            credentialId = snapshot.credentialId,
+            challenge = challenge,
+            username = snapshot.credentials.username,
+            password = snapshot.credentials.password,
+        )
         require(
             plaintext.size <=
                 MAX_RSA_3072_OAEP_SHA256_PLAINTEXT - PLAINTEXT_HEADROOM_BYTES,
-        ) { "provisioning payload exceeds bounded RSA envelope" }
+        ) { "provisioning protobuf exceeds bounded RSA envelope" }
 
         val cipher = Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding")
         val parameters = OAEPParameterSpec(
@@ -134,53 +138,4 @@ internal object CredentialProvisioningEnvelope {
         cipher.init(Cipher.ENCRYPT_MODE, publicKey, parameters)
         return cipher.doFinal(plaintext)
     }
-
-    private fun renderPayload(
-        snapshot: ExternalProxyCredentialSnapshot,
-        challenge: ByteArray,
-    ): String = buildString {
-        append("{\"v\":")
-        append(PROTOCOL_VERSION)
-        append(",\"cv\":\"")
-        append(snapshot.version)
-        append("\",\"id\":\"")
-        appendJsonString(snapshot.credentialId)
-        append("\",\"c\":\"")
-        append(challenge.toHex())
-        append("\",\"u\":\"")
-        appendJsonString(snapshot.credentials.username)
-        append("\",\"p\":\"")
-        appendJsonString(snapshot.credentials.password)
-        append("\"}")
-    }
-
-    private fun StringBuilder.appendJsonString(value: String) {
-        value.forEach { character ->
-            when (character) {
-                '\\' -> append("\\\\")
-                '"' -> append("\\\"")
-                '\b' -> append("\\b")
-                '\u000C' -> append("\\f")
-                '\n' -> append("\\n")
-                '\r' -> append("\\r")
-                '\t' -> append("\\t")
-                else -> if (character.code < 0x20) {
-                    append("\\u")
-                    append(character.code.toString(16).padStart(4, '0'))
-                } else {
-                    append(character)
-                }
-            }
-        }
-    }
-
-    private fun ByteArray.toHex(): String = buildString(size * 2) {
-        this@toHex.forEach { byte ->
-            val value = byte.toInt() and 0xff
-            append(HEX[value ushr 4])
-            append(HEX[value and 0x0f])
-        }
-    }
-
-    private const val HEX = "0123456789abcdef"
 }

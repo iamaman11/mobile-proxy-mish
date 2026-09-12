@@ -29,6 +29,40 @@ function Get-ArgumentValue {
     throw "Missing fake ADB argument: $Name"
 }
 
+function Add-ProtoVarint {
+    param(
+        [Parameter(Mandatory)][System.Collections.Generic.List[byte]] $Buffer,
+        [Parameter(Mandatory)][uint64] $Value
+    )
+    $remaining = $Value
+    while ($remaining -ge 128) {
+        $Buffer.Add([byte](([int]($remaining -band 0x7f)) -bor 0x80))
+        $remaining = $remaining -shr 7
+    }
+    $Buffer.Add([byte]$remaining)
+}
+
+function Add-ProtoVarintField {
+    param(
+        [Parameter(Mandatory)][System.Collections.Generic.List[byte]] $Buffer,
+        [Parameter(Mandatory)][int] $FieldNumber,
+        [Parameter(Mandatory)][uint64] $Value
+    )
+    Add-ProtoVarint -Buffer $Buffer -Value ([uint64](($FieldNumber -shl 3) -bor 0))
+    Add-ProtoVarint -Buffer $Buffer -Value $Value
+}
+
+function Add-ProtoBytesField {
+    param(
+        [Parameter(Mandatory)][System.Collections.Generic.List[byte]] $Buffer,
+        [Parameter(Mandatory)][int] $FieldNumber,
+        [Parameter(Mandatory)][byte[]] $Value
+    )
+    Add-ProtoVarint -Buffer $Buffer -Value ([uint64](($FieldNumber -shl 3) -bor 2))
+    Add-ProtoVarint -Buffer $Buffer -Value ([uint64]$Value.Length)
+    $Buffer.AddRange($Value)
+}
+
 $publicKeyBase64 = Get-ArgumentValue -Name 'client_public_key_spki_b64'
 $challengeHex = Get-ArgumentValue -Name 'challenge_hex'
 if ($env:MISH_FAKE_BAD_CHALLENGE -eq '1') {
@@ -43,15 +77,16 @@ try {
     if ($bytesRead -ne $publicKeyBytes.Length) {
         throw 'Fake ADB public key import was incomplete.'
     }
-    $payload = [ordered]@{
-        v = 1
-        cv = '7'
-        id = 'external-proxy-v7'
-        c = $challengeHex
-        u = 'mish-11111111111111111111111111111111'
-        p = '2222222222222222222222222222222222222222222222222222222222222222'
-    } | ConvertTo-Json -Compress
-    $plaintext = [Text.Encoding]::UTF8.GetBytes($payload)
+
+    $payload = [System.Collections.Generic.List[byte]]::new()
+    Add-ProtoVarintField -Buffer $payload -FieldNumber 1 -Value 1
+    Add-ProtoVarintField -Buffer $payload -FieldNumber 2 -Value 7
+    Add-ProtoBytesField -Buffer $payload -FieldNumber 3 -Value ([Text.Encoding]::UTF8.GetBytes('external-proxy-v7'))
+    Add-ProtoBytesField -Buffer $payload -FieldNumber 4 -Value ([Convert]::FromHexString($challengeHex))
+    Add-ProtoBytesField -Buffer $payload -FieldNumber 5 -Value ([Text.Encoding]::UTF8.GetBytes('mish-11111111111111111111111111111111'))
+    Add-ProtoBytesField -Buffer $payload -FieldNumber 6 -Value ([Text.Encoding]::UTF8.GetBytes('2222222222222222222222222222222222222222222222222222222222222222'))
+    $plaintext = $payload.ToArray()
+
     $ciphertext = $rsa.Encrypt(
         $plaintext,
         [Security.Cryptography.RSAEncryptionPadding]::OaepSHA256
@@ -76,7 +111,7 @@ finally {
     $result = Invoke-MishExternalProxyCredentialProvisioning `
         -AdbPath $fakeAdbCommand `
         -StorePath $storePath
-    if ($result.Schema -ne 'mish.external-proxy.windows-store/v1') {
+    if ($result.Schema -ne 'mish.credentials.v1.ExternalProxyProvisioningEnvelope') {
         throw 'Provisioning result schema drifted.'
     }
     if ($result.CredentialVersion -ne '7' -or $result.CredentialId -ne 'external-proxy-v7') {
@@ -146,7 +181,7 @@ finally {
         throw 'Failed provisioning transaction wrote a credential store.'
     }
 
-    Write-Output 'Credential provisioning hosted self-test passed.'
+    Write-Output 'Credential provisioning protobuf hosted self-test passed.'
 }
 finally {
     Remove-Module CredentialProvisioning -ErrorAction SilentlyContinue

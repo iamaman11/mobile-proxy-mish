@@ -7,6 +7,8 @@ $script:ChallengeExtra = 'challenge_hex'
 $script:StoreEntropy = [System.Text.Encoding]::UTF8.GetBytes(
     'mobile-proxy-mish/windows/external-proxy-dpapi/v1'
 )
+$script:StrictUtf8 = [System.Text.UTF8Encoding]::new($false, $true)
+$script:ProvisioningSchemaVersion = [uint64]1
 
 class MishExternalProxyCredentialLease {
     [string] $CredentialVersion
@@ -71,43 +73,183 @@ function ConvertTo-MishLowerHex {
     return [Convert]::ToHexString($Bytes).ToLowerInvariant()
 }
 
+function Read-MishProtoVarint {
+    param(
+        [Parameter(Mandatory)][byte[]] $Bytes,
+        [Parameter(Mandatory)][ref] $Offset
+    )
+
+    [uint64]$result = 0
+    for ($index = 0; $index -lt 10; $index++) {
+        if ($Offset.Value -ge $Bytes.Length) {
+            throw [InvalidDataException]::new('Provisioned credential protobuf varint is truncated.')
+        }
+        $current = [int]$Bytes[$Offset.Value]
+        $Offset.Value++
+        if ($index -eq 9 -and (($current -band 0xfe) -ne 0)) {
+            throw [InvalidDataException]::new('Provisioned credential protobuf varint overflows uint64.')
+        }
+        $piece = ([uint64]($current -band 0x7f)) -shl (7 * $index)
+        $result = $result -bor $piece
+        if (($current -band 0x80) -eq 0) {
+            return $result
+        }
+    }
+    throw [InvalidDataException]::new('Provisioned credential protobuf varint is too long.')
+}
+
+function Read-MishProtoBytes {
+    param(
+        [Parameter(Mandatory)][byte[]] $Bytes,
+        [Parameter(Mandatory)][ref] $Offset
+    )
+
+    $length = Read-MishProtoVarint -Bytes $Bytes -Offset $Offset
+    if ($length -gt [int]::MaxValue) {
+        throw [InvalidDataException]::new('Provisioned credential protobuf field is too large.')
+    }
+    $count = [int]$length
+    if ($count -gt ($Bytes.Length - $Offset.Value)) {
+        throw [InvalidDataException]::new('Provisioned credential protobuf field is truncated.')
+    }
+    $result = New-Object byte[] $count
+    if ($count -gt 0) {
+        [Array]::Copy($Bytes, $Offset.Value, $result, 0, $count)
+    }
+    $Offset.Value += $count
+    return ,$result
+}
+
+function Skip-MishProtoField {
+    param(
+        [Parameter(Mandatory)][byte[]] $Bytes,
+        [Parameter(Mandatory)][ref] $Offset,
+        [Parameter(Mandatory)][int] $WireType
+    )
+
+    switch ($WireType) {
+        0 { [void](Read-MishProtoVarint -Bytes $Bytes -Offset $Offset); return }
+        1 { $count = 8 }
+        2 {
+            $length = Read-MishProtoVarint -Bytes $Bytes -Offset $Offset
+            if ($length -gt [int]::MaxValue) {
+                throw [InvalidDataException]::new('Provisioned credential protobuf field is too large.')
+            }
+            $count = [int]$length
+        }
+        5 { $count = 4 }
+        default {
+            throw [InvalidDataException]::new('Provisioned credential protobuf wire type is unsupported.')
+        }
+    }
+    if ($count -gt ($Bytes.Length - $Offset.Value)) {
+        throw [InvalidDataException]::new('Provisioned credential protobuf field is truncated.')
+    }
+    $Offset.Value += $count
+}
+
 function ConvertFrom-MishProvisioningEnvelope {
     param(
         [Parameter(Mandatory)][byte[]] $Plaintext,
         [string] $ExpectedChallengeHex
     )
 
+    $offset = 0
+    $schemaSeen = $false
+    $versionSeen = $false
+    $idSeen = $false
+    $challengeSeen = $false
+    $usernameSeen = $false
+    $passwordSeen = $false
+    [uint64]$schemaVersion = 0
+    [uint64]$credentialVersionValue = 0
+    $credentialId = $null
+    $challengeBytes = $null
+    $userName = $null
+    $password = $null
+
     try {
-        $json = [Text.Encoding]::UTF8.GetString($Plaintext)
-        $payload = $json | ConvertFrom-Json -ErrorAction Stop
+        while ($offset -lt $Plaintext.Length) {
+            $key = Read-MishProtoVarint -Bytes $Plaintext -Offset ([ref]$offset)
+            if ($key -eq 0) {
+                throw [InvalidDataException]::new('Provisioned credential protobuf tag is invalid.')
+            }
+            $fieldNumber = [int]($key -shr 3)
+            $wireType = [int]($key -band 7)
+            if ($fieldNumber -le 0) {
+                throw [InvalidDataException]::new('Provisioned credential protobuf field number is invalid.')
+            }
+
+            switch ($fieldNumber) {
+                1 {
+                    if ($wireType -ne 0 -or $schemaSeen) { throw 'malformed schema_version' }
+                    $schemaSeen = $true
+                    $schemaVersion = Read-MishProtoVarint -Bytes $Plaintext -Offset ([ref]$offset)
+                }
+                2 {
+                    if ($wireType -ne 0 -or $versionSeen) { throw 'malformed credential_version' }
+                    $versionSeen = $true
+                    $credentialVersionValue = Read-MishProtoVarint -Bytes $Plaintext -Offset ([ref]$offset)
+                }
+                3 {
+                    if ($wireType -ne 2 -or $idSeen) { throw 'malformed credential_id' }
+                    $idSeen = $true
+                    $credentialId = $script:StrictUtf8.GetString(
+                        (Read-MishProtoBytes -Bytes $Plaintext -Offset ([ref]$offset))
+                    )
+                }
+                4 {
+                    if ($wireType -ne 2 -or $challengeSeen) { throw 'malformed challenge' }
+                    $challengeSeen = $true
+                    $challengeBytes = Read-MishProtoBytes -Bytes $Plaintext -Offset ([ref]$offset)
+                }
+                5 {
+                    if ($wireType -ne 2 -or $usernameSeen) { throw 'malformed username' }
+                    $usernameSeen = $true
+                    $userName = $script:StrictUtf8.GetString(
+                        (Read-MishProtoBytes -Bytes $Plaintext -Offset ([ref]$offset))
+                    )
+                }
+                6 {
+                    if ($wireType -ne 2 -or $passwordSeen) { throw 'malformed password' }
+                    $passwordSeen = $true
+                    $password = $script:StrictUtf8.GetString(
+                        (Read-MishProtoBytes -Bytes $Plaintext -Offset ([ref]$offset))
+                    )
+                }
+                default {
+                    Skip-MishProtoField -Bytes $Plaintext -Offset ([ref]$offset) -WireType $wireType
+                }
+            }
+        }
     }
     catch {
-        throw [InvalidDataException]::new('Provisioned credential envelope is malformed.')
+        throw [InvalidDataException]::new('Provisioned credential protobuf envelope is malformed.')
     }
 
-    if ([int]$payload.v -ne 1) {
+    if (-not ($schemaSeen -and $versionSeen -and $idSeen -and $challengeSeen -and $usernameSeen -and $passwordSeen)) {
+        throw [InvalidDataException]::new('Provisioned credential protobuf envelope is incomplete.')
+    }
+    if ($schemaVersion -ne $script:ProvisioningSchemaVersion) {
         throw [InvalidDataException]::new('Provisioned credential protocol version is unsupported.')
     }
-    $credentialVersion = [string]$payload.cv
-    if ($credentialVersion -notmatch '^[1-9][0-9]{0,19}$') {
+    if ($credentialVersionValue -eq 0) {
         throw [InvalidDataException]::new('Provisioned credential owner version is invalid.')
     }
-    $credentialId = [string]$payload.id
-    if ($credentialId -ne "external-proxy-v$credentialVersion") {
+    $credentialVersion = $credentialVersionValue.ToString([Globalization.CultureInfo]::InvariantCulture)
+    if ($credentialId -cne "external-proxy-v$credentialVersion") {
         throw [InvalidDataException]::new('Provisioned credential identity/version mismatch.')
     }
-    $challengeHex = [string]$payload.c
-    if ($challengeHex -notmatch '^[0-9a-f]{64}$') {
+    if ($null -eq $challengeBytes -or $challengeBytes.Length -ne 32) {
         throw [InvalidDataException]::new('Provisioned credential challenge is invalid.')
     }
+    $challengeHex = ConvertTo-MishLowerHex -Bytes $challengeBytes
     if (
         -not [string]::IsNullOrEmpty($ExpectedChallengeHex) -and
         $challengeHex -cne $ExpectedChallengeHex
     ) {
         throw [InvalidDataException]::new('Provisioned credential challenge does not match this session.')
     }
-    $userName = [string]$payload.u
-    $password = [string]$payload.p
     if ($userName -notmatch '^mish-[0-9a-f]{32}$') {
         throw [InvalidDataException]::new('Provisioned credential username shape is invalid.')
     }
@@ -246,7 +388,7 @@ function Invoke-MishExternalProxyCredentialProvisioning {
             -ProtectedBytes $protected
 
         return [pscustomobject]@{
-            Schema = 'mish.external-proxy.windows-store/v1'
+            Schema = 'mish.credentials.v1.ExternalProxyProvisioningEnvelope'
             CredentialVersion = $envelope.CredentialVersion
             CredentialId = $envelope.CredentialId
             StorePath = $resolvedStorePath

@@ -3,6 +3,7 @@ package com.mobileproxymish.app
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import android.util.Base64
 import com.mobileproxymish.ffi.ExternalCredentialStateView
 import com.mobileproxymish.ffi.externalCredentialDerivation
 import com.mobileproxymish.ffi.externalCredentialInitialState
@@ -28,8 +29,9 @@ internal class ExternalProxyCredentialSnapshot(
  * Narrow Android platform adapter for the Rust Credentials / Secrets natural owner.
  *
  * Durable secret bytes are represented only by a non-exportable Android Keystore HMAC root.
- * SharedPreferences contains owner-approved non-secret version/revocation metadata only. Derived
- * proxy username/password values exist in memory only for a bounded runtime/provisioning read.
+ * SharedPreferences contains one canonical base64 transport of the owner-scoped protobuf state;
+ * derived proxy username/password values exist in memory only for a bounded runtime/provisioning
+ * read. The two legacy scalar keys are accepted only for one fail-closed migration.
  */
 internal class ExternalProxyCredentialStore(
     context: Context,
@@ -54,8 +56,8 @@ internal class ExternalProxyCredentialStore(
     }.getOrNull()
 
     /**
-     * Applies the natural-owner rotation transition and persists only its non-secret result.
-     * Callers must invoke this only while the runtime is exactly stopped.
+     * Applies the natural-owner rotation transition and persists only its non-secret protobuf
+     * result. Callers must invoke this only while the runtime is exactly stopped.
      */
     @Synchronized
     fun rotateWhileStopped(): Boolean = runCatching {
@@ -69,8 +71,8 @@ internal class ExternalProxyCredentialStore(
     }.getOrDefault(false)
 
     /**
-     * Applies the natural-owner revocation transition and persists only its non-secret result.
-     * Callers must invoke this only while the runtime is exactly stopped.
+     * Applies the natural-owner revocation transition and persists only its non-secret protobuf
+     * result. Callers must invoke this only while the runtime is exactly stopped.
      */
     @Synchronized
     fun revokeWhileStopped(): Boolean = runCatching {
@@ -111,30 +113,44 @@ internal class ExternalProxyCredentialStore(
     }
 
     /**
-     * Creates the Keystore root only for the first complete owner state. Once metadata exists,
-     * a missing root is corruption and must fail closed rather than silently changing material
-     * under the same credential version.
+     * Creates the Keystore root only for the first complete owner state. Once protobuf metadata
+     * exists, a missing root is corruption and must fail closed rather than silently changing
+     * material under the same credential version.
      */
     private fun loadOrInitialize(): StoredCredentialRoot {
         val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-        val hasVersion = preferences.contains(KEY_VERSION)
-        val hasRevoked = preferences.contains(KEY_REVOKED)
-        check(hasVersion == hasRevoked) {
-            "external credential owner metadata is incomplete"
-        }
+        val encodedState = preferences.getString(KEY_STATE_PROTOBUF, null)
+        val hasLegacyVersion = preferences.contains(LEGACY_KEY_VERSION)
+        val hasLegacyRevoked = preferences.contains(LEGACY_KEY_REVOKED)
 
-        if (hasVersion) {
+        if (encodedState != null) {
+            check(!hasLegacyVersion && !hasLegacyRevoked) {
+                "external credential metadata contains mixed protobuf and legacy schemas"
+            }
             check(keyStore.containsAlias(ROOT_KEY_ALIAS)) {
                 "external credential root missing for persisted owner state"
             }
             val root = keyStore.getKey(ROOT_KEY_ALIAS, null) as? SecretKey
                 ?: error("Android Keystore external credential root has wrong key type")
-            val version = preferences.getString(KEY_VERSION, null)?.toULongOrNull()
-                ?: error("persisted external credential version is invalid")
+            return StoredCredentialRoot(restoreState(decodeCanonicalBase64(encodedState)), root)
+        }
+
+        check(hasLegacyVersion == hasLegacyRevoked) {
+            "legacy external credential owner metadata is incomplete"
+        }
+        if (hasLegacyVersion) {
+            check(keyStore.containsAlias(ROOT_KEY_ALIAS)) {
+                "external credential root missing for legacy owner state"
+            }
+            val root = keyStore.getKey(ROOT_KEY_ALIAS, null) as? SecretKey
+                ?: error("Android Keystore external credential root has wrong key type")
+            val version = preferences.getString(LEGACY_KEY_VERSION, null)?.toULongOrNull()
+                ?: error("legacy external credential version is invalid")
             val state = externalCredentialRestore(
                 version = version,
-                revoked = preferences.getBoolean(KEY_REVOKED, false),
+                revoked = preferences.getBoolean(LEGACY_KEY_REVOKED, false),
             )
+            check(persistState(state)) { "failed to migrate credential metadata to protobuf" }
             return StoredCredentialRoot(state, root)
         }
 
@@ -153,11 +169,31 @@ internal class ExternalProxyCredentialStore(
         return StoredCredentialRoot(initial, root)
     }
 
-    private fun persistState(state: ExternalCredentialStateView): Boolean = preferences
-        .edit()
-        .putString(KEY_VERSION, state.version.toString())
-        .putBoolean(KEY_REVOKED, state.revoked)
-        .commit()
+    private fun restoreState(encoded: ByteArray): ExternalCredentialStateView {
+        val decoded = CredentialContractV1.decodeState(encoded)
+        return externalCredentialRestore(
+            version = decoded.version,
+            revoked = decoded.revoked,
+        )
+    }
+
+    private fun persistState(state: ExternalCredentialStateView): Boolean {
+        val encoded = CredentialContractV1.encodeState(state.version, state.revoked)
+        val base64 = Base64.encodeToString(encoded, Base64.NO_WRAP)
+        return preferences.edit()
+            .putString(KEY_STATE_PROTOBUF, base64)
+            .remove(LEGACY_KEY_VERSION)
+            .remove(LEGACY_KEY_REVOKED)
+            .commit()
+    }
+
+    private fun decodeCanonicalBase64(encoded: String): ByteArray {
+        val decoded = Base64.decode(encoded, Base64.NO_WRAP)
+        check(Base64.encodeToString(decoded, Base64.NO_WRAP) == encoded) {
+            "external credential protobuf transport encoding is non-canonical"
+        }
+        return decoded
+    }
 
     private fun generateRootKey(): SecretKey {
         val generator = KeyGenerator.getInstance(
@@ -192,7 +228,8 @@ internal class ExternalProxyCredentialStore(
         const val ROOT_KEY_ALIAS = "mobile-proxy-mish.external-proxy-root.v1"
         const val ROOT_KEY_BITS = 256
         const val PREFERENCES_NAME = "external-proxy-credential-state"
-        const val KEY_VERSION = "version"
-        const val KEY_REVOKED = "revoked"
+        const val KEY_STATE_PROTOBUF = "state_pb_b64_v1"
+        const val LEGACY_KEY_VERSION = "version"
+        const val LEGACY_KEY_REVOKED = "revoked"
     }
 }
