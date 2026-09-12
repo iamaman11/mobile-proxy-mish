@@ -135,7 +135,7 @@ class MishRuntimeController internal constructor(
         val callbacks = synchronized(lock) {
             lifecycleState = LifecycleState.STOPPED
             restartAfterStop = false
-            stopCallbacks.toList().also(stopCallbacks::clear)
+            stopCallbacks.toList().also { stopCallbacks.clear() }
         }
         callbacks.forEach { callback -> runCatching { callback(false) } }
     }
