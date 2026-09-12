@@ -84,6 +84,35 @@ class ProxyRuntimeLifecycleTest {
     }
 
     @Test
+    fun exactGenerationCleanupClosesProxyBeforeCellularOwner() {
+        val effects = mutableListOf<String>()
+
+        val clean = closeRuntimeGenerationExact(
+            closeProxy = { effects += "proxy" },
+            closeCellular = { effects += "cellular" },
+        )
+
+        assertTrue(clean)
+        assertEquals(listOf("proxy", "cellular"), effects)
+    }
+
+    @Test
+    fun exactGenerationCleanupStillAttemptsCellularAfterProxyFailure() {
+        val effects = mutableListOf<String>()
+
+        val clean = closeRuntimeGenerationExact(
+            closeProxy = {
+                effects += "proxy"
+                error("proxy cleanup failed")
+            },
+            closeCellular = { effects += "cellular" },
+        )
+
+        assertFalse(clean)
+        assertEquals(listOf("proxy", "cellular"), effects)
+    }
+
+    @Test
     fun processGenerationCredentialsAreExplicitTypedMaterial() {
         val credentials = ProxyRuntimeCredentials(
             username = "process-generation-user",
