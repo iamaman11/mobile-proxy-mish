@@ -1,0 +1,73 @@
+name: One-shot Rustfmt Correction
+
+on:
+  push:
+    branches: [integration/m1]
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    name: Apply pinned rustfmt correction
+    if: ${{ contains(github.event.head_commit.message, '[rustfmt]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact integration head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: integration/m1
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Install pinned rustfmt
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal --component rustfmt
+          rustup override set 1.98.1
+
+      - name: Format and enforce exact correction scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+
+          mapfile -t changed < <(git diff --name-only)
+          printf '%s\n' "${changed[@]}"
+
+          python3 - <<'PY'
+          import subprocess
+
+          allowed = {
+              'crates/android-ffi/src/lib.rs',
+              'crates/android-ffi/src/runtime_lifecycle_ffi.rs',
+              'crates/configuration/src/lib.rs',
+              'crates/runtime/src/cellular_runtime.rs',
+              'crates/runtime/src/lib.rs',
+              'crates/runtime/src/lifecycle.rs',
+              'crates/transport/src/lib.rs',
+          }
+          changed = set(
+              subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines()
+          )
+          if not changed:
+              raise SystemExit('rustfmt correction produced no changes')
+          unexpected = changed - allowed
+          if unexpected:
+              raise SystemExit(f'rustfmt changed unexpected files: {sorted(unexpected)}')
+          missing = allowed - changed
+          if missing:
+              raise SystemExit(f'CI-reported rustfmt files were not reproduced: {sorted(missing)}')
+          print('RUSTFMT_SCOPE=PASS')
+          PY
+
+      - name: Remove one-shot workflow and publish review branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/rustfmt-correction.yml
+          git add -A
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'M1 architecture: apply pinned rustfmt corrections'
+          git push origin HEAD:refs/heads/m1/arch-rustfmt-correction
