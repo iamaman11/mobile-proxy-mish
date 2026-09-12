@@ -34,6 +34,7 @@ sealed interface ProxyRuntimeSnapshot {
 enum class ProxyRuntimeFailure {
     NativeRuntimeMissing,
     StaleProcessIdentityMismatch,
+    ExternalCredentialUnavailable,
     PrivateBridgeUnavailable,
     ConfigurationRejected,
     ChildLaunchFailed,
@@ -55,23 +56,17 @@ internal data class ProxyRuntimeDiagnosticObservation(
     val privateBridgeHealthy: Boolean,
 )
 
-/**
- * Process-generation proxy credential material owned by the Android composition root.
- *
- * This is intentionally only a typed input boundary. Durable storage, provisioning and
- * rotation remain outside this remediation transaction and must be assigned to their
- * natural owner before Mesh/client acceptance. Secrets are never projected to UI/log state.
- */
-internal data class ProxyRuntimeCredentials(
+/** In-memory only external proxy credential material. */
+internal class ProxyRuntimeCredentials(
     val username: String,
     val password: String,
 ) {
-    companion object {
-        fun generate(): ProxyRuntimeCredentials = ProxyRuntimeCredentials(
-            username = randomCredential(),
-            password = randomCredential(),
-        )
-    }
+    override fun toString(): String = "ProxyRuntimeCredentials(<redacted>)"
+}
+
+/** Narrow composition input; credential lifecycle and durable semantics remain in Rust. */
+internal fun interface ProxyCredentialProvider {
+    fun currentCredential(): ProxyRuntimeCredentials?
 }
 
 private fun randomCredential(): String {
@@ -138,7 +133,7 @@ internal class ProxyRuntimeLifecycle {
 class ProxyRuntimeSupervisor internal constructor(
     context: Context,
     private val cellularRuntime: CellularRuntimeBridge,
-    private val publicCredentials: ProxyRuntimeCredentials,
+    private val publicCredentials: ProxyCredentialProvider,
 ) : Closeable {
     private val appContext = context.applicationContext
     private val runtimeDir = File(appContext.noBackupFilesDir, RUNTIME_DIR)
@@ -198,6 +193,20 @@ class ProxyRuntimeSupervisor internal constructor(
                 return
             }
 
+            // Resolve durable external material before opening the private Cellular Egress bridge.
+            // Missing, corrupted or revoked credential state therefore fails closed before any
+            // authenticated client path can reach Cellular Egress.
+            val publicCredential = try {
+                publicCredentials.currentCredential()
+            } catch (_: Exception) {
+                null
+            }
+            if (publicCredential == null) {
+                lifecycle.markFailed(ProxyRuntimeFailure.ExternalCredentialUnavailable)
+                return
+            }
+
+            // Private bridge credentials stay intentionally ephemeral and generation-scoped.
             val privateUsername = randomCredential()
             val privatePassword = randomCredential()
 
@@ -215,8 +224,8 @@ class ProxyRuntimeSupervisor internal constructor(
             val config = try {
                 renderProxyRuntimeConfig(
                     listenAddress = LOOPBACK,
-                    publicUsername = publicCredentials.username,
-                    publicPassword = publicCredentials.password,
+                    publicUsername = publicCredential.username,
+                    publicPassword = publicCredential.password,
                     bridgePort = newBridge.port(),
                     bridgeUsername = privateUsername,
                     bridgePassword = privatePassword,
