@@ -63,6 +63,7 @@ struct MeshTransportState {
     owner: MeshEndpointOwner,
     ingress: Option<MeshIngressRuntime>,
     ingress_epoch: Option<u64>,
+    cleanup_failed: bool,
 }
 
 #[derive(uniffi::Object)]
@@ -86,6 +87,7 @@ impl MeshTransportController {
                 owner,
                 ingress: None,
                 ingress_epoch: None,
+                cleanup_failed: false,
             }),
         }))
     }
@@ -120,6 +122,10 @@ impl MeshTransportController {
     /// Starts the exact-address ingress only for the caller's still-current admission epoch.
     pub fn start_ingress(&self, admission_epoch: u64) -> Result<bool, MeshTransportBoundaryError> {
         let mut state = self.state()?;
+        if state.cleanup_failed {
+            return Err(MeshTransportBoundaryError::IngressShutdownFailed);
+        }
+
         let snapshot = state.owner.snapshot();
         if snapshot.state() != OwnerAdmissionState::Admitted
             || snapshot.admission_epoch() != Some(admission_epoch)
@@ -157,10 +163,11 @@ impl MeshTransportController {
 
     pub fn ingress_healthy(&self) -> Result<bool, MeshTransportBoundaryError> {
         let state = self.state()?;
-        Ok(state
-            .ingress
-            .as_ref()
-            .is_some_and(MeshIngressRuntime::is_healthy))
+        Ok(!state.cleanup_failed
+            && state
+                .ingress
+                .as_ref()
+                .is_some_and(MeshIngressRuntime::is_healthy))
     }
 }
 
@@ -175,11 +182,22 @@ impl MeshTransportController {
 fn stop_ingress_locked(state: &mut MeshTransportState) -> Result<(), MeshTransportBoundaryError> {
     state.ingress_epoch = None;
     let Some(mut ingress) = state.ingress.take() else {
-        return Ok(());
+        return if state.cleanup_failed {
+            Err(MeshTransportBoundaryError::IngressShutdownFailed)
+        } else {
+            Ok(())
+        };
     };
-    ingress
-        .stop()
-        .map_err(|_| MeshTransportBoundaryError::IngressShutdownFailed)
+
+    if ingress.stop().is_err() {
+        state.cleanup_failed = true;
+        return Err(MeshTransportBoundaryError::IngressShutdownFailed);
+    }
+    if state.cleanup_failed {
+        Err(MeshTransportBoundaryError::IngressShutdownFailed)
+    } else {
+        Ok(())
+    }
 }
 
 fn map_view(state: &MeshTransportState) -> MeshAdmissionView {
@@ -198,10 +216,11 @@ fn map_view(state: &MeshTransportState) -> MeshAdmissionView {
         }),
         admission_epoch: snapshot.admission_epoch(),
         last_sequence: snapshot.last_sequence(),
-        ingress_running: state
-            .ingress
-            .as_ref()
-            .is_some_and(MeshIngressRuntime::is_healthy),
+        ingress_running: !state.cleanup_failed
+            && state
+                .ingress
+                .as_ref()
+                .is_some_and(MeshIngressRuntime::is_healthy),
         active_sessions: state
             .ingress
             .as_ref()
@@ -280,5 +299,26 @@ mod tests {
             controller.observe_local_ipv4(1, vec!["100.96.2.5".to_owned()]),
             Err(MeshTransportBoundaryError::StaleObservation)
         );
+    }
+
+    #[test]
+    fn cleanup_failure_taint_blocks_any_fresh_ingress_in_same_generation() {
+        let controller =
+            MeshTransportController::new("100.96.0.0".to_owned(), 12).expect("controller");
+        let admitted = controller
+            .observe_local_ipv4(1, vec!["100.96.2.4".to_owned()])
+            .expect("observation");
+        let epoch = admitted.admission_epoch.expect("epoch");
+        controller.state().expect("state").cleanup_failed = true;
+
+        assert_eq!(
+            controller.start_ingress(epoch),
+            Err(MeshTransportBoundaryError::IngressShutdownFailed)
+        );
+        assert_eq!(
+            controller.stop_ingress(),
+            Err(MeshTransportBoundaryError::IngressShutdownFailed)
+        );
+        assert_eq!(controller.ingress_healthy(), Ok(false));
     }
 }
