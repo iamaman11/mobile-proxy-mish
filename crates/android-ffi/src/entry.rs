@@ -4,3 +4,6 @@ pub use runtime_boundary::*;
 
 mod credentials_ffi;
 pub use credentials_ffi::*;
+
+mod transport_ffi;
+pub use transport_ffi::*;

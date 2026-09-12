@@ -329,6 +329,7 @@ dependencies = [
  "mish-proxy",
  "mish-runtime",
  "mish-sing-box-adapter",
+ "mish-transport",
  "uniffi",
 ]
 

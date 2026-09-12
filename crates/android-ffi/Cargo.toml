@@ -22,6 +22,7 @@ mish-credentials = { path = "../credentials" }
 mish-proxy = { path = "../proxy" }
 mish-runtime = { path = "../runtime" }
 mish-sing-box-adapter = { path = "../sing-box-adapter" }
+mish-transport = { path = "../transport" }
 uniffi = { version = "=0.32.0", features = ["cli"] }
 
 [lints]
