@@ -476,7 +476,7 @@ fn bridge_accept_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mish_cellular::{CellularAdmissionReason, NetworkObservation};
+    use mish_cellular::{CellularAdmissionReason, CellularNetworkAuthority, NetworkObservation};
     use std::net::Ipv4Addr;
 
     fn sequence(raw: u64) -> ObservationSequence {
@@ -487,10 +487,20 @@ mod tests {
         NetworkHandle::new(raw).expect("handle")
     }
 
-    fn coordinator() -> Arc<CellularRuntimeCoordinator> {
-        CellularRuntimeCoordinator::new(Arc::new(|_, _| {
+    struct StaticResolver;
+
+    impl CellularDnsResolver for StaticResolver {
+        fn resolve(
+            &self,
+            _authority: CellularNetworkAuthority,
+            _hostname: &str,
+        ) -> Result<Vec<IpAddr>, OutboundConnectError> {
             Ok(vec![IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9))])
-        }))
+        }
+    }
+
+    fn coordinator() -> Arc<CellularRuntimeCoordinator> {
+        CellularRuntimeCoordinator::new(Arc::new(StaticResolver))
     }
 
     #[test]
