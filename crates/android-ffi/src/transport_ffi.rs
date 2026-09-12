@@ -4,6 +4,7 @@ use mish_transport::{
     MeshAdmissionReason as OwnerAdmissionReason, MeshAdmissionState as OwnerAdmissionState,
     MeshIngressError, MeshOwnerError, MeshPortForward, MeshTransportCoordinator,
     MeshTransportError as OwnerTransportError, MeshTransportSnapshot as OwnerTransportSnapshot,
+    MeshVpnObservation as OwnerVpnObservation,
 };
 use std::fmt;
 use std::net::Ipv4Addr;
@@ -36,6 +37,7 @@ pub struct MeshAdmissionView {
 pub enum MeshTransportBoundaryError {
     InvalidAcceptedCidr,
     InvalidObservationSequence,
+    InvalidVpnObservation,
     StaleObservation,
     AdmissionEpochExhausted,
     OwnerUnavailable,
@@ -49,6 +51,7 @@ impl fmt::Display for MeshTransportBoundaryError {
         formatter.write_str(match self {
             Self::InvalidAcceptedCidr => "accepted Mesh CIDR is invalid",
             Self::InvalidObservationSequence => "Mesh observation sequence must be non-zero",
+            Self::InvalidVpnObservation => "Mesh VPN observation contains an invalid IPv4 value",
             Self::StaleObservation => "stale Mesh observation was rejected",
             Self::AdmissionEpochExhausted => "Mesh admission epoch space is exhausted",
             Self::OwnerUnavailable => "Mesh transport owner state is unavailable",
@@ -102,21 +105,49 @@ impl MeshTransportController {
             .map_err(map_transport_error)
     }
 
-    /// Publishes one complete local-IPv4 observation to the Rust natural owner.
-    ///
-    /// Android supplies raw locally assigned IPv4 strings only. CIDR filtering, uniqueness,
-    /// endpoint admission, epoch semantics and fail-closed listener teardown remain in Transport.
-    pub fn observe_local_ipv4(
+    /// Publishes a complete snapshot proving that no current VPN Network exists.
+    pub fn observe_vpn_absent(
+        &self,
+        sequence: u64,
+    ) -> Result<MeshAdmissionView, MeshTransportBoundaryError> {
+        self.runtime
+            .observe_vpn(sequence, OwnerVpnObservation::Absent)
+            .map(map_view)
+            .map_err(map_transport_error)
+    }
+
+    /// Publishes one complete current-VPN snapshot. Android supplies only raw current VPN-local
+    /// IPv4 values; CIDR filtering, 0/1/>1 acceptance, endpoint identity and epoch remain in Rust.
+    pub fn observe_unique_vpn(
         &self,
         sequence: u64,
         local_ipv4: Vec<String>,
     ) -> Result<MeshAdmissionView, MeshTransportBoundaryError> {
         let addresses = local_ipv4
             .into_iter()
-            .filter_map(|raw| raw.parse::<Ipv4Addr>().ok())
-            .collect::<Vec<_>>();
+            .map(|raw| {
+                raw.parse::<Ipv4Addr>()
+                    .map_err(|_| MeshTransportBoundaryError::InvalidVpnObservation)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         self.runtime
-            .observe_local_ipv4(sequence, addresses)
+            .observe_vpn(
+                sequence,
+                OwnerVpnObservation::UniqueVpn {
+                    local_ipv4: addresses,
+                },
+            )
+            .map(map_view)
+            .map_err(map_transport_error)
+    }
+
+    /// Publishes a complete snapshot proving that more than one current VPN Network exists.
+    pub fn observe_vpn_ambiguous(
+        &self,
+        sequence: u64,
+    ) -> Result<MeshAdmissionView, MeshTransportBoundaryError> {
+        self.runtime
+            .observe_vpn(sequence, OwnerVpnObservation::AmbiguousVpn)
             .map(map_view)
             .map_err(map_transport_error)
     }
@@ -221,7 +252,7 @@ mod tests {
     fn boundary_delegates_exact_candidate_admission_to_owner() {
         let controller = MeshTransportController::new().expect("controller");
         let admitted = controller
-            .observe_local_ipv4(
+            .observe_unique_vpn(
                 1,
                 vec![
                     "127.0.0.1".to_owned(),
@@ -237,15 +268,33 @@ mod tests {
     }
 
     #[test]
-    fn boundary_fails_closed_on_multiple_mesh_addresses() {
+    fn boundary_fails_closed_on_vpn_cardinality_and_multiple_mesh_addresses() {
         let controller = MeshTransportController::new().expect("controller");
-        let view = controller
-            .observe_local_ipv4(1, vec!["100.96.2.4".to_owned(), "100.97.2.5".to_owned()])
+        let absent = controller.observe_vpn_absent(1).expect("absent");
+        assert_eq!(absent.state, MeshAdmissionState::NotAdmitted);
+
+        let ambiguous = controller.observe_vpn_ambiguous(2).expect("ambiguous");
+        assert_eq!(ambiguous.state, MeshAdmissionState::NotAdmitted);
+
+        let multiple = controller
+            .observe_unique_vpn(
+                3,
+                vec!["100.96.2.4".to_owned(), "100.97.2.5".to_owned()],
+            )
             .expect("observation");
-        assert_eq!(view.state, MeshAdmissionState::NotAdmitted);
+        assert_eq!(multiple.state, MeshAdmissionState::NotAdmitted);
         assert_eq!(
-            view.reason,
+            multiple.reason,
             Some(MeshAdmissionReason::MultipleAcceptedAddresses)
+        );
+    }
+
+    #[test]
+    fn malformed_platform_address_fails_closed_at_boundary() {
+        let controller = MeshTransportController::new().expect("controller");
+        assert_eq!(
+            controller.observe_unique_vpn(1, vec!["not-an-ipv4".to_owned()]),
+            Err(MeshTransportBoundaryError::InvalidVpnObservation)
         );
     }
 
@@ -253,10 +302,10 @@ mod tests {
     fn stale_boundary_observation_is_rejected() {
         let controller = MeshTransportController::new().expect("controller");
         controller
-            .observe_local_ipv4(2, vec!["100.96.2.4".to_owned()])
+            .observe_unique_vpn(2, vec!["100.96.2.4".to_owned()])
             .expect("current");
         assert_eq!(
-            controller.observe_local_ipv4(1, vec!["100.96.2.5".to_owned()]),
+            controller.observe_vpn_absent(1),
             Err(MeshTransportBoundaryError::StaleObservation)
         );
     }
