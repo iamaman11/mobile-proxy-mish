@@ -11,11 +11,7 @@ macro_rules! generation_key {
 
         impl $name {
             pub const fn new(raw: u64) -> Option<Self> {
-                if raw == 0 {
-                    None
-                } else {
-                    Some(Self(raw))
-                }
+                if raw == 0 { None } else { Some(Self(raw)) }
             }
 
             pub const fn raw(self) -> u64 {
