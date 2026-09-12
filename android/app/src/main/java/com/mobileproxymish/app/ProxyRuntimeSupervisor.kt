@@ -123,7 +123,7 @@ internal class ProxyRuntimeLifecycle {
  * class owns only process-generation start/health/stop/reconciliation. It deliberately binds
  * loopback until the separate Mesh-ingress stage supplies an accepted non-wildcard address.
  */
-class ProxyRuntimeSupervisor(
+class ProxyRuntimeSupervisor internal constructor(
     context: Context,
     private val cellularRuntime: CellularRuntimeBridge,
     private val publicCredentials: ProxyRuntimeCredentials,
