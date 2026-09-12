@@ -83,23 +83,28 @@ class ProxyRuntimeLifecycleTest {
     }
 
     @Test
-    fun exactGenerationCleanupClosesProxyBeforeCellularOwner() {
+    fun exactGenerationCleanupClosesMeshThenProxyThenCellularOwner() {
         val effects = mutableListOf<String>()
 
         val clean = closeRuntimeGenerationExact(
+            closeMesh = { effects += "mesh" },
             closeProxy = { effects += "proxy" },
             closeCellular = { effects += "cellular" },
         )
 
         assertTrue(clean)
-        assertEquals(listOf("proxy", "cellular"), effects)
+        assertEquals(listOf("mesh", "proxy", "cellular"), effects)
     }
 
     @Test
-    fun exactGenerationCleanupStillAttemptsCellularAfterProxyFailure() {
+    fun exactGenerationCleanupAttemptsEveryEffectAfterEarlierFailures() {
         val effects = mutableListOf<String>()
 
         val clean = closeRuntimeGenerationExact(
+            closeMesh = {
+                effects += "mesh"
+                error("Mesh cleanup failed")
+            },
             closeProxy = {
                 effects += "proxy"
                 error("proxy cleanup failed")
@@ -108,7 +113,7 @@ class ProxyRuntimeLifecycleTest {
         )
 
         assertFalse(clean)
-        assertEquals(listOf("proxy", "cellular"), effects)
+        assertEquals(listOf("mesh", "proxy", "cellular"), effects)
     }
 
     @Test

@@ -15,12 +15,14 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 
-/** Runs both cleanup effects in dependency order and reports whether both completed cleanly. */
+/** Runs every generation cleanup effect in dependency order and reports aggregate success. */
 internal fun closeRuntimeGenerationExact(
+    closeMesh: () -> Unit,
     closeProxy: () -> Unit,
     closeCellular: () -> Unit,
 ): Boolean {
     var clean = true
+    if (runCatching(closeMesh).isFailure) clean = false
     if (runCatching(closeProxy).isFailure) clean = false
     if (runCatching(closeCellular).isFailure) clean = false
     return clean
@@ -53,9 +55,10 @@ internal fun runtimeCleanupDisposition(
 /**
  * Process-local lifecycle composition for one foreground-service-owned runtime generation.
  *
- * Semantic ownership does not move here: Cellular Egress remains owned by the Rust cellular
- * owner, credentials lifecycle remains owned by the Rust credentials owner, and proxy protocol
- * auth remains owned by sing-box. This class only serializes lifecycle composition.
+ * Semantic ownership does not move here: Transport Reachability remains owned by the Rust
+ * transport owner, Cellular Egress remains owned by the Rust cellular owner, credentials
+ * lifecycle remains owned by the Rust credentials owner, and proxy protocol/auth remains owned
+ * by sing-box. This class only serializes lifecycle composition.
  */
 class MishRuntimeController internal constructor(
     context: Context,
@@ -138,8 +141,8 @@ class MishRuntimeController internal constructor(
     }
 
     /**
-     * Requests exact stop without blocking the Android main thread. The completion callback is
-     * invoked only after proxy -> Cellular Egress/root-policy cleanup has completed or failed.
+     * Requests exact stop without blocking the Android main thread. Completion is published only
+     * after Mesh ingress -> proxy -> Cellular Egress/root-policy cleanup has completed or failed.
      */
     fun stop(onComplete: (Boolean) -> Unit = {}) {
         var completeImmediately: Boolean? = null
@@ -183,7 +186,8 @@ class MishRuntimeController internal constructor(
 
     /**
      * Explicit rotation is accepted only from an exactly stopped, clean generation. This keeps
-     * cutover atomic: no old sing-box generation remains active when the owner version changes.
+     * cutover atomic: no old sing-box or Mesh ingress generation remains active when the owner
+     * version changes.
      */
     internal fun rotateExternalCredentialWhileStopped(): Boolean =
         mutateExternalCredentialWhileStopped(externalCredentialStore::rotateWhileStopped)
@@ -223,6 +227,10 @@ class MishRuntimeController internal constructor(
         val started = try {
             current.cellularRuntime.start()
             current.proxyRuntime.start()
+            // The Mesh adapter waits for proxyRuntime=Running before asking the Rust owner to
+            // bind exact Mesh listeners. Starting observation here therefore cannot expose a
+            // listener ahead of the loopback proxy generation.
+            current.meshRuntime.start()
             true
         } catch (_: Exception) {
             false
@@ -293,14 +301,17 @@ class MishRuntimeController internal constructor(
             cellularRuntime = cellularRuntime,
             publicCredentials = externalCredentialStore,
         )
-        return RuntimeGeneration(cellularRuntime, proxyRuntime)
+        val meshRuntime = MeshIngressRuntimeBridge(proxyRuntime)
+        return RuntimeGeneration(cellularRuntime, proxyRuntime, meshRuntime)
     }
 
     private data class RuntimeGeneration(
         val cellularRuntime: CellularRuntimeBridge,
         val proxyRuntime: ProxyRuntimeSupervisor,
+        val meshRuntime: MeshIngressRuntimeBridge,
     ) {
         fun closeExact(): Boolean = closeRuntimeGenerationExact(
+            closeMesh = meshRuntime::close,
             closeProxy = proxyRuntime::close,
             closeCellular = cellularRuntime::close,
         )
