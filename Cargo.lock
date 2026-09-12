@@ -326,6 +326,7 @@ dependencies = [
  "mish-android-network",
  "mish-cellular",
  "mish-cellular-egress-bridge",
+ "mish-configuration",
  "mish-credentials",
  "mish-proxy",
  "mish-runtime",

@@ -1,3 +1,4 @@
+use mish_configuration::MeshAcceptedCidr;
 use mish_proxy::canonical_listeners;
 use mish_transport::{
     MeshAdmissionReason as OwnerAdmissionReason, MeshAdmissionState as OwnerAdmissionState,
@@ -89,15 +90,13 @@ pub struct MeshTransportController {
 
 #[uniffi::export]
 impl MeshTransportController {
+    /// Creates one Transport controller from the repository-owned, owner-validated desired Mesh
+    /// CIDR. Android does not carry a second literal or choose a provider range at runtime.
     #[uniffi::constructor]
-    pub fn new(
-        accepted_network: String,
-        accepted_prefix: u8,
-    ) -> Result<Arc<Self>, MeshTransportBoundaryError> {
-        let network = accepted_network
-            .parse::<Ipv4Addr>()
+    pub fn new() -> Result<Arc<Self>, MeshTransportBoundaryError> {
+        let accepted = MeshAcceptedCidr::deployment()
             .map_err(|_| MeshTransportBoundaryError::InvalidAcceptedCidr)?;
-        let owner = MeshEndpointOwner::new(network, accepted_prefix)?;
+        let owner = MeshEndpointOwner::new(accepted.network(), accepted.prefix())?;
         Ok(Arc::new(Self {
             state: Mutex::new(MeshTransportState {
                 owner,
@@ -273,6 +272,11 @@ mod tests {
     use super::*;
 
     #[test]
+    fn deployment_desired_configuration_constructs_transport_owner() {
+        assert!(MeshTransportController::new().is_ok());
+    }
+
+    #[test]
     fn proxy_listener_projection_is_exactly_owner_backed() {
         let expected = canonical_listeners()
             .iter()
@@ -289,8 +293,7 @@ mod tests {
 
     #[test]
     fn boundary_delegates_exact_candidate_admission_to_owner() {
-        let controller =
-            MeshTransportController::new("100.96.0.0".to_owned(), 12).expect("controller");
+        let controller = MeshTransportController::new().expect("controller");
         let admitted = controller
             .observe_local_ipv4(
                 1,
@@ -309,8 +312,7 @@ mod tests {
 
     #[test]
     fn boundary_fails_closed_on_multiple_mesh_addresses() {
-        let controller =
-            MeshTransportController::new("100.96.0.0".to_owned(), 12).expect("controller");
+        let controller = MeshTransportController::new().expect("controller");
         let view = controller
             .observe_local_ipv4(1, vec!["100.96.2.4".to_owned(), "100.97.2.5".to_owned()])
             .expect("observation");
@@ -323,8 +325,7 @@ mod tests {
 
     #[test]
     fn stale_boundary_observation_is_rejected() {
-        let controller =
-            MeshTransportController::new("100.96.0.0".to_owned(), 12).expect("controller");
+        let controller = MeshTransportController::new().expect("controller");
         controller
             .observe_local_ipv4(2, vec!["100.96.2.4".to_owned()])
             .expect("current");
@@ -336,8 +337,7 @@ mod tests {
 
     #[test]
     fn cleanup_failure_taint_blocks_any_fresh_ingress_in_same_generation() {
-        let controller =
-            MeshTransportController::new("100.96.0.0".to_owned(), 12).expect("controller");
+        let controller = MeshTransportController::new().expect("controller");
         let admitted = controller
             .observe_local_ipv4(1, vec!["100.96.2.4".to_owned()])
             .expect("observation");

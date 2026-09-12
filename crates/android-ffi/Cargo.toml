@@ -19,6 +19,7 @@ path = "src/bin/uniffi-bindgen.rs"
 mish-android-network = { path = "../android-network" }
 mish-cellular = { path = "../cellular" }
 mish-cellular-egress-bridge = { path = "../cellular-egress-bridge" }
+mish-configuration = { path = "../configuration" }
 mish-credentials = { path = "../credentials" }
 mish-proxy = { path = "../proxy" }
 mish-runtime = { path = "../runtime" }

@@ -18,14 +18,3 @@ variable "windows_profile_match" {
     error_message = "windows_profile_match must not be empty."
   }
 }
-
-variable "mesh_device_cidr" {
-  description = "Account-verified Cloudflare Mesh/device address range for the current lab architecture."
-  type        = string
-  default     = "100.96.0.0/12"
-
-  validation {
-    condition     = can(cidrhost(var.mesh_device_cidr, 0))
-    error_message = "mesh_device_cidr must be a valid CIDR."
-  }
-}
