@@ -377,15 +377,17 @@ jobs:
             :app:assembleDebug \
             :app:assembleDebugAndroidTest
 
-      - name: Verify packaged native runtime excludes superseded socket binding
+      - name: Verify packaged native runtime and narrow UniFFI surface
         run: |
           set -euo pipefail
           APK="android/app/build/outputs/apk/debug/app-debug.apk"
           TEST_APK="android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"
           NATIVE="android/app/build/generated/rust-jni/$MISH_TARGET_ABI/libmish_android_ffi.so"
+          GENERATED="android/app/build/generated/uniffi/kotlin/com/mobileproxymish/ffi/mish_android_ffi.kt"
           test -f "$APK"
           test -f "$TEST_APK"
           test -f "$NATIVE"
+          test -f "$GENERATED"
           unzip -l "$APK" | grep -q "lib/$MISH_TARGET_ABI/libmish_android_ffi.so"
           unzip -l "$APK" | grep -q "lib/$MISH_TARGET_ABI/libjnidispatch.so"
           SYMBOLS="$RUNNER_TEMP/mish-android-ffi.symbols"
@@ -394,10 +396,13 @@ jobs:
             echo 'superseded android_setsocknetwork leaked into PRODUCT FFI library' >&2
             exit 1
           fi
-          if grep -Fq 'android_getaddrinfofornetwork' "$SYMBOLS"; then
-            echo 'network-scoped DNS must not leak into Kotlin/UniFFI surface' >&2
-            exit 1
-          fi
+          grep -Fq 'android_getaddrinfofornetwork' "$SYMBOLS"
+          for forbidden in CellularNetworkLease admittedNetworkLease bindSocket resolveHost; do
+            if grep -Fq "$forbidden" "$GENERATED"; then
+              echo "network-scoped Android mechanism leaked into UniFFI surface: $forbidden" >&2
+              exit 1
+            fi
+          done
 
       - name: Verify Android runtime uses DNS-only network adapter
         run: |
