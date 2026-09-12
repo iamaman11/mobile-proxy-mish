@@ -142,6 +142,53 @@ class CellularRootPolicyTest {
     }
 
     @Test
+    fun collisionAfterPublicationRevokesLookupAndKeepsSelectedIdentityForRecovery() {
+        val process = FakePolicyProcess()
+        val policy = policy(process)
+        assertEquals(
+            CellularRootPolicyResult.Enforced,
+            policy.reconcile(admitted = true, interfaceName = "rmnet_data0"),
+        )
+        val foreign = "-A OUTPUT -j MARK --set-xmark 0x0/${FIRST.mark}"
+        process.foreignIpv4Mangle += foreign
+
+        assertEquals(
+            CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.ReservedPolicyCollision),
+            policy.reconcile(admitted = true, interfaceName = "rmnet_data0"),
+        )
+        assertNull(process.ipv4Lookup)
+        assertEquals(FIRST.mark, process.ipv4Guard?.mark)
+        assertTrue(process.foreignIpv4Mangle.contains(foreign))
+
+        process.foreignIpv4Mangle.clear()
+        assertEquals(
+            CellularRootPolicyResult.Enforced,
+            policy.reconcile(admitted = true, interfaceName = "rmnet_data0"),
+        )
+        assertEquals(FIRST.mark, process.ipv4Guard?.mark)
+        assertEquals(FIRST.lookup, process.ipv4Lookup?.lookup)
+    }
+
+    @Test
+    fun malformedPublishedChainStillRevokesLookupUsingRetainedIdentity() {
+        val process = FakePolicyProcess()
+        val policy = policy(process)
+        assertEquals(
+            CellularRootPolicyResult.Enforced,
+            policy.reconcile(admitted = true, interfaceName = "rmnet_data0"),
+        )
+        process.ipv4ChainRules += "-A $CHAIN -j MARK --set-xmark 0xdead/0xdead"
+
+        assertEquals(
+            CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.ReservedPolicyCollision),
+            policy.reconcile(admitted = true, interfaceName = "rmnet_data0"),
+        )
+        assertNull(process.ipv4Lookup)
+        assertEquals(FIRST.mark, process.ipv4Guard?.mark)
+        assertTrue(process.ipv4ChainRules.any { it.contains("0xdead/0xdead") })
+    }
+
+    @Test
     fun legacyNewOnlySelectorMigratesIntoNamedFlowPolicy() {
         val process = FakePolicyProcess().apply {
             legacyIpv4Selector = true

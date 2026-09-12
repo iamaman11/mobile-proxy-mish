@@ -74,15 +74,27 @@ class CellularRootPolicy internal constructor(
         }
 
         when (resolvePolicyIdentity()) {
-            PolicyIdentityResolution.Collision ->
+            PolicyIdentityResolution.Collision -> {
+                val revoked = activeIdentity == null || removeOwnedIpv4Lookups()
                 return CellularRootPolicyResult.FailClosed(
-                    CellularRootPolicyFailure.ReservedPolicyCollision,
+                    if (revoked) {
+                        CellularRootPolicyFailure.ReservedPolicyCollision
+                    } else {
+                        CellularRootPolicyFailure.RuleMutationFailed
+                    },
                 )
+            }
 
-            PolicyIdentityResolution.Unavailable ->
+            PolicyIdentityResolution.Unavailable -> {
+                val revoked = activeIdentity == null || removeOwnedIpv4Lookups()
                 return CellularRootPolicyResult.FailClosed(
-                    CellularRootPolicyFailure.VerificationFailed,
+                    if (revoked) {
+                        CellularRootPolicyFailure.VerificationFailed
+                    } else {
+                        CellularRootPolicyFailure.RuleMutationFailed
+                    },
                 )
+            }
 
             PolicyIdentityResolution.Selected -> Unit
         }
@@ -179,13 +191,11 @@ class CellularRootPolicy internal constructor(
         val ipv6JumpCount = ipv6Mangle.count { it == ipv6OutputJump() }
 
         if ((!ipv4ChainExists && ipv4JumpCount != 0) || (!ipv6ChainExists && ipv6JumpCount != 0)) {
-            activeIdentity = null
             return PolicyIdentityResolution.Collision
         }
         if ((ipv4JumpCount != 0 && ipv4Chain.isEmpty()) ||
             (ipv6JumpCount != 0 && ipv6Chain.isEmpty())
         ) {
-            activeIdentity = null
             return PolicyIdentityResolution.Collision
         }
 
@@ -204,7 +214,6 @@ class CellularRootPolicy internal constructor(
             ipv4Matches && ipv6Matches
         }
         if (hasChainState && compatible.isEmpty()) {
-            activeIdentity = null
             return PolicyIdentityResolution.Collision
         }
 
@@ -212,8 +221,7 @@ class CellularRootPolicy internal constructor(
         val preferred = activeIdentity
         if (preferred != null) {
             if (preferred !in candidates) {
-                activeIdentity = null
-                return PolicyIdentityResolution.Collision
+                    return PolicyIdentityResolution.Collision
             }
             activeIdentity = preferred
             if (auditReservedPolicySpace(ipv4Rules, ipv6Rules, ipv4Mangle, ipv6Mangle) ==
@@ -221,7 +229,6 @@ class CellularRootPolicy internal constructor(
             ) {
                 return PolicyIdentityResolution.Selected
             }
-            activeIdentity = null
             return PolicyIdentityResolution.Collision
         }
 

@@ -11,7 +11,10 @@ use mish_cellular::{
     CellularAdmissionState as OwnerAdmissionState, CellularEgress, NetworkHandle,
     NetworkObservation, ObservationSequence,
 };
-use mish_cellular_egress_bridge::{BridgeCredentials, BridgeListener};
+use mish_cellular_egress_bridge::{
+    BridgeCredentials, BridgeListener, CellularOutboundConnector, ConnectTarget,
+    OutboundConnectError,
+};
 use mish_proxy::{ProxyCredentialMaterial, ProxyServingPlan};
 use mish_runtime::AndroidCellularOutboundConnector;
 use mish_sing_box_adapter::{PrivateSocks5Endpoint, render_product_config};
@@ -19,7 +22,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -116,6 +119,7 @@ impl std::error::Error for AndroidRuntimeError {}
 pub struct CellularController {
     owner: Arc<Mutex<CellularEgress>>,
     bridge_claimed: Arc<AtomicBool>,
+    root_policy_effect_gate: Arc<RootPolicyEffectGate>,
 }
 
 #[uniffi::export]
@@ -125,11 +129,67 @@ impl CellularController {
         Arc::new(Self {
             owner: Arc::new(Mutex::new(CellularEgress::new())),
             bridge_claimed: Arc::new(AtomicBool::new(false)),
+            root_policy_effect_gate: Arc::new(RootPolicyEffectGate::default()),
         })
     }
 
     pub fn admission_snapshot(&self) -> Result<CellularAdmissionView, CellularBridgeError> {
         Ok(map_snapshot(self.owner()?.admission()))
+    }
+
+    /// Closes the infrastructure-only gate for ordinary PRODUCT-UID socket effects.
+    /// Closing cannot make any network admissible and therefore owns no cellular semantics.
+    pub fn close_root_policy_gate(&self) -> Result<(), AndroidRuntimeError> {
+        if self.root_policy_effect_gate.set_ready(false) {
+            Ok(())
+        } else {
+            Err(AndroidRuntimeError::BridgeStateUnavailable)
+        }
+    }
+
+    /// Waits until connect operations admitted by the preceding root-policy generation have
+    /// released their bounded permits. Kernel policy mutation is forbidden until quiesced.
+    pub fn await_root_policy_quiesced(&self, timeout_ms: u64) -> Result<bool, AndroidRuntimeError> {
+        if timeout_ms == 0 || timeout_ms > BRIDGE_OPERATION_TIMEOUT_MAX_MS {
+            return Err(AndroidRuntimeError::InvalidOperationTimeout);
+        }
+        self.root_policy_effect_gate
+            .wait_quiesced(Duration::from_millis(timeout_ms))
+            .ok_or(AndroidRuntimeError::BridgeStateUnavailable)
+    }
+
+    /// Opens the infrastructure effect gate only while holding the same owner mutex used by
+    /// observation/loss. A stale Kotlin reconcile therefore cannot authorize a newer owner
+    /// generation between its final currentness check and gate publication.
+    pub fn authorize_root_policy(
+        &self,
+        sequence: u64,
+        network_handle: u64,
+    ) -> Result<bool, AndroidRuntimeError> {
+        let Some(sequence) = ObservationSequence::new(sequence) else {
+            return Ok(false);
+        };
+        let Some(network_handle) = NetworkHandle::new(network_handle) else {
+            return Ok(false);
+        };
+        let owner = self
+            .owner
+            .lock()
+            .map_err(|_| AndroidRuntimeError::BridgeStateUnavailable)?;
+        let snapshot = owner.admission();
+        let current = snapshot.state() == OwnerAdmissionState::Admitted
+            && snapshot.last_sequence() == Some(sequence)
+            && snapshot.admitted_network() == Some(network_handle);
+        if !current {
+            if !self.root_policy_effect_gate.set_ready(false) {
+                return Err(AndroidRuntimeError::BridgeStateUnavailable);
+            }
+            return Ok(false);
+        }
+        if !self.root_policy_effect_gate.set_ready(true) {
+            return Err(AndroidRuntimeError::BridgeStateUnavailable);
+        }
+        Ok(true)
     }
 
     pub fn observe_network(
@@ -154,6 +214,9 @@ impl CellularController {
             is_not_vpn,
         );
         let mut owner = self.owner()?;
+        if !self.root_policy_effect_gate.set_ready(false) {
+            return Err(CellularBridgeError::OwnerUnavailable);
+        }
         owner.observe(observation);
         Ok(map_snapshot(owner.admission()))
     }
@@ -168,6 +231,9 @@ impl CellularController {
         let network_handle =
             NetworkHandle::new(network_handle).ok_or(CellularBridgeError::InvalidNetworkHandle)?;
         let mut owner = self.owner()?;
+        if !self.root_policy_effect_gate.set_ready(false) {
+            return Err(CellularBridgeError::OwnerUnavailable);
+        }
         owner.lost(sequence, network_handle);
         Ok(map_snapshot(owner.admission()))
     }
@@ -181,6 +247,7 @@ impl CellularController {
         CellularBridgeRuntime::start(
             Arc::clone(&self.owner),
             Arc::clone(&self.bridge_claimed),
+            Arc::clone(&self.root_policy_effect_gate),
             username,
             password,
             operation_timeout_ms,
@@ -193,6 +260,92 @@ impl CellularController {
         self.owner
             .lock()
             .map_err(|_| CellularBridgeError::OwnerUnavailable)
+    }
+}
+
+#[derive(Default)]
+struct RootPolicyEffectGate {
+    state: Mutex<RootPolicyEffectGateState>,
+    quiesced: Condvar,
+}
+
+#[derive(Default)]
+struct RootPolicyEffectGateState {
+    ready: bool,
+    in_flight: usize,
+}
+
+impl RootPolicyEffectGate {
+    fn set_ready(&self, ready: bool) -> bool {
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        state.ready = ready;
+        if !ready && state.in_flight == 0 {
+            self.quiesced.notify_all();
+        }
+        true
+    }
+
+    fn acquire(self: &Arc<Self>) -> Option<RootPolicyEffectPermit> {
+        let mut state = self.state.lock().ok()?;
+        if !state.ready {
+            return None;
+        }
+        state.in_flight = state.in_flight.checked_add(1)?;
+        drop(state);
+        Some(RootPolicyEffectPermit {
+            gate: Arc::clone(self),
+        })
+    }
+
+    fn wait_quiesced(&self, timeout: Duration) -> Option<bool> {
+        let state = self.state.lock().ok()?;
+        let (state, _) = self
+            .quiesced
+            .wait_timeout_while(state, timeout, |state| state.in_flight != 0)
+            .ok()?;
+        Some(state.in_flight == 0)
+    }
+}
+
+struct RootPolicyEffectPermit {
+    gate: Arc<RootPolicyEffectGate>,
+}
+
+impl Drop for RootPolicyEffectPermit {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.gate.state.lock() {
+            if state.in_flight == 0 {
+                return;
+            }
+            state.in_flight -= 1;
+            if state.in_flight == 0 {
+                self.gate.quiesced.notify_all();
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+struct RootPolicyGatedConnector<C> {
+    inner: C,
+    effect_gate: Arc<RootPolicyEffectGate>,
+}
+
+impl<C> RootPolicyGatedConnector<C> {
+    fn new(inner: C, effect_gate: Arc<RootPolicyEffectGate>) -> Self {
+        Self { inner, effect_gate }
+    }
+}
+
+impl<C: CellularOutboundConnector> CellularOutboundConnector for RootPolicyGatedConnector<C> {
+    fn connect(&self, target: &ConnectTarget) -> Result<TcpStream, OutboundConnectError> {
+        let _permit = self
+            .effect_gate
+            .acquire()
+            .ok_or(OutboundConnectError::Unavailable)?;
+        self.inner.connect(target)
     }
 }
 
@@ -213,6 +366,7 @@ impl CellularBridgeRuntime {
     fn start(
         owner: Arc<Mutex<CellularEgress>>,
         bridge_claimed: Arc<AtomicBool>,
+        root_policy_effect_gate: Arc<RootPolicyEffectGate>,
         username: String,
         password: String,
         operation_timeout_ms: u64,
@@ -237,11 +391,14 @@ impl CellularBridgeRuntime {
             let wake_address = listener
                 .local_addr()
                 .map_err(|_| AndroidRuntimeError::BridgeStateUnavailable)?;
-            let connector = AndroidCellularOutboundConnector::new(
-                owner,
-                Duration::from_millis(operation_timeout_ms),
-            )
-            .map_err(|_| AndroidRuntimeError::ConnectorUnavailable)?;
+            let connector = RootPolicyGatedConnector::new(
+                AndroidCellularOutboundConnector::new(
+                    owner,
+                    Duration::from_millis(operation_timeout_ms),
+                )
+                .map_err(|_| AndroidRuntimeError::ConnectorUnavailable)?,
+                root_policy_effect_gate,
+            );
 
             let stop_requested = Arc::new(AtomicBool::new(false));
             let healthy = Arc::new(AtomicBool::new(true));
@@ -365,15 +522,17 @@ impl Drop for CellularBridgeRuntime {
     }
 }
 
-fn bridge_accept_loop(
+fn bridge_accept_loop<C>(
     listener: Arc<BridgeListener>,
-    connector: AndroidCellularOutboundConnector,
+    connector: C,
     stop_requested: Arc<AtomicBool>,
     healthy: Arc<AtomicBool>,
     active_sessions: Arc<AtomicUsize>,
     clients: Arc<Mutex<HashMap<u64, TcpStream>>>,
     session_sequence: Arc<AtomicU64>,
-) {
+) where
+    C: CellularOutboundConnector + Clone + 'static,
+{
     while !stop_requested.load(Ordering::Acquire) {
         let (client, _) = match listener.accept() {
             Ok(pair) => pair,
@@ -566,6 +725,48 @@ mod tests {
             controller.admission_snapshot().expect("snapshot").state,
             CellularAdmissionState::Unknown
         );
+    }
+
+    #[test]
+    fn root_policy_effect_gate_is_default_closed_and_drains_preexisting_permits() {
+        let gate = Arc::new(RootPolicyEffectGate::default());
+        assert!(gate.acquire().is_none());
+        assert!(gate.set_ready(true));
+        let permit = gate.acquire().expect("open gate permit");
+        assert!(gate.set_ready(false));
+        assert_eq!(gate.wait_quiesced(Duration::from_millis(1)), Some(false));
+        drop(permit);
+        assert_eq!(gate.wait_quiesced(Duration::from_millis(10)), Some(true));
+        assert!(gate.acquire().is_none());
+    }
+
+    #[test]
+    fn stale_generation_cannot_reopen_root_policy_effect_gate() {
+        let controller = CellularController::new();
+        controller
+            .observe_network(1, 42, true, true, true, true)
+            .expect("first observation");
+        assert!(
+            controller
+                .authorize_root_policy(1, 42)
+                .expect("authorize first")
+        );
+        controller
+            .observe_network(2, 43, true, true, true, true)
+            .expect("newer observation");
+        assert!(
+            !controller
+                .authorize_root_policy(1, 42)
+                .expect("reject stale")
+        );
+        assert!(controller.root_policy_effect_gate.acquire().is_none());
+        assert!(
+            controller
+                .authorize_root_policy(2, 43)
+                .expect("authorize current")
+        );
+        assert!(controller.root_policy_effect_gate.acquire().is_some());
+        controller.close_root_policy_gate().expect("close gate");
     }
 
     #[test]

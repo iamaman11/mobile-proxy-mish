@@ -122,6 +122,8 @@ Each PRODUCT process generation creates one `CellularRuntimeBridge`. Startup fir
 
 The same `CellularController` / `CellularEgress` instance is also supplied to the private loopback egress bridge used by the Android proxy runtime. Starting the proxy bridge must not instantiate a second Cellular Egress owner or a second admission/generation state machine.
 
+Ordinary PRODUCT-UID outbound socket effects are additionally protected by a process-local infrastructure gate. The gate is default-closed. The same Rust `CellularController` mutex that serializes owner observations also closes the gate before an observation/loss mutates the owner and authorizes reopening only when the expected sequence/network handle is still the exact current ADMITTED generation. A connect transaction holds a bounded RAII permit; the Kotlin policy executor must observe permit quiescence before mutating or revoking kernel routing state. This gate is not admission/readiness state and cannot make a network admissible; it only prevents the runtime adapter from issuing a new ordinary socket effect while root-policy realization is unproven or changing.
+
 On owner loss or generation change, currentness advances independently of slow root effects. Every root transaction checks the captured owner generation before and after the effect. On intentional close, exact PRODUCT objects are removed and absence is post-verified.
 
 A reboot/process restart never treats persisted kernel objects as admission truth: they are audited/reconciled under fresh PRODUCT root authority and fresh Cellular Egress observations.

@@ -240,6 +240,20 @@ class CellularRuntimeBridge(
             return
         }
 
+        val quiesced = try {
+            activeController.awaitRootPolicyQuiesced(EFFECT_DRAIN_TIMEOUT_MS.toULong())
+        } catch (_: LinkageError) {
+            false
+        } catch (_: Exception) {
+            false
+        }
+        if (!quiesced) {
+            mutableSnapshot.value = CellularRuntimeSnapshot.BoundaryUnavailable(
+                CellularBoundaryFailure.RootPolicyReconcileFailed,
+            )
+            return
+        }
+
         val policyResult = rootPolicy.reconcile(
             admitted = admission.state == CellularAdmissionState.ADMITTED,
             interfaceName = interfaceName,
@@ -264,8 +278,30 @@ class CellularRuntimeBridge(
         }
 
         mutableSnapshot.value = when (policyResult) {
-            CellularRootPolicyResult.Enforced ->
-                CellularRuntimeSnapshot.OwnerSnapshot(admission)
+            CellularRootPolicyResult.Enforced -> {
+                val sequence = admission.lastSequence
+                val handle = admission.admittedNetworkHandle
+                val authorized = if (sequence != null && handle != null) {
+                    try {
+                        activeController.authorizeRootPolicy(sequence, handle)
+                    } catch (_: LinkageError) {
+                        false
+                    } catch (_: Exception) {
+                        false
+                    }
+                } else {
+                    false
+                }
+                if (authorized) {
+                    CellularRuntimeSnapshot.OwnerSnapshot(admission)
+                } else {
+                    snapshotForFailClosed(
+                        preferredFailure = CellularBoundaryFailure.RootPolicyGenerationChanged,
+                    ) ?: CellularRuntimeSnapshot.BoundaryUnavailable(
+                        CellularBoundaryFailure.RootPolicyGenerationChanged,
+                    )
+                }
+            }
 
             is CellularRootPolicyResult.FailClosed -> {
                 if (admission.state != CellularAdmissionState.ADMITTED &&
@@ -311,7 +347,21 @@ class CellularRuntimeBridge(
     private fun snapshotForFailClosed(
         preferredFailure: CellularBoundaryFailure?,
         preserveOnCleanFailClosed: Boolean = false,
-    ): CellularRuntimeSnapshot? = when (val result = rootPolicy.failClosed()) {
+    ): CellularRuntimeSnapshot? {
+        val quiesced = try {
+            controller?.closeRootPolicyGate()
+            controller?.awaitRootPolicyQuiesced(EFFECT_DRAIN_TIMEOUT_MS.toULong()) ?: true
+        } catch (_: Exception) {
+            false
+        } catch (_: LinkageError) {
+            false
+        }
+        if (!quiesced) {
+            return CellularRuntimeSnapshot.BoundaryUnavailable(
+                preferredFailure ?: CellularBoundaryFailure.RootPolicyReconcileFailed,
+            )
+        }
+        return when (val result = rootPolicy.failClosed()) {
         is CellularRootPolicyResult.AuthorityUnavailable ->
             CellularRuntimeSnapshot.BoundaryUnavailable(
                 CellularBoundaryFailure.RootAuthorityUnavailable,
@@ -332,6 +382,7 @@ class CellularRuntimeBridge(
         CellularRootPolicyResult.Enforced -> preferredFailure?.let {
             CellularRuntimeSnapshot.BoundaryUnavailable(it)
         }
+        }
     }
 
     private fun submitPolicyWork(block: () -> Unit) {
@@ -345,11 +396,19 @@ class CellularRuntimeBridge(
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
 
+        runCatching { controller?.closeRootPolicyGate() }
         observer.close()
         val cleanup = try {
             policyExecutor.submit {
                 interfaceHints.clear()
-                rootPolicy.cleanupExactOwnedRules()
+                val quiesced = try {
+                    controller?.awaitRootPolicyQuiesced(EFFECT_DRAIN_TIMEOUT_MS.toULong()) ?: true
+                } catch (_: Exception) {
+                    false
+                } catch (_: LinkageError) {
+                    false
+                }
+                quiesced && rootPolicy.cleanupExactOwnedRules()
             }
         } catch (_: RejectedExecutionException) {
             null
@@ -380,5 +439,6 @@ class CellularRuntimeBridge(
 
     private companion object {
         const val CLOSE_TIMEOUT_SECONDS = 60L
+        const val EFFECT_DRAIN_TIMEOUT_MS = 20_000L
     }
 }
