@@ -8,6 +8,7 @@ import com.mobileproxymish.app.cellular.CellularRootPolicyFailure
 import com.mobileproxymish.app.cellular.CellularRuntimeSnapshot
 import com.mobileproxymish.ffi.CellularAdmissionReason
 import com.mobileproxymish.ffi.CellularAdmissionState
+import com.mobileproxymish.ffi.RuntimeProcessFailure
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -25,17 +26,19 @@ data class MainUiState(
 /** Presentation projection only; it neither owns nor mutates cellular/proxy runtime state. */
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application as MishApplication
-    private val cellularRuntime = app.cellularRuntime
-    private val proxyRuntime = app.proxyRuntime
+    private val runtimeController = app.runtimeController
 
     val state: StateFlow<MainUiState> = combine(
-        cellularRuntime.snapshot,
-        proxyRuntime.snapshot,
+        runtimeController.cellularSnapshot,
+        runtimeController.proxySnapshot,
         ::toUiState,
     ).stateIn(
         scope = viewModelScope,
         started = SharingStarted.Eagerly,
-        initialValue = toUiState(cellularRuntime.snapshot.value, proxyRuntime.snapshot.value),
+        initialValue = toUiState(
+            runtimeController.cellularSnapshot.value,
+            runtimeController.proxySnapshot.value,
+        ),
     )
 
     private fun toUiState(
@@ -99,16 +102,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             "cellular.root_policy_verification_failed"
     }
 
-    private fun proxyReasonCode(reason: ProxyRuntimeFailure): String = when (reason) {
-        ProxyRuntimeFailure.NativeRuntimeMissing -> "proxy.native_runtime_missing"
-        ProxyRuntimeFailure.StaleProcessIdentityMismatch -> "proxy.stale_process_identity_mismatch"
-        ProxyRuntimeFailure.PrivateBridgeUnavailable -> "proxy.private_bridge_unavailable"
-        ProxyRuntimeFailure.ConfigurationRejected -> "proxy.configuration_rejected"
-        ProxyRuntimeFailure.ChildLaunchFailed -> "proxy.child_launch_failed"
-        ProxyRuntimeFailure.HealthCheckFailed -> "proxy.health_check_failed"
-        ProxyRuntimeFailure.ChildExited -> "proxy.child_exited"
-        ProxyRuntimeFailure.PrivateBridgeUnhealthy -> "proxy.private_bridge_unhealthy"
-        ProxyRuntimeFailure.CleanupFailed -> "proxy.cleanup_failed"
+    private fun proxyReasonCode(reason: RuntimeProcessFailure): String = when (reason) {
+        RuntimeProcessFailure.NATIVE_RUNTIME_MISSING -> "proxy.native_runtime_missing"
+        RuntimeProcessFailure.STALE_PROCESS_IDENTITY_MISMATCH ->
+            "proxy.stale_process_identity_mismatch"
+        RuntimeProcessFailure.EXTERNAL_CREDENTIAL_UNAVAILABLE ->
+            "proxy.external_credential_unavailable"
+        RuntimeProcessFailure.PRIVATE_BRIDGE_UNAVAILABLE -> "proxy.private_bridge_unavailable"
+        RuntimeProcessFailure.CONFIGURATION_REJECTED -> "proxy.configuration_rejected"
+        RuntimeProcessFailure.CHILD_LAUNCH_FAILED -> "proxy.child_launch_failed"
+        RuntimeProcessFailure.HEALTH_CHECK_FAILED -> "proxy.health_check_failed"
+        RuntimeProcessFailure.CHILD_EXITED -> "proxy.child_exited"
+        RuntimeProcessFailure.PRIVATE_BRIDGE_UNHEALTHY -> "proxy.private_bridge_unhealthy"
+        RuntimeProcessFailure.CLEANUP_FAILED -> "proxy.cleanup_failed"
     }
 
     private fun reasonCode(reason: CellularAdmissionReason): String = when (reason) {

@@ -323,11 +323,15 @@ checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 name = "mish-android-ffi"
 version = "0.1.0"
 dependencies = [
+ "mish-android-network",
  "mish-cellular",
  "mish-cellular-egress-bridge",
+ "mish-configuration",
+ "mish-credentials",
  "mish-proxy",
  "mish-runtime",
  "mish-sing-box-adapter",
+ "mish-transport",
  "uniffi",
 ]
 
@@ -343,6 +347,9 @@ dependencies = [
 [[package]]
 name = "mish-application"
 version = "0.1.0"
+dependencies = [
+ "mish-readiness",
+]
 
 [[package]]
 name = "mish-cellular"
@@ -380,7 +387,6 @@ version = "0.1.0"
 name = "mish-runtime"
 version = "0.1.0"
 dependencies = [
- "mish-android-network",
  "mish-cellular",
  "mish-cellular-egress-bridge",
 ]

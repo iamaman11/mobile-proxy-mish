@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Mobile Proxy MISH</string>
+    <string name="proxy_runtime_channel_name">Proxy runtime</string>
+    <string name="proxy_runtime_channel_description">Keeps the authenticated mobile proxy runtime available.</string>
+    <string name="proxy_runtime_notification_title">Mobile Proxy MISH is running</string>
+    <string name="proxy_runtime_notification_text">Proxy runtime is active and remains fail-closed without cellular egress.</string>
 </resources>

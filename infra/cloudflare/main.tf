@@ -1,3 +1,22 @@
+locals {
+  # One non-secret Desired Configuration source shared with the Android build. Changing the
+  # deployment-approved Mesh classification is therefore one repository edit, not two defaults.
+  mesh_device_cidr = trimspace(file("${path.module}/../../config/deployment/mesh-device-cidr.txt"))
+}
+
+check "mesh_device_cidr_desired_configuration" {
+  assert {
+    condition = try(
+      can(regex("^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+/[0-9]+$", local.mesh_device_cidr)) &&
+      cidrhost(local.mesh_device_cidr, 0) == split("/", local.mesh_device_cidr)[0] &&
+      tonumber(split("/", local.mesh_device_cidr)[1]) >= 8 &&
+      tonumber(split("/", local.mesh_device_cidr)[1]) <= 32,
+      false,
+    )
+    error_message = "config/deployment/mesh-device-cidr.txt must contain one canonical safe IPv4 CIDR."
+  }
+}
+
 resource "cloudflare_zero_trust_device_custom_profile" "adds" {
   account_id = var.cloudflare_account_id
   name       = "adds"
@@ -16,7 +35,7 @@ resource "cloudflare_zero_trust_device_custom_profile" "adds" {
   }
 
   include = [{
-    address     = var.mesh_device_cidr
+    address     = local.mesh_device_cidr
     description = "Cloudflare Mesh destinations"
   }]
 

@@ -21,6 +21,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        ProxyRuntimeService.requestStart(this)
         setContent {
             val state by viewModel.state.collectAsStateWithLifecycle()
 

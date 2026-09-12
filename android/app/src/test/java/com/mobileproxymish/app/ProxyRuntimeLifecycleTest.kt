@@ -2,96 +2,58 @@ package com.mobileproxymish.app
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+/**
+ * Android-side tests cover only effect ordering/redaction. Lifecycle state transitions are owned
+ * and directly tested in `crates/runtime`; Kotlin deliberately has no parallel lifecycle machine.
+ */
 class ProxyRuntimeLifecycleTest {
     @Test
-    fun startIsIdempotentUntilFailureOrStop() {
-        val lifecycle = ProxyRuntimeLifecycle()
+    fun exactGenerationCleanupClosesMeshThenProxyThenCellularOwner() {
+        val effects = mutableListOf<String>()
 
-        assertEquals(ProxyRuntimeSnapshot.Stopped, lifecycle.snapshot.value)
-        assertTrue(lifecycle.requestStart())
-        assertEquals(ProxyRuntimeSnapshot.Starting, lifecycle.snapshot.value)
-        assertFalse(lifecycle.requestStart())
-
-        assertTrue(lifecycle.markRunning())
-        assertEquals(ProxyRuntimeSnapshot.Running, lifecycle.snapshot.value)
-        assertFalse(lifecycle.requestStart())
-    }
-
-    @Test
-    fun childFailureClearsRunningAndAllowsBoundedRestart() {
-        val lifecycle = ProxyRuntimeLifecycle()
-        assertTrue(lifecycle.requestStart())
-        assertTrue(lifecycle.markRunning())
-
-        lifecycle.markFailed(ProxyRuntimeFailure.ChildExited)
-        assertEquals(
-            ProxyRuntimeSnapshot.Failed(ProxyRuntimeFailure.ChildExited),
-            lifecycle.snapshot.value,
+        val clean = closeRuntimeGenerationExact(
+            closeMesh = { effects += "mesh" },
+            closeProxy = { effects += "proxy" },
+            closeCellular = { effects += "cellular" },
         )
-        assertTrue(lifecycle.requestStart())
-        assertEquals(ProxyRuntimeSnapshot.Starting, lifecycle.snapshot.value)
-        assertTrue(lifecycle.markRunning())
-        assertEquals(ProxyRuntimeSnapshot.Running, lifecycle.snapshot.value)
+
+        assertTrue(clean)
+        assertEquals(listOf("mesh", "proxy", "cellular"), effects)
     }
 
     @Test
-    fun cleanupFailureNeverLeavesStaleRunning() {
-        val lifecycle = ProxyRuntimeLifecycle()
-        assertTrue(lifecycle.requestStart())
-        assertTrue(lifecycle.markRunning())
+    fun exactGenerationCleanupAttemptsEveryEffectAfterEarlierFailures() {
+        val effects = mutableListOf<String>()
 
-        lifecycle.markFailed(ProxyRuntimeFailure.CleanupFailed)
-
-        assertEquals(
-            ProxyRuntimeSnapshot.Failed(ProxyRuntimeFailure.CleanupFailed),
-            lifecycle.snapshot.value,
+        val clean = closeRuntimeGenerationExact(
+            closeMesh = {
+                effects += "mesh"
+                error("Mesh cleanup failed")
+            },
+            closeProxy = {
+                effects += "proxy"
+                error("proxy cleanup failed")
+            },
+            closeCellular = { effects += "cellular" },
         )
-        assertFalse(lifecycle.snapshot.value == ProxyRuntimeSnapshot.Running)
+
+        assertFalse(clean)
+        assertEquals(listOf("mesh", "proxy", "cellular"), effects)
     }
 
     @Test
-    fun stopAndProcessGenerationRecreationReturnToStopped() {
-        val lifecycle = ProxyRuntimeLifecycle()
-        assertTrue(lifecycle.requestStart())
-        assertTrue(lifecycle.markRunning())
-        lifecycle.markStopped()
-        assertEquals(ProxyRuntimeSnapshot.Stopped, lifecycle.snapshot.value)
-        assertTrue(lifecycle.requestStart())
-
-        val recreated = ProxyRuntimeLifecycle()
-        assertEquals(ProxyRuntimeSnapshot.Stopped, recreated.snapshot.value)
-        assertFalse(recreated.markRunning())
-        assertEquals(ProxyRuntimeSnapshot.Stopped, recreated.snapshot.value)
-    }
-
-    @Test
-    fun healthCannotPublishRunningWithoutAStartGeneration() {
-        val lifecycle = ProxyRuntimeLifecycle()
-
-        assertFalse(lifecycle.markRunning())
-        assertEquals(ProxyRuntimeSnapshot.Stopped, lifecycle.snapshot.value)
-
-        lifecycle.markFailed(ProxyRuntimeFailure.HealthCheckFailed)
-        assertFalse(lifecycle.markRunning())
-        assertEquals(
-            ProxyRuntimeSnapshot.Failed(ProxyRuntimeFailure.HealthCheckFailed),
-            lifecycle.snapshot.value,
-        )
-    }
-
-    @Test
-    fun processGenerationCredentialsAreExplicitTypedMaterial() {
+    fun externalCredentialMaterialIsRedactedFromStringProjection() {
         val credentials = ProxyRuntimeCredentials(
-            username = "process-generation-user",
-            password = "process-generation-password",
+            username = "external-user-secret",
+            password = "external-password-secret",
         )
 
-        assertEquals("process-generation-user", credentials.username)
-        assertEquals("process-generation-password", credentials.password)
-        assertNotEquals(credentials.username, credentials.password)
+        assertEquals("external-user-secret", credentials.username)
+        assertEquals("external-password-secret", credentials.password)
+        assertFalse(credentials.toString().contains(credentials.username))
+        assertFalse(credentials.toString().contains(credentials.password))
     }
 }
