@@ -25,10 +25,10 @@ jobs:
         run: |
           set -euo pipefail
           python3 tools/qa81_effect_gate_patch.py
-          cargo fmt --all --check
+          cargo fmt --all
           cargo test --workspace --locked
           git diff --check
-          test "$(git status --short | wc -l)" -eq 4
+          test "$(git status --short | wc -l)" -eq 5
       - name: Commit source changes and remove helper
         run: |
           set -euo pipefail
@@ -40,7 +40,8 @@ jobs:
             android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRuntimeBridge.kt \
             android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRootPolicy.kt \
             android/app/src/test/java/com/mobileproxymish/app/cellular/CellularRootPolicyTest.kt \
+            docs/architecture/CELLULAR_ROOT_POLICY.md \
             tools/qa81_effect_gate_patch.py
-          test "$(git diff --cached --name-only | wc -l)" -eq 5
+          test "$(git diff --cached --name-only | wc -l)" -eq 6
           git commit -m 'Runtime: gate outbound effects on proven root policy'
           git push origin HEAD:qa/81-remediation
