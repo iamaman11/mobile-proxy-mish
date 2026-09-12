@@ -18,19 +18,31 @@ jobs:
           ref: m1/arch-clippy-test-resolver
           fetch-depth: 0
 
-      - name: Replace test closure with explicit resolver adapter
+      - name: Apply exact test-only Clippy corrections
         shell: python
         run: |
           from pathlib import Path
-          path = Path('crates/runtime/src/cellular_runtime.rs')
-          text = path.read_text(encoding='utf-8')
+
+          runtime = Path('crates/runtime/src/cellular_runtime.rs')
+          text = runtime.read_text(encoding='utf-8')
           old_import = '    use mish_cellular::{CellularAdmissionReason, NetworkObservation};\n'
           new_import = '    use mish_cellular::{CellularAdmissionReason, CellularNetworkAuthority, NetworkObservation};\n'
           old_block = '''    fn coordinator() -> Arc<CellularRuntimeCoordinator> {\n        CellularRuntimeCoordinator::new(Arc::new(|_, _| {\n            Ok(vec![IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9))])\n        }))\n    }\n'''
           new_block = '''    struct StaticResolver;\n\n    impl CellularDnsResolver for StaticResolver {\n        fn resolve(\n            &self,\n            _authority: CellularNetworkAuthority,\n            _hostname: &str,\n        ) -> Result<Vec<IpAddr>, OutboundConnectError> {\n            Ok(vec![IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9))])\n        }\n    }\n\n    fn coordinator() -> Arc<CellularRuntimeCoordinator> {\n        CellularRuntimeCoordinator::new(Arc::new(StaticResolver))\n    }\n'''
           if text.count(old_import) != 1 or text.count(old_block) != 1:
               raise SystemExit('unexpected cellular runtime test shape')
-          path.write_text(text.replace(old_import, new_import).replace(old_block, new_block), encoding='utf-8')
+          runtime.write_text(
+              text.replace(old_import, new_import).replace(old_block, new_block),
+              encoding='utf-8',
+          )
+
+          lifecycle = Path('crates/runtime/src/lifecycle.rs')
+          text = lifecycle.read_text(encoding='utf-8')
+          old_assert = '''        assert!(\n            owner\n                .complete_start(true, true)\n                .install_fresh_generation_now()\n                == false\n        );\n'''
+          new_assert = '''        assert!(\n            !owner\n                .complete_start(true, true)\n                .install_fresh_generation_now()\n        );\n'''
+          if text.count(old_assert) != 2:
+              raise SystemExit('unexpected lifecycle boolean assertion shape')
+          lifecycle.write_text(text.replace(old_assert, new_assert), encoding='utf-8')
 
       - name: Validate pinned Rust all-targets gate
         run: |
@@ -49,5 +61,5 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
           git diff --cached --check
-          git commit -m 'M1 architecture: make runtime DNS test adapter lifetime-explicit'
+          git commit -m 'M1 architecture: satisfy pinned all-target Clippy tests'
           git push origin HEAD:m1/arch-clippy-test-resolver
