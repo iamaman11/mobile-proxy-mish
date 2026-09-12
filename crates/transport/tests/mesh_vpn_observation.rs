@@ -81,6 +81,5 @@ fn vpn_loss_closes_active_session_before_same_endpoint_gets_fresh_epoch() {
     assert_ne!(returned.admission().admission_epoch(), Some(first_epoch));
     assert!(!returned.ingress_running());
 
-    let mut probe = [0_u8; 1];
-    let _ = client.read(&mut probe);
+    drop(client);
 }
