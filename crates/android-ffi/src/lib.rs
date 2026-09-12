@@ -116,7 +116,6 @@ impl std::error::Error for AndroidRuntimeError {}
 pub struct CellularController {
     owner: Arc<Mutex<CellularEgress>>,
     bridge_claimed: Arc<AtomicBool>,
-    claim_released: AtomicBool,
 }
 
 #[uniffi::export]
@@ -207,6 +206,7 @@ pub struct CellularBridgeRuntime {
     clients: Arc<Mutex<HashMap<u64, TcpStream>>>,
     accept_thread: Mutex<Option<JoinHandle<()>>>,
     bridge_claimed: Arc<AtomicBool>,
+    claim_released: AtomicBool,
 }
 
 impl CellularBridgeRuntime {
