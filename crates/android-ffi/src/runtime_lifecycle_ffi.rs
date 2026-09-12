@@ -63,6 +63,11 @@ impl RuntimeLifecycleController {
         map_lifecycle_state(self.owner().state())
     }
 
+    /// Exact monotonic key of the currently installed Android runtime effect generation.
+    pub fn generation(&self) -> u64 {
+        self.owner().generation()
+    }
+
     pub fn generation_requires_replacement(&self) -> bool {
         self.owner().generation_requires_replacement()
     }
@@ -73,6 +78,10 @@ impl RuntimeLifecycleController {
 
     pub fn take_generation_replacement_for_start(&self) -> bool {
         self.owner_mut().take_generation_replacement_for_start()
+    }
+
+    pub fn advance_stopped_generation(&self) -> bool {
+        self.owner_mut().advance_stopped_generation()
     }
 
     pub fn start_submission_failed(&self) {
@@ -311,8 +320,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ffi_lifecycle_projection_delegates_to_runtime_owner() {
+    fn ffi_lifecycle_projection_delegates_generation_to_runtime_owner() {
         let controller = RuntimeLifecycleController::new();
+        assert_eq!(controller.generation(), 1);
         assert_eq!(controller.state(), RuntimeLifecycleState::Stopped);
         assert_eq!(controller.request_start(), RuntimeStartAction::StartNow);
         assert_eq!(
@@ -326,10 +336,17 @@ mod tests {
         );
         assert_eq!(controller.state(), RuntimeLifecycleState::Running);
         assert_eq!(controller.request_stop(), RuntimeStopAction::StopNow);
-        let disposition = controller.complete_stop(false);
-        assert!(!disposition.install_fresh_generation_now);
-        assert!(disposition.require_fresh_generation_before_next_explicit_start);
-        assert!(!disposition.restart_now);
+        let disposition = controller.complete_stop(true);
+        assert!(disposition.install_fresh_generation_now);
+        assert_eq!(controller.generation(), 2);
+    }
+
+    #[test]
+    fn ffi_stopped_generation_cutover_is_owner_authorized() {
+        let controller = RuntimeLifecycleController::new();
+        assert!(controller.can_mutate_stopped_generation());
+        assert!(controller.advance_stopped_generation());
+        assert_eq!(controller.generation(), 2);
     }
 
     #[test]
