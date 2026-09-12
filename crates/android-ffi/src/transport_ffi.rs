@@ -1,6 +1,7 @@
+use mish_proxy::canonical_listeners;
 use mish_transport::{
     MeshAdmissionReason as OwnerAdmissionReason, MeshAdmissionState as OwnerAdmissionState,
-    MeshEndpointOwner, MeshIngressError, MeshIngressRuntime, MeshOwnerError,
+    MeshEndpointOwner, MeshIngressError, MeshIngressRuntime, MeshOwnerError, MeshPortForward,
 };
 use std::fmt;
 use std::net::Ipv4Addr;
@@ -57,6 +58,22 @@ impl fmt::Display for MeshTransportBoundaryError {
 }
 
 impl std::error::Error for MeshTransportBoundaryError {}
+
+/// Typed projection of the single Proxy Serving listener contract for platform health checks.
+#[uniffi::export]
+pub fn proxy_listener_ports() -> Vec<u16> {
+    canonical_listeners()
+        .iter()
+        .map(|listener| listener.port)
+        .collect()
+}
+
+fn proxy_transport_mappings() -> Vec<MeshPortForward> {
+    canonical_listeners()
+        .iter()
+        .map(|listener| MeshPortForward::same(listener.port))
+        .collect()
+}
 
 struct MeshTransportState {
     owner: MeshEndpointOwner,
@@ -119,6 +136,7 @@ impl MeshTransportController {
     }
 
     /// Starts the exact-address ingress only for the caller's still-current admission epoch.
+    /// Proxy listener ports are projected from the Proxy Serving owner at this composition seam.
     pub fn start_ingress(&self, admission_epoch: u64) -> Result<bool, MeshTransportBoundaryError> {
         let mut state = self.state()?;
         if state.cleanup_failed {
@@ -148,7 +166,8 @@ impl MeshTransportController {
         let endpoint = snapshot
             .admitted_endpoint()
             .ok_or(MeshTransportBoundaryError::IngressUnavailable)?;
-        let ingress = MeshIngressRuntime::start_product(endpoint).map_err(map_ingress_error)?;
+        let mappings = proxy_transport_mappings();
+        let ingress = MeshIngressRuntime::start(endpoint, &mappings).map_err(map_ingress_error)?;
         state.ingress = Some(ingress);
         state.ingress_epoch = Some(admission_epoch);
         Ok(true)
@@ -252,6 +271,21 @@ impl From<MeshOwnerError> for MeshTransportBoundaryError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proxy_listener_projection_is_exactly_owner_backed() {
+        let expected = canonical_listeners()
+            .iter()
+            .map(|listener| listener.port)
+            .collect::<Vec<_>>();
+        assert_eq!(proxy_listener_ports(), expected);
+        let mappings = proxy_transport_mappings();
+        assert_eq!(mappings.len(), expected.len());
+        for (mapping, port) in mappings.iter().zip(expected) {
+            assert_eq!(mapping.ingress_port(), port);
+            assert_eq!(mapping.backend_port(), port);
+        }
+    }
 
     #[test]
     fn boundary_delegates_exact_candidate_admission_to_owner() {
