@@ -86,7 +86,7 @@ dependencies = [
 name = "bitflags"
 version = "2.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ded4057c258ba199e2d26386d3af3780957eca6732202bbf2a9cc504fe2f9b84a"
+checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4e950bf3c76d9b97c0b06"
 
 [[package]]
 name = "bytes"
