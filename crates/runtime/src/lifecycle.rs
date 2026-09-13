@@ -62,11 +62,14 @@ impl RuntimeCleanupDisposition {
 ///
 /// Effects are deliberately absent. The Android adapter requests transitions, executes the
 /// concrete generation/process cleanup or startup effect, then publishes the typed outcome here.
+/// `generation` is the exact monotonic key of the currently installed Android effect generation;
+/// it advances only on owner-authorized replacement transitions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeLifecycle {
     state: RuntimeLifecycleState,
     restart_after_stop: bool,
     generation_requires_replacement: bool,
+    generation: u64,
 }
 
 impl Default for RuntimeLifecycle {
@@ -81,11 +84,16 @@ impl RuntimeLifecycle {
             state: RuntimeLifecycleState::Stopped,
             restart_after_stop: false,
             generation_requires_replacement: false,
+            generation: 1,
         }
     }
 
     pub const fn state(self) -> RuntimeLifecycleState {
         self.state
+    }
+
+    pub const fn generation(self) -> u64 {
+        self.generation
     }
 
     pub const fn generation_requires_replacement(self) -> bool {
@@ -109,13 +117,25 @@ impl RuntimeLifecycle {
     }
 
     /// Claims a replacement required by an earlier failed cleanup only from an explicit start.
-    /// The caller must report a failed start if replacement/effects cannot be completed.
+    /// The generation key advances before the adapter is allowed to install the fresh effects.
     pub fn take_generation_replacement_for_start(&mut self) -> bool {
         if self.state != RuntimeLifecycleState::Starting || !self.generation_requires_replacement {
             return false;
         }
+        if !self.advance_generation() {
+            return false;
+        }
         self.generation_requires_replacement = false;
         true
+    }
+
+    /// Authorizes one stopped-only generation replacement, used by credential cutover after the
+    /// exact old generation was cleaned. Failure (including counter exhaustion) is fail-closed.
+    pub fn advance_stopped_generation(&mut self) -> bool {
+        if self.state != RuntimeLifecycleState::Stopped || self.generation_requires_replacement {
+            return false;
+        }
+        self.advance_generation()
     }
 
     /// Submission failed before any start effect executed. No automatic retry is introduced.
@@ -129,7 +149,7 @@ impl RuntimeLifecycle {
     ///
     /// If stop was requested while startup was executing, the state remains STOPPING and the
     /// queued stop effect owns cleanup. Otherwise a failed startup may install a fresh generation
-    /// only after exact cleanup succeeded.
+    /// only after exact cleanup succeeded and the owner advanced its generation key.
     pub fn complete_start(
         &mut self,
         started: bool,
@@ -148,9 +168,10 @@ impl RuntimeLifecycle {
             }
         } else {
             self.state = RuntimeLifecycleState::Stopped;
-            self.generation_requires_replacement = !clean_after_failed_start;
+            let install_fresh_generation_now = clean_after_failed_start && self.advance_generation();
+            self.generation_requires_replacement = !install_fresh_generation_now;
             RuntimeStartCompletion {
-                install_fresh_generation_now: clean_after_failed_start,
+                install_fresh_generation_now,
             }
         }
     }
@@ -178,7 +199,8 @@ impl RuntimeLifecycle {
         self.restart_after_stop = false;
         self.state = RuntimeLifecycleState::Stopped;
 
-        let disposition = if clean {
+        let replacement_advanced = clean && self.advance_generation();
+        let disposition = if replacement_advanced {
             RuntimeCleanupDisposition {
                 install_fresh_generation_now: true,
                 require_fresh_generation_before_next_explicit_start: false,
@@ -205,6 +227,14 @@ impl RuntimeLifecycle {
             return false;
         }
         self.generation_requires_replacement = true;
+        true
+    }
+
+    fn advance_generation(&mut self) -> bool {
+        let Some(next) = self.generation.checked_add(1) else {
+            return false;
+        };
+        self.generation = next;
         true
     }
 }
@@ -319,6 +349,7 @@ mod tests {
     #[test]
     fn duplicate_start_is_idempotent_and_stop_race_queues_restart() {
         let mut owner = RuntimeLifecycle::new();
+        assert_eq!(owner.generation(), 1);
         assert_eq!(owner.request_start(), RuntimeStartAction::StartNow);
         assert_eq!(owner.request_start(), RuntimeStartAction::AlreadyActive);
         assert_eq!(owner.request_stop(), RuntimeStopAction::StopNow);
@@ -328,6 +359,7 @@ mod tests {
         assert!(disposition.install_fresh_generation_now());
         assert!(disposition.restart_now());
         assert_eq!(owner.state(), RuntimeLifecycleState::Stopped);
+        assert_eq!(owner.generation(), 2);
     }
 
     #[test]
@@ -347,6 +379,7 @@ mod tests {
         assert!(disposition.require_fresh_generation_before_next_explicit_start());
         assert!(!disposition.restart_now());
         assert!(owner.generation_requires_replacement());
+        assert_eq!(owner.generation(), 1);
     }
 
     #[test]
@@ -357,6 +390,7 @@ mod tests {
         assert_eq!(owner.request_start(), RuntimeStartAction::StartNow);
         assert!(owner.take_generation_replacement_for_start());
         assert!(!owner.generation_requires_replacement());
+        assert_eq!(owner.generation(), 2);
         assert!(
             !owner
                 .complete_start(true, true)
@@ -372,12 +406,22 @@ mod tests {
         let clean_completion = clean.complete_start(false, true);
         assert!(clean_completion.install_fresh_generation_now());
         assert!(!clean.generation_requires_replacement());
+        assert_eq!(clean.generation(), 2);
 
         let mut dirty = RuntimeLifecycle::new();
         dirty.request_start();
         let dirty_completion = dirty.complete_start(false, false);
         assert!(!dirty_completion.install_fresh_generation_now());
         assert!(dirty.generation_requires_replacement());
+        assert_eq!(dirty.generation(), 1);
+    }
+
+    #[test]
+    fn stopped_credential_cutover_advances_owner_generation() {
+        let mut owner = RuntimeLifecycle::new();
+        assert!(owner.can_mutate_stopped_generation());
+        assert!(owner.advance_stopped_generation());
+        assert_eq!(owner.generation(), 2);
     }
 
     #[test]

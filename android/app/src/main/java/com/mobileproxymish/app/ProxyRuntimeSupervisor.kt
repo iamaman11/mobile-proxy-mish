@@ -39,13 +39,15 @@ sealed interface ProxyRuntimeSnapshot {
 /**
  * Non-secret read-only observation of the exact currently owned runtime generation.
  *
- * This is diagnostic evidence only. It carries no credentials, no configuration and no
- * readiness authority; the existing lifecycle and Cellular Egress owners remain authoritative.
+ * This is diagnostic evidence only. It carries no credential material, no configuration and no
+ * readiness authority; the existing lifecycle, Credentials and Cellular Egress owners remain
+ * authoritative.
  */
 internal data class ProxyRuntimeDiagnosticObservation(
     val childAlive: Boolean,
     val privateBridgePort: Int?,
     val privateBridgeHealthy: Boolean,
+    val credentialVersion: ULong?,
 )
 
 /** In-memory only external proxy credential material. */
@@ -56,9 +58,17 @@ internal class ProxyRuntimeCredentials(
     override fun toString(): String = "ProxyRuntimeCredentials(<redacted>)"
 }
 
+/** Exact Credentials-owner version plus ephemeral derived material for one runtime start. */
+internal class ProxyRuntimeCredentialSnapshot(
+    val version: ULong,
+    val credentials: ProxyRuntimeCredentials,
+) {
+    override fun toString(): String = "ProxyRuntimeCredentialSnapshot(version=$version,<redacted>)"
+}
+
 /** Narrow composition input; credential lifecycle and durable semantics remain in Rust. */
 internal fun interface ProxyCredentialProvider {
-    fun currentCredential(): ProxyRuntimeCredentials?
+    fun currentCredential(): ProxyRuntimeCredentialSnapshot?
 }
 
 private fun randomCredential(): String {
@@ -98,6 +108,7 @@ class ProxyRuntimeSupervisor internal constructor(
     private var child: Process? = null
     private var childPid: Int? = null
     private var bridge: CellularBridgeRuntime? = null
+    private var servingCredentialVersion: ULong? = null
     private var monitor: Thread? = null
     private var stopping = false
 
@@ -113,6 +124,7 @@ class ProxyRuntimeSupervisor internal constructor(
             privateBridgeHealthy = currentBridge?.let {
                 runCatching { it.isHealthy() }.getOrDefault(false)
             } == true,
+            credentialVersion = servingCredentialVersion,
         )
     }
 
@@ -142,7 +154,8 @@ class ProxyRuntimeSupervisor internal constructor(
                 return
             }
 
-            // Resolve durable external material before opening the private Cellular Egress bridge.
+            // Resolve exact durable-owner version + derived material before opening the private
+            // Cellular Egress bridge. Only the version survives as a non-secret serving fact.
             val publicCredential = try {
                 publicCredentials.currentCredential()
             } catch (_: Exception) {
@@ -171,8 +184,8 @@ class ProxyRuntimeSupervisor internal constructor(
             val config = try {
                 renderProxyRuntimeConfig(
                     listenAddress = LOOPBACK,
-                    publicUsername = publicCredential.username,
-                    publicPassword = publicCredential.password,
+                    publicUsername = publicCredential.credentials.username,
+                    publicPassword = publicCredential.credentials.password,
                     bridgePort = newBridge.port(),
                     bridgeUsername = privateUsername,
                     bridgePassword = privatePassword,
@@ -246,6 +259,7 @@ class ProxyRuntimeSupervisor internal constructor(
             child = newChild
             childPid = newPid
             bridge = newBridge
+            servingCredentialVersion = publicCredential.version
             stopping = false
             check(lifecycle.markRunning()) { "proxy runtime left STARTING before health publication" }
             publishLifecycle()
@@ -431,6 +445,7 @@ class ProxyRuntimeSupervisor internal constructor(
         child = null
         childPid = null
         bridge = null
+        servingCredentialVersion = null
 
         var clean = true
         if (currentChild != null && !terminateProcess(currentChild, currentPid)) clean = false

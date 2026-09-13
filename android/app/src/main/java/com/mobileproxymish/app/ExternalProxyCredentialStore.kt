@@ -25,6 +25,12 @@ internal class ExternalProxyCredentialSnapshot(
     override fun toString(): String = "ExternalProxyCredentialSnapshot(<redacted>)"
 }
 
+/** Non-secret read-only owner projection used by readiness composition. */
+internal data class ExternalProxyCredentialReadinessSnapshot(
+    val version: ULong,
+    val active: Boolean,
+)
+
 /**
  * Narrow Android platform adapter for the Rust Credentials / Secrets natural owner.
  *
@@ -42,8 +48,12 @@ internal class ExternalProxyCredentialStore(
     )
 
     @Synchronized
-    override fun currentCredential(): ProxyRuntimeCredentials? = runCatching {
-        materializeCurrent().credentials
+    override fun currentCredential(): ProxyRuntimeCredentialSnapshot? = runCatching {
+        val current = materializeCurrent()
+        ProxyRuntimeCredentialSnapshot(
+            version = current.version,
+            credentials = current.credentials,
+        )
     }.getOrNull()
 
     /**
@@ -53,6 +63,20 @@ internal class ExternalProxyCredentialStore(
     @Synchronized
     fun currentProvisioningSnapshot(): ExternalProxyCredentialSnapshot? = runCatching {
         materializeCurrent()
+    }.getOrNull()
+
+    /**
+     * Returns only already-existing non-secret Credentials-owner state. Readiness observation never
+     * creates a Keystore root, initializes owner metadata, or performs legacy migration; those
+     * write effects remain on the actual credential/runtime paths.
+     */
+    @Synchronized
+    fun currentReadinessSnapshot(): ExternalProxyCredentialReadinessSnapshot? = runCatching {
+        val state = loadExistingStateForObservation() ?: return@runCatching null
+        ExternalProxyCredentialReadinessSnapshot(
+            version = state.version,
+            active = !state.revoked,
+        )
     }.getOrNull()
 
     /**
@@ -109,6 +133,29 @@ internal class ExternalProxyCredentialStore(
                 username = material.username,
                 password = material.password,
             ),
+        )
+    }
+
+    /** Read-only counterpart of loadOrInitialize used exclusively for observation. */
+    private fun loadExistingStateForObservation(): ExternalCredentialStateView? {
+        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+        val encodedState = preferences.getString(KEY_STATE_PROTOBUF, null)
+        val hasLegacyVersion = preferences.contains(LEGACY_KEY_VERSION)
+        val hasLegacyRevoked = preferences.contains(LEGACY_KEY_REVOKED)
+
+        if (encodedState != null) {
+            if (hasLegacyVersion || hasLegacyRevoked || !keyStore.containsAlias(ROOT_KEY_ALIAS)) {
+                return null
+            }
+            return restoreState(decodeCanonicalBase64(encodedState))
+        }
+
+        if (hasLegacyVersion != hasLegacyRevoked || !hasLegacyVersion) return null
+        if (!keyStore.containsAlias(ROOT_KEY_ALIAS)) return null
+        val version = preferences.getString(LEGACY_KEY_VERSION, null)?.toULongOrNull() ?: return null
+        return externalCredentialRestore(
+            version = version,
+            revoked = preferences.getBoolean(LEGACY_KEY_REVOKED, false),
         )
     }
 

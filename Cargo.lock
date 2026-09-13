@@ -324,11 +324,13 @@ name = "mish-android-ffi"
 version = "0.1.0"
 dependencies = [
  "mish-android-network",
+ "mish-application",
  "mish-cellular",
  "mish-cellular-egress-bridge",
  "mish-configuration",
  "mish-credentials",
  "mish-proxy",
+ "mish-readiness",
  "mish-runtime",
  "mish-sing-box-adapter",
  "mish-transport",

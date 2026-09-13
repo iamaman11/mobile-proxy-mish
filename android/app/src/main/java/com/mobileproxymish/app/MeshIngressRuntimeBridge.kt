@@ -15,6 +15,15 @@ import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
 
 /** Complete Android platform fact supplied to the Rust Transport Reachability owner. */
 internal sealed interface AndroidMeshVpnObservation {
@@ -57,6 +66,7 @@ internal class MeshIngressRuntimeBridge(
         .getSystemService(ConnectivityManager::class.java)
         ?: throw IllegalStateException("ConnectivityManager is unavailable")
     private val controller: MeshTransportController?
+    private val mutableSnapshot = MutableStateFlow<MeshAdmissionView?>(null)
     private val started = AtomicBoolean(false)
     private val closed = AtomicBoolean(false)
     private val callbackRegistered = AtomicBoolean(false)
@@ -64,6 +74,8 @@ internal class MeshIngressRuntimeBridge(
     private val executor = Executors.newSingleThreadExecutor { task ->
         Thread(task, "mish-mesh-observer").apply { isDaemon = true }
     }
+    private val proxyObservationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var proxyObservationJob: Job? = null
     private val vpnRequest = NetworkRequest.Builder()
         .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
         .removeCapability(NetworkCapabilities.NET_CAPABILITY_TRUSTED)
@@ -72,6 +84,9 @@ internal class MeshIngressRuntimeBridge(
         .build()
 
     private var sequence = 0L
+
+    val snapshot: StateFlow<MeshAdmissionView?>
+        get() = mutableSnapshot.asStateFlow()
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) = scheduleObservation()
@@ -99,6 +114,7 @@ internal class MeshIngressRuntimeBridge(
         } catch (_: Exception) {
             null
         }
+        mutableSnapshot.value = controller?.let(::ownerSnapshotOrNull)
     }
 
     fun start() {
@@ -109,9 +125,17 @@ internal class MeshIngressRuntimeBridge(
         try {
             connectivityManager.registerNetworkCallback(vpnRequest, networkCallback)
             callbackRegistered.set(true)
+            // Proxy health is an input to ingress realization. Recompute the same complete current
+            // VPN snapshot when proxy lifecycle changes so an endpoint observed during STARTING is
+            // not stranded merely because no later ConnectivityManager callback arrives.
+            proxyObservationJob = proxyRuntime.snapshot
+                .onEach { scheduleObservation() }
+                .launchIn(proxyObservationScope)
             scheduleObservation()
         } catch (error: Exception) {
             started.set(false)
+            proxyObservationJob?.cancel()
+            proxyObservationJob = null
             if (callbackRegistered.compareAndSet(true, false)) {
                 runCatching { connectivityManager.unregisterNetworkCallback(networkCallback) }
             }
@@ -194,6 +218,7 @@ internal class MeshIngressRuntimeBridge(
     ) = synchronized(ingressLock) {
         if (closed.get()) {
             runCatching { activeController.stopIngress() }
+            mutableSnapshot.value = ownerSnapshotOrNull(activeController)
             return@synchronized
         }
 
@@ -214,18 +239,34 @@ internal class MeshIngressRuntimeBridge(
         } catch (_: Exception) {
             runCatching { activeController.stopIngress() }
         }
+        mutableSnapshot.value = ownerSnapshotOrNull(activeController)
     }
 
     private fun stopIngressFailClosed(activeController: MeshTransportController?) {
-        if (activeController == null) return
+        if (activeController == null) {
+            mutableSnapshot.value = null
+            return
+        }
         synchronized(ingressLock) {
             runCatching { activeController.stopIngress() }
+            mutableSnapshot.value = ownerSnapshotOrNull(activeController)
         }
     }
+
+    private fun ownerSnapshotOrNull(activeController: MeshTransportController): MeshAdmissionView? =
+        try {
+            activeController.admissionSnapshot()
+        } catch (_: LinkageError) {
+            null
+        } catch (_: Exception) {
+            null
+        }
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
 
+        proxyObservationJob?.cancel()
+        proxyObservationJob = null
         var clean = true
         if (callbackRegistered.compareAndSet(true, false)) {
             clean = runCatching {
@@ -237,6 +278,9 @@ internal class MeshIngressRuntimeBridge(
         synchronized(ingressLock) {
             controller?.let { activeController ->
                 clean = runCatching { activeController.stopIngress() }.isSuccess && clean
+                mutableSnapshot.value = ownerSnapshotOrNull(activeController)
+            } ?: run {
+                mutableSnapshot.value = null
             }
         }
 

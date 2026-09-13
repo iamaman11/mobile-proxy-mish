@@ -8,6 +8,7 @@ import com.mobileproxymish.app.cellular.CellularRootPolicyFailure
 import com.mobileproxymish.app.cellular.CellularRuntimeSnapshot
 import com.mobileproxymish.ffi.CellularAdmissionReason
 import com.mobileproxymish.ffi.CellularAdmissionState
+import com.mobileproxymish.ffi.ProductReadinessState
 import com.mobileproxymish.ffi.RuntimeProcessFailure
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -16,14 +17,26 @@ import kotlinx.coroutines.flow.stateIn
 
 data class MainUiState(
     val title: String = "Mobile Proxy MISH",
-    val overallStatus: String = "Overall readiness — production acceptance pending",
+    val overallStatus: String = readinessStatus(ProductReadinessState.UNKNOWN),
     val cellularState: String = "Unknown",
     val cellularReasonCode: String? = "cellular.no_observation",
     val proxyState: String = "Stopped",
     val proxyReasonCode: String? = null,
 )
 
-/** Presentation projection only; it neither owns nor mutates cellular/proxy runtime state. */
+/** Presentation wording only. The input value is the Rust readiness projection itself. */
+internal fun readinessStatus(readiness: ProductReadinessState): String = when (readiness) {
+    ProductReadinessState.READY ->
+        "Overall readiness — READY (runtime projection; production acceptance pending)"
+    ProductReadinessState.NOT_READY ->
+        "Overall readiness — NOT_READY (runtime projection; production acceptance pending)"
+    ProductReadinessState.DEGRADED ->
+        "Overall readiness — DEGRADED (runtime projection; production acceptance pending)"
+    ProductReadinessState.UNKNOWN ->
+        "Overall readiness — UNKNOWN (runtime projection; production acceptance pending)"
+}
+
+/** Presentation projection only; it neither owns nor mutates cellular/proxy/readiness state. */
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application as MishApplication
     private val runtimeController = app.runtimeController
@@ -31,6 +44,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val state: StateFlow<MainUiState> = combine(
         runtimeController.cellularSnapshot,
         runtimeController.proxySnapshot,
+        runtimeController.readinessSnapshot,
         ::toUiState,
     ).stateIn(
         scope = viewModelScope,
@@ -38,12 +52,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         initialValue = toUiState(
             runtimeController.cellularSnapshot.value,
             runtimeController.proxySnapshot.value,
+            runtimeController.readinessSnapshot.value,
         ),
     )
 
     private fun toUiState(
         cellular: CellularRuntimeSnapshot,
         proxy: ProxyRuntimeSnapshot,
+        readiness: ProductReadinessState,
     ): MainUiState {
         val cellularProjection = when (cellular) {
             is CellularRuntimeSnapshot.BoundaryUnavailable -> Pair(
@@ -66,6 +82,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             is ProxyRuntimeSnapshot.Failed -> Pair("Failed", proxyReasonCode(proxy.reason))
         }
         return MainUiState(
+            overallStatus = readinessStatus(readiness),
             cellularState = cellularProjection.first,
             cellularReasonCode = cellularProjection.second,
             proxyState = proxyProjection.first,
