@@ -3,6 +3,7 @@ package com.mobileproxymish.app
 import android.content.Context
 import com.mobileproxymish.app.cellular.CellularRuntimeBridge
 import com.mobileproxymish.app.cellular.CellularRuntimeSnapshot
+import com.mobileproxymish.ffi.ProductReadinessState
 import com.mobileproxymish.ffi.RuntimeLifecycleController
 import com.mobileproxymish.ffi.RuntimeLifecycleState
 import com.mobileproxymish.ffi.RuntimeStartAction
@@ -71,6 +72,15 @@ class MishRuntimeController internal constructor(
             initialValue = ProxyRuntimeSnapshot.Stopped,
         )
 
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val readinessSnapshot: StateFlow<ProductReadinessState> = generation
+        .flatMapLatest { it.readinessRuntime.state }
+        .stateIn(
+            scope = observationScope,
+            started = SharingStarted.Eagerly,
+            initialValue = generation.value.readinessRuntime.state.value,
+        )
+
     internal val currentCellularRuntime: CellularRuntimeBridge
         get() = generation.value.cellularRuntime
 
@@ -105,7 +115,8 @@ class MishRuntimeController internal constructor(
 
     /**
      * Requests exact stop without blocking the Android main thread. Completion is published only
-     * after Mesh ingress -> proxy -> Cellular Egress/root-policy cleanup has completed or failed.
+     * after readiness probe -> Mesh ingress -> proxy -> Cellular Egress/root-policy cleanup has
+     * completed or failed.
      */
     fun stop(onComplete: (Boolean) -> Unit = {}) {
         var completeImmediately = false
@@ -156,23 +167,45 @@ class MishRuntimeController internal constructor(
                 lifecycle.markStoppedGenerationDirty()
                 return false
             }
+            // Credential cutover changes the effect generation. Rust must advance the exact owner
+            // key before Android may install the new composition objects.
+            if (!lifecycle.advanceStoppedGeneration()) {
+                lifecycle.markStoppedGenerationDirty()
+                return false
+            }
             generation.value = newGeneration()
             true
         }
 
     private fun startBlocking() {
         val current = synchronized(lock) {
-            if (lifecycle.takeGenerationReplacementForStart()) {
-                // Replacement is authorized only by the later explicit start transition.
-                generation.value = newGeneration()
+            val replacementRequired = lifecycle.generationRequiresReplacement()
+            if (replacementRequired && !lifecycle.takeGenerationReplacementForStart()) {
+                null
+            } else {
+                if (replacementRequired) {
+                    // Replacement was authorized and its generation key advanced atomically in
+                    // Rust before the fresh Android effects become visible.
+                    generation.value = newGeneration()
+                }
+                generation.value
             }
-            generation.value
         }
+        if (current == null) {
+            synchronized(lock) {
+                lifecycle.completeStart(
+                    started = false,
+                    cleanAfterFailedStart = false,
+                )
+            }
+            return
+        }
+
         val started = try {
             current.cellularRuntime.start()
             current.proxyRuntime.start()
-            // The Mesh adapter waits for proxyRuntime=Running before asking the Rust transport
-            // owner to bind exact Mesh listeners.
+            // The Mesh adapter observes proxy lifecycle and realizes ingress only after the proxy
+            // reaches its Rust-owned RUNNING state.
             current.meshRuntime.start()
             true
         } catch (_: Exception) {
@@ -220,6 +253,7 @@ class MishRuntimeController internal constructor(
     }
 
     private fun newGeneration(): RuntimeGeneration {
+        val runtimeGeneration = lifecycle.generation()
         val cellularRuntime = CellularRuntimeBridge(appContext)
         val proxyRuntime = ProxyRuntimeSupervisor(
             context = appContext,
@@ -230,18 +264,35 @@ class MishRuntimeController internal constructor(
             context = appContext,
             proxyRuntime = proxyRuntime,
         )
-        return RuntimeGeneration(cellularRuntime, proxyRuntime, meshRuntime)
+        val readinessRuntime = ProductReadinessRuntime(
+            runtimeGeneration = runtimeGeneration,
+            cellularRuntime = cellularRuntime,
+            proxyRuntime = proxyRuntime,
+            meshRuntime = meshRuntime,
+            credentialStore = externalCredentialStore,
+        )
+        return RuntimeGeneration(
+            cellularRuntime = cellularRuntime,
+            proxyRuntime = proxyRuntime,
+            meshRuntime = meshRuntime,
+            readinessRuntime = readinessRuntime,
+        )
     }
 
     private data class RuntimeGeneration(
         val cellularRuntime: CellularRuntimeBridge,
         val proxyRuntime: ProxyRuntimeSupervisor,
         val meshRuntime: MeshIngressRuntimeBridge,
+        val readinessRuntime: ProductReadinessRuntime,
     ) {
-        fun closeExact(): Boolean = closeRuntimeGenerationExact(
-            closeMesh = meshRuntime::close,
-            closeProxy = proxyRuntime::close,
-            closeCellular = cellularRuntime::close,
-        )
+        fun closeExact(): Boolean {
+            var clean = runCatching(readinessRuntime::close).isSuccess
+            clean = closeRuntimeGenerationExact(
+                closeMesh = meshRuntime::close,
+                closeProxy = proxyRuntime::close,
+                closeCellular = cellularRuntime::close,
+            ) && clean
+            return clean
+        }
     }
 }
