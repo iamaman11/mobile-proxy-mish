@@ -82,7 +82,7 @@ pub struct RuntimeReadinessFact {
 pub struct ProxyReadinessFact {
     pub runtime_generation: RuntimeGeneration,
     pub serving_generation: Option<ProxyServingGeneration>,
-    pub credential_version: CredentialVersion,
+    pub credential_version: Option<CredentialVersion>,
     pub healthy: bool,
 }
 
@@ -124,6 +124,9 @@ pub fn project(input: ProductReadinessInput) -> Readiness {
         return Readiness::Unknown;
     };
 
+    // Explicit current leaf failure wins before serving-only keys are required. A stopped proxy or
+    // non-admitted Mesh endpoint is therefore NOT_READY rather than malformed/UNKNOWN merely
+    // because no serving credential version/admission epoch exists yet.
     if !cellular.admitted
         || !cellular.root_policy_verified
         || !runtime.private_bridge_healthy
@@ -137,16 +140,21 @@ pub fn project(input: ProductReadinessInput) -> Readiness {
 
     if proxy.runtime_generation != runtime.generation
         || mesh.runtime_generation != runtime.generation
-        || proxy.credential_version != credential.version
     {
         return Readiness::Unknown;
     }
 
-    let (Some(proxy_serving_generation), Some(mesh_admission_epoch)) =
-        (proxy.serving_generation, mesh.admission_epoch)
-    else {
+    let (Some(proxy_serving_generation), Some(proxy_credential_version), Some(mesh_admission_epoch)) = (
+        proxy.serving_generation,
+        proxy.credential_version,
+        mesh.admission_epoch,
+    ) else {
         return Readiness::Unknown;
     };
+    if proxy_credential_version != credential.version {
+        return Readiness::Unknown;
+    }
+
     let Some(expected_freshness) = input.expected_freshness else {
         return Readiness::Unknown;
     };
@@ -223,7 +231,7 @@ mod tests {
             proxy: Some(ProxyReadinessFact {
                 runtime_generation: binding.runtime_generation,
                 serving_generation: Some(binding.proxy_serving_generation),
-                credential_version: binding.credential_version,
+                credential_version: Some(binding.credential_version),
                 healthy: true,
             }),
             credential: Some(CredentialReadinessFact {
@@ -266,7 +274,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_leaf_failure_is_not_ready_even_without_serving_epoch() {
+    fn explicit_leaf_failure_is_not_ready_even_without_serving_keys() {
         let mut input = ready_input();
         input
             .cellular
@@ -285,11 +293,19 @@ mod tests {
         let proxy = input.proxy.as_mut().expect("proxy");
         proxy.healthy = false;
         proxy.serving_generation = None;
+        proxy.credential_version = None;
         assert_eq!(project(input), Readiness::NotReady);
 
         let mut input = ready_input();
         input.credential.as_mut().expect("credential").active = false;
         assert_eq!(project(input), Readiness::NotReady);
+    }
+
+    #[test]
+    fn healthy_proxy_missing_serving_key_is_unknown() {
+        let mut input = ready_input();
+        input.proxy.as_mut().expect("proxy").credential_version = None;
+        assert_eq!(project(input), Readiness::Unknown);
     }
 
     #[test]
@@ -299,7 +315,7 @@ mod tests {
         assert_eq!(project(input), Readiness::Unknown);
 
         let mut input = ready_input();
-        input.proxy.as_mut().expect("proxy").credential_version = credential_version(52);
+        input.proxy.as_mut().expect("proxy").credential_version = Some(credential_version(52));
         assert_eq!(project(input), Readiness::Unknown);
 
         let mut input = ready_input();
