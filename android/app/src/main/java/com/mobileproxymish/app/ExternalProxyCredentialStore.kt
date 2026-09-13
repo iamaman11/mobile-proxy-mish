@@ -25,6 +25,12 @@ internal class ExternalProxyCredentialSnapshot(
     override fun toString(): String = "ExternalProxyCredentialSnapshot(<redacted>)"
 }
 
+/** Non-secret read-only owner projection used by readiness composition. */
+internal data class ExternalProxyCredentialReadinessSnapshot(
+    val version: ULong,
+    val active: Boolean,
+)
+
 /**
  * Narrow Android platform adapter for the Rust Credentials / Secrets natural owner.
  *
@@ -42,8 +48,12 @@ internal class ExternalProxyCredentialStore(
     )
 
     @Synchronized
-    override fun currentCredential(): ProxyRuntimeCredentials? = runCatching {
-        materializeCurrent().credentials
+    override fun currentCredential(): ProxyRuntimeCredentialSnapshot? = runCatching {
+        val current = materializeCurrent()
+        ProxyRuntimeCredentialSnapshot(
+            version = current.version,
+            credentials = current.credentials,
+        )
     }.getOrNull()
 
     /**
@@ -53,6 +63,19 @@ internal class ExternalProxyCredentialStore(
     @Synchronized
     fun currentProvisioningSnapshot(): ExternalProxyCredentialSnapshot? = runCatching {
         materializeCurrent()
+    }.getOrNull()
+
+    /**
+     * Returns only non-secret Credentials-owner state. No username/password derivation is performed
+     * merely to project readiness.
+     */
+    @Synchronized
+    fun currentReadinessSnapshot(): ExternalProxyCredentialReadinessSnapshot? = runCatching {
+        val state = loadOrInitialize().state
+        ExternalProxyCredentialReadinessSnapshot(
+            version = state.version,
+            active = !state.revoked,
+        )
     }.getOrNull()
 
     /**
