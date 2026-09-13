@@ -8,6 +8,11 @@
 use mish_readiness::{EgressProbeObservation, FreshnessMarker, ProbeBinding, ProbeOutcome};
 use std::time::{Duration, Instant};
 
+/// One bounded end-to-end probe may wait for cellular-owned DNS, public TCP and TLS under the
+/// existing 15-second private-bridge operation timeout, with a small outer margin for local proxy
+/// CONNECT/auth and TLS bookkeeping. This is an operation deadline, not a readiness TTL.
+pub const DEFAULT_EGRESS_PROBE_BUDGET: Duration = Duration::from_secs(20);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EgressProbeError {
     ZeroBudget,
@@ -76,14 +81,21 @@ impl EgressProbeCoordinator {
         FreshnessMarker::new(self.last_freshness)
     }
 
-    pub fn complete(
-        &self,
+    /// Consumes exactly one current ticket. Duplicate or late completion is ignored. The
+    /// application layer, not the platform adapter, owns timeout classification for the shared
+    /// probe budget.
+    pub fn complete_bounded(
+        &mut self,
         ticket: ProbeTicket,
-        outcome: ProbeOutcome,
+        reported: ProbeOutcome,
+        elapsed: Duration,
+        budget: Duration,
     ) -> Option<EgressProbeObservation> {
         if self.current != Some(ticket) {
             return None;
         }
+        self.current = None;
+        let outcome = classify_outcome(reported, elapsed >= budget);
         Some(EgressProbeObservation {
             outcome,
             binding: ticket.binding,
@@ -99,6 +111,14 @@ impl EgressProbeCoordinator {
         let freshness = FreshnessMarker::new(raw).ok_or(EgressProbeError::FreshnessExhausted)?;
         self.last_freshness = raw;
         Ok(freshness)
+    }
+}
+
+fn classify_outcome(reported: ProbeOutcome, timed_out: bool) -> ProbeOutcome {
+    if timed_out {
+        ProbeOutcome::Timeout
+    } else {
+        reported
     }
 }
 
@@ -128,15 +148,12 @@ pub fn run_authenticated_egress_probe(
     if budget.is_zero() {
         return Err(EgressProbeError::ZeroBudget);
     }
-    let deadline = Instant::now()
+    let started = Instant::now();
+    let deadline = started
         .checked_add(budget)
         .ok_or(EgressProbeError::DeadlineOverflow)?;
     let reported = effect.execute(deadline);
-    let outcome = if Instant::now() >= deadline {
-        ProbeOutcome::Timeout
-    } else {
-        reported
-    };
+    let outcome = classify_outcome(reported, Instant::now().duration_since(started) >= budget);
     Ok(EgressProbeObservation {
         outcome,
         binding,
@@ -169,24 +186,69 @@ mod tests {
         let old = coordinator.begin(binding()).expect("ticket");
         let invalidated = coordinator.invalidate().expect("invalidate");
         assert_ne!(invalidated, old.freshness());
-        assert_eq!(coordinator.complete(old, ProbeOutcome::Succeeded), None);
+        assert_eq!(
+            coordinator.complete_bounded(
+                old,
+                ProbeOutcome::Succeeded,
+                Duration::ZERO,
+                DEFAULT_EGRESS_PROBE_BUDGET,
+            ),
+            None,
+        );
         assert_eq!(coordinator.expected_freshness(), Some(invalidated));
     }
 
     #[test]
-    fn newer_ticket_rejects_older_completion() {
+    fn newer_ticket_rejects_older_completion_and_is_single_use() {
         let mut coordinator = EgressProbeCoordinator::new();
         let old = coordinator.begin(binding()).expect("old ticket");
         let current = coordinator.begin(binding()).expect("current ticket");
-        assert_eq!(coordinator.complete(old, ProbeOutcome::Succeeded), None);
+        assert_eq!(
+            coordinator.complete_bounded(
+                old,
+                ProbeOutcome::Succeeded,
+                Duration::ZERO,
+                DEFAULT_EGRESS_PROBE_BUDGET,
+            ),
+            None,
+        );
         let observation = coordinator
-            .complete(current, ProbeOutcome::Succeeded)
+            .complete_bounded(
+                current,
+                ProbeOutcome::Succeeded,
+                Duration::ZERO,
+                DEFAULT_EGRESS_PROBE_BUDGET,
+            )
             .expect("current observation");
         assert_eq!(observation.freshness, current.freshness());
         assert_eq!(
             coordinator.expected_freshness(),
             Some(current.freshness()),
         );
+        assert_eq!(
+            coordinator.complete_bounded(
+                current,
+                ProbeOutcome::TlsFailed,
+                Duration::ZERO,
+                DEFAULT_EGRESS_PROBE_BUDGET,
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    fn coordinator_owns_budget_timeout_classification() {
+        let mut coordinator = EgressProbeCoordinator::new();
+        let ticket = coordinator.begin(binding()).expect("ticket");
+        let observation = coordinator
+            .complete_bounded(
+                ticket,
+                ProbeOutcome::Succeeded,
+                DEFAULT_EGRESS_PROBE_BUDGET,
+                DEFAULT_EGRESS_PROBE_BUDGET,
+            )
+            .expect("observation");
+        assert_eq!(observation.outcome, ProbeOutcome::Timeout);
     }
 
     #[test]
