@@ -86,7 +86,9 @@ jobs:
 
           foreach ($path in @(
             'lab/windows/bootstrap-windows.ps1',
-            'lab/windows/host-preflight.ps1'
+            'lab/windows/host-preflight.ps1',
+            'lab/windows/CredentialProvisioning.psm1',
+            'lab/windows/test-credential-provisioning.ps1'
           )) {
             $tokens = $null
             $errors = $null
@@ -230,6 +232,15 @@ jobs:
             -SelfTest
           if ($LASTEXITCODE -ne 0) {
             throw "Bootstrap host dependency self-test failed with exit code $LASTEXITCODE."
+          }
+
+      - name: Exercise bounded external proxy credential provisioning contract
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & 'lab/windows/test-credential-provisioning.ps1'
+          if ($LASTEXITCODE -ne 0) {
+            throw "Credential provisioning hosted self-test failed with exit code $LASTEXITCODE."
           }
 
       - name: Validate physical-workflow trust and execution-policy boundary

@@ -76,9 +76,24 @@ The repository may implement the promotion ceremony only when the physical accep
 
 ## Standard development path
 
+The default merge unit is an **evidence milestone**, not an individual implementation stage.
+
 ```text
-short-lived branch -> PR -> required CI -> squash merge -> main
+fresh accepted main + current execution/natural-owner Issues
+ -> draft integration PR
+ -> accumulate the coherent E1/E2-completable batch
+ -> batch related remote edits/pushes
+ -> deliberate exact-head CI checkpoint(s)
+ -> ready-for-review exact-head required CI PASS
+ -> one squash merge at the milestone boundary
+ -> accepted main
+ -> fresh post-merge verification
+ -> main-only LAB/provider/release evidence only when the next fact truly requires it
 ```
+
+An internal stage such as lifecycle, credentials, Mesh ingress or DNS/readiness does not by itself require a merge. `main` is an accepted integration/evidence boundary, not a progress ledger.
+
+The stable execution details are versioned in `AGENTS.md` and `docs/architecture/EXECUTION.md`; live milestone status remains in Issue #86 and natural-owner Issues.
 
 Physical acceptance uses one serialized bounded lab/device execution path. The stable lab ownership, security and evidence contracts are versioned in:
 
@@ -99,7 +114,9 @@ A separate LAB repository may keep **one fixed Issue** as an append-only request
 - the fixed Issue is not a CURRENT stage pointer, mutable status database or generic command router;
 - formal physical acceptance still starts from an exact immutable PRODUCT RC/release and uses the protected/manual acceptance path.
 
-This exception exists only to shorten development feedback for physical defects. It does not modify `PIN -> BUILD ONCE -> HASH -> SIGN -> ATTEST -> TEST EXACT BYTES -> PROMOTE EXACT BYTES`.
+This exception exists only to shorten development feedback for physical defects. It does not make a PR branch a LAB source. Batch every independent E1/E2-completable change before crossing an intentional `main -> development LAB` boundary.
+
+This exception does not modify `PIN -> BUILD ONCE -> HASH -> SIGN -> ATTEST -> TEST EXACT BYTES -> PROMOTE EXACT BYTES`.
 
 Supported Cloudflare desired configuration should use one declarative Git-reviewed path where the provider exposes a stable resource/API. Terraform state is deployment machinery, not product/runtime truth. One-time provider bootstrap exceptions must be explicit rather than silently becoming a permanent second dashboard write path.
 

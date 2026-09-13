@@ -18,19 +18,23 @@ This file is a navigation index, not a second source of truth. Durable architect
 - Issue #7 / PR #8 — completed B1 repository/bootstrap implementation.
 - Issue #9 — completed main protection/ruleset blocker.
 - PR #73 — application-wide minimal-layer extension invariant: existing natural owner + one narrow adapter before any new architectural layer.
+- `AGENTS.md` — executor rules for baselining, batching, draft PRs, CI, `main` and LAB boundaries.
+- `docs/architecture/EXECUTION.md` — stable evidence-milestone integration policy; live status remains in Issues.
 - `docs/lab/PLAN.md` — stable managed-lab execution sequence and ownership boundaries; live stage status remains in Issues.
 
 ## Current implementation line
 
+- Issue #86 — current cross-component execution tracker to `PROXY_ON_PHONE_WORKING=YES`; it owns execution order and milestone gates only, not component semantics.
 - Issue #10 — single owner for B2 Cellular Egress implementation and E3 acceptance.
 - Issue #63 — physical Android/device behavior and root-policy characterization evidence owner.
+- Issue #75 — bounded PRODUCT root-policy mechanism/correction owner.
+- Issue #64 — final proxy-destination DNS ownership / anti-leak acceptance owner; early E1/E2 implementation work may be prepared before its final physical acceptance gate.
 - PR #11 — B2a cellular natural-owner semantics and Android observation seam.
 - PR #12 — B2b-1 stable UniFFI typed cellular contract.
 - PR #13 — B2b-2 Android native packaging/runtime bridge + owner-derived Compose projection.
-- PR #14 — historical B2c-1 exact-network lease/NDK bind seam. Physical target-topology evidence later showed the bind mechanism fails with `EPERM`; Issue #10 now owns its replacement by a lifecycle-bounded root policy-routing adapter while preserving the existing Cellular Egress owner.
-- Issue #64 — subsequent DNS ownership / anti-leak acceptance owner after B2/E3; it must not become a second Cellular Egress owner.
+- PR #14 — historical B2c-1 exact-network lease/NDK bind seam. Physical target-topology evidence later showed the bind mechanism fails with `EPERM`; Issue #10 owns its replacement by the accepted root-policy path while preserving the existing Cellular Egress owner.
 
-The live status of B2 must be read from Issue #10 rather than copied into this file. Device-specific findings live in Issue #63. Historical PRs remain implementation history and do not override later accepted physical disposition.
+Read live cross-component order from Issue #86. Read semantic/acceptance status from the relevant natural-owner issue. Device-specific findings live in Issue #63. Historical PRs and older closure plans remain implementation/evidence history and do not override later accepted execution disposition.
 
 ## Windows / Mesh contract navigation
 
@@ -42,12 +46,12 @@ The live status of B2 must be read from Issue #10 rather than copied into this f
 
 - `docs/architecture/ACCEPTANCE.md` — E1/E2/E3/E4 evidence domains and readiness/acceptance separation.
 - `docs/testing/E3_PHYSICAL_CELLULAR.md` — executable physical Cellular Egress acceptance protocol for the current PRODUCT mechanism; old bind-based RC/harness evidence cannot satisfy the revised root-policy acceptance path.
-- `docs/testing/E4_FULL_STACK.md` — future Windows/Cloudflare/Mesh/Kameleo/Camoufox full-stack execution contract.
+- `docs/testing/E4_FULL_STACK.md` — future Windows/Cloudflare/Mesh/Kameleo/Camoufox full-stack contract.
 - `.github/workflows/e3-physical-cellular.yml` — manual self-hosted E3 runner workflow; the workflow/harness must match the accepted PRODUCT mechanism before a future run may claim E3 PASS.
 
 ## Non-authority rule
 
-Do not turn this index, README text, CI logs, test summaries, or generated artifacts into a mutable product-state authority. The project law remains:
+Do not turn this index, README text, CI logs, test summaries, generated artifacts or chat handoffs into a mutable product-state authority. The project law remains:
 
 ```text
 one fact -> one natural owner -> one write path -> one observation path

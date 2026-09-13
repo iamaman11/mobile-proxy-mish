@@ -48,7 +48,7 @@ mark 0x800000  -> IPv4 lookup 9540 -> guard 9541
 mark 0x1000000 -> IPv4 lookup 9560 -> guard 9561
 ```
 
-The adapter snapshots the complete relevant RPDB/mangle state and selects the first candidate whose mark bit and priority pair do not overlap any foreign object. The selected identity is retained for the live policy lifecycle and can be rediscovered from the exact materialized `MISH_EGRESS_V1` rules after process restart. If no candidate is clean, or materialized PRODUCT state is ambiguous, reconciliation returns typed `ReservedPolicyCollision` and publishes nothing new.
+The adapter snapshots the complete IPv4/IPv6 RPDB plus complete mangle text. It audits the full RPDB independently, builds the user-chain graph from the mangle snapshot, and treats only `OUTPUT` plus user-defined chains transitively reachable from `OUTPUT` as foreign mangle collision authority. It then selects the first candidate whose mark bit and priority pair do not overlap that accepted collision space. The selected identity is retained for the live policy lifecycle and can be rediscovered from the exact materialized `MISH_EGRESS_V1` rules after process restart. If no candidate is clean, reachability/mark parsing is relevantly ambiguous, or materialized PRODUCT state is ambiguous, reconciliation returns typed `ReservedPolicyCollision` and publishes nothing new.
 
 This is intentionally **not** a generic mark allocator or registry. Candidate count/order is versioned product code; there is no durable mutable allocation database and no search outside the bounded set.
 
@@ -100,13 +100,26 @@ This avoids relying on unproven Android-specific `iptables-restore` transaction 
 
 ## Reserved-space collision law
 
-For each candidate, both its mark bit and its lookup/guard priorities are reserved only after a fresh complete audit. Collision includes:
+For each candidate, both its mark bit and its lookup/guard priorities are reserved only after a fresh complete snapshot and bounded audit. Collision authority is exactly:
+
+```text
+complete IPv4/IPv6 RPDB
++
+mangle OUTPUT
++
+all user-defined mangle chains transitively reachable from OUTPUT
+```
+
+Collision includes:
 
 - a foreign RPDB object at either candidate priority;
 - any foreign RPDB `fwmark` whose mask overlaps the candidate bit;
-- any foreign mangle MARK/CONNMARK rule whose read/write mask overlaps the candidate bit, even if the foreign value for that bit is zero;
+- any foreign mangle MARK/CONNMARK read/write on `OUTPUT` or an OUTPUT-reachable user chain whose mask overlaps the candidate bit, even if the foreign value for that bit is zero;
+- malformed or ambiguous mark/reachability semantics on that relevant path;
 - foreign or mismatched content under `MISH_EGRESS_V1`;
 - contradictory candidate-specific materialized state.
+
+A foreign MARK/CONNMARK rule that is proven reachable only from `INPUT`, `FORWARD`, or another chain not reachable from `OUTPUT` is **not** a PRODUCT public-egress collision merely because its mask overlaps the candidate bit. This does not grant ownership of that foreign state: PRODUCT still never deletes, rewrites, reorders or repurposes it.
 
 PRODUCT never deletes, rewrites, reorders or repurposes a foreign object merely to make a candidate fit. Collision of one candidate advances only to the next bounded candidate. Collision/ambiguity of all candidates fails closed without publication.
 

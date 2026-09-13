@@ -221,7 +221,7 @@ class CellularRootPolicy internal constructor(
         val preferred = activeIdentity
         if (preferred != null) {
             if (preferred !in candidates) {
-                    return PolicyIdentityResolution.Collision
+                return PolicyIdentityResolution.Collision
             }
             activeIdentity = preferred
             if (auditReservedPolicySpace(ipv4Rules, ipv6Rules, ipv4Mangle, ipv6Mangle) ==
@@ -261,10 +261,24 @@ class CellularRootPolicy internal constructor(
     ): PolicySpaceAudit {
         if (ipv4Rules.any(::isForeignReservedIpv4RpdbLine)) return PolicySpaceAudit.Collision
         if (ipv6Rules.any(::isForeignReservedIpv6RpdbLine)) return PolicySpaceAudit.Collision
-        if (containsForeignReservedMangle(ipv4Mangle, ipv4AllowedMangleLines())) {
+        if (
+            MangleOutputCollisionAudit.audit(
+                lines = ipv4Mangle,
+                allowedProductLines = ipv4AllowedMangleLines(),
+                mishChain = MISH_CHAIN,
+                candidateMark = MARK_VALUE,
+            ) != MangleOutputCollisionAudit.Result.Clean
+        ) {
             return PolicySpaceAudit.Collision
         }
-        if (containsForeignReservedMangle(ipv6Mangle, ipv6AllowedMangleLines())) {
+        if (
+            MangleOutputCollisionAudit.audit(
+                lines = ipv6Mangle,
+                allowedProductLines = ipv6AllowedMangleLines(),
+                mishChain = MISH_CHAIN,
+                candidateMark = MARK_VALUE,
+            ) != MangleOutputCollisionAudit.Result.Clean
+        ) {
             return PolicySpaceAudit.Collision
         }
         return PolicySpaceAudit.Clean
@@ -288,47 +302,20 @@ class CellularRootPolicy internal constructor(
             rpdbLineTouchesReservedMark(trimmed)
     }
 
-    private fun containsForeignReservedMangle(
-        lines: List<String>,
-        allowed: Set<String>,
-    ): Boolean = lines.any { line ->
-        val trimmed = line.trim()
-        val touchesIdentity = trimmed.contains(MISH_CHAIN)
-        val touchesReservedMark = lineTouchesReservedMark(trimmed)
-        (touchesIdentity || touchesReservedMark) && trimmed !in allowed
-    }
-
     private fun rpdbLineTouchesReservedMark(line: String): Boolean {
         val tokens = line.split(WHITESPACE_REGEX)
         val index = tokens.indexOf("fwmark")
-        if (index < 0 || index + 1 >= tokens.size) return false
-        return markSpecTouchesReservedBit(tokens[index + 1])
-    }
-
-    private fun lineTouchesReservedMark(line: String): Boolean {
-        val tokens = line.split(WHITESPACE_REGEX)
-        for (index in tokens.indices) {
-            when (tokens[index]) {
-                "--set-xmark", "--set-mark", "--mark" -> {
-                    val spec = tokens.getOrNull(index + 1) ?: continue
-                    if (markSpecTouchesReservedBit(spec)) return true
-                }
-                "--nfmask", "--ctmask" -> {
-                    val mask = parseUnsigned(tokens.getOrNull(index + 1)) ?: continue
-                    if ((mask and MARK_VALUE) != 0UL) return true
-                }
-            }
-        }
-        return false
+        if (index < 0) return false
+        val spec = tokens.getOrNull(index + 1) ?: return true
+        return markSpecTouchesReservedBit(spec)
     }
 
     private fun markSpecTouchesReservedBit(spec: String): Boolean {
         val parts = spec.split('/', limit = 2)
-        val value = parseUnsigned(parts[0]) ?: return false
-        val mask = if (parts.size == 2) parseUnsigned(parts[1]) ?: return false else IPV4_FULL_MASK
-        // The mask decides whether a rule reads/writes the selected bit. Parsing the value as
-        // well rejects malformed specs instead of accidentally classifying them as free.
-        return value <= IPV4_FULL_MASK && (mask and MARK_VALUE) != 0UL
+        val value = parseUnsigned(parts[0]) ?: return true
+        val mask = if (parts.size == 2) parseUnsigned(parts[1]) ?: return true else IPV4_FULL_MASK
+        if (value > IPV4_FULL_MASK || mask > IPV4_FULL_MASK) return true
+        return (mask and MARK_VALUE) != 0UL
     }
 
     private fun parseUnsigned(raw: String?): ULong? {

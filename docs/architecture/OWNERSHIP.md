@@ -20,4 +20,8 @@ one fact -> one natural owner -> one write path -> one observation path
 
 `crates/application` owns no leaf facts. It is only for genuine cross-owner use-cases.
 
+For M1 readiness, `crates/readiness` receives only ephemeral immutable projections from the natural owners plus one `EgressProbeObservation`; it owns no sockets, timers, mutable cache or readiness database. The observation carries the exact cellular/runtime/proxy/Mesh/credential keys and one opaque freshness marker. Missing, stale or mismatched keys cannot project READY.
+
+The bounded authenticated DNS+TLS probe is a cross-owner use-case in `crates/application`. It executes an injected concrete effect under one absolute deadline and emits the typed non-secret observation. Successful DNS is evidence inside that single probe observation, not a second cached DNS-readiness fact. Application code does not become a resolver, routing owner, secret owner or mutable readiness owner.
+
 Vendor/platform/presentation boundaries are adapters, not additional natural owners. Root policy-routing, Android routing-table discovery, firewall/RPDB mutation and DNS execution mechanisms remain infrastructure adapters to Cellular Egress; they do not own admission, generation, availability or a second readiness state.

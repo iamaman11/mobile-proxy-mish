@@ -116,19 +116,47 @@ It may invoke bounded subprocesses, ADB and supported vendor/client interfaces f
 
 ### Product / lab code
 
+The merge unit is an **evidence milestone**, not every internal implementation stage.
+
 ```text
-fresh accepted main + current natural-owner Issue
- -> short-lived branch
- -> bounded owner-local change
+fresh accepted main + current execution/natural-owner Issues
+ -> draft integration PR
+ -> accumulate all coherent E1/E2-completable work
+ -> batch related remote edits/pushes
  -> direct tests at the cheapest valid evidence level
- -> PR
- -> exact-head required hosted CI
- -> squash merge
+ -> deliberate exact-head hosted CI checkpoint(s)
+ -> ready-for-review exact-head required CI PASS
+ -> one squash merge at the milestone boundary
  -> accepted main
  -> fresh post-merge verification
 ```
 
+Do not merge merely to record that lifecycle, credentials, Mesh ingress, DNS/readiness or another adjacent internal stage completed. Keep working in the draft integration PR while the next required fact can still be established correctly at E1/E2.
+
+Cross `main` only when the coherent milestone is complete as far as E1/E2 can prove it, or when the next required fact genuinely needs accepted `main`, LAB, provider mutation or a release boundary.
+
 Do not create a new layer merely to organize a change. If the existing owner plus one narrow adapter can solve it correctly, that is the required default shape.
+
+### Development physical diagnostic
+
+The development-only LAB convenience accepts **one exact accepted green PRODUCT `main` SHA**. It does not build or test arbitrary PR branches.
+
+Therefore:
+
+```text
+E1/E2 work still available
+ -> remain in draft integration PR
+ -> do not merge for progress
+
+next implementation decision requires an irreducible physical fact
+ -> finish all independent E1/E2 work first
+ -> exact-head CI
+ -> one milestone merge
+ -> verify green main
+ -> request only the bounded physical fact required by Issue #86 / natural owner
+```
+
+A LAB candidate is not requested merely because a PR merged. Physical evidence is created only when a stronger evidence boundary is actually required.
 
 ### Android release candidate
 

@@ -30,6 +30,8 @@ Current commits are implementation-stage evidence only. They must not be interpr
 
 ## Architecture navigation
 
+- [Executor policy](AGENTS.md)
+- [Development execution policy](docs/architecture/EXECUTION.md)
 - [Decision index](docs/architecture/DECISION_INDEX.md)
 - [System and process model](docs/architecture/SYSTEM.md)
 - [Capability ownership](docs/architecture/OWNERSHIP.md)
@@ -43,7 +45,7 @@ Current commits are implementation-stage evidence only. They must not be interpr
 - [E3 physical cellular protocol](docs/testing/E3_PHYSICAL_CELLULAR.md)
 - [E4 future full-stack protocol](docs/testing/E4_FULL_STACK.md)
 
-Durable architecture decision history is in GitHub Issue #2 and ADR #5. Physical-tree derivation is Issue #6. Current Cellular Egress implementation/acceptance is owned by Issue #10; read that issue for live stage status rather than relying on copied status text in documentation.
+Durable architecture decision history is in GitHub Issue #2 and ADR #5. Physical-tree derivation is Issue #6. Current cross-component execution to `PROXY_ON_PHONE_WORKING=YES` is tracked in Issue #86; natural-owner semantics and acceptance remain in their respective issues such as #10, #64 and #75.
 
 ## Core laws
 
@@ -62,16 +64,19 @@ The repository is a modular monolith. Capability crates are compile-time ownersh
 This is a navigation procedure, not a second live-status system:
 
 ```text
-fresh accepted main + current natural-owner Issue
- -> identify the fact owner and the smallest bounded change
- -> prefer existing owner + existing port or one narrow new port + one adapter
- -> short-lived branch
- -> direct tests at the cheapest evidence level that can prove the claim
- -> PR
- -> exact-head required CI
- -> squash merge
- -> fresh post-merge verification
- -> record live stage status only in the natural-owner Issue
+fresh accepted main + Issue #86 + relevant natural-owner Issue(s)
+ -> identify the next evidence milestone
+ -> keep E1/E2-completable adjacent work in one draft integration PR
+ -> batch coherent edits before remote pushes
+ -> use direct tests at the cheapest valid evidence level
+ -> run deliberate exact-head CI checkpoints, not CI after every edit
+ -> merge once when the milestone is complete as far as E1/E2 can prove it
+    or when the next required fact genuinely needs accepted main
+ -> verify fresh accepted main
+ -> request main-only LAB/provider/release evidence only when the tracker requires it
+ -> record live stage status in #86 and natural-owner Issues
 ```
 
-Physical claims are never promoted from weaker evidence: E3 proves the real rooted-phone/carrier Cellular Egress boundary; E4 proves the Windows -> Mesh -> Android -> proxy -> cellular full stack. New framework/process/control-plane/state layers require a concrete blocking ownership, privilege, lifecycle or failure-isolation fact and direct evidence as defined by `docs/architecture/DEPENDENCIES.md`.
+`main` is an accepted integration/evidence boundary, not a progress ledger. An internal implementation stage is not automatically a merge boundary.
+
+Physical claims are never promoted from weaker evidence: E3 proves the real rooted-phone/carrier Cellular Egress boundary; E4 proves the Windows -> Mesh -> Android -> proxy -> cellular full stack. Development LAB accepts only an exact accepted green PRODUCT `main` SHA. New framework/process/control-plane/state layers require a concrete blocking ownership, privilege, lifecycle or failure-isolation fact and direct evidence as defined by `docs/architecture/DEPENDENCIES.md`.
