@@ -240,7 +240,8 @@ fn map_input(
             healthy: facts.proxy_healthy,
         }),
         None => {
-            if facts.proxy_serving_generation.is_some() || facts.proxy_credential_version.is_some() {
+            if facts.proxy_serving_generation.is_some() || facts.proxy_credential_version.is_some()
+            {
                 return Err(ReadinessBoundaryError::InvalidOwnerKey);
             }
             None
