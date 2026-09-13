@@ -5,6 +5,7 @@ import android.os.Process as AndroidProcess
 import android.system.Os
 import android.util.Base64
 import com.mobileproxymish.app.cellular.CellularRuntimeBridge
+import com.mobileproxymish.app.cellular.SuProcess
 import com.mobileproxymish.ffi.CellularBridgeRuntime
 import com.mobileproxymish.ffi.RuntimeProcessFailure
 import com.mobileproxymish.ffi.RuntimeProcessLifecycleController
@@ -13,10 +14,12 @@ import com.mobileproxymish.ffi.RuntimeProcessState
 import com.mobileproxymish.ffi.proxyListenerPorts
 import com.mobileproxymish.ffi.renderProxyRuntimeConfig
 import java.io.Closeable
+import java.io.FileOutputStream
 import java.io.File
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.security.SecureRandom
+import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
@@ -94,8 +97,12 @@ class ProxyRuntimeSupervisor internal constructor(
 ) : Closeable {
     private val appContext = context.applicationContext
     private val runtimeDir = File(appContext.noBackupFilesDir, RUNTIME_DIR)
-    private val configFile = File(runtimeDir, CONFIG_FILE)
-    private val pidFile = File(runtimeDir, PID_FILE)
+    private val generationManifestFile = File(runtimeDir, GENERATION_MANIFEST_FILE)
+    private var configFile = File(runtimeDir, LEGACY_CONFIG_FILE)
+    private var pidFile = File(runtimeDir, LEGACY_PID_FILE)
+    private var rootLauncherFile = File(runtimeDir, LEGACY_ROOT_LAUNCHER_FILE)
+    private var rootControlFile = File(runtimeDir, LEGACY_ROOT_CONTROL_FILE)
+    private var activeGenerationId: String? = null
     private val binaryFile = File(appContext.applicationInfo.nativeLibraryDir, SING_BOX_LIBRARY)
     private val lifecycle = RuntimeProcessLifecycleController()
     private val mutableSnapshot = MutableStateFlow(projectLifecycle(lifecycle.snapshot()))
@@ -119,7 +126,7 @@ class ProxyRuntimeSupervisor internal constructor(
         val currentChild = child
         val currentBridge = bridge
         ProxyRuntimeDiagnosticObservation(
-            childAlive = currentChild?.let(::isAlive) == true,
+            childAlive = currentChild != null && canonicalLoopbackListenersReachable(),
             privateBridgePort = runCatching { currentBridge?.port()?.toInt() }.getOrNull(),
             privateBridgeHealthy = currentBridge?.let {
                 runCatching { it.isHealthy() }.getOrDefault(false)
@@ -134,7 +141,7 @@ class ProxyRuntimeSupervisor internal constructor(
         try {
             executor.execute(::startBlocking)
         } catch (_: RejectedExecutionException) {
-            failLifecycle(RuntimeProcessFailure.CHILD_LAUNCH_FAILED)
+            failLifecycle(RuntimeProcessFailure.CHILD_EXECUTOR_REJECTED)
         }
     }
 
@@ -149,8 +156,12 @@ class ProxyRuntimeSupervisor internal constructor(
                 failLifecycle(RuntimeProcessFailure.NATIVE_RUNTIME_MISSING)
                 return
             }
-            if (!cleanupStaleChild()) {
+            if (!loadRecordedGeneration() || !cleanupStaleChild()) {
                 failLifecycle(RuntimeProcessFailure.STALE_PROCESS_IDENTITY_MISMATCH)
+                return
+            }
+            if (!createNextGeneration()) {
+                failLifecycle(RuntimeProcessFailure.CONFIGURATION_REJECTED)
                 return
             }
 
@@ -162,6 +173,7 @@ class ProxyRuntimeSupervisor internal constructor(
                 null
             }
             if (publicCredential == null) {
+                deleteCurrentGenerationFiles(removeManifest = true)
                 failLifecycle(RuntimeProcessFailure.EXTERNAL_CREDENTIAL_UNAVAILABLE)
                 return
             }
@@ -177,6 +189,7 @@ class ProxyRuntimeSupervisor internal constructor(
                     operationTimeoutMs = OUTBOUND_TIMEOUT_MS.toULong(),
                 )
             } catch (_: Exception) {
+                deleteCurrentGenerationFiles(removeManifest = true)
                 failLifecycle(RuntimeProcessFailure.PRIVATE_BRIDGE_UNAVAILABLE)
                 return
             }
@@ -192,66 +205,74 @@ class ProxyRuntimeSupervisor internal constructor(
                 )
             } catch (_: Exception) {
                 runCatching { newBridge.stop() }
+                deleteCurrentGenerationFiles(removeManifest = true)
                 failLifecycle(RuntimeProcessFailure.CONFIGURATION_REJECTED)
                 return
             }
 
             if (!writePrivateConfig(config)) {
                 runCatching { newBridge.stop() }
+                deleteCurrentGenerationFiles(removeManifest = true)
                 failLifecycle(RuntimeProcessFailure.CONFIGURATION_REJECTED)
                 return
             }
 
-            val newChild = try {
-                ProcessBuilder(
-                    binaryFile.absolutePath,
-                    "run",
-                    "-c",
-                    configFile.absolutePath,
-                )
-                    .directory(runtimeDir)
-                    .redirectErrorStream(true)
-                    .start()
-            } catch (_: Exception) {
-                deleteIfPresent(configFile)
+            if (!writeRootLauncher()) {
                 runCatching { newBridge.stop() }
-                failLifecycle(RuntimeProcessFailure.CHILD_LAUNCH_FAILED)
+                deleteCurrentGenerationFiles(removeManifest = true)
+                failLifecycle(RuntimeProcessFailure.CHILD_PROCESS_START_FAILED)
+                return
+            }
+            val newChild = try {
+                SuProcess.serializedRootSession {
+                    ProcessBuilder(
+                        MAGISK_SU,
+                        "-c",
+                        rootLauncherFile.absolutePath,
+                    )
+                        .directory(runtimeDir)
+                        .redirectErrorStream(true)
+                        .start()
+                }
+            } catch (_: Exception) {
+                runCatching { newBridge.stop() }
+                deleteCurrentGenerationFiles(removeManifest = true)
+                failLifecycle(RuntimeProcessFailure.CHILD_PROCESS_START_FAILED)
                 return
             }
 
-            val newPid = processPid(newChild)
-            if (newPid == null || !writePid(newPid)) {
+            val newPid = awaitRecordedPid()
+            if (newPid == null) {
                 terminateProcess(newChild, newPid)
-                deleteIfPresent(configFile)
                 runCatching { newBridge.stop() }
-                failLifecycle(RuntimeProcessFailure.CHILD_LAUNCH_FAILED)
+                deleteCurrentGenerationFiles(removeManifest = true)
+                failLifecycle(RuntimeProcessFailure.CHILD_PID_OR_PERSISTENCE_FAILED)
                 return
             }
             drainOutput(newChild)
 
-            if (!waitForHealthy(newChild, newBridge)) {
+            if (!waitForHealthy(newBridge)) {
                 terminateProcess(newChild, newPid)
-                deleteIfPresent(pidFile)
-                deleteIfPresent(configFile)
                 runCatching { newBridge.stop() }
+                deleteCurrentGenerationFiles(removeManifest = true)
                 failLifecycle(RuntimeProcessFailure.HEALTH_CHECK_FAILED)
                 return
             }
 
-            // sing-box has consumed the configuration. Runtime credential material must not
-            // survive on disk after the child is healthy.
+            // The child has consumed its configuration. Keep only the private PID/control
+            // identity needed for bounded root lifecycle control; credentials do not persist.
             if (!deleteIfPresent(configFile)) {
                 terminateProcess(newChild, newPid)
-                deleteIfPresent(pidFile)
                 runCatching { newBridge.stop() }
+                deleteCurrentGenerationFiles(removeManifest = true)
                 failLifecycle(RuntimeProcessFailure.CLEANUP_FAILED)
                 return
             }
 
             if (closed.get()) {
                 terminateProcess(newChild, newPid)
-                deleteIfPresent(pidFile)
                 runCatching { newBridge.stop() }
+                deleteCurrentGenerationFiles(removeManifest = true)
                 stopLifecycle()
                 return
             }
@@ -271,19 +292,31 @@ class ProxyRuntimeSupervisor internal constructor(
         val thread = Thread({
             while (!closed.get()) {
                 val reason = when {
-                    !isAlive(expectedChild) -> RuntimeProcessFailure.CHILD_EXITED
                     !runCatching { expectedBridge.isHealthy() }.getOrDefault(false) ->
                         RuntimeProcessFailure.PRIVATE_BRIDGE_UNHEALTHY
+                    !canonicalLoopbackListenersReachable() -> {
+                        if (isExactRootSingBoxAlive(childPid ?: -1)) {
+                            RuntimeProcessFailure.HEALTH_CHECK_FAILED
+                        } else {
+                            RuntimeProcessFailure.CHILD_EXITED
+                        }
+                    }
                     else -> null
                 }
                 if (reason != null) {
-                    synchronized(lock) {
-                        if (!stopping && child === expectedChild) {
-                            val cleanupOk = cleanupCurrentLocked()
-                            failLifecycle(
-                                if (cleanupOk) reason else RuntimeProcessFailure.CLEANUP_FAILED,
-                            )
+                    try {
+                        executor.execute {
+                            synchronized(lock) {
+                                if (!stopping && child === expectedChild) {
+                                    val cleanupOk = cleanupCurrentLocked()
+                                    failLifecycle(
+                                        if (cleanupOk) reason else RuntimeProcessFailure.CLEANUP_FAILED,
+                                    )
+                                }
+                            }
                         }
+                    } catch (_: RejectedExecutionException) {
+                        // close() already owns terminal cleanup.
                     }
                     return@Thread
                 }
@@ -299,10 +332,7 @@ class ProxyRuntimeSupervisor internal constructor(
         thread.start()
     }
 
-    private fun waitForHealthy(
-        process: Process,
-        privateBridge: CellularBridgeRuntime,
-    ): Boolean {
+    private fun waitForHealthy(privateBridge: CellularBridgeRuntime): Boolean {
         val publicPorts = try {
             proxyListenerPorts().map { it.toInt() }
         } catch (_: LinkageError) {
@@ -314,7 +344,11 @@ class ProxyRuntimeSupervisor internal constructor(
 
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(START_HEALTH_TIMEOUT_SECONDS)
         while (System.nanoTime() < deadline) {
-            if (!isAlive(process) || !runCatching { privateBridge.isHealthy() }.getOrDefault(false)) {
+            val recordedPid = awaitRecordedPid()
+            if (recordedPid == null || !isExactRootSingBoxAlive(recordedPid)) {
+                return false
+            }
+            if (!runCatching { privateBridge.isHealthy() }.getOrDefault(false)) {
                 return false
             }
             if (publicPorts.all(::canConnectLoopback)) return true
@@ -341,60 +375,174 @@ class ProxyRuntimeSupervisor internal constructor(
         false
     }
 
-    private fun writePid(pid: Int): Boolean = try {
-        pidFile.writeText(pid.toString(), Charsets.US_ASCII)
-        Os.chmod(pidFile.absolutePath, PRIVATE_FILE_MODE)
+    private fun canonicalLoopbackListenersReachable(): Boolean = try {
+        proxyListenerPorts().map { it.toInt() }.all(::canConnectLoopback)
+    } catch (_: Exception) {
+        false
+    }
+
+    private fun loadRecordedGeneration(): Boolean = try {
+        if (!generationManifestFile.isFile) {
+            activeGenerationId = null
+            configFile = File(runtimeDir, LEGACY_CONFIG_FILE)
+            pidFile = File(runtimeDir, LEGACY_PID_FILE)
+            rootLauncherFile = File(runtimeDir, LEGACY_ROOT_LAUNCHER_FILE)
+            rootControlFile = File(runtimeDir, LEGACY_ROOT_CONTROL_FILE)
+            return true
+        }
+        val id = generationManifestFile.readText(Charsets.US_ASCII)
+            .lineSequence()
+            .firstOrNull { it.startsWith("generation=") }
+            ?.substringAfter("generation=")
+            ?: return false
+        if (!GENERATION_ID.matches(id)) return false
+        selectGeneration(id)
         true
     } catch (_: Exception) {
         false
     }
 
-    private fun cleanupStaleChild(): Boolean {
-        if (!deleteIfPresent(configFile)) return false
-        if (!pidFile.isFile) return true
-        val pid = pidFile.readText(Charsets.US_ASCII).trim().toIntOrNull() ?: return false
-        val procDir = File("/proc/$pid")
-        if (!procDir.exists()) {
-            return deleteIfPresent(pidFile)
+    private fun createNextGeneration(): Boolean = try {
+        val id = randomCredential().take(GENERATION_ID_LENGTH)
+        if (!GENERATION_ID.matches(id)) return false
+        selectGeneration(id)
+        val temporary = File(runtimeDir, "$GENERATION_MANIFEST_FILE.tmp")
+        FileOutputStream(temporary).use { output ->
+            output.write("generation=$id\n".toByteArray(Charsets.US_ASCII))
+            output.fd.sync()
         }
-        if (!isExactOwnedSingBoxProcess(pid)) return false
-        AndroidProcess.killProcess(pid)
-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(STALE_KILL_TIMEOUT_SECONDS)
-        while (procDir.exists() && System.nanoTime() < deadline) {
-            Thread.sleep(25)
-        }
-        if (procDir.exists()) return false
-        return deleteIfPresent(pidFile)
-    }
-
-    private fun isExactOwnedSingBoxProcess(pid: Int): Boolean {
-        return try {
-            val status = File("/proc/$pid/status").readLines()
-            val uid = status.firstOrNull { it.startsWith("Uid:") }
-                ?.substringAfter("Uid:")
-                ?.trim()
-                ?.split(Regex("""\s+"""))
-                ?.firstOrNull()
-                ?.toIntOrNull()
-            if (uid != AndroidProcess.myUid()) {
-                false
-            } else {
-                val command = File("/proc/$pid/cmdline")
-                    .readBytes()
-                    .toString(Charsets.UTF_8)
-                    .replace('\u0000', ' ')
-                command.contains(SING_BOX_LIBRARY) && command.contains(configFile.absolutePath)
-            }
-        } catch (_: Exception) {
-            false
-        }
-    }
-
-    private fun processPid(process: Process): Int? = try {
-        val method = Process::class.java.getMethod("pid")
-        (method.invoke(process) as Long).toInt().takeIf { it > 0 }
+        Os.chmod(temporary.absolutePath, PRIVATE_FILE_MODE)
+        if (!temporary.renameTo(generationManifestFile)) return false
+        Os.chmod(generationManifestFile.absolutePath, PRIVATE_FILE_MODE)
+        true
     } catch (_: Exception) {
-        null
+        false
+    }
+
+    private fun selectGeneration(id: String) {
+        activeGenerationId = id
+        configFile = File(runtimeDir, "sing-box-$id.json")
+        pidFile = File(runtimeDir, "sing-box-$id.pid")
+        rootLauncherFile = File(runtimeDir, "sing-box-$id-launch.sh")
+        rootControlFile = File(runtimeDir, "sing-box-$id-control.sh")
+    }
+
+    private fun deleteCurrentGenerationFiles(removeManifest: Boolean): Boolean {
+        var clean = true
+        if (!deleteIfPresent(configFile)) clean = false
+        if (!deleteIfPresent(pidFile)) clean = false
+        if (!deleteIfPresent(rootLauncherFile)) clean = false
+        if (!deleteIfPresent(rootControlFile)) clean = false
+        if (removeManifest && !deleteIfPresent(generationManifestFile)) clean = false
+        if (clean) activeGenerationId = null
+        return clean
+    }
+
+    private fun writeRootLauncher(): Boolean = try {
+        val appUid = AndroidProcess.myUid()
+        if (!isSafeOwnedPath(configFile) || !isSafeOwnedPath(pidFile) || !isSafeNativePath(binaryFile)) {
+            return false
+        }
+        rootLauncherFile.writeText(
+            """
+            #!/system/bin/sh
+            umask 077
+            /system/bin/toybox nohup "${binaryFile.absolutePath}" run -c "${configFile.absolutePath}" </dev/null >/dev/null 2>&1 &
+            child_pid="${'$'}!"
+            case "${'$'}child_pid" in ''|*[!0-9]*) exit 124;; esac
+            printf '%s\n' "${'$'}child_pid" > "${pidFile.absolutePath}" || exit 125
+            chown $appUid:$appUid "${pidFile.absolutePath}" || exit 126
+            chmod 600 "${pidFile.absolutePath}" || exit 127
+            exit 0
+            """.trimIndent() + "\n",
+            Charsets.UTF_8,
+        )
+        Os.chmod(rootLauncherFile.absolutePath, ROOT_SCRIPT_MODE)
+        true
+    } catch (_: Exception) {
+        false
+    }
+
+    private fun writeRootControl(action: String): Boolean = try {
+        if (action !in ROOT_ACTIONS || !isSafeOwnedPath(configFile) || !isSafeOwnedPath(pidFile) ||
+            !isSafeNativePath(binaryFile)
+        ) return false
+        rootControlFile.writeText(
+            """
+            #!/system/bin/sh
+            set -eu
+            pid="${'$'}(cat "${pidFile.absolutePath}")"
+            case "${'$'}pid" in ''|*[!0-9]*) exit 64;; esac
+            [ -r "/proc/${'$'}pid/cmdline" ] || exit 20
+            actual="${'$'}(tr '\000' ' ' < "/proc/${'$'}pid/cmdline")"
+            case "${'$'}actual" in *"/${SING_BOX_LIBRARY} run -c ${configFile.absolutePath}"*) ;; *) exit 21;; esac
+            case "$action" in
+              status) exit 0 ;;
+              stop)
+                kill -TERM "${'$'}pid" 2>/dev/null || exit 3
+                i=0
+                while [ "${'$'}i" -lt 60 ]; do
+                  [ ! -d "/proc/${'$'}pid" ] && exit 0
+                  sleep 0.05
+                  i=${'$'}((i + 1))
+                done
+                kill -KILL "${'$'}pid" 2>/dev/null || exit 4
+                i=0
+                while [ "${'$'}i" -lt 40 ]; do
+                  [ ! -d "/proc/${'$'}pid" ] && exit 0
+                  sleep 0.05
+                  i=${'$'}((i + 1))
+                done
+                exit 5
+                ;;
+            esac
+            """.trimIndent() + "\n",
+            Charsets.UTF_8,
+        )
+        Os.chmod(rootControlFile.absolutePath, ROOT_SCRIPT_MODE)
+        true
+    } catch (_: Exception) {
+        false
+    }
+
+    private fun isSafeOwnedPath(file: File): Boolean = file.absolutePath
+        .let { it.startsWith(runtimeDir.absolutePath + "/") && SAFE_PATH.matches(it) }
+
+    private fun isSafeNativePath(file: File): Boolean = file.absolutePath
+        .let { it.startsWith(appContext.applicationInfo.nativeLibraryDir + "/") && SAFE_PATH.matches(it) }
+
+    private fun awaitRecordedPid(): Int? {
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(PID_RECORD_TIMEOUT_MS)
+        while (System.nanoTime() < deadline) {
+            val pid = runCatching { pidFile.readText(Charsets.US_ASCII).trim().toIntOrNull() }.getOrNull()
+            if (pid != null && pid > 0) return pid
+            Thread.sleep(PID_RECORD_RETRY_MS)
+        }
+        return null
+    }
+
+    private fun cleanupStaleChild(): Boolean {
+        if (!pidFile.isFile) return deleteCurrentGenerationFiles(removeManifest = activeGenerationId != null)
+        val pid = pidFile.readText(Charsets.US_ASCII).trim().toIntOrNull() ?: return false
+        if (!isExactRootSingBoxAlive(pid)) return deleteCurrentGenerationFiles(activeGenerationId != null)
+        if (!stopExactRootSingBox(pid)) return false
+        return deleteCurrentGenerationFiles(activeGenerationId != null)
+    }
+
+    private fun isExactRootSingBoxAlive(pid: Int): Boolean = runRootControl("status", pid) == 0
+
+    private fun stopExactRootSingBox(pid: Int): Boolean =
+        runRootControl("stop", pid) in setOf(0, ROOT_CONTROL_PROCESS_ABSENT)
+
+    private fun runRootControl(action: String, pid: Int): Int {
+        if (pid <= 0 || action !in ROOT_ACTIONS) return -1
+        val recorded = runCatching { pidFile.readText(Charsets.US_ASCII).trim().toIntOrNull() }.getOrNull()
+        if (recorded != pid || !writeRootControl(action)) return -1
+        return runCatching {
+            SuProcess().run(listOf(MAGISK_SU, "-c", rootControlFile.absolutePath)).let { result ->
+                if (!result.timedOut && result.outputComplete) result.exitCode else -1
+            }
+        }.getOrDefault(-1)
     }
 
     private fun drainOutput(process: Process) {
@@ -414,27 +562,9 @@ class ProxyRuntimeSupervisor internal constructor(
         }
     }
 
-    private fun isAlive(process: Process): Boolean = try {
-        process.exitValue()
-        false
-    } catch (_: IllegalThreadStateException) {
-        true
-    }
-
     private fun terminateProcess(process: Process, pid: Int?): Boolean {
         process.destroy()
-        val gracefulDeadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(GRACEFUL_STOP_MS)
-        while (isAlive(process) && System.nanoTime() < gracefulDeadline) {
-            Thread.sleep(25)
-        }
-        if (!isAlive(process)) return true
-        if (pid == null || !isExactOwnedSingBoxProcess(pid)) return false
-        AndroidProcess.killProcess(pid)
-        val forcedDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(FORCED_STOP_TIMEOUT_SECONDS)
-        while (isAlive(process) && System.nanoTime() < forcedDeadline) {
-            Thread.sleep(25)
-        }
-        return !isAlive(process)
+        return pid != null && stopExactRootSingBox(pid)
     }
 
     private fun cleanupCurrentLocked(): Boolean {
@@ -450,8 +580,7 @@ class ProxyRuntimeSupervisor internal constructor(
         var clean = true
         if (currentChild != null && !terminateProcess(currentChild, currentPid)) clean = false
         if (currentBridge != null && runCatching { currentBridge.stop() }.isFailure) clean = false
-        if (!deleteIfPresent(configFile)) clean = false
-        if (!deleteIfPresent(pidFile)) clean = false
+        if (!deleteCurrentGenerationFiles(removeManifest = activeGenerationId != null)) clean = false
         stopping = false
         return clean
     }
@@ -501,11 +630,11 @@ class ProxyRuntimeSupervisor internal constructor(
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         val cleanup = try {
-            executor.submit {
+            executor.submit(Callable {
                 synchronized(lock) {
                     cleanupCurrentLocked()
                 }
-            }
+            })
         } catch (_: RejectedExecutionException) {
             null
         }
@@ -528,20 +657,29 @@ class ProxyRuntimeSupervisor internal constructor(
 
     private companion object {
         const val RUNTIME_DIR = "proxy-runtime"
-        const val CONFIG_FILE = "sing-box.json"
-        const val PID_FILE = "sing-box.pid"
+        const val LEGACY_CONFIG_FILE = "sing-box.json"
+        const val LEGACY_PID_FILE = "sing-box.pid"
+        const val LEGACY_ROOT_LAUNCHER_FILE = "sing-box-root-launch.sh"
+        const val LEGACY_ROOT_CONTROL_FILE = "sing-box-root-control.sh"
+        const val GENERATION_MANIFEST_FILE = "sing-box-current-generation"
+        const val GENERATION_ID_LENGTH = 24
         const val SING_BOX_LIBRARY = "libsingbox.so"
+        const val MAGISK_SU = "su"
         const val LOOPBACK = "127.0.0.1"
         const val OUTBOUND_TIMEOUT_MS = 15_000L
         const val START_HEALTH_TIMEOUT_SECONDS = 5L
         const val HEALTH_RETRY_MS = 100L
         const val HEALTH_POLL_MS = 500L
         const val HEALTH_CONNECT_TIMEOUT_MS = 250
-        const val GRACEFUL_STOP_MS = 1_500L
-        const val FORCED_STOP_TIMEOUT_SECONDS = 2L
-        const val STALE_KILL_TIMEOUT_SECONDS = 2L
-        const val CLOSE_TIMEOUT_SECONDS = 10L
+        const val PID_RECORD_TIMEOUT_MS = 1_000L
+        const val PID_RECORD_RETRY_MS = 25L
+        const val CLOSE_TIMEOUT_SECONDS = 25L
         const val PRIVATE_FILE_MODE = 384 // 0600
+        const val ROOT_SCRIPT_MODE = 448 // 0700
+        const val ROOT_CONTROL_PROCESS_ABSENT = 20
+        val SAFE_PATH = Regex("""/[A-Za-z0-9_./~=-]+""")
+        val GENERATION_ID = Regex("""[A-Za-z0-9_-]{24}""")
+        val ROOT_ACTIONS = setOf("status", "stop")
     }
 }
 

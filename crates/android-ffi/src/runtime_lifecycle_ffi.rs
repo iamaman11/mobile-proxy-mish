@@ -148,6 +148,9 @@ pub enum RuntimeProcessFailure {
     PrivateBridgeUnavailable,
     ConfigurationRejected,
     ChildLaunchFailed,
+    ChildExecutorRejected,
+    ChildProcessStartFailed,
+    ChildPidOrPersistenceFailed,
     HealthCheckFailed,
     ChildExited,
     PrivateBridgeUnhealthy,
@@ -279,6 +282,15 @@ fn map_process_failure_out(failure: OwnerRuntimeProcessFailure) -> RuntimeProces
             RuntimeProcessFailure::ConfigurationRejected
         }
         OwnerRuntimeProcessFailure::ChildLaunchFailed => RuntimeProcessFailure::ChildLaunchFailed,
+        OwnerRuntimeProcessFailure::ChildExecutorRejected => {
+            RuntimeProcessFailure::ChildExecutorRejected
+        }
+        OwnerRuntimeProcessFailure::ChildProcessStartFailed => {
+            RuntimeProcessFailure::ChildProcessStartFailed
+        }
+        OwnerRuntimeProcessFailure::ChildPidOrPersistenceFailed => {
+            RuntimeProcessFailure::ChildPidOrPersistenceFailed
+        }
         OwnerRuntimeProcessFailure::HealthCheckFailed => RuntimeProcessFailure::HealthCheckFailed,
         OwnerRuntimeProcessFailure::ChildExited => RuntimeProcessFailure::ChildExited,
         OwnerRuntimeProcessFailure::PrivateBridgeUnhealthy => {
@@ -306,6 +318,15 @@ fn map_process_failure_in(failure: RuntimeProcessFailure) -> OwnerRuntimeProcess
             OwnerRuntimeProcessFailure::ConfigurationRejected
         }
         RuntimeProcessFailure::ChildLaunchFailed => OwnerRuntimeProcessFailure::ChildLaunchFailed,
+        RuntimeProcessFailure::ChildExecutorRejected => {
+            OwnerRuntimeProcessFailure::ChildExecutorRejected
+        }
+        RuntimeProcessFailure::ChildProcessStartFailed => {
+            OwnerRuntimeProcessFailure::ChildProcessStartFailed
+        }
+        RuntimeProcessFailure::ChildPidOrPersistenceFailed => {
+            OwnerRuntimeProcessFailure::ChildPidOrPersistenceFailed
+        }
         RuntimeProcessFailure::HealthCheckFailed => OwnerRuntimeProcessFailure::HealthCheckFailed,
         RuntimeProcessFailure::ChildExited => OwnerRuntimeProcessFailure::ChildExited,
         RuntimeProcessFailure::PrivateBridgeUnhealthy => {
