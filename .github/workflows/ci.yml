@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
     branches: [main]
-    types: [ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
   workflow_dispatch:
@@ -18,7 +18,7 @@ concurrency:
 jobs:
   architecture:
     name: Architecture Guards
-    if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.base.ref == 'main' && github.event.pull_request.head.ref == 'integration/m1' && github.event.pull_request.draft == false) }}
+    if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.base.ref == 'main' && github.event.pull_request.draft == false) }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
