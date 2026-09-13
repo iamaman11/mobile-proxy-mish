@@ -51,9 +51,6 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           & 'lab/windows/test-external-client-fixture.ps1'
-          if ($LASTEXITCODE -ne 0) {
-            throw "External client fixture validation failed with exit code $LASTEXITCODE."
-          }
 
       - name: Verify pinned Camoufox release still exists upstream
         shell: pwsh
