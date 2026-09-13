@@ -314,7 +314,7 @@ jobs:
                   | [$keys[] | select($before[.] != $after[.])] as $changed
                   | "  - \($r.address): actions=\($r.change.actions | join(",")); changed_attributes=\(if ($changed | length) == 0 then "metadata-only-or-nested" else ($changed | join(",")) end)"
                 ' "$plan_json"
-              } >> "$GITHUB_STEP_SUMMARY"
+              } | tee -a "$GITHUB_STEP_SUMMARY"
               echo '::error::Terraform provider plan contains changes requiring review. No apply is allowed.'
               exit 1
               ;;
