@@ -1,6 +1,8 @@
 use mish_application::{
     DEFAULT_EGRESS_PROBE_BUDGET, EgressProbeCoordinator, EgressProbeError, ProbeTicket,
 };
+use mish_configuration::ReadinessProbeTarget;
+use mish_proxy::HTTP_CONNECT_PORT;
 use mish_readiness::{
     CellularOwnerGeneration, CellularReadinessFact, CredentialReadinessFact, CredentialVersion,
     EgressProbeObservation, FreshnessMarker, MeshAdmissionEpoch, MeshReadinessFact, ProbeBinding,
@@ -51,6 +53,12 @@ pub struct EgressProbeObservationView {
     pub freshness: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ReadinessProbeTargetView {
+    pub hostname: String,
+    pub port: u16,
+}
+
 /// Flattened adapter facts. Presence and generation identity remain explicit; no readiness state is
 /// stored in this record or in the FFI seam.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
@@ -76,6 +84,7 @@ pub struct ProductReadinessFactsView {
 pub enum ReadinessBoundaryError {
     InvalidOwnerKey,
     ProbeFreshnessExhausted,
+    InvalidProbeTarget,
 }
 
 impl fmt::Display for ReadinessBoundaryError {
@@ -83,6 +92,7 @@ impl fmt::Display for ReadinessBoundaryError {
         formatter.write_str(match self {
             Self::InvalidOwnerKey => "readiness input contains a zero/invalid owner key",
             Self::ProbeFreshnessExhausted => "probe freshness sequence is exhausted",
+            Self::InvalidProbeTarget => "deployment readiness probe target is invalid",
         })
     }
 }
@@ -94,6 +104,23 @@ impl std::error::Error for ReadinessBoundaryError {}
 #[uniffi::export]
 pub fn egress_probe_budget_ms() -> u64 {
     DEFAULT_EGRESS_PROBE_BUDGET.as_millis() as u64
+}
+
+/// Desired Configuration owns the runtime probe hostname/port. Android must not duplicate them.
+#[uniffi::export]
+pub fn readiness_probe_target() -> Result<ReadinessProbeTargetView, ReadinessBoundaryError> {
+    let target = ReadinessProbeTarget::deployment()
+        .map_err(|_| ReadinessBoundaryError::InvalidProbeTarget)?;
+    Ok(ReadinessProbeTargetView {
+        hostname: target.hostname().to_owned(),
+        port: target.port(),
+    })
+}
+
+/// Proxy Serving owns the HTTP CONNECT listener coordinate used by the authenticated probe.
+#[uniffi::export]
+pub fn proxy_http_connect_port() -> u16 {
+    HTTP_CONNECT_PORT
 }
 
 /// Thin boundary over the application-owned probe freshness coordinator plus the stateless
@@ -397,6 +424,15 @@ mod tests {
             mesh_admission_epoch: 41,
             credential_version: 51,
         }
+    }
+
+    #[test]
+    fn owner_backed_probe_coordinates_are_valid() {
+        let target = readiness_probe_target().expect("target");
+        assert_eq!(target.hostname, "example.com");
+        assert_eq!(target.port, 443);
+        assert_eq!(proxy_http_connect_port(), HTTP_CONNECT_PORT);
+        assert!(egress_probe_budget_ms() > 0);
     }
 
     #[test]
