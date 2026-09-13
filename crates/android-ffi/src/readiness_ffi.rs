@@ -1,13 +1,15 @@
-use mish_application::{EgressProbeCoordinator, EgressProbeError, ProbeTicket};
+use mish_application::{
+    DEFAULT_EGRESS_PROBE_BUDGET, EgressProbeCoordinator, EgressProbeError, ProbeTicket,
+};
 use mish_readiness::{
     CellularOwnerGeneration, CellularReadinessFact, CredentialReadinessFact, CredentialVersion,
-    EgressProbeObservation, FreshnessMarker, MeshAdmissionEpoch, MeshReadinessFact,
-    ProbeBinding, ProbeOutcome, ProductReadinessInput, ProxyReadinessFact,
-    ProxyServingGeneration, Readiness as OwnerReadiness, RuntimeGeneration, RuntimeReadinessFact,
-    project,
+    EgressProbeObservation, FreshnessMarker, MeshAdmissionEpoch, MeshReadinessFact, ProbeBinding,
+    ProbeOutcome, ProductReadinessInput, ProxyReadinessFact, ProxyServingGeneration,
+    Readiness as OwnerReadiness, RuntimeGeneration, RuntimeReadinessFact, project,
 };
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum ProductReadinessState {
@@ -87,6 +89,13 @@ impl fmt::Display for ReadinessBoundaryError {
 
 impl std::error::Error for ReadinessBoundaryError {}
 
+/// One application-owned absolute operation budget. Android must apply this same budget to its
+/// concrete local-proxy CONNECT + TLS effect; elapsed time is reclassified by Rust on completion.
+#[uniffi::export]
+pub fn egress_probe_budget_ms() -> u64 {
+    DEFAULT_EGRESS_PROBE_BUDGET.as_millis() as u64
+}
+
 /// Thin boundary over the application-owned probe freshness coordinator plus the stateless
 /// readiness projection. It stores no leaf facts and no READY/NOT_READY value.
 #[derive(uniffi::Object)]
@@ -129,11 +138,17 @@ impl ProductReadinessController {
         &self,
         ticket: ProbeTicketView,
         outcome: EgressProbeOutcome,
+        elapsed_ms: u64,
     ) -> Result<Option<EgressProbeObservationView>, ReadinessBoundaryError> {
         let ticket = map_ticket_in(ticket)?;
         Ok(self
-            .probe()
-            .complete(ticket, map_outcome_in(outcome))
+            .probe_mut()
+            .complete_bounded(
+                ticket,
+                map_outcome_in(outcome),
+                Duration::from_millis(elapsed_ms),
+                DEFAULT_EGRESS_PROBE_BUDGET,
+            )
             .map(map_observation_out))
     }
 
@@ -389,7 +404,7 @@ mod tests {
             ProductReadinessState::Unknown
         );
         let observation = controller
-            .complete_probe(ticket, EgressProbeOutcome::Succeeded)
+            .complete_probe(ticket, EgressProbeOutcome::Succeeded, 10)
             .expect("complete")
             .expect("current observation");
         assert_eq!(
@@ -407,10 +422,43 @@ mod tests {
         controller.invalidate_probe().expect("invalidate");
         assert_eq!(
             controller
-                .complete_probe(ticket, EgressProbeOutcome::Succeeded)
+                .complete_probe(ticket, EgressProbeOutcome::Succeeded, 10)
                 .expect("complete"),
             None
         );
+    }
+
+    #[test]
+    fn duplicate_completion_is_rejected() {
+        let controller = ProductReadinessController::new();
+        let ticket = controller.begin_probe(binding()).expect("ticket");
+        assert!(
+            controller
+                .complete_probe(ticket, EgressProbeOutcome::Succeeded, 10)
+                .expect("first")
+                .is_some()
+        );
+        assert_eq!(
+            controller
+                .complete_probe(ticket, EgressProbeOutcome::TlsFailed, 10)
+                .expect("duplicate"),
+            None
+        );
+    }
+
+    #[test]
+    fn elapsed_budget_is_reclassified_as_timeout() {
+        let controller = ProductReadinessController::new();
+        let ticket = controller.begin_probe(binding()).expect("ticket");
+        let observation = controller
+            .complete_probe(
+                ticket,
+                EgressProbeOutcome::Succeeded,
+                egress_probe_budget_ms(),
+            )
+            .expect("complete")
+            .expect("observation");
+        assert_eq!(observation.outcome, EgressProbeOutcome::Timeout);
     }
 
     #[test]
