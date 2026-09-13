@@ -58,7 +58,7 @@ dependencies = [
 name = "askama_parser"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c5ae75772275d268b03ab8bdccdd12117b6169ee23256942b34e46c9f476583"
+checksum = "2c5ae75772275d268b03ab8bdcdd12117b6169ee23256942b34e46c9f476583"
 dependencies = [
  "rustc-hash",
  "serde",
@@ -192,7 +192,7 @@ dependencies = [
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
+checksum = "da7c62e2b18d4cc04b6e69de1732957d7585229076d50b0a9dbb45fa4652e580"
 
 [[package]]
 name = "fs-err"
@@ -218,7 +218,7 @@ dependencies = [
 name = "glob"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
+checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6b829310732241652a178a"
 
 [[package]]
 name = "goblin"
@@ -324,11 +324,13 @@ name = "mish-android-ffi"
 version = "0.1.0"
 dependencies = [
  "mish-android-network",
+ "mish-application",
  "mish-cellular",
  "mish-cellular-egress-bridge",
  "mish-configuration",
  "mish-credentials",
  "mish-proxy",
+ "mish-readiness",
  "mish-runtime",
  "mish-sing-box-adapter",
  "mish-transport",
