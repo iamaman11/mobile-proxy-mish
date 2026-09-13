@@ -197,7 +197,8 @@ def main() -> None:
         "readinessProbeTarget()",
         "egressProbeBudgetMs()",
         "Proxy-Authorization: Basic",
-        'endpointIdentificationAlgorithm = "HTTPS"',
+        "it.startHandshake()",
+        "HttpsURLConnection.getDefaultHostnameVerifier().verify(target.hostname, it.session)",
     ):
         require(
             readiness_android,
