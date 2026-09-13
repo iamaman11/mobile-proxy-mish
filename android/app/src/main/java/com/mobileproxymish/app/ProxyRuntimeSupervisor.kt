@@ -28,6 +28,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+private const val LOOPBACK_HEALTH_FAILURE_CONFIRMATIONS = 3
+
 /** Runtime Lifecycle projection only; it does not own proxy protocol or cellular facts. */
 sealed interface ProxyRuntimeSnapshot {
     data object Stopped : ProxyRuntimeSnapshot
@@ -80,6 +82,10 @@ private fun randomCredential(): String {
     return Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
 }
 
+/** A single local health timeout is not sufficient evidence that an owned listener died. */
+internal fun confirmedLoopbackHealthFailure(consecutiveFailures: Int): Boolean =
+    consecutiveFailures >= LOOPBACK_HEALTH_FAILURE_CONFIRMATIONS
+
 /**
  * Android child-process effect adapter for the Rust Runtime Lifecycle natural owner.
  *
@@ -94,6 +100,7 @@ class ProxyRuntimeSupervisor internal constructor(
     context: Context,
     private val cellularRuntime: CellularRuntimeBridge,
     private val publicCredentials: ProxyCredentialProvider,
+    private val onRecoverableUnexpectedFailure: (RuntimeProcessFailure) -> Unit = {},
 ) : Closeable {
     private val appContext = context.applicationContext
     private val runtimeDir = File(appContext.noBackupFilesDir, RUNTIME_DIR)
@@ -293,18 +300,25 @@ class ProxyRuntimeSupervisor internal constructor(
 
     private fun startMonitor(expectedChild: Process, expectedBridge: CellularBridgeRuntime) {
         val thread = Thread({
+            var consecutiveLoopbackFailures = 0
             while (!closed.get()) {
                 val reason = when {
                     !runCatching { expectedBridge.isHealthy() }.getOrDefault(false) ->
                         RuntimeProcessFailure.PRIVATE_BRIDGE_UNHEALTHY
-                    !canonicalLoopbackListenersReachable() -> {
-                        if (isExactRootSingBoxAlive(childPid ?: -1)) {
+                    canonicalLoopbackListenersReachable() -> {
+                        consecutiveLoopbackFailures = 0
+                        null
+                    }
+                    else -> {
+                        consecutiveLoopbackFailures += 1
+                        if (!confirmedLoopbackHealthFailure(consecutiveLoopbackFailures)) {
+                            null
+                        } else if (isExactRootSingBoxAlive(childPid ?: -1)) {
                             RuntimeProcessFailure.HEALTH_CHECK_FAILED
                         } else {
                             RuntimeProcessFailure.CHILD_EXITED
                         }
                     }
-                    else -> null
                 }
                 if (reason != null) {
                     try {
@@ -312,9 +326,11 @@ class ProxyRuntimeSupervisor internal constructor(
                             synchronized(lock) {
                                 if (!stopping && child === expectedChild) {
                                     val cleanupOk = cleanupCurrentLocked()
-                                    failLifecycle(
-                                        if (cleanupOk) reason else RuntimeProcessFailure.CLEANUP_FAILED,
-                                    )
+                                    val published = if (cleanupOk) reason else RuntimeProcessFailure.CLEANUP_FAILED
+                                    failLifecycle(published)
+                                    if (published in RECOVERABLE_UNEXPECTED_FAILURES) {
+                                        onRecoverableUnexpectedFailure(published)
+                                    }
                                 }
                             }
                         }
@@ -685,6 +701,11 @@ class ProxyRuntimeSupervisor internal constructor(
         val SAFE_PATH = Regex("""/[A-Za-z0-9_./~=-]+""")
         val GENERATION_ID = Regex("""[A-Za-z0-9_-]{24}""")
         val ROOT_ACTIONS = setOf("status", "stop")
+        val RECOVERABLE_UNEXPECTED_FAILURES = setOf(
+            RuntimeProcessFailure.HEALTH_CHECK_FAILED,
+            RuntimeProcessFailure.CHILD_EXITED,
+            RuntimeProcessFailure.PRIVATE_BRIDGE_UNHEALTHY,
+        )
     }
 }
 

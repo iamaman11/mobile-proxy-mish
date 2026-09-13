@@ -7,10 +7,15 @@ import com.mobileproxymish.ffi.MeshAdmissionView
 import com.mobileproxymish.ffi.ProductReadinessState
 import com.mobileproxymish.ffi.RuntimeLifecycleController
 import com.mobileproxymish.ffi.RuntimeLifecycleState
+import com.mobileproxymish.ffi.RuntimeProcessFailure
 import com.mobileproxymish.ffi.RuntimeStartAction
 import com.mobileproxymish.ffi.RuntimeStopAction
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -50,10 +55,15 @@ class MishRuntimeController internal constructor(
     private val lifecycleExecutor = Executors.newSingleThreadExecutor { task ->
         Thread(task, "mish-runtime-lifecycle").apply { isDaemon = true }
     }
+    private val recoveryScheduler: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor { task ->
+        Thread(task, "mish-runtime-recovery").apply { isDaemon = true }
+    }
     private val observationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val externalCredentialStore = ExternalProxyCredentialStore(appContext)
     private val generation = MutableStateFlow(newGeneration())
     private val stopCallbacks = mutableListOf<(Boolean) -> Unit>()
+    private val automaticRecoveryPending = AtomicBoolean(false)
+    private val automaticRecoveryAttempts = AtomicInteger(0)
 
     @OptIn(ExperimentalCoroutinesApi::class)
     val cellularSnapshot: StateFlow<CellularRuntimeSnapshot> = generation
@@ -262,6 +272,22 @@ class MishRuntimeController internal constructor(
         if (restart) start()
     }
 
+    private fun scheduleUnexpectedProxyRecovery(reason: RuntimeProcessFailure) {
+        if (reason !in RECOVERABLE_PROXY_FAILURES) return
+        if (!isRunning || !automaticRecoveryPending.compareAndSet(false, true)) return
+        val delay = recoveryDelayMs(automaticRecoveryAttempts.getAndIncrement())
+        recoveryScheduler.schedule({
+            if (!isRunning || proxySnapshot.value !is ProxyRuntimeSnapshot.Failed) {
+                automaticRecoveryPending.set(false)
+                return@schedule
+            }
+            stop { clean ->
+                automaticRecoveryPending.set(false)
+                if (clean) start()
+            }
+        }, delay, TimeUnit.MILLISECONDS)
+    }
+
     private fun submit(block: () -> Unit): Boolean = try {
         lifecycleExecutor.execute(block)
         true
@@ -276,6 +302,7 @@ class MishRuntimeController internal constructor(
             context = appContext,
             cellularRuntime = cellularRuntime,
             publicCredentials = externalCredentialStore,
+            onRecoverableUnexpectedFailure = ::scheduleUnexpectedProxyRecovery,
         )
         val meshRuntime = MeshIngressRuntimeBridge(
             context = appContext,
@@ -314,6 +341,21 @@ class MishRuntimeController internal constructor(
                 closeCellular = cellularRuntime::close,
             ) && clean
             return clean
+        }
+    }
+
+    private companion object {
+        val RECOVERABLE_PROXY_FAILURES = setOf(
+            RuntimeProcessFailure.HEALTH_CHECK_FAILED,
+            RuntimeProcessFailure.CHILD_EXITED,
+            RuntimeProcessFailure.PRIVATE_BRIDGE_UNHEALTHY,
+        )
+        fun recoveryDelayMs(attempt: Int): Long = when (attempt.coerceAtMost(4)) {
+            0 -> 1_000L
+            1 -> 5_000L
+            2 -> 15_000L
+            3 -> 30_000L
+            else -> 60_000L
         }
     }
 }

@@ -4,6 +4,7 @@ import android.app.Activity
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
+import com.mobileproxymish.app.cellular.MagiskRootAuthority
 import com.mobileproxymish.ffi.ProductReadinessState
 
 /**
@@ -22,15 +23,24 @@ class DebugReadinessActivity : Activity() {
                 SystemClock.sleep(POLL_INTERVAL_MS)
             }
             val diagnostic = runtime.currentReadinessRuntime.diagnosticObservation()
+            val innerReadiness = runtime.currentReadinessRuntime.state.value
+            val proxySnapshot = runtime.currentProxyRuntime.snapshot.value
+            val proxyFailure = (proxySnapshot as? ProxyRuntimeSnapshot.Failed)?.reason
+            val proxyFailureCode = proxyFailure?.name ?: "NONE"
+            val rootAuthority = MagiskRootAuthority().probe()
             val mesh = runtime.meshSnapshot.value
             val ingressFailure = runtime.currentMeshRuntime.diagnosticIngressFailure()
             Log.i(TAG, "state=${runtime.readinessSnapshot.value}")
+            Log.i(TAG, "inner_readiness=$innerReadiness")
             Log.i(TAG, "cellular_state=${diagnostic.cellularState}")
             Log.i(TAG, "cellular_reason=${diagnostic.cellularReason}")
             Log.i(TAG, "cellular_admitted=${diagnostic.cellularAdmitted}")
             Log.i(TAG, "root_policy=${diagnostic.rootPolicyVerified}")
+            Log.i(TAG, "app_root_authority=$rootAuthority")
             Log.i(TAG, "private_bridge=${diagnostic.privateBridgeHealthy}")
             Log.i(TAG, "proxy_healthy=${diagnostic.proxyHealthy}")
+            Log.i(TAG, "proxy_lifecycle=${proxySnapshot.javaClass.simpleName}")
+            Log.i(TAG, "proxy_failure=$proxyFailureCode")
             Log.i(TAG, "credential_active=${diagnostic.credentialActive}")
             Log.i(TAG, "mesh_admitted=${diagnostic.meshAdmitted}")
             Log.i(TAG, "mesh_epoch_present=${mesh?.admissionEpoch != null}")
