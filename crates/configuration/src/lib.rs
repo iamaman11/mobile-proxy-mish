@@ -4,12 +4,17 @@
 //! persist an owner-approved value, but must not redefine its syntax or safety constraints.
 
 use std::fmt;
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr};
 
 const MIN_MESH_ACCEPTED_PREFIX: u8 = 8;
+const READINESS_PROBE_PORT: u16 = 443;
 const DEPLOYMENT_MESH_ACCEPTED_CIDR_RAW: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../config/deployment/mesh-device-cidr.txt"
+));
+const DEPLOYMENT_READINESS_PROBE_HOST_RAW: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../config/deployment/readiness-probe-host.txt"
 ));
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,11 +73,67 @@ impl MeshAcceptedCidr {
     }
 }
 
+/// One repository-owned hostname used only by the bounded runtime readiness TLS probe.
+///
+/// It is intentionally a hostname, never an IP literal, so a successful probe necessarily crosses
+/// the selected Cellular Egress DNS path. This is not the dedicated physical anti-leak canary used
+/// by P1/E3/E4 and does not establish those stronger acceptance claims.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadinessProbeTarget {
+    hostname: String,
+    port: u16,
+}
+
+impl ReadinessProbeTarget {
+    pub fn deployment() -> Result<Self, DesiredConfigurationError> {
+        Self::parse(DEPLOYMENT_READINESS_PROBE_HOST_RAW.trim(), READINESS_PROBE_PORT)
+    }
+
+    pub fn parse(raw: &str, port: u16) -> Result<Self, DesiredConfigurationError> {
+        if raw.is_empty()
+            || raw.trim() != raw
+            || raw.len() > 253
+            || port == 0
+            || raw.parse::<IpAddr>().is_ok()
+            || !raw.contains('.')
+        {
+            return Err(DesiredConfigurationError::InvalidReadinessProbeTarget);
+        }
+
+        for label in raw.split('.') {
+            if label.is_empty()
+                || label.len() > 63
+                || label.starts_with('-')
+                || label.ends_with('-')
+                || !label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+            {
+                return Err(DesiredConfigurationError::InvalidReadinessProbeTarget);
+            }
+        }
+
+        Ok(Self {
+            hostname: raw.to_owned(),
+            port,
+        })
+    }
+
+    pub fn hostname(&self) -> &str {
+        &self.hostname
+    }
+
+    pub const fn port(&self) -> u16 {
+        self.port
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DesiredConfigurationError {
     InvalidMeshAcceptedCidr,
     UnsafeMeshAcceptedCidr,
     NonCanonicalMeshAcceptedCidr,
+    InvalidReadinessProbeTarget,
 }
 
 impl fmt::Display for DesiredConfigurationError {
@@ -82,6 +143,9 @@ impl fmt::Display for DesiredConfigurationError {
             Self::UnsafeMeshAcceptedCidr => "Mesh accepted CIDR is too broad or unsafe",
             Self::NonCanonicalMeshAcceptedCidr => {
                 "Mesh accepted CIDR must use its canonical network address"
+            }
+            Self::InvalidReadinessProbeTarget => {
+                "readiness probe target must be one canonical lowercase DNS hostname and port"
             }
         })
     }
@@ -128,5 +192,42 @@ mod tests {
         let desired = MeshAcceptedCidr::parse("100.96.2.4/32").expect("host CIDR");
         assert_eq!(desired.network(), Ipv4Addr::new(100, 96, 2, 4));
         assert_eq!(desired.prefix(), 32);
+    }
+
+    #[test]
+    fn deployment_readiness_probe_is_valid_dns_target() {
+        let target = ReadinessProbeTarget::deployment().expect("deployment probe target");
+        assert_eq!(target.hostname(), "example.com");
+        assert_eq!(target.port(), 443);
+    }
+
+    #[test]
+    fn readiness_probe_requires_canonical_hostname_not_ip_or_injection() {
+        for (host, port) in [
+            ("", 443),
+            ("example.com", 0),
+            (" example.com", 443),
+            ("example.com ", 443),
+            ("Example.com", 443),
+            ("example.com.", 443),
+            ("127.0.0.1", 443),
+            ("2001:db8::1", 443),
+            ("localhost", 443),
+            ("-example.com", 443),
+            ("example-.com", 443),
+            ("example..com", 443),
+            ("example.com\r\nInjected: yes", 443),
+        ] {
+            assert!(
+                ReadinessProbeTarget::parse(host, port).is_err(),
+                "accepted invalid probe target {host:?}:{port}",
+            );
+        }
+        assert_eq!(
+            ReadinessProbeTarget::parse("probe.example.com", 8443)
+                .expect("valid target")
+                .hostname(),
+            "probe.example.com",
+        );
     }
 }
