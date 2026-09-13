@@ -282,21 +282,33 @@ impl BridgeListener {
     /// Serves one previously accepted SOCKS5 session.
     pub fn serve_session<C: CellularOutboundConnector + ?Sized>(
         &self,
-        mut client: TcpStream,
+        client: TcpStream,
         connector: &C,
     ) -> Result<RelayStats, SessionError> {
-        negotiate_username_password(&mut client)?;
-        authenticate(&mut client, &self.credentials)?;
-        let target = read_connect_request(&mut client)?;
+        let mut client = client;
+        let result = self.serve_session_inner(&mut client, connector);
+        if result.is_err() {
+            // A protocol rejection has already written a bounded SOCKS reply. Gracefully finish
+            // the write side before dropping the socket so Windows clients can consume that
+            // reply instead of seeing an intermittent reset from an immediate close.
+            let _ = client.shutdown(Shutdown::Write);
+        }
+        result
+    }
+
+    fn serve_session_inner<C: CellularOutboundConnector + ?Sized>(
+        &self,
+        client: &mut TcpStream,
+        connector: &C,
+    ) -> Result<RelayStats, SessionError> {
+        negotiate_username_password(client)?;
+        authenticate(client, &self.credentials)?;
+        let target = read_connect_request(client)?;
 
         let upstream = match connector.connect(&target) {
             Ok(stream) => stream,
             Err(error) => {
-                write_reply(
-                    &mut client,
-                    outbound_reply_code(error),
-                    unspecified_bind_addr(),
-                )?;
+                write_reply(client, outbound_reply_code(error), unspecified_bind_addr())?;
                 return Err(SessionError::Outbound(error));
             }
         };
@@ -304,8 +316,8 @@ impl BridgeListener {
         let bound = upstream
             .local_addr()
             .unwrap_or_else(|_| unspecified_bind_addr());
-        write_reply(&mut client, REPLY_SUCCEEDED, bound)?;
-        relay_bidirectional(client, upstream).map_err(SessionError::Io)
+        write_reply(client, REPLY_SUCCEEDED, bound)?;
+        relay_bidirectional(client.try_clone()?, upstream).map_err(SessionError::Io)
     }
 }
 

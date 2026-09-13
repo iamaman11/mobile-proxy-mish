@@ -1,6 +1,7 @@
 package com.mobileproxymish.app
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -43,5 +44,41 @@ class MeshIngressRuntimeBridgeTest {
         )
 
         assertEquals(AndroidMeshVpnObservation.AmbiguousVpn, observation)
+    }
+
+    @Test
+    fun publicIngressWaitsForPrivateEgressReadiness() {
+        assertFalse(
+            meshIngressServingAllowed(
+                proxyRunning = true,
+                readiness = com.mobileproxymish.ffi.ProductReadinessState.NOT_READY,
+                meshAdmitted = true,
+                admissionEpoch = 7u,
+            ),
+        )
+        assertFalse(
+            meshIngressServingAllowed(
+                proxyRunning = true,
+                readiness = com.mobileproxymish.ffi.ProductReadinessState.DEGRADED,
+                meshAdmitted = true,
+                admissionEpoch = 7u,
+            ),
+        )
+        assertFalse(
+            meshIngressServingAllowed(
+                proxyRunning = false,
+                readiness = com.mobileproxymish.ffi.ProductReadinessState.READY,
+                meshAdmitted = true,
+                admissionEpoch = 7u,
+            ),
+        )
+        assertTrue(
+            meshIngressServingAllowed(
+                proxyRunning = true,
+                readiness = com.mobileproxymish.ffi.ProductReadinessState.READY,
+                meshAdmitted = true,
+                admissionEpoch = 7u,
+            ),
+        )
     }
 }

@@ -241,6 +241,9 @@ class ProxyRuntimeSupervisor internal constructor(
                 return
             }
 
+            // `su -c` is only the launcher process, not the long-lived sing-box child. Magisk
+            // need not close that parent receipt before the detached child has written its exact
+            // PID record, so the bounded record below is the authoritative launch receipt.
             val newPid = awaitRecordedPid()
             if (newPid == null) {
                 terminateProcess(newChild, newPid)
@@ -671,7 +674,9 @@ class ProxyRuntimeSupervisor internal constructor(
         const val HEALTH_RETRY_MS = 100L
         const val HEALTH_POLL_MS = 500L
         const val HEALTH_CONNECT_TIMEOUT_MS = 250
-        const val PID_RECORD_TIMEOUT_MS = 1_000L
+        // DEVICE-1 Magisk may deliver a cold app-side `su` receipt after the child was forked.
+        // This remains bounded; it is not a readiness retry or a generic root session.
+        const val PID_RECORD_TIMEOUT_MS = 5_000L
         const val PID_RECORD_RETRY_MS = 25L
         const val CLOSE_TIMEOUT_SECONDS = 25L
         const val PRIVATE_FILE_MODE = 384 // 0600

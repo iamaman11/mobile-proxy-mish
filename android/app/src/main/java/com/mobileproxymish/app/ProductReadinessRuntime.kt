@@ -347,7 +347,6 @@ internal class ProductReadinessRuntime(
             !facts.proxyHealthy ||
             !facts.credentialActive ||
             !facts.meshAdmitted ||
-            !facts.meshIngressRunning ||
             facts.runtimeGeneration != runtimeGeneration ||
             facts.proxyRuntimeGeneration != runtimeGeneration ||
             facts.meshRuntimeGeneration != runtimeGeneration ||

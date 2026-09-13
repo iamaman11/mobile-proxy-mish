@@ -391,6 +391,7 @@ version = "0.1.0"
 dependencies = [
  "mish-cellular",
  "mish-cellular-egress-bridge",
+ "mish-configuration",
 ]
 
 [[package]]
@@ -404,6 +405,9 @@ dependencies = [
 [[package]]
 name = "mish-transport"
 version = "0.1.0"
+dependencies = [
+ "mish-configuration",
+]
 
 [[package]]
 name = "ndk-sys"

@@ -14,6 +14,7 @@ use mish_cellular_egress_bridge::{
     BridgeCredentials, BridgeListener, CellularOutboundConnector, ConnectTarget,
     OutboundConnectError,
 };
+use mish_configuration::EXTERNAL_TCP_SESSION_BUDGET;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -21,7 +22,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-const MAX_BRIDGE_SESSIONS: usize = 128;
+const MAX_BRIDGE_SESSIONS: usize = EXTERNAL_TCP_SESSION_BUDGET;
 const BRIDGE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const BRIDGE_OPERATION_TIMEOUT_MAX_MS: u64 = 120_000;
 

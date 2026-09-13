@@ -10,5 +10,8 @@ publish = false
 [lib]
 path = "src/entry.rs"
 
+[dependencies]
+mish-configuration = { path = "../configuration" }
+
 [lints]
 workspace = true

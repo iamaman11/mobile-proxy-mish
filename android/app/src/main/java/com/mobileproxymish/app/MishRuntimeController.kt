@@ -271,6 +271,10 @@ class MishRuntimeController internal constructor(
             meshRuntime = meshRuntime,
             credentialStore = externalCredentialStore,
         )
+        // Private egress readiness is proved through the loopback proxy before any public Mesh
+        // listener may serve. This closes the restart window where a listener existed before the
+        // cellular policy, scoped DNS and TLS probe had been verified.
+        meshRuntime.requireEgressReadiness(readinessRuntime.state)
         return RuntimeGeneration(
             cellularRuntime = cellularRuntime,
             proxyRuntime = proxyRuntime,

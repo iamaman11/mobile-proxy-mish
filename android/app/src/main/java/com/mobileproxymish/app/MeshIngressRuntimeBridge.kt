@@ -9,6 +9,7 @@ import android.net.NetworkRequest
 import com.mobileproxymish.ffi.MeshAdmissionState
 import com.mobileproxymish.ffi.MeshAdmissionView
 import com.mobileproxymish.ffi.MeshTransportController
+import com.mobileproxymish.ffi.ProductReadinessState
 import java.io.Closeable
 import java.net.Inet4Address
 import java.util.concurrent.Executors
@@ -49,6 +50,21 @@ internal fun classifyMeshVpnNetworks(
 }
 
 /**
+ * Public Mesh listeners are a derived serving effect, never proof of egress readiness. A new
+ * listener generation is therefore allowed only after the existing readiness owner has published
+ * a generation-bound private cellular DNS+TLS success.
+ */
+internal fun meshIngressServingAllowed(
+    proxyRunning: Boolean,
+    readiness: ProductReadinessState,
+    meshAdmitted: Boolean,
+    admissionEpoch: ULong?,
+): Boolean = proxyRunning &&
+    readiness == ProductReadinessState.READY &&
+    meshAdmitted &&
+    admissionEpoch != null
+
+/**
  * Android observation/composition adapter for the Rust Transport Reachability owner.
  *
  * Platform authority is current ConnectivityManager VPN Network cardinality plus each current
@@ -76,6 +92,8 @@ internal class MeshIngressRuntimeBridge(
     }
     private val proxyObservationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var proxyObservationJob: Job? = null
+    private var readinessObservationJob: Job? = null
+    private var egressReadiness: StateFlow<ProductReadinessState>? = null
     private val vpnRequest = NetworkRequest.Builder()
         .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
         .removeCapability(NetworkCapabilities.NET_CAPABILITY_TRUSTED)
@@ -131,17 +149,36 @@ internal class MeshIngressRuntimeBridge(
             proxyObservationJob = proxyRuntime.snapshot
                 .onEach { scheduleObservation() }
                 .launchIn(proxyObservationScope)
+            egressReadiness?.let { readiness ->
+                readinessObservationJob = readiness
+                    .onEach { scheduleObservation() }
+                    .launchIn(proxyObservationScope)
+            }
             scheduleObservation()
         } catch (error: Exception) {
             started.set(false)
             proxyObservationJob?.cancel()
             proxyObservationJob = null
+            readinessObservationJob?.cancel()
+            readinessObservationJob = null
             if (callbackRegistered.compareAndSet(true, false)) {
                 runCatching { connectivityManager.unregisterNetworkCallback(networkCallback) }
             }
             stopIngressFailClosed(controller)
             throw IllegalStateException("Mesh VPN observer could not start", error)
         }
+    }
+
+    /**
+     * Supplies the existing terminal readiness projection which gates public ingress serving.
+     * The projection remains its Rust owner's truth: Transport only consumes it to decide whether
+     * an already-admitted exact endpoint may accept clients. It is deliberately installed before
+     * this bridge starts and cannot be replaced for a running generation.
+     */
+    fun requireEgressReadiness(readiness: StateFlow<ProductReadinessState>) {
+        check(!started.get()) { "Mesh ingress readiness must be installed before start" }
+        check(egressReadiness == null) { "Mesh ingress readiness is already installed" }
+        egressReadiness = readiness
     }
 
     private fun scheduleObservation() {
@@ -223,11 +260,16 @@ internal class MeshIngressRuntimeBridge(
         }
 
         try {
-            val proxyReady = proxyRuntime.snapshot.value == ProxyRuntimeSnapshot.Running
             val epoch = view.admissionEpoch
-            if (proxyReady && view.state == MeshAdmissionState.ADMITTED && epoch != null) {
+            if (meshIngressServingAllowed(
+                    proxyRunning = proxyRuntime.snapshot.value == ProxyRuntimeSnapshot.Running,
+                    readiness = egressReadiness?.value ?: ProductReadinessState.UNKNOWN,
+                    meshAdmitted = view.state == MeshAdmissionState.ADMITTED,
+                    admissionEpoch = epoch,
+                )
+            ) {
                 if (!view.ingressRunning || !activeController.ingressHealthy()) {
-                    if (!activeController.startIngress(epoch)) {
+                    if (!activeController.startIngress(requireNotNull(epoch))) {
                         activeController.stopIngress()
                     }
                 }
@@ -267,6 +309,8 @@ internal class MeshIngressRuntimeBridge(
 
         proxyObservationJob?.cancel()
         proxyObservationJob = null
+        readinessObservationJob?.cancel()
+        readinessObservationJob = null
         var clean = true
         if (callbackRegistered.compareAndSet(true, false)) {
             clean = runCatching {
