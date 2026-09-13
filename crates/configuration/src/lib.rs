@@ -86,7 +86,10 @@ pub struct ReadinessProbeTarget {
 
 impl ReadinessProbeTarget {
     pub fn deployment() -> Result<Self, DesiredConfigurationError> {
-        Self::parse(DEPLOYMENT_READINESS_PROBE_HOST_RAW.trim(), READINESS_PROBE_PORT)
+        Self::parse(
+            DEPLOYMENT_READINESS_PROBE_HOST_RAW.trim(),
+            READINESS_PROBE_PORT,
+        )
     }
 
     pub fn parse(raw: &str, port: u16) -> Result<Self, DesiredConfigurationError> {

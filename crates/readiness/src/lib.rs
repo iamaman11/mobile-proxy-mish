@@ -144,11 +144,16 @@ pub fn project(input: ProductReadinessInput) -> Readiness {
         return Readiness::Unknown;
     }
 
-    let (Some(proxy_serving_generation), Some(proxy_credential_version), Some(mesh_admission_epoch)) = (
+    let (
+        Some(proxy_serving_generation),
+        Some(proxy_credential_version),
+        Some(mesh_admission_epoch),
+    ) = (
         proxy.serving_generation,
         proxy.credential_version,
         mesh.admission_epoch,
-    ) else {
+    )
+    else {
         return Readiness::Unknown;
     };
     if proxy_credential_version != credential.version {
