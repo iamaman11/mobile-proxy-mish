@@ -1,0 +1,71 @@
+name: D3 External Client Fixture Static
+
+on:
+  pull_request:
+    paths:
+      - 'lab/windows/external-client-fixture.json'
+      - 'lab/windows/test-external-client-fixture.ps1'
+      - 'docs/lab/EXTERNAL_CLIENT_FIXTURE.md'
+      - '.github/workflows/external-client-fixture-static.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'lab/windows/external-client-fixture.json'
+      - 'lab/windows/test-external-client-fixture.ps1'
+      - 'docs/lab/EXTERNAL_CLIENT_FIXTURE.md'
+      - '.github/workflows/external-client-fixture-static.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fixture:
+    name: D3 External Client Fixture Static
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Parse fixture validator
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'lab/windows/test-external-client-fixture.ps1'),
+            [ref]$tokens,
+            [ref]$errors
+          )
+          if ($errors.Count -ne 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            throw 'External client fixture validator parse failed.'
+          }
+
+      - name: Validate pinned TCP-only browser fixture
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & 'lab/windows/test-external-client-fixture.ps1'
+
+      - name: Verify pinned Camoufox release still exists upstream
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $fixture = Get-Content -Raw -LiteralPath 'lab/windows/external-client-fixture.json' | ConvertFrom-Json
+          $tag = [string]$fixture.camoufox.browser_version
+          $headers = @{
+            'User-Agent' = 'mobile-proxy-mish-d3-fixture'
+            'Authorization' = "Bearer $env:GITHUB_TOKEN"
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          $release = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/daijro/camoufox/releases/tags/$tag"
+          if ([string]$release.tag_name -ne $tag) {
+            throw "Pinned Camoufox release metadata drifted: expected $tag, got $($release.tag_name)"
+          }
