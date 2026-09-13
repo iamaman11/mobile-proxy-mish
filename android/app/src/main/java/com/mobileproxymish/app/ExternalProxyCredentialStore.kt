@@ -66,12 +66,13 @@ internal class ExternalProxyCredentialStore(
     }.getOrNull()
 
     /**
-     * Returns only non-secret Credentials-owner state. No username/password derivation is performed
-     * merely to project readiness.
+     * Returns only already-existing non-secret Credentials-owner state. Readiness observation never
+     * creates a Keystore root, initializes owner metadata, or performs legacy migration; those
+     * write effects remain on the actual credential/runtime paths.
      */
     @Synchronized
     fun currentReadinessSnapshot(): ExternalProxyCredentialReadinessSnapshot? = runCatching {
-        val state = loadOrInitialize().state
+        val state = loadExistingStateForObservation() ?: return@runCatching null
         ExternalProxyCredentialReadinessSnapshot(
             version = state.version,
             active = !state.revoked,
@@ -132,6 +133,29 @@ internal class ExternalProxyCredentialStore(
                 username = material.username,
                 password = material.password,
             ),
+        )
+    }
+
+    /** Read-only counterpart of loadOrInitialize used exclusively for observation. */
+    private fun loadExistingStateForObservation(): ExternalCredentialStateView? {
+        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+        val encodedState = preferences.getString(KEY_STATE_PROTOBUF, null)
+        val hasLegacyVersion = preferences.contains(LEGACY_KEY_VERSION)
+        val hasLegacyRevoked = preferences.contains(LEGACY_KEY_REVOKED)
+
+        if (encodedState != null) {
+            if (hasLegacyVersion || hasLegacyRevoked || !keyStore.containsAlias(ROOT_KEY_ALIAS)) {
+                return null
+            }
+            return restoreState(decodeCanonicalBase64(encodedState))
+        }
+
+        if (hasLegacyVersion != hasLegacyRevoked || !hasLegacyVersion) return null
+        if (!keyStore.containsAlias(ROOT_KEY_ALIAS)) return null
+        val version = preferences.getString(LEGACY_KEY_VERSION, null)?.toULongOrNull() ?: return null
+        return externalCredentialRestore(
+            version = version,
+            revoked = preferences.getBoolean(LEGACY_KEY_REVOKED, false),
         )
     }
 
