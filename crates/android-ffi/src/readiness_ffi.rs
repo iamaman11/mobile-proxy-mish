@@ -199,21 +199,25 @@ fn map_input(
             })
         })
         .transpose()?;
-    let proxy = match (
-        facts.proxy_runtime_generation,
-        facts.proxy_credential_version,
-    ) {
-        (Some(runtime_raw), Some(credential_raw)) => Some(ProxyReadinessFact {
+    let proxy = match facts.proxy_runtime_generation {
+        Some(runtime_raw) => Some(ProxyReadinessFact {
             runtime_generation: runtime_generation(runtime_raw)?,
             serving_generation: facts
                 .proxy_serving_generation
                 .map(proxy_generation)
                 .transpose()?,
-            credential_version: credential_version(credential_raw)?,
+            credential_version: facts
+                .proxy_credential_version
+                .map(credential_version)
+                .transpose()?,
             healthy: facts.proxy_healthy,
         }),
-        (None, None) => None,
-        _ => return Err(ReadinessBoundaryError::InvalidOwnerKey),
+        None => {
+            if facts.proxy_serving_generation.is_some() || facts.proxy_credential_version.is_some() {
+                return Err(ReadinessBoundaryError::InvalidOwnerKey);
+            }
+            None
+        }
     };
     let credential = facts
         .credential_version
@@ -459,6 +463,19 @@ mod tests {
             .expect("complete")
             .expect("observation");
         assert_eq!(observation.outcome, EgressProbeOutcome::Timeout);
+    }
+
+    #[test]
+    fn explicit_proxy_stop_is_not_ready_without_serving_version() {
+        let controller = ProductReadinessController::new();
+        let mut facts = ready_facts();
+        facts.proxy_healthy = false;
+        facts.proxy_serving_generation = None;
+        facts.proxy_credential_version = None;
+        assert_eq!(
+            controller.project(facts, None).expect("projection"),
+            ProductReadinessState::NotReady
+        );
     }
 
     #[test]
