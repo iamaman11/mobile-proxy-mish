@@ -168,7 +168,8 @@ impl RuntimeLifecycle {
             }
         } else {
             self.state = RuntimeLifecycleState::Stopped;
-            let install_fresh_generation_now = clean_after_failed_start && self.advance_generation();
+            let install_fresh_generation_now =
+                clean_after_failed_start && self.advance_generation();
             self.generation_requires_replacement = !install_fresh_generation_now;
             RuntimeStartCompletion {
                 install_fresh_generation_now,
