@@ -1,0 +1,198 @@
+name: Cloudflare Live Preflight
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/cloudflare-live-preflight.yml'
+      - 'config/deployment/mesh-device-cidr.txt'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-live-preflight
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Cloudflare Live Preflight
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: cloudflare-plan
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      WINDOWS_PROFILE_MATCH: ${{ secrets.CLOUDFLARE_WINDOWS_PROFILE_MATCH }}
+    steps:
+      - name: Checkout accepted main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify accepted-main execution boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = 'refs/heads/main'
+          git fetch --no-tags origin main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+
+      - name: Validate protected inputs and canonical Mesh CIDR
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$WINDOWS_PROFILE_MATCH"
+          mesh_cidr="$(tr -d '\r\n' < config/deployment/mesh-device-cidr.txt)"
+          test -n "$mesh_cidr"
+          if [[ ! "$mesh_cidr" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]]; then
+            echo '::error::Canonical Mesh CIDR has an unexpected shape.'
+            exit 1
+          fi
+          echo "EXPECTED_MESH_CIDR=$mesh_cidr" >> "$GITHUB_ENV"
+
+      - name: Resolve exactly one Cloudflare account
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          response="$RUNNER_TEMP/cloudflare-accounts.json"
+          trap 'rm -f "$response"' EXIT
+
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+            'https://api.cloudflare.com/client/v4/accounts?per_page=50&page=1' \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H 'Accept: application/json' \
+            -o "$response"
+
+          if ! jq -e '.success == true and (.result | type == "array")' "$response" >/dev/null; then
+            echo '::error::Cloudflare account scope could not be read.'
+            exit 1
+          fi
+
+          returned="$(jq -r '.result | length' "$response")"
+          total="$(jq -r '.result_info.total_count // (.result | length)' "$response")"
+          if [[ "$returned" != '1' || "$total" != '1' ]]; then
+            echo "::error::Expected protected token to resolve exactly one Cloudflare account; returned=${returned}, total=${total}."
+            exit 1
+          fi
+
+          account_id="$(jq -r '.result[0].id // empty' "$response")"
+          if [[ ! "$account_id" =~ ^[0-9A-Fa-f]{32}$ ]]; then
+            echo '::error::Resolved Cloudflare account identifier has an unexpected shape.'
+            exit 1
+          fi
+          echo "::add-mask::$account_id"
+          echo "CLOUDFLARE_ACCOUNT_ID=$account_id" >> "$GITHUB_ENV"
+
+      - name: Assert exact Windows Mesh profile through official API
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          response="$RUNNER_TEMP/cloudflare-device-policies.json"
+          trap 'rm -f "$response"' EXIT
+
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/devices/policies?per_page=100&page=1" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H 'Accept: application/json' \
+            -o "$response"
+
+          if ! jq -e '.success == true and (.result | type == "array")' "$response" >/dev/null; then
+            echo '::error::Cloudflare device-profile list could not be read.'
+            exit 1
+          fi
+
+          returned="$(jq -r '.result | length' "$response")"
+          total="$(jq -r '.result_info.total_count // (.result | length)' "$response")"
+          if (( total > returned )); then
+            echo '::error::Cloudflare device-profile response exceeds the bounded first page.'
+            exit 1
+          fi
+
+          if ! jq -e \
+            --arg expected_match "$WINDOWS_PROFILE_MATCH" \
+            --arg expected_cidr "$EXPECTED_MESH_CIDR" '
+              [.result[] |
+                select(
+                  .name == "adds" and
+                  .match == $expected_match and
+                  ((.default // false) == false)
+                )
+              ] as $p
+              | ($p | length) == 1
+              and ($p[0].enabled == true)
+              and ($p[0].allow_mode_switch == false)
+              and ($p[0].disable_auto_fallback == true)
+              and ($p[0].tunnel_protocol == "masque")
+              and ($p[0].service_mode_v2.mode == "warp_tunnel_only")
+              and (($p[0].include // []) as $inc |
+                ($inc | length) == 1
+                and $inc[0].address == $expected_cidr
+                and (($inc[0].host // "") == ""))
+            ' "$response" >/dev/null; then
+            echo '::error::Exact Windows Mesh profile does not satisfy the accepted live contract.'
+            exit 1
+          fi
+
+          echo 'Cloudflare profile: PASS (exact protected selector, enabled, MASQUE, warp_tunnel_only, no DNS auto-fallback, canonical Mesh include).'
+
+      - name: Assert global Zero Trust device settings through official API
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          response="$RUNNER_TEMP/cloudflare-device-settings.json"
+          trap 'rm -f "$response"' EXIT
+
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/devices/settings" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H 'Accept: application/json' \
+            -o "$response"
+
+          if ! jq -e '
+            .success == true and
+            .result.use_zt_virtual_ip == true and
+            .result.gateway_proxy_enabled == true and
+            .result.gateway_udp_proxy_enabled == true
+          ' "$response" >/dev/null; then
+            echo '::error::Cloudflare global device settings do not satisfy Mesh TCP/UDP/virtual-IP requirements.'
+            exit 1
+          fi
+
+          echo 'Cloudflare device settings: PASS (unique virtual IP + Gateway TCP + Gateway UDP).'
+
+      - name: Assert WARP-to-WARP connectivity through official API
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          response="$RUNNER_TEMP/cloudflare-connectivity-settings.json"
+          trap 'rm -f "$response"' EXIT
+
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/zerotrust/connectivity_settings" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H 'Accept: application/json' \
+            -o "$response"
+
+          if ! jq -e '.success == true and .result.offramp_warp_enabled == true' "$response" >/dev/null; then
+            echo '::error::Cloudflare WARP-to-WARP/off-ramp is not enabled.'
+            exit 1
+          fi
+
+          echo 'Cloudflare WARP-to-WARP/off-ramp: PASS.'
+
+      - name: Publish acceptance preflight summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '### Cloudflare Live Preflight: PASS'
+            echo '- Read-only official API observations only.'
+            echo '- No Terraform, R2 state, provider plan, import, PATCH, PUT, POST, DELETE, or apply operation was used.'
+            echo '- Exact Windows profile, Mesh CIDR, device TCP/UDP/virtual-IP settings, and WARP-to-WARP connectivity are accepted.'
+          } >> "$GITHUB_STEP_SUMMARY"
