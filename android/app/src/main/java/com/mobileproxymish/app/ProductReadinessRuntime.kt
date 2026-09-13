@@ -1,11 +1,13 @@
 package com.mobileproxymish.app
 
 import android.util.Base64
+import com.mobileproxymish.app.cellular.CellularRuntimeBridge
 import com.mobileproxymish.app.cellular.CellularRuntimeSnapshot
 import com.mobileproxymish.ffi.CellularAdmissionState
 import com.mobileproxymish.ffi.EgressProbeObservationView
 import com.mobileproxymish.ffi.EgressProbeOutcome
 import com.mobileproxymish.ffi.MeshAdmissionState
+import com.mobileproxymish.ffi.MeshAdmissionView
 import com.mobileproxymish.ffi.ProbeBindingView
 import com.mobileproxymish.ffi.ProbeTicketView
 import com.mobileproxymish.ffi.ProductReadinessController
@@ -53,7 +55,7 @@ import kotlinx.coroutines.flow.onEach
  */
 internal class ProductReadinessRuntime(
     private val runtimeGeneration: ULong,
-    private val cellularRuntime: com.mobileproxymish.app.cellular.CellularRuntimeBridge,
+    private val cellularRuntime: CellularRuntimeBridge,
     private val proxyRuntime: ProxyRuntimeSupervisor,
     private val meshRuntime: MeshIngressRuntimeBridge,
     private val credentialStore: ExternalProxyCredentialStore,
@@ -115,13 +117,6 @@ internal class ProductReadinessRuntime(
     private fun executeProbe(ticket: ProbeTicketView) {
         if (closed.get() || controller.expectedFreshness() != ticket.freshness) return
 
-        val credential = credentialStore.currentProvisioningSnapshot()
-        if (credential == null || credential.version != ticket.binding.credentialVersion) {
-            runCatching { controller.invalidateProbe() }
-            mutableState.value = projectOrUnknown(currentFacts(), null)
-            return
-        }
-
         val target = try {
             readinessProbeTarget()
         } catch (_: Exception) {
@@ -133,6 +128,12 @@ internal class ProductReadinessRuntime(
         if (budgetMs <= 0L) {
             runCatching { controller.invalidateProbe() }
             mutableState.value = projectUnknown()
+            return
+        }
+        val credential = credentialStore.currentCredential()
+        if (credential == null || credential.version != ticket.binding.credentialVersion) {
+            runCatching { controller.invalidateProbe() }
+            mutableState.value = projectOrUnknown(currentFacts(), null)
             return
         }
 
@@ -210,7 +211,9 @@ internal class ProductReadinessRuntime(
             val status = classifyProxyConnectStatusLine(header.lineSequence().firstOrNull().orEmpty())
             if (status != EgressProbeOutcome.SUCCEEDED) return status
 
-            val ssl = SSLSocketFactory.getDefault().createSocket(
+            val sslFactory = SSLSocketFactory.getDefault() as? SSLSocketFactory
+                ?: return EgressProbeOutcome.TLS_FAILED
+            val ssl = sslFactory.createSocket(
                 socket,
                 target.hostname,
                 target.port.toInt(),
@@ -415,7 +418,7 @@ internal class ProductReadinessRuntime(
     private data class StructuralObservation(
         val cellular: CellularRuntimeSnapshot,
         val proxy: ProxyRuntimeSnapshot,
-        val mesh: com.mobileproxymish.ffi.MeshAdmissionView?,
+        val mesh: MeshAdmissionView?,
     )
 
     private companion object {
@@ -428,7 +431,7 @@ internal class ProductReadinessRuntime(
 /** Pure parser used by the concrete effect; it owns no proxy policy. */
 internal fun classifyProxyConnectStatusLine(statusLine: String): EgressProbeOutcome {
     val parts = statusLine.trim().split(Regex("\\s+"), limit = 3)
-    if (parts.size < 2 || !parts[0].startsWith("HTTP/1.")) {
+    if (parts.size < 2 || (parts[0] != "HTTP/1.0" && parts[0] != "HTTP/1.1")) {
         return EgressProbeOutcome.TRANSPORT_FAILED
     }
     val status = parts[1].toIntOrNull() ?: return EgressProbeOutcome.TRANSPORT_FAILED
