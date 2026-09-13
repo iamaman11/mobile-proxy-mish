@@ -28,6 +28,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.SSLException
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
@@ -221,10 +222,10 @@ internal class ProductReadinessRuntime(
             ) as? SSLSocket ?: return EgressProbeOutcome.TLS_FAILED
             ssl.use {
                 it.soTimeout = remainingMillis(deadline)
-                it.sslParameters = it.sslParameters.apply {
-                    endpointIdentificationAlgorithm = "HTTPS"
-                }
                 it.startHandshake()
+                if (!HttpsURLConnection.getDefaultHostnameVerifier().verify(target.hostname, it.session)) {
+                    return EgressProbeOutcome.TLS_FAILED
+                }
             }
             return EgressProbeOutcome.SUCCEEDED
         } catch (_: SocketTimeoutException) {
