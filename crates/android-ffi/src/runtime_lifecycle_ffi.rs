@@ -372,16 +372,23 @@ mod tests {
 
     #[test]
     fn ffi_process_projection_preserves_failure_reason() {
-        let controller = RuntimeProcessLifecycleController::new();
-        assert!(controller.request_start());
-        assert!(controller.mark_running());
-        controller.mark_failed(RuntimeProcessFailure::ChildExited);
-        assert_eq!(
-            controller.snapshot(),
-            RuntimeProcessSnapshotView {
-                state: RuntimeProcessState::Failed,
-                failure: Some(RuntimeProcessFailure::ChildExited),
-            }
-        );
+        for failure in [
+            RuntimeProcessFailure::ChildExited,
+            RuntimeProcessFailure::ChildExecutorRejected,
+            RuntimeProcessFailure::ChildProcessStartFailed,
+            RuntimeProcessFailure::ChildPidOrPersistenceFailed,
+        ] {
+            let controller = RuntimeProcessLifecycleController::new();
+            assert!(controller.request_start());
+            assert!(controller.mark_running());
+            controller.mark_failed(failure);
+            assert_eq!(
+                controller.snapshot(),
+                RuntimeProcessSnapshotView {
+                    state: RuntimeProcessState::Failed,
+                    failure: Some(failure),
+                }
+            );
+        }
     }
 }
