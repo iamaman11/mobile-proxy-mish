@@ -221,10 +221,7 @@ mod tests {
             )
             .expect("current observation");
         assert_eq!(observation.freshness, current.freshness());
-        assert_eq!(
-            coordinator.expected_freshness(),
-            Some(current.freshness()),
-        );
+        assert_eq!(coordinator.expected_freshness(), Some(current.freshness()),);
         assert_eq!(
             coordinator.complete_bounded(
                 current,
