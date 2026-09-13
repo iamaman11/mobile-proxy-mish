@@ -3,6 +3,7 @@ package com.mobileproxymish.app
 import android.content.Context
 import com.mobileproxymish.app.cellular.CellularRuntimeBridge
 import com.mobileproxymish.app.cellular.CellularRuntimeSnapshot
+import com.mobileproxymish.ffi.MeshAdmissionView
 import com.mobileproxymish.ffi.ProductReadinessState
 import com.mobileproxymish.ffi.RuntimeLifecycleController
 import com.mobileproxymish.ffi.RuntimeLifecycleState
@@ -81,11 +82,27 @@ class MishRuntimeController internal constructor(
             initialValue = generation.value.readinessRuntime.state.value,
         )
 
+    /** Read-only Transport Reachability projection for UI and retained device diagnostics. */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val meshSnapshot: StateFlow<MeshAdmissionView?> = generation
+        .flatMapLatest { it.meshRuntime.snapshot }
+        .stateIn(
+            scope = observationScope,
+            started = SharingStarted.Eagerly,
+            initialValue = generation.value.meshRuntime.snapshot.value,
+        )
+
     internal val currentCellularRuntime: CellularRuntimeBridge
         get() = generation.value.cellularRuntime
 
     internal val currentProxyRuntime: ProxyRuntimeSupervisor
         get() = generation.value.proxyRuntime
+
+    internal val currentReadinessRuntime: ProductReadinessRuntime
+        get() = generation.value.readinessRuntime
+
+    internal val currentMeshRuntime: MeshIngressRuntimeBridge
+        get() = generation.value.meshRuntime
 
     /** Read-only bounded snapshot for the permission-gated Windows provisioning transaction. */
     internal fun currentExternalCredentialProvisioningSnapshot(): ExternalProxyCredentialSnapshot? =

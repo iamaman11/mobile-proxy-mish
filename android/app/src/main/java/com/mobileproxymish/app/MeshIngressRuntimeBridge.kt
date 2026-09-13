@@ -9,6 +9,7 @@ import android.net.NetworkRequest
 import com.mobileproxymish.ffi.MeshAdmissionState
 import com.mobileproxymish.ffi.MeshAdmissionView
 import com.mobileproxymish.ffi.MeshTransportController
+import com.mobileproxymish.ffi.MeshTransportBoundaryException
 import com.mobileproxymish.ffi.ProductReadinessState
 import java.io.Closeable
 import java.net.Inet4Address
@@ -64,6 +65,17 @@ internal fun meshIngressServingAllowed(
     meshAdmitted &&
     admissionEpoch != null
 
+/** Safe, endpoint-free diagnostic classification of the last ingress realization attempt. */
+internal enum class MeshIngressDiagnosticFailure {
+    NONE,
+    START_REJECTED,
+    BIND_FAILED,
+    UNAVAILABLE,
+    SHUTDOWN_FAILED,
+    OWNER_UNAVAILABLE,
+    OTHER,
+}
+
 /**
  * Android observation/composition adapter for the Rust Transport Reachability owner.
  *
@@ -94,6 +106,8 @@ internal class MeshIngressRuntimeBridge(
     private var proxyObservationJob: Job? = null
     private var readinessObservationJob: Job? = null
     private var egressReadiness: StateFlow<ProductReadinessState>? = null
+    @Volatile
+    private var lastIngressFailure = MeshIngressDiagnosticFailure.NONE
     private val vpnRequest = NetworkRequest.Builder()
         .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
         .removeCapability(NetworkCapabilities.NET_CAPABILITY_TRUSTED)
@@ -105,6 +119,8 @@ internal class MeshIngressRuntimeBridge(
 
     val snapshot: StateFlow<MeshAdmissionView?>
         get() = mutableSnapshot.asStateFlow()
+
+    internal fun diagnosticIngressFailure(): MeshIngressDiagnosticFailure = lastIngressFailure
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) = scheduleObservation()
@@ -270,15 +286,34 @@ internal class MeshIngressRuntimeBridge(
             ) {
                 if (!view.ingressRunning || !activeController.ingressHealthy()) {
                     if (!activeController.startIngress(requireNotNull(epoch))) {
+                        lastIngressFailure = MeshIngressDiagnosticFailure.START_REJECTED
                         activeController.stopIngress()
+                    } else {
+                        lastIngressFailure = MeshIngressDiagnosticFailure.NONE
                     }
                 }
             } else {
                 activeController.stopIngress()
+                lastIngressFailure = MeshIngressDiagnosticFailure.NONE
             }
         } catch (_: LinkageError) {
+            lastIngressFailure = MeshIngressDiagnosticFailure.OWNER_UNAVAILABLE
+            runCatching { activeController.stopIngress() }
+        } catch (error: MeshTransportBoundaryException) {
+            lastIngressFailure = when (error) {
+                is MeshTransportBoundaryException.IngressBindFailed ->
+                    MeshIngressDiagnosticFailure.BIND_FAILED
+                is MeshTransportBoundaryException.IngressShutdownFailed ->
+                    MeshIngressDiagnosticFailure.SHUTDOWN_FAILED
+                is MeshTransportBoundaryException.IngressUnavailable ->
+                    MeshIngressDiagnosticFailure.UNAVAILABLE
+                is MeshTransportBoundaryException.OwnerUnavailable ->
+                    MeshIngressDiagnosticFailure.OWNER_UNAVAILABLE
+                else -> MeshIngressDiagnosticFailure.OTHER
+            }
             runCatching { activeController.stopIngress() }
         } catch (_: Exception) {
+            lastIngressFailure = MeshIngressDiagnosticFailure.OTHER
             runCatching { activeController.stopIngress() }
         }
         mutableSnapshot.value = ownerSnapshotOrNull(activeController)
