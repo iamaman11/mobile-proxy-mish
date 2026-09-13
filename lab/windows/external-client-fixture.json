@@ -1,0 +1,60 @@
+{
+  "schema": "mish.external-client-fixture/v1",
+  "verified_date": "2026-09-13",
+  "m1_transport_contract": {
+    "product_transport": "tcp-only",
+    "udp_quic_product_support": false,
+    "phone_wifi_security_invariant": false,
+    "proxy_surface": [
+      { "port": 1080, "mode": "mixed-http-socks5", "transport": "tcp" },
+      { "port": 1081, "mode": "socks5", "transport": "tcp" },
+      { "port": 3128, "mode": "http-connect", "transport": "tcp" }
+    ]
+  },
+  "kameleo": {
+    "engine_version": "5.2.1",
+    "sources": {
+      "engine": "https://kameleo.io/downloads",
+      "kernels": "https://kameleo.io/browser-kernel-releases",
+      "webrtc": "https://developer.kameleo.io/tutorials/using-proxy-servers/",
+      "arguments": "https://developer.kameleo.io/tutorials/passing-command-line-switches/",
+      "blacklist": "https://developer.kameleo.io/reference/blacklisted-browser-switches/"
+    },
+    "chroma": {
+      "kernel_release": "Chroma 152",
+      "upstream_version": "152.0.7977.54",
+      "browser_settings": {
+        "arguments": ["--disable-quic"],
+        "preferences": {
+          "webrtc.ip_handling_policy": "disable_non_proxied_udp"
+        }
+      }
+    },
+    "junglefox": {
+      "kernel_release": "Junglefox 153",
+      "upstream_version": "153.0",
+      "browser_settings": {
+        "preferences": {
+          "media.peerconnection.ice.proxy_only": true,
+          "network.http.http3.enable": false
+        }
+      }
+    }
+  },
+  "camoufox": {
+    "browser_version": "v152.0.4-beta.30",
+    "python_package_version": "0.5.6",
+    "sources": {
+      "release": "https://github.com/daijro/camoufox/releases/tag/v152.0.4-beta.30",
+      "usage": "https://camoufox.com/python/usage/",
+      "webrtc": "https://camoufox.com/fingerprint/webrtc/",
+      "playwright_firefox_prefs": "https://playwright.dev/python/docs/api/class-browsertype"
+    },
+    "launch_settings": {
+      "block_webrtc": true,
+      "firefox_user_prefs": {
+        "network.http.http3.enable": false
+      }
+    }
+  }
+}
