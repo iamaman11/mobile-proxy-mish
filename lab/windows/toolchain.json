@@ -19,7 +19,7 @@
     "version": "7.6.6",
     "asset": "PowerShell-7.6.6-win-x64.zip",
     "url": "https://github.com/PowerShell/PowerShell/releases/download/v7.6.6/PowerShell-7.6.6-win-x64.zip",
-    "sha256": "02fe458be20493fbdf43f61ea20610b811ee6c738ab1676c61b9cfcd1a33c860"
+    "sha256": "02fe458be20434428bffcb699c290860f19bb5f66a67e6b330067e3de801fb04a"
   },
   "java": {
     "major": 17,
@@ -47,13 +47,13 @@
     "compile_sdk": 37,
     "compile_sdk_minor": 0,
     "platform_package": "platforms;android-37.0",
-    "platform_dir": "android-37.0",
     "target_sdk": 36,
     "min_sdk": 30,
     "ndk": "29.0.14206865",
     "packages": [
       "platform-tools",
       "platforms;android-37.0",
+      "build-tools;36.0.0",
       "ndk;29.0.14206865"
     ]
   }
