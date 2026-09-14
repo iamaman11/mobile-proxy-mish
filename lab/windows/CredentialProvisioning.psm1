@@ -4,6 +4,7 @@ Set-StrictMode -Version Latest
 
 $script:ProvisioningAction = 'com.mobileproxymish.app.action.PROVISION_EXTERNAL_PROXY_V1'
 $script:DefaultProvisioningPackage = 'com.mobileproxymish.app'
+$script:ProvisioningReceiverClass = 'com.mobileproxymish.app.CredentialProvisioningReceiver'
 $script:PublicKeyExtra = 'client_public_key_spki_b64'
 $script:ChallengeExtra = 'challenge_hex'
 $script:StoreEntropy = [System.Text.Encoding]::UTF8.GetBytes(
@@ -286,7 +287,7 @@ function Get-MishAdbProvisioningCiphertext {
     )
 
     $resolvedPackage = Assert-MishProvisioningPackageName -PackageName $PackageName
-    $provisioningComponent = "$resolvedPackage/.CredentialProvisioningReceiver"
+    $provisioningComponent = "$resolvedPackage/$script:ProvisioningReceiverClass"
     $arguments = @(
         'shell', 'am', 'broadcast', '--user', '0',
         '-n', $provisioningComponent,

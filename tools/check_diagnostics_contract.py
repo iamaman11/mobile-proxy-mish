@@ -23,6 +23,7 @@ def main() -> None:
         / "android/app/src/main/java/com/mobileproxymish/app/MishDiagnosticsProvider.kt"
     ).read_text(encoding="utf-8")
     collector = (ROOT / "lab/windows/collect-device-diagnostic.ps1").read_text(encoding="utf-8")
+    credential_bridge = (ROOT / "lab/windows/CredentialProvisioning.psm1").read_text(encoding="utf-8")
     workflow = (ROOT / ".github/workflows/mish-lab-diagnostic.yml").read_text(encoding="utf-8")
 
     require(manifest, 'android:name=".MishDiagnosticsProvider"', "provider component")
@@ -47,6 +48,7 @@ def main() -> None:
     require(collector, "'shell', 'content', 'call'", "single ADB snapshot bridge")
     require(collector, "forward 'tcp:0' 'tcp:3128'", "independent loopback E2E probe")
     require(collector, 'Open-MishExternalProxyCredentialLease', "existing credential authority")
+    require(collector, '-PackageName $PackageName', "package-scoped credential source")
     for forbidden in (
         "adb install",
         "force-stop",
@@ -55,6 +57,22 @@ def main() -> None:
         "cloudflare prove",
     ):
         forbid(collector, forbidden, "collector mutation")
+
+    require(
+        credential_bridge,
+        "$script:ProvisioningReceiverClass = 'com.mobileproxymish.app.CredentialProvisioningReceiver'",
+        "stable receiver implementation class",
+    )
+    require(
+        credential_bridge,
+        '$provisioningComponent = "$resolvedPackage/$script:ProvisioningReceiverClass"',
+        "applicationId/namespace-safe component address",
+    )
+    forbid(
+        credential_bridge,
+        '$resolvedPackage/.CredentialProvisioningReceiver',
+        "applicationId-relative receiver class",
+    )
 
     require(workflow, "github.event.issue.number == 163", "dedicated control issue")
     require(workflow, "github.event.comment.user.login == 'iamaman11'", "owner gate")
