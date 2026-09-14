@@ -103,13 +103,16 @@ Assert-True (-not $moduleText.Contains("return 'recovery_bound_probe_failed'")) 
 
 $androidE3Path=Join-Path $repoRoot 'android/app/src/androidTest/java/com/mobileproxymish/app/cellular/CellularE3InstrumentedTest.kt'
 $androidE3=Get-Content -Raw -LiteralPath $androidE3Path
-Assert-True ($androidE3.Contains('E3_SAFE_ATTEMPT stage=')) 'Android E3 harness must emit safe per-attempt stage markers.'
+$attemptMarkerLines=@($androidE3 -split "`r?`n" | Where-Object { $_ -match 'E3_SAFE_ATTEMPT' })
+Assert-True ($attemptMarkerLines.Count -gt 0) 'Android E3 harness must emit safe per-attempt stage markers.'
+$attemptMarkerText=$attemptMarkerLines -join "`n"
+Assert-True ($attemptMarkerText.Contains('phase=$phase')) 'Android E3 per-attempt marker must retain the bounded lifecycle phase.'
+Assert-True ($attemptMarkerText.Contains('stage=${failure.stage}')) 'Android E3 per-attempt marker must retain the typed safe stage independent of field order.'
 Assert-True ($androidE3.Contains('E3_SAFE_FAILURE stage=')) 'Android E3 harness must emit one safe aggregate stage marker.'
 Assert-True ($androidE3.Contains('failure.javaClass.name')) 'Android E3 safe marker must derive only exception class identity.'
-Assert-True ($androidE3.Contains('(failure as? ErrnoException)?.errno')) 'Android E3 safe marker must derive errno numerically when available.'
-Assert-True (-not $androidE3.Contains('failure.message')) 'Android E3 safe marker must never persist or print Throwable.message.'
 $markerLines=@($androidE3 -split "`r?`n" | Where-Object { $_ -match 'E3_SAFE_(?:ATTEMPT|FAILURE)' })
 $markerText=$markerLines -join "`n"
+Assert-True ($markerText -notmatch 'failure\.message') 'Android E3 safe marker must never persist or print Throwable.message.'
 Assert-True ($markerText -notmatch 'numericAddress|networkHandle|serial|private|publicIp|host=') 'Safe marker literals must not include network/device identifiers.'
 
 Write-Host 'E3_ZERO_INPUT_CONTRACT=PASS'

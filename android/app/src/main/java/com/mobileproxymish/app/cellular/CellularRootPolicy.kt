@@ -488,33 +488,35 @@ class CellularRootPolicy internal constructor(
     }
 
     private fun discoverValidatedIpv4Table(iface: String): String? {
-        val result = runRoot("ip -4 route show table all dev $iface")
-        if (result.timedOut || !result.outputComplete || result.exitCode != 0) return null
-
-        val tables = result.stdout.lineSequence()
-            .map(String::trim)
-            .filter { it.startsWith("default ") || it == "default" }
-            .filter { Regex("""(?:^|\s)dev\s+${Regex.escape(iface)}(?:\s|$)""").containsMatchIn(it) }
+        // Android/iproute output for `route show table all` does not consistently retain the
+        // originating table token on every default-route line. Treat the complete RPDB snapshot
+        // as the candidate authority, then validate each candidate table directly. This remains
+        // fail-closed on no candidate, ambiguity, partial output or interface contradiction.
+        val ruleLines = ruleOutputOrNull(IPV4_RULE_SHOW) ?: return null
+        val referencedTables = ruleLines
             .mapNotNull { line ->
-                Regex("""(?:^|\s)table\s+([^\s]+)(?:\s|$)""")
+                Regex("""(?:^|\s)(?:lookup|table)\s+([^\s]+)(?:\s|$)""")
                     .find(line)
                     ?.groupValues
                     ?.get(1)
-                    ?.takeIf { isSafeTableToken(it) }
+                    ?.takeIf(::isSafeTableToken)
             }
             .distinct()
-            .toList()
+
+        val tables = referencedTables.filter { candidate ->
+            val result = runRoot("ip -4 route show table $candidate default")
+            !result.timedOut && result.outputComplete && result.exitCode == 0 &&
+                result.stdout.lineSequence()
+                    .map(String::trim)
+                    .any { line ->
+                        (line.startsWith("default ") || line == "default") &&
+                            Regex("""(?:^|\s)dev\s+${Regex.escape(iface)}(?:\s|$)""")
+                                .containsMatchIn(line)
+                    }
+        }
 
         if (tables.size != 1) return null
-        val table = tables.single()
-
-        val verify = runRoot("ip -4 route show table $table default dev $iface")
-        if (verify.timedOut || !verify.outputComplete || verify.exitCode != 0) return null
-        val verified = verify.stdout.lineSequence().map(String::trim).any { line ->
-            (line.startsWith("default ") || line == "default") &&
-                Regex("""(?:^|\s)dev\s+${Regex.escape(iface)}(?:\s|$)""").containsMatchIn(line)
-        }
-        return table.takeIf { verified }
+        return tables.single()
     }
 
     private fun replaceIpv4Lookup(table: String): Boolean {

@@ -8,6 +8,15 @@ use std::net::{IpAddr, Ipv4Addr};
 
 const MIN_MESH_ACCEPTED_PREFIX: u8 = 8;
 const READINESS_PROBE_PORT: u16 = 443;
+
+/// M1's bounded, fail-closed concurrent TCP budget for one external proxy runtime generation.
+///
+/// The Android bridge is deliberately blocking/thread-per-session today. Keeping one shared
+/// admission budget prevents an unbounded burst at the Mesh edge from creating more relay
+/// workers than the private Cellular Egress bridge can serve. Connections above this budget are
+/// rejected; they are never rerouted through a default/VPN path. Raising this value requires a
+/// measured Android/LAB capacity change, not merely a timeout increase.
+pub const EXTERNAL_TCP_SESSION_BUDGET: usize = 16;
 const DEPLOYMENT_MESH_ACCEPTED_CIDR_RAW: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../config/deployment/mesh-device-cidr.txt"

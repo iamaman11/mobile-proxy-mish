@@ -71,9 +71,31 @@ internal class ProductReadinessRuntime(
     private var activeSocket: Socket? = null
     private val mutableState = MutableStateFlow(projectUnknown())
     private var observationJob: Job? = null
+    private var lastStructuralFacts: ProductReadinessFactsView? = null
 
     val state: StateFlow<ProductReadinessState>
         get() = mutableState.asStateFlow()
+
+    /**
+     * Sanitized structural prerequisite projection for device diagnostics. It deliberately exposes
+     * no endpoint, DNS, credential material, route/table, network handle, or probe response.
+     */
+    internal fun diagnosticObservation(): ProductReadinessDiagnostic {
+        val facts = currentFacts()
+        val admission = (cellularRuntime.snapshot.value as? CellularRuntimeSnapshot.OwnerSnapshot)
+            ?.admission
+        return ProductReadinessDiagnostic(
+            cellularState = admission?.state?.name ?: "ABSENT",
+            cellularReason = admission?.reason?.name ?: "NONE",
+            cellularAdmitted = facts.cellularAdmitted,
+            rootPolicyVerified = facts.rootPolicyVerified,
+            privateBridgeHealthy = facts.privateBridgeHealthy,
+            proxyHealthy = facts.proxyHealthy,
+            credentialActive = facts.credentialActive,
+            meshAdmitted = facts.meshAdmitted,
+            bindingEligible = candidateBinding(facts) != null,
+        )
+    }
 
     init {
         observationJob = combine(
@@ -88,6 +110,14 @@ internal class ProductReadinessRuntime(
     private fun onStructuralObservation(observation: StructuralObservation) {
         if (closed.get()) return
 
+        val facts = currentFacts(observation)
+        // Mesh observer callbacks carry a monotonically increasing local observation sequence.
+        // That sequence is not a readiness fact: repeating the same admitted endpoint/epoch must
+        // not continually cancel a DNS+TLS probe before it can complete. Only semantic owner facts
+        // are allowed to invalidate the current probe binding.
+        if (facts == lastStructuralFacts) return
+        lastStructuralFacts = facts
+
         // Structural change invalidates any older in-flight/completed probe before its socket is
         // closed. A concurrent late completion therefore cannot publish READY even for one frame.
         if (runCatching { controller.invalidateProbe() }.isFailure) {
@@ -97,7 +127,6 @@ internal class ProductReadinessRuntime(
         }
         closeActiveSocket()
 
-        val facts = currentFacts(observation)
         mutableState.value = projectOrUnknown(facts, null)
         val binding = candidateBinding(facts) ?: return
         val ticket = try {
@@ -331,7 +360,9 @@ internal class ProductReadinessRuntime(
             meshRuntimeGeneration = if (mesh != null) runtimeGeneration else null,
             meshAdmissionEpoch = mesh?.admissionEpoch,
             meshAdmitted = mesh?.state == MeshAdmissionState.ADMITTED,
-            meshIngressRunning = mesh?.ingressRunning == true,
+            // Public ingress is an effect of READY, never an input to it. Including its transient
+            // listener lifecycle here would create a READY -> ingress -> invalidate-READY loop.
+            meshIngressRunning = false,
         )
     }
 
@@ -347,7 +378,6 @@ internal class ProductReadinessRuntime(
             !facts.proxyHealthy ||
             !facts.credentialActive ||
             !facts.meshAdmitted ||
-            !facts.meshIngressRunning ||
             facts.runtimeGeneration != runtimeGeneration ||
             facts.proxyRuntimeGeneration != runtimeGeneration ||
             facts.meshRuntimeGeneration != runtimeGeneration ||
@@ -442,3 +472,15 @@ internal fun classifyProxyConnectStatusLine(statusLine: String): EgressProbeOutc
         else -> EgressProbeOutcome.TRANSPORT_FAILED
     }
 }
+
+internal data class ProductReadinessDiagnostic(
+    val cellularState: String,
+    val cellularReason: String,
+    val cellularAdmitted: Boolean,
+    val rootPolicyVerified: Boolean,
+    val privateBridgeHealthy: Boolean,
+    val proxyHealthy: Boolean,
+    val credentialActive: Boolean,
+    val meshAdmitted: Boolean,
+    val bindingEligible: Boolean,
+)

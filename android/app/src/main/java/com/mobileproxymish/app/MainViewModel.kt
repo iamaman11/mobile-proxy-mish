@@ -128,6 +128,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         RuntimeProcessFailure.PRIVATE_BRIDGE_UNAVAILABLE -> "proxy.private_bridge_unavailable"
         RuntimeProcessFailure.CONFIGURATION_REJECTED -> "proxy.configuration_rejected"
         RuntimeProcessFailure.CHILD_LAUNCH_FAILED -> "proxy.child_launch_failed"
+        RuntimeProcessFailure.CHILD_EXECUTOR_REJECTED -> "proxy.child_executor_rejected"
+        RuntimeProcessFailure.CHILD_PROCESS_START_FAILED -> "proxy.child_process_start_failed"
+        RuntimeProcessFailure.CHILD_PID_OR_PERSISTENCE_FAILED ->
+            "proxy.child_pid_or_persistence_failed"
         RuntimeProcessFailure.HEALTH_CHECK_FAILED -> "proxy.health_check_failed"
         RuntimeProcessFailure.CHILD_EXITED -> "proxy.child_exited"
         RuntimeProcessFailure.PRIVATE_BRIDGE_UNHEALTHY -> "proxy.private_bridge_unhealthy"

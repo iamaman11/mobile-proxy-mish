@@ -133,7 +133,6 @@ pub fn project(input: ProductReadinessInput) -> Readiness {
         || !proxy.healthy
         || !credential.active
         || !mesh.admitted
-        || !mesh.ingress_running
     {
         return Readiness::NotReady;
     }
@@ -290,6 +289,7 @@ mod tests {
 
         let mut input = ready_input();
         let mesh = input.mesh.as_mut().expect("mesh");
+        mesh.admitted = false;
         mesh.ingress_running = false;
         mesh.admission_epoch = None;
         assert_eq!(project(input), Readiness::NotReady);
@@ -311,6 +311,13 @@ mod tests {
         let mut input = ready_input();
         input.proxy.as_mut().expect("proxy").credential_version = None;
         assert_eq!(project(input), Readiness::Unknown);
+    }
+
+    #[test]
+    fn successful_private_egress_probe_is_ready_before_public_ingress_starts() {
+        let mut input = ready_input();
+        input.mesh.as_mut().expect("mesh").ingress_running = false;
+        assert_eq!(project(input), Readiness::Ready);
     }
 
     #[test]

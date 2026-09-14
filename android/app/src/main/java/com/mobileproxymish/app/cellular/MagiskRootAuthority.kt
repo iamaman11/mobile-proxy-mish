@@ -89,7 +89,15 @@ internal data class RootProcessResult(
  * reader failure or overflow is represented as `outputComplete=false` and fails closed.
  */
 internal class SuProcess : RootProcess {
-    override fun run(arguments: List<String>): RootProcessResult {
+    override fun run(arguments: List<String>): RootProcessResult = synchronized(ROOT_PROCESS_LOCK) {
+        runSerialized(arguments)
+    }
+
+    /**
+     * DEVICE-1 serializes application-originated Magisk sessions.  Distinct typed root clients
+     * must therefore not race separate `su` processes against each other.
+     */
+    private fun runSerialized(arguments: List<String>): RootProcessResult {
         var child: Process? = null
         var outputReader: Thread? = null
         val output = ByteArrayOutputStream()
@@ -188,7 +196,12 @@ internal class SuProcess : RootProcess {
         }
     }
 
-    private companion object {
+    internal companion object {
+        val ROOT_PROCESS_LOCK = Any()
+        /** Shares the single DEVICE-1 Magisk session boundary with a fixed root child launch. */
+        fun <T> serializedRootSession(block: () -> T): T = synchronized(ROOT_PROCESS_LOCK) {
+            block()
+        }
         const val PROBE_TIMEOUT_NANOS = 10_000_000_000L
         const val POLL_INTERVAL_MILLIS = 25L
         const val READER_JOIN_MILLIS = 1_000L

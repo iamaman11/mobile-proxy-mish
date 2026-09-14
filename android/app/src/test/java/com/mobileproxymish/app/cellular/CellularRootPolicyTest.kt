@@ -342,12 +342,9 @@ class CellularRootPolicyTest {
                 GUARD_DELETE_REGEX.matches(command) -> deleteGuard(command)
                 LOOKUP_ADD_REGEX.matches(command) -> addLookup(command)
                 LOOKUP_DELETE_REGEX.matches(command) -> deleteLookup(command)
-                command == "ip -4 route show table all dev rmnet_data0" -> ok(
-                    "default via 10.0.0.1 dev rmnet_data0 table 1052 proto static\n" +
-                        "10.0.0.0/30 dev rmnet_data0 table 1052 scope link\n",
-                )
-                command == "ip -4 route show table 1052 default dev rmnet_data0" ->
+                command == "ip -4 route show table 1052 default" ->
                     ok("default via 10.0.0.1 dev rmnet_data0\n")
+                command == "ip -4 route show table main default" -> ok("")
                 ROUTE_GET_REGEX.matches(command) -> routeGet(command)
                 else -> fail("unsupported test command: $command")
             }
@@ -453,6 +450,9 @@ class CellularRootPolicyTest {
 
         private fun ipv4Rules(): String = buildString {
             append("0: from all lookup local\n")
+            // Android/netd identifies the cellular table through RPDB. The adapter does not
+            // rely on table-all route output because that output may omit the table token.
+            append("10000: from all lookup 1052\n")
             foreignIpv4Rpdb.forEach { append(it).append('\n') }
             ipv4Lookup?.let {
                 append("${it.lookup}: from all fwmark ${it.mark}/${it.mark} lookup ${it.table}\n")

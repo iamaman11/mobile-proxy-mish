@@ -25,6 +25,7 @@ class CellularNetworkObserver(
     private val connectivityManager = context.getSystemService(ConnectivityManager::class.java)
     private val sequence = AtomicLong(0)
     private val eventLock = Any()
+    private var lastObserved: ObservedFact? = null
 
     private val request = NetworkRequest.Builder()
         .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
@@ -100,24 +101,31 @@ class CellularNetworkObserver(
         linkProperties: LinkProperties?,
     ) {
         synchronized(eventLock) {
+            val fact = ObservedFact(
+                networkHandle = network.networkHandle,
+                isCellular = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR),
+                hasInternet = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET),
+                isValidated = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED),
+                isNotVpn = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN),
+                interfaceName = linkProperties?.interfaceName,
+            )
+            // Repeated identical Android snapshots carry no new cellular admission fact. If
+            // emitted they can supersede a still-valid reconciliation generation, so collapse
+            // only exact duplicates; semantic changes and every loss remain ordered.
+            if (fact == lastObserved) return
+            lastObserved = fact
             // Sequence allocation and sink submission are one atomic ordering boundary.
             // If Android invokes callbacks concurrently, executor enqueue order therefore
             // cannot invert owner sequence order and make a stale interface hint current.
             sink.onEvent(
                 CellularNetworkEvent.Observed(
                     sequence = sequence.incrementAndGet(),
-                    networkHandle = network.networkHandle,
-                    isCellular = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR),
-                    hasInternet = capabilities.hasCapability(
-                        NetworkCapabilities.NET_CAPABILITY_INTERNET,
-                    ),
-                    isValidated = capabilities.hasCapability(
-                        NetworkCapabilities.NET_CAPABILITY_VALIDATED,
-                    ),
-                    isNotVpn = capabilities.hasCapability(
-                        NetworkCapabilities.NET_CAPABILITY_NOT_VPN,
-                    ),
-                    interfaceName = linkProperties?.interfaceName,
+                    networkHandle = fact.networkHandle,
+                    isCellular = fact.isCellular,
+                    hasInternet = fact.hasInternet,
+                    isValidated = fact.isValidated,
+                    isNotVpn = fact.isNotVpn,
+                    interfaceName = fact.interfaceName,
                 ),
             )
         }
@@ -125,6 +133,9 @@ class CellularNetworkObserver(
 
     private fun emitLost(network: Network) {
         synchronized(eventLock) {
+            if (lastObserved?.networkHandle == network.networkHandle) {
+                lastObserved = null
+            }
             sink.onEvent(
                 CellularNetworkEvent.Lost(
                     sequence = sequence.incrementAndGet(),
@@ -133,4 +144,13 @@ class CellularNetworkObserver(
             )
         }
     }
+
+    private data class ObservedFact(
+        val networkHandle: Long,
+        val isCellular: Boolean,
+        val hasInternet: Boolean,
+        val isValidated: Boolean,
+        val isNotVpn: Boolean,
+        val interfaceName: String?,
+    )
 }

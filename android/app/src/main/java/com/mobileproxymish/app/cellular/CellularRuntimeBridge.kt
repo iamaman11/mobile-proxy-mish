@@ -7,6 +7,7 @@ import com.mobileproxymish.ffi.CellularAdmissionView
 import com.mobileproxymish.ffi.CellularBridgeRuntime
 import com.mobileproxymish.ffi.CellularController
 import java.io.Closeable
+import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
@@ -399,7 +400,10 @@ class CellularRuntimeBridge(
         runCatching { controller?.closeRootPolicyGate() }
         observer.close()
         val cleanup = try {
-            policyExecutor.submit {
+            // The lambda returns the cleanup fact.  Use Callable explicitly: the Runnable
+            // overload returns a Future whose value is always null, which would turn a
+            // successful exact cleanup into a false failure.
+            policyExecutor.submit(Callable {
                 interfaceHints.clear()
                 val quiesced = try {
                     controller?.awaitRootPolicyQuiesced(EFFECT_DRAIN_TIMEOUT_MS.toULong()) ?: true
@@ -409,7 +413,7 @@ class CellularRuntimeBridge(
                     false
                 }
                 quiesced && rootPolicy.cleanupExactOwnedRules()
-            }
+            })
         } catch (_: RejectedExecutionException) {
             null
         }

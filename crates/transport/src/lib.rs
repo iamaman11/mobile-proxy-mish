@@ -5,6 +5,7 @@
 //! proxy protocols, proxy listener ports, authentication, Cloudflare/VPN configuration, DNS, or
 //! public Internet egress.
 
+use mish_configuration::EXTERNAL_TCP_SESSION_BUDGET;
 use std::collections::{BTreeSet, HashMap};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, SocketAddrV4, TcpListener, TcpStream};
@@ -13,7 +14,10 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-pub const MAX_MESH_SESSIONS: usize = 128;
+/// One external generation may accept only the same bounded number of sessions as the private
+/// bridge. Over-capacity Mesh clients are rejected at the edge instead of accumulating threads
+/// and eventually timing out behind sing-box.
+pub const MAX_MESH_SESSIONS: usize = EXTERNAL_TCP_SESSION_BUDGET;
 
 const ACCEPT_POLL: Duration = Duration::from_millis(20);
 const BACKEND_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
