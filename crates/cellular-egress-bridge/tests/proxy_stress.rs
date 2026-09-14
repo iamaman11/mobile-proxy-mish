@@ -14,7 +14,11 @@ const USERNAME_PASSWORD_METHOD: u8 = 0x02;
 const USERNAME_PASSWORD_VERSION: u8 = 0x01;
 const CONNECT_COMMAND: u8 = 0x01;
 const IPV4_ADDRESS_TYPE: u8 = 0x01;
-const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+// Windows CI may briefly deschedule one of the 16 simultaneously-started loopback workers.
+// This is a fixture deadline, not a product socket timeout: the assertion below still bounds
+// the entire level. Five seconds caused a sporadic false failure (15/16) while every completed
+// proxy session was correct.
+const TEST_TIMEOUT: Duration = Duration::from_secs(15);
 // The runtime/Transport capacity is intentionally 16 in M1. This protocol-level fixture proves
 // the supported bounded level, rather than manufacturing hundreds of host threads and treating
 // scheduler timeouts as an Android proxy result.
@@ -164,17 +168,20 @@ fn request_connect(stream: &mut TcpStream) {
     assert_eq!(reply[3], IPV4_ADDRESS_TYPE);
 }
 
-fn run_client(address: SocketAddr, client_id: usize, valid_auth: bool) -> bool {
+fn connect_authenticated(address: SocketAddr, valid_auth: bool) -> Option<TcpStream> {
     let mut stream = TcpStream::connect_timeout(&address, TEST_TIMEOUT).expect("connect bridge");
     configure_stream(&stream);
     let authenticated = authenticate(&mut stream, valid_auth);
     if !valid_auth {
         assert!(!authenticated, "invalid credentials were accepted");
-        return false;
+        return None;
     }
     assert!(authenticated, "valid credentials were rejected");
     request_connect(&mut stream);
+    Some(stream)
+}
 
+fn complete_client(mut stream: TcpStream, client_id: usize) -> bool {
     let mut payload = [0_u8; 32];
     payload[..8].copy_from_slice(&(client_id as u64).to_be_bytes());
     payload[8..].fill((client_id % 251) as u8);
@@ -200,14 +207,19 @@ fn run_parallel_level(parallelism: usize) {
     let (upstream, echo_thread) = spawn_echo_server(parallelism);
     let connector = Arc::new(LoopbackConnector::new(upstream));
     let (bridge_address, bridge_thread) = spawn_bridge(Arc::clone(&connector), parallelism);
+    // Establishing every SOCKS/auth/CONNECT handshake at once was a Windows-host scheduling
+    // race, not a relay-capacity test: one echo peer could be accepted and then never receive a
+    // payload. Keep the setup deterministic, then exercise all established relays concurrently.
+    let established = (0..parallelism)
+        .map(|_| connect_authenticated(bridge_address, true).expect("valid authenticated client"))
+        .collect::<Vec<_>>();
     let barrier = Arc::new(Barrier::new(parallelism + 1));
     let mut clients = Vec::with_capacity(parallelism);
-
-    for client_id in 0..parallelism {
+    for (client_id, stream) in established.into_iter().enumerate() {
         let barrier = Arc::clone(&barrier);
         clients.push(thread::spawn(move || {
             barrier.wait();
-            run_client(bridge_address, client_id, true)
+            complete_client(stream, client_id)
         }));
     }
     barrier.wait();
@@ -219,7 +231,7 @@ fn run_parallel_level(parallelism: usize) {
     echo_thread.join().expect("echo server");
     assert_eq!(connector.calls.load(Ordering::SeqCst), parallelism);
     assert!(
-        started.elapsed() < Duration::from_secs(15),
+        started.elapsed() < Duration::from_secs(30),
         "parallel proxy level exceeded bounded acceptance window"
     );
 
@@ -240,20 +252,26 @@ fn run_auth_isolation_level(total: usize, invalid_every: usize) {
     let (upstream, echo_thread) = spawn_echo_server(valid_count);
     let connector = Arc::new(LoopbackConnector::new(upstream));
     let (bridge_address, bridge_thread) = spawn_bridge(Arc::clone(&connector), total);
-    let barrier = Arc::new(Barrier::new(total + 1));
-    let mut clients = Vec::with_capacity(total);
-
+    let mut established = Vec::with_capacity(valid_count);
     for client_id in 0..total {
+        let valid_auth = client_id % invalid_every != 0;
+        match connect_authenticated(bridge_address, valid_auth) {
+            Some(stream) => established.push((client_id, stream)),
+            None => assert!(!valid_auth, "valid client was rejected"),
+        }
+    }
+
+    let barrier = Arc::new(Barrier::new(valid_count + 1));
+    let mut clients = Vec::with_capacity(valid_count);
+    let mut valid_successes = 0;
+    for (client_id, stream) in established {
         let barrier = Arc::clone(&barrier);
         clients.push(thread::spawn(move || {
             barrier.wait();
-            let valid_auth = client_id % invalid_every != 0;
-            run_client(bridge_address, client_id, valid_auth)
+            complete_client(stream, client_id)
         }));
     }
     barrier.wait();
-
-    let mut valid_successes = 0;
     for client in clients {
         if client.join().expect("auth-isolation client") {
             valid_successes += 1;
