@@ -74,6 +74,18 @@ internal fun sameCellularOwnerGeneration(
     expected.state == current.state &&
     expected.admittedNetworkHandle == current.admittedNetworkHandle
 
+/** Only transport/incomplete authority states are expected to recover without operator action. */
+internal fun shouldRetryRootAuthority(status: RootAuthorityStatus): Boolean = when (status) {
+    RootAuthorityStatus.Unavailable,
+    RootAuthorityStatus.Incomplete,
+    -> true
+
+    RootAuthorityStatus.Ready,
+    RootAuthorityStatus.InteractiveGrantRequired,
+    RootAuthorityStatus.Denied,
+    -> false
+}
+
 /**
  * One process-generation bridge between Android observations, the Rust natural owner,
  * and the narrow root policy-routing adapter that realizes an already owner-admitted
@@ -343,7 +355,9 @@ class CellularRuntimeBridge(
             return
         }
 
-        if (policyResult is CellularRootPolicyResult.AuthorityUnavailable) {
+        if (policyResult is CellularRootPolicyResult.AuthorityUnavailable &&
+            shouldRetryRootAuthority(policyResult.status)
+        ) {
             scheduleRootAuthorityRecovery(activeController, ownerSequence)
         } else {
             resetRootAuthorityRecovery()
@@ -495,7 +509,11 @@ class CellularRuntimeBridge(
 
         mutableSnapshot.value = when (result) {
             is CellularRootPolicyResult.AuthorityUnavailable -> {
-                scheduleRootAuthorityRecovery(activeController, admission.lastSequence)
+                if (shouldRetryRootAuthority(result.status)) {
+                    scheduleRootAuthorityRecovery(activeController, admission.lastSequence)
+                } else {
+                    resetRootAuthorityRecovery()
+                }
                 CellularRuntimeSnapshot.BoundaryUnavailable(
                     CellularBoundaryFailure.RootAuthorityUnavailable,
                 )
@@ -563,7 +581,11 @@ class CellularRuntimeBridge(
         }
         return when (val result = rootPolicy.failClosed()) {
             is CellularRootPolicyResult.AuthorityUnavailable -> {
-                controller?.let { scheduleRootAuthorityRecovery(it) }
+                if (shouldRetryRootAuthority(result.status)) {
+                    controller?.let { scheduleRootAuthorityRecovery(it) }
+                } else {
+                    resetRootAuthorityRecovery()
+                }
                 CellularRuntimeSnapshot.BoundaryUnavailable(
                     CellularBoundaryFailure.RootAuthorityUnavailable,
                 )
