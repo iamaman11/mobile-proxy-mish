@@ -4,12 +4,16 @@
 //! only the bounded internal SOCKS5 protocol/session semantics needed for sing-box
 //! to hand one CONNECT stream to a consumer-owned Cellular Egress connector port.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::net::{
     IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket,
 };
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
+use std::time::Duration;
 
 const SOCKS_VERSION: u8 = 0x05;
 const USERNAME_PASSWORD_METHOD: u8 = 0x02;
@@ -28,6 +32,9 @@ const REPLY_HOST_UNREACHABLE: u8 = 0x04;
 const REPLY_COMMAND_NOT_SUPPORTED: u8 = 0x07;
 const REPLY_ADDRESS_TYPE_NOT_SUPPORTED: u8 = 0x08;
 const MAX_AUTH_FIELD_LEN: usize = u8::MAX as usize;
+const UDP_ASSOCIATION_MAX_TARGETS: usize = 16;
+const UDP_ASSOCIATION_MAX_DATAGRAM: usize = 16 * 1024;
+const UDP_ASSOCIATION_POLL: Duration = Duration::from_millis(50);
 
 /// Runtime-generation credentials for the private loopback SOCKS5 bridge.
 #[derive(Clone, PartialEq, Eq)]
@@ -88,7 +95,7 @@ impl fmt::Display for BridgeConfigError {
 impl std::error::Error for BridgeConfigError {}
 
 /// One typed destination requested by the internal SOCKS5 client.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ConnectTarget {
     host: TargetHost,
     port: u16,
@@ -107,7 +114,7 @@ impl ConnectTarget {
 }
 
 /// Host representation preserved across the bridge/outbound boundary.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TargetHost {
     /// Numeric IPv4 destination. No DNS is required.
     Ipv4(Ipv4Addr),
@@ -174,8 +181,8 @@ pub enum ProtocolError {
     MalformedRequest,
     /// SOCKS5 BIND is intentionally unsupported.
     BindNotSupported,
-    /// SOCKS5 UDP ASSOCIATE is intentionally unsupported.
-    UdpAssociateNotSupported,
+    /// SOCKS5 UDP ASSOCIATE framing was malformed or tried unsupported fragmentation.
+    UdpAssociateMalformed,
     /// Another SOCKS5 command is unsupported.
     CommandNotSupported,
     /// The address type is unsupported or malformed.
@@ -197,7 +204,7 @@ impl fmt::Display for ProtocolError {
             Self::AuthenticationFailed => "SOCKS5 authentication failed",
             Self::MalformedRequest => "malformed SOCKS5 request",
             Self::BindNotSupported => "SOCKS5 BIND is not supported",
-            Self::UdpAssociateNotSupported => "SOCKS5 UDP ASSOCIATE is not supported",
+            Self::UdpAssociateMalformed => "SOCKS5 UDP ASSOCIATE frame is malformed",
             Self::CommandNotSupported => "SOCKS5 command is not supported",
             Self::AddressNotSupported => "SOCKS5 address type is not supported",
             Self::InvalidDomain => "SOCKS5 domain target is invalid",
@@ -314,21 +321,25 @@ impl BridgeListener {
     ) -> Result<RelayStats, SessionError> {
         negotiate_username_password(client)?;
         authenticate(client, &self.credentials)?;
-        let target = read_connect_request(client)?;
+        let request = read_socks_request(client)?;
+        match request.command {
+            SocksCommand::Connect => {
+                let upstream = match connector.connect(&request.target) {
+                    Ok(stream) => stream,
+                    Err(error) => {
+                        write_reply(client, outbound_reply_code(error), unspecified_bind_addr())?;
+                        return Err(SessionError::Outbound(error));
+                    }
+                };
 
-        let upstream = match connector.connect(&target) {
-            Ok(stream) => stream,
-            Err(error) => {
-                write_reply(client, outbound_reply_code(error), unspecified_bind_addr())?;
-                return Err(SessionError::Outbound(error));
+                let bound = upstream
+                    .local_addr()
+                    .unwrap_or_else(|_| unspecified_bind_addr());
+                write_reply(client, REPLY_SUCCEEDED, bound)?;
+                relay_bidirectional(client.try_clone()?, upstream).map_err(SessionError::Io)
             }
-        };
-
-        let bound = upstream
-            .local_addr()
-            .unwrap_or_else(|_| unspecified_bind_addr());
-        write_reply(client, REPLY_SUCCEEDED, bound)?;
-        relay_bidirectional(client.try_clone()?, upstream).map_err(SessionError::Io)
+            SocksCommand::UdpAssociate => serve_udp_associate(client, connector),
+        }
     }
 }
 
@@ -430,7 +441,18 @@ fn authenticate(
     Ok(())
 }
 
-fn read_connect_request(stream: &mut TcpStream) -> Result<ConnectTarget, SessionError> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SocksCommand {
+    Connect,
+    UdpAssociate,
+}
+
+struct SocksRequest {
+    command: SocksCommand,
+    target: ConnectTarget,
+}
+
+fn read_socks_request(stream: &mut TcpStream) -> Result<SocksRequest, SessionError> {
     let mut header = [0_u8; 4];
     stream.read_exact(&mut header)?;
     if header[0] != SOCKS_VERSION || header[2] != 0 {
@@ -438,21 +460,18 @@ fn read_connect_request(stream: &mut TcpStream) -> Result<ConnectTarget, Session
         return Err(ProtocolError::MalformedRequest.into());
     }
 
-    match header[1] {
-        CONNECT_COMMAND => {}
+    let command = match header[1] {
+        CONNECT_COMMAND => SocksCommand::Connect,
         BIND_COMMAND => {
             write_reply(stream, REPLY_COMMAND_NOT_SUPPORTED, unspecified_bind_addr())?;
             return Err(ProtocolError::BindNotSupported.into());
         }
-        UDP_ASSOCIATE_COMMAND => {
-            write_reply(stream, REPLY_COMMAND_NOT_SUPPORTED, unspecified_bind_addr())?;
-            return Err(ProtocolError::UdpAssociateNotSupported.into());
-        }
+        UDP_ASSOCIATE_COMMAND => SocksCommand::UdpAssociate,
         _ => {
             write_reply(stream, REPLY_COMMAND_NOT_SUPPORTED, unspecified_bind_addr())?;
             return Err(ProtocolError::CommandNotSupported.into());
         }
-    }
+    };
 
     let host = match header[3] {
         IPV4_ADDRESS_TYPE => {
@@ -506,12 +525,222 @@ fn read_connect_request(stream: &mut TcpStream) -> Result<ConnectTarget, Session
     let mut port = [0_u8; 2];
     stream.read_exact(&mut port)?;
     let port = u16::from_be_bytes(port);
-    if port == 0 {
+    if port == 0 && command == SocksCommand::Connect {
         write_reply(stream, REPLY_GENERAL_FAILURE, unspecified_bind_addr())?;
         return Err(ProtocolError::InvalidPort.into());
     }
 
-    Ok(ConnectTarget { host, port })
+    Ok(SocksRequest {
+        command,
+        target: ConnectTarget { host, port },
+    })
+}
+
+struct UdpTargetWorker {
+    socket: UdpSocket,
+    response_worker: thread::JoinHandle<()>,
+}
+
+/// Bounded local SOCKS5 UDP ASSOCIATE implementation.
+///
+/// This is intentionally an internal loopback hop: the authenticated TCP control peer must be
+/// loopback, the first UDP packet must have the same loopback IP, and its full socket address is
+/// then pinned for the association lifetime. Public Mesh admission and external-client identity
+/// are separate transport-owner responsibilities; this function never opens a public UDP socket.
+fn serve_udp_associate<C: CellularOutboundConnector + ?Sized>(
+    control: &mut TcpStream,
+    connector: &C,
+) -> Result<RelayStats, SessionError> {
+    let control_peer = control.peer_addr()?;
+    if !control_peer.ip().is_loopback() {
+        return Err(ProtocolError::UdpAssociateMalformed.into());
+    }
+    let local_address = match control_peer {
+        SocketAddr::V4(_) => SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+        SocketAddr::V6(_) => SocketAddr::from((Ipv6Addr::LOCALHOST, 0)),
+    };
+    let inbound = UdpSocket::bind(local_address)?;
+    inbound.set_read_timeout(Some(UDP_ASSOCIATION_POLL))?;
+    let bound = inbound.local_addr()?;
+    write_reply(control, REPLY_SUCCEEDED, bound)?;
+
+    let mut control_probe = control.try_clone()?;
+    control_probe.set_nonblocking(true)?;
+    let stopped = Arc::new(AtomicBool::new(false));
+    let response_socket = inbound.try_clone()?;
+    let mut source_peer = None;
+    let mut targets: HashMap<ConnectTarget, UdpTargetWorker> = HashMap::new();
+    let mut buffer = vec![0_u8; UDP_ASSOCIATION_MAX_DATAGRAM];
+
+    while !stopped.load(Ordering::Acquire) {
+        let mut control_byte = [0_u8; 1];
+        match control_probe.read(&mut control_byte) {
+            Ok(0) | Ok(_) => break,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+            Err(error) => return Err(error.into()),
+        }
+
+        let (count, peer) = match inbound.recv_from(&mut buffer) {
+            Ok(received) => received,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if peer.ip() != control_peer.ip() || !peer.ip().is_loopback() {
+            continue;
+        }
+        match source_peer {
+            Some(bound_peer) if bound_peer != peer => continue,
+            Some(_) => {}
+            None => source_peer = Some(peer),
+        }
+
+        let Some((target, payload)) = parse_udp_request(&buffer[..count]) else {
+            continue;
+        };
+        if !targets.contains_key(&target) {
+            if targets.len() >= UDP_ASSOCIATION_MAX_TARGETS {
+                continue;
+            }
+            let outbound = match connector.connect_udp(&target) {
+                Ok(socket) => socket,
+                Err(_) => continue,
+            };
+            let reader = outbound.try_clone()?;
+            reader.set_read_timeout(Some(UDP_ASSOCIATION_POLL))?;
+            let sender = response_socket.try_clone()?;
+            let response_target = target.clone();
+            let response_peer = peer;
+            let response_stop = Arc::clone(&stopped);
+            let response_worker = thread::Builder::new()
+                .name("mish-cellular-udp-response".to_owned())
+                .spawn(move || {
+                    udp_response_loop(
+                        reader,
+                        sender,
+                        response_peer,
+                        response_target,
+                        response_stop,
+                    )
+                })
+                .map_err(|_| io::Error::other("UDP response worker unavailable"))?;
+            targets.insert(
+                target.clone(),
+                UdpTargetWorker {
+                    socket: outbound,
+                    response_worker,
+                },
+            );
+        }
+        if let Some(worker) = targets.get(&target) {
+            let _ = worker.socket.send(payload);
+        }
+    }
+
+    stopped.store(true, Ordering::Release);
+    for (_, worker) in targets {
+        let _ = worker.response_worker.join();
+    }
+    Ok(RelayStats {
+        client_to_upstream: 0,
+        upstream_to_client: 0,
+    })
+}
+
+fn udp_response_loop(
+    socket: UdpSocket,
+    inbound: UdpSocket,
+    peer: SocketAddr,
+    target: ConnectTarget,
+    stopped: Arc<AtomicBool>,
+) {
+    let mut response = vec![0_u8; UDP_ASSOCIATION_MAX_DATAGRAM];
+    while !stopped.load(Ordering::Acquire) {
+        match socket.recv(&mut response) {
+            Ok(count) => {
+                let frame = encode_udp_response(&target, &response[..count]);
+                let _ = inbound.send_to(&frame, peer);
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) => {}
+            Err(_) => return,
+        }
+    }
+}
+
+fn parse_udp_request(frame: &[u8]) -> Option<(ConnectTarget, &[u8])> {
+    if frame.len() < 7 || frame[0] != 0 || frame[1] != 0 || frame[2] != 0 {
+        return None;
+    }
+    let mut offset = 4;
+    let host = match frame[3] {
+        IPV4_ADDRESS_TYPE => {
+            let octets: [u8; 4] = frame.get(offset..offset + 4)?.try_into().ok()?;
+            offset += 4;
+            TargetHost::Ipv4(Ipv4Addr::from(octets))
+        }
+        IPV6_ADDRESS_TYPE => {
+            let octets: [u8; 16] = frame.get(offset..offset + 16)?.try_into().ok()?;
+            offset += 16;
+            TargetHost::Ipv6(Ipv6Addr::from(octets))
+        }
+        DOMAIN_ADDRESS_TYPE => {
+            let length = usize::from(*frame.get(offset)?);
+            offset += 1;
+            if length == 0 {
+                return None;
+            }
+            let bytes = frame.get(offset..offset + length)?;
+            offset += length;
+            let domain = std::str::from_utf8(bytes).ok()?;
+            if domain
+                .bytes()
+                .any(|byte| byte == 0 || byte.is_ascii_control())
+            {
+                return None;
+            }
+            TargetHost::Domain(domain.to_owned().into_boxed_str())
+        }
+        _ => return None,
+    };
+    let port = u16::from_be_bytes(frame.get(offset..offset + 2)?.try_into().ok()?);
+    offset += 2;
+    if port == 0 || offset >= frame.len() {
+        return None;
+    }
+    Some((ConnectTarget { host, port }, &frame[offset..]))
+}
+
+fn encode_udp_response(target: &ConnectTarget, payload: &[u8]) -> Vec<u8> {
+    let mut frame = Vec::with_capacity(payload.len() + 22);
+    frame.extend_from_slice(&[0, 0, 0]);
+    match target.host() {
+        TargetHost::Ipv4(address) => {
+            frame.push(IPV4_ADDRESS_TYPE);
+            frame.extend_from_slice(&address.octets());
+        }
+        TargetHost::Ipv6(address) => {
+            frame.push(IPV6_ADDRESS_TYPE);
+            frame.extend_from_slice(&address.octets());
+        }
+        TargetHost::Domain(domain) => {
+            frame.push(DOMAIN_ADDRESS_TYPE);
+            frame.push(domain.len() as u8);
+            frame.extend_from_slice(domain.as_bytes());
+        }
+    }
+    frame.extend_from_slice(&target.port().to_be_bytes());
+    frame.extend_from_slice(payload);
+    frame
 }
 
 fn outbound_reply_code(error: OutboundConnectError) -> u8 {
@@ -574,7 +803,9 @@ mod tests {
     #[derive(Debug)]
     struct RecordingConnector {
         target: Mutex<Option<ConnectTarget>>,
+        udp_target: Mutex<Option<ConnectTarget>>,
         upstream: SocketAddr,
+        udp_upstream: Option<SocketAddr>,
         failure: Option<OutboundConnectError>,
     }
 
@@ -582,7 +813,9 @@ mod tests {
         fn success(upstream: SocketAddr) -> Self {
             Self {
                 target: Mutex::new(None),
+                udp_target: Mutex::new(None),
                 upstream,
+                udp_upstream: None,
                 failure: None,
             }
         }
@@ -590,13 +823,29 @@ mod tests {
         fn failure(error: OutboundConnectError) -> Self {
             Self {
                 target: Mutex::new(None),
+                udp_target: Mutex::new(None),
                 upstream: "127.0.0.1:9".parse().expect("static socket address"),
+                udp_upstream: None,
                 failure: Some(error),
             }
         }
 
         fn observed_target(&self) -> Option<ConnectTarget> {
             self.target.lock().expect("target mutex").clone()
+        }
+
+        fn udp_success(upstream: SocketAddr) -> Self {
+            Self {
+                target: Mutex::new(None),
+                udp_target: Mutex::new(None),
+                upstream: "127.0.0.1:9".parse().expect("static socket address"),
+                udp_upstream: Some(upstream),
+                failure: None,
+            }
+        }
+
+        fn observed_udp_target(&self) -> Option<ConnectTarget> {
+            self.udp_target.lock().expect("UDP target mutex").clone()
         }
     }
 
@@ -607,6 +856,17 @@ mod tests {
                 return Err(error);
             }
             TcpStream::connect(self.upstream).map_err(|_| OutboundConnectError::Failed)
+        }
+
+        fn connect_udp(&self, target: &ConnectTarget) -> Result<UdpSocket, OutboundConnectError> {
+            *self.udp_target.lock().expect("UDP target mutex") = Some(target.clone());
+            let upstream = self.udp_upstream.ok_or(OutboundConnectError::Rejected)?;
+            let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+                .map_err(|_| OutboundConnectError::Failed)?;
+            socket
+                .connect(upstream)
+                .map_err(|_| OutboundConnectError::Failed)?;
+            Ok(socket)
         }
     }
 
@@ -675,22 +935,35 @@ mod tests {
     }
 
     fn read_reply(stream: &mut TcpStream) -> u8 {
+        read_reply_with_address(stream).0
+    }
+
+    fn read_reply_with_address(stream: &mut TcpStream) -> (u8, SocketAddr) {
         let mut header = [0_u8; 4];
         stream.read_exact(&mut header).expect("read reply header");
         assert_eq!(header[0], SOCKS_VERSION);
         assert_eq!(header[2], 0);
-        match header[3] {
+        let address = match header[3] {
             IPV4_ADDRESS_TYPE => {
                 let mut rest = [0_u8; 6];
                 stream.read_exact(&mut rest).expect("read IPv4 reply");
+                SocketAddr::from((
+                    Ipv4Addr::new(rest[0], rest[1], rest[2], rest[3]),
+                    u16::from_be_bytes([rest[4], rest[5]]),
+                ))
             }
             IPV6_ADDRESS_TYPE => {
                 let mut rest = [0_u8; 18];
                 stream.read_exact(&mut rest).expect("read IPv6 reply");
+                let octets: [u8; 16] = rest[..16].try_into().expect("IPv6 octets");
+                SocketAddr::from((
+                    Ipv6Addr::from(octets),
+                    u16::from_be_bytes([rest[16], rest[17]]),
+                ))
             }
             other => panic!("unexpected reply address type {other}"),
-        }
-        header[1]
+        };
+        (header[1], address)
     }
 
     #[test]
@@ -780,6 +1053,93 @@ mod tests {
                 port: 443,
             })
         );
+    }
+
+    #[test]
+    fn authenticated_udp_associate_relays_loopback_datagram_and_stops_with_control() {
+        let backend = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("UDP backend bind");
+        backend
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("UDP backend timeout");
+        let backend_address = backend.local_addr().expect("UDP backend address");
+        let backend_worker = thread::spawn(move || {
+            let mut packet = [0_u8; 128];
+            let (count, peer) = backend.recv_from(&mut packet).expect("UDP backend receive");
+            assert_eq!(&packet[..count], b"udp-bridge-ok");
+            backend
+                .send_to(b"udp-response", peer)
+                .expect("UDP backend response");
+        });
+        let connector = Arc::new(RecordingConnector::udp_success(backend_address));
+        let (bridge_address, bridge_thread) = spawn_bridge(Arc::clone(&connector));
+        let mut control = connect_and_authenticate(bridge_address);
+        control
+            .write_all(&[
+                SOCKS_VERSION,
+                UDP_ASSOCIATE_COMMAND,
+                0,
+                IPV4_ADDRESS_TYPE,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ])
+            .expect("write UDP associate");
+        let (reply, relay) = read_reply_with_address(&mut control);
+        assert_eq!(reply, REPLY_SUCCEEDED);
+        assert!(relay.ip().is_loopback());
+
+        let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("UDP client bind");
+        client
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("UDP client timeout");
+        let mut request = vec![0, 0, 0, IPV4_ADDRESS_TYPE, 203, 0, 113, 9, 1, 187];
+        request.extend_from_slice(b"udp-bridge-ok");
+        client.send_to(&request, relay).expect("UDP request");
+        let mut response = [0_u8; 128];
+        let (count, _) = client.recv_from(&mut response).expect("UDP response");
+        assert_eq!(
+            &response[..count],
+            &[
+                0,
+                0,
+                0,
+                IPV4_ADDRESS_TYPE,
+                203,
+                0,
+                113,
+                9,
+                1,
+                187,
+                b'u',
+                b'd',
+                b'p',
+                b'-',
+                b'r',
+                b'e',
+                b's',
+                b'p',
+                b'o',
+                b'n',
+                b's',
+                b'e'
+            ]
+        );
+        assert_eq!(
+            connector.observed_udp_target(),
+            Some(ConnectTarget {
+                host: TargetHost::Ipv4(Ipv4Addr::new(203, 0, 113, 9)),
+                port: 443,
+            })
+        );
+        drop(control);
+        backend_worker.join().expect("UDP backend worker");
+        bridge_thread
+            .join()
+            .expect("bridge thread")
+            .expect("UDP association session");
     }
 
     #[test]
@@ -903,38 +1263,30 @@ mod tests {
     }
 
     #[test]
-    fn bind_and_udp_associate_are_rejected_before_connector_invocation() {
-        for (command, expected) in [
-            (BIND_COMMAND, ProtocolError::BindNotSupported),
-            (
-                UDP_ASSOCIATE_COMMAND,
-                ProtocolError::UdpAssociateNotSupported,
-            ),
-        ] {
-            let connector = Arc::new(RecordingConnector::failure(OutboundConnectError::Failed));
-            let (bridge_address, bridge_thread) = spawn_bridge(Arc::clone(&connector));
-            let mut client = connect_and_authenticate(bridge_address);
-            client
-                .write_all(&[
-                    SOCKS_VERSION,
-                    command,
-                    0,
-                    IPV4_ADDRESS_TYPE,
-                    127,
-                    0,
-                    0,
-                    1,
-                    0,
-                    80,
-                ])
-                .expect("write unsupported request");
-            assert_eq!(read_reply(&mut client), REPLY_COMMAND_NOT_SUPPORTED);
-            assert!(matches!(
-                bridge_thread.join().expect("bridge thread"),
-                Err(SessionError::Protocol(error)) if error == expected
-            ));
-            assert_eq!(connector.observed_target(), None);
-        }
+    fn bind_is_rejected_before_connector_invocation() {
+        let connector = Arc::new(RecordingConnector::failure(OutboundConnectError::Failed));
+        let (bridge_address, bridge_thread) = spawn_bridge(Arc::clone(&connector));
+        let mut client = connect_and_authenticate(bridge_address);
+        client
+            .write_all(&[
+                SOCKS_VERSION,
+                BIND_COMMAND,
+                0,
+                IPV4_ADDRESS_TYPE,
+                127,
+                0,
+                0,
+                1,
+                0,
+                80,
+            ])
+            .expect("write unsupported request");
+        assert_eq!(read_reply(&mut client), REPLY_COMMAND_NOT_SUPPORTED);
+        assert!(matches!(
+            bridge_thread.join().expect("bridge thread"),
+            Err(SessionError::Protocol(ProtocolError::BindNotSupported))
+        ));
+        assert_eq!(connector.observed_target(), None);
     }
 
     #[test]
