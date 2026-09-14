@@ -29,14 +29,19 @@ jobs:
       - name: Verify physical LAB identity
         shell: powershell
         run: |
-          .\lab\windows\labctl.ps1 host inspect -PhysicalLab
+          $pwsh = 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe'
+          if (-not (Test-Path -LiteralPath $pwsh -PathType Leaf)) {
+            throw "Canonical LAB PowerShell is missing: $pwsh"
+          }
+          & $pwsh -NoLogo -NoProfile -File '.\lab\windows\labctl.ps1' host inspect -PhysicalLab
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Collect and print one-shot diagnostic
         shell: powershell
         run: |
+          $pwsh = 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe'
           $evidencePath = Join-Path $env:RUNNER_TEMP 'mish-device-diagnostic-v1.json'
-          .\lab\windows\collect-device-diagnostic.ps1 `
+          & $pwsh -NoLogo -NoProfile -File '.\lab\windows\collect-device-diagnostic.ps1' `
             -AdbPath 'C:\mish-lab\tools\android-sdk\platform-tools\adb.exe' `
             -PackageName 'com.mobileproxymish.app.debug' `
             -EvidencePath $evidencePath
