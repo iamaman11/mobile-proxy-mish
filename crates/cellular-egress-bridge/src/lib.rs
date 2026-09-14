@@ -10,8 +10,8 @@ use std::io::{self, Read, Write};
 use std::net::{
     IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket,
 };
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -719,7 +719,10 @@ fn udp_response_loop(
         match socket.recv(&mut response) {
             Ok(count) => {
                 let frame = encode_udp_response(&target, &response[..count]);
-                if budget.lock().is_ok_and(|mut budget| budget.allow(frame.len())) {
+                if budget
+                    .lock()
+                    .is_ok_and(|mut budget| budget.allow(frame.len()))
+                {
                     let _ = inbound.send_to(&frame, peer);
                 }
             }
