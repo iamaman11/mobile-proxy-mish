@@ -1,9 +1,10 @@
 # Local UDP / QUIC extension contract (not enabled)
 
 Status: **local design branch only**. It now contains a unit/integration-tested exact-address UDP
-relay primitive and an opaque, epoch-bound association registry. It deliberately does **not**
-enable QUIC, WebRTC, SOCKS UDP ASSOCIATE, Android runtime composition, or a new root rule in the
-current PRODUCT.
+relay primitive, an opaque epoch-bound association registry, a gated cellular UDP connector, and
+an authenticated loopback-only SOCKS5 UDP ASSOCIATE bridge. It deliberately does **not** enable
+public Mesh UDP, QUIC, WebRTC, Android runtime composition, or a new root rule in the current
+PRODUCT configuration.
 
 M1 remains a TCP-only appliance. A UDP packet must fail closed until every requirement below is
 implemented and physically accepted together.
@@ -22,7 +23,7 @@ implemented and physically accepted together.
 | --- | --- | --- |
 | Current unique exact Mesh IPv4 and admission epoch | `mish-transport::MeshEndpointOwner` | Existing 0/1/>1 address admission. Loss or change creates a fresh epoch. |
 | Exact UDP socket lifetime | `mish-transport::MeshUdpIngressRuntime` (new) | Bind one exact admitted IPv4 and close all UDP association state before an epoch is lost or replaced. |
-| SOCKS UDP protocol/authentication and association credential | `mish-proxy` / `cellular-egress-bridge` | An authenticated TCP SOCKS control connection creates a bounded, expiring UDP association. Source address alone is never authentication. |
+| SOCKS UDP protocol/authentication and association credential | `mish-proxy` / `cellular-egress-bridge` | The local bridge accepts an authenticated TCP SOCKS control connection and pins one loopback UDP peer. A public association issuer/expiry contract is still required. Source address alone is never authentication. |
 | Cellular admission, generation and public egress authorization | existing Cellular Egress owner | No independent UDP admission state. |
 | Root packet marking / RPDB mutation | `CellularRootPolicy` narrow adapter | Typed UDP extension of the existing MISH identity only after owner admission. |
 | Cellular target DNS resolver and resolver anti-leak | #64 DNS owner | UDP must use this resolver decision; no OS/default/WARP resolver fallback. |
@@ -42,10 +43,12 @@ Windows application explicitly selected for MISH UDP
   -> LTE/5G Internet
 ```
 
-The reverse path is equally required. A reply destined for the current exact Mesh endpoint is
-not public egress and must be exempted before the MISH cellular mark. The exemption is one exact
-current `/32`, generated from the Transport admission epoch. It is removed before a stale endpoint
-can be replaced. Broad RFC1918, VPN-interface, or `100.96.0.0/12` bypasses are forbidden.
+The reverse path is equally required. Broad RFC1918, VPN-interface, or `100.96.0.0/12` bypasses
+are forbidden. The current TCP chain restores only its MISH connmark and marks `NEW` product
+flows; observed inbound Mesh replies are `ESTABLISHED` and do not acquire that mark. UDP must not
+assume this remains true: a dynamic exact `/32` RETURN is allowed only if a physical UDP counter
+and route test proves an outgoing Mesh reply would otherwise be marked. It must be derived from
+the Transport admission epoch and removed before any stale endpoint replacement.
 
 ## Authentication and abuse controls
 
@@ -56,7 +59,8 @@ The new relay must not forward an arbitrary datagram merely because it arrived t
    current Mesh admission epoch.
 3. The UDP relay accepts a datagram only when it has a valid association, source binding, epoch,
    maximum datagram size and replay/expiry checks.
-4. Per-association and global token-bucket limits apply before any loopback/backend write.
+4. The current local bridge applies per-association packet/byte limits before any
+   loopback/backend write. A global admission budget remains required before public enablement.
 5. Association count, bytes, packets and idle time are bounded. Overflow is dropped, never queued
    unboundedly.
 6. Loss of TCP control, proxy child, Mesh endpoint, Cellular admission, root-policy authorization,
@@ -88,7 +92,8 @@ input, or arbitrary shell commands.
 ## Cellular root-policy extension
 
 The existing MISH chain currently flow-marks all product UID `NEW` flows and has only loopback
-returns. UDP support requires a new *typed desired state*, not an ad-hoc command fragment:
+returns. The physical UDP packet classification result decides whether a Mesh `/32` return is
+needed. UDP support requires a new *typed desired state*, not an ad-hoc command fragment:
 
 ```text
 MISH UDP desired state = {
@@ -103,8 +108,9 @@ Apply order, both IPv4 and IPv6:
 
 ```text
 1. establish unreachable guard for selected MISH mark
-2. remove stale cellular lookup and stale exact Mesh exemption
-3. install verified exact current Mesh `/32` RETURN before mark/CONNMARK rules
+2. remove stale cellular lookup and any previously-proven exact Mesh exemption
+3. if required by physical UDP classification, install/verify one current Mesh `/32` RETURN
+   before mark/CONNMARK rules
 4. install/verify exact cellular lookup for current admitted generation
 5. publish UDP bridge usable
 ```
@@ -114,7 +120,7 @@ Loss/update order:
 ```text
 1. stop accepting new UDP associations and close existing association state
 2. remove cellular lookup (guard remains)
-3. remove only the exact prior `/32` exemption after relay is closed
+3. remove only the exact prior `/32` exemption, if one was installed, after relay is closed
 4. revoke owner/root-policy authorization
 ```
 
@@ -165,8 +171,9 @@ Until then retain `network.http.http3.enable=false` and WebRTC blocking.
 
 ## Implementation slices
 
-1. `mish-proxy` / bridge: authenticated SOCKS UDP association state, expiry, bounded counters and
-   unit vectors. No Android exposure.
+1. `mish-proxy` / bridge: authenticated SOCKS UDP ASSOCIATE, loopback-peer pinning, target and
+   per-association rate bounds, and unit vectors are implemented locally. Public association
+   issuance/expiry and Android exposure remain.
 2. `mish-transport`: exact-address UDP runtime and per-association relay with a typed authorizer
    supplied by the proxy owner; no generic raw relay.
 3. Android composition: Mesh epoch + proxy association lifecycle only; no second owner.
