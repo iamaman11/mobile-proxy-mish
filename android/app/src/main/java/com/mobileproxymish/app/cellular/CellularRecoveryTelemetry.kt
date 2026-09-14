@@ -17,6 +17,9 @@ internal enum class CellularRecoveryStage {
     ROOT_RECONCILE_COMPLETED,
     ROOT_POLICY_AUTHORIZED,
     ROOT_AUTHORITY_BACKOFF,
+    PROXY_READY,
+    READINESS_E2E_SUCCEEDED,
+    MESH_INGRESS_RUNNING,
 }
 
 internal enum class CellularRecoveryDetail {
@@ -24,6 +27,9 @@ internal enum class CellularRecoveryDetail {
     DRAIN_FAILED,
     AUTHORIZED,
     BACKOFF_SCHEDULED,
+    PROXY_HEALTHY,
+    READINESS_READY,
+    INGRESS_RUNNING,
 }
 
 internal data class CellularRecoveryObservation(
