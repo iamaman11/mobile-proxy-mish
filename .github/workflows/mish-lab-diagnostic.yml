@@ -8,12 +8,48 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: mish-lab-diagnostic
+  cancel-in-progress: false
+
 jobs:
-  validate:
-    name: Validate control entrypoint
-    runs-on: ubuntu-latest
+  snapshot:
+    name: Read-only DEVICE-1 snapshot
+    if: github.actor == 'iamaman11'
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 10
     steps:
-      - name: Confirm owner-only control branch event
+      - name: Checkout protected main diagnostics bridge
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+          clean: true
+
+      - name: Verify physical LAB identity
+        shell: powershell
         run: |
-          test "${{ github.actor }}" = "iamaman11"
-          test "${{ github.ref }}" = "refs/heads/mish-lab-control"
+          .\lab\windows\labctl.ps1 host inspect -PhysicalLab
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Collect and print one-shot diagnostic
+        shell: powershell
+        run: |
+          $evidencePath = Join-Path $env:RUNNER_TEMP 'mish-device-diagnostic-v1.json'
+          .\lab\windows\collect-device-diagnostic.ps1 `
+            -AdbPath 'C:\mish-lab\tools\android-sdk\platform-tools\adb.exe' `
+            -PackageName 'com.mobileproxymish.app.debug' `
+            -EvidencePath $evidencePath
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host 'MISH_DIAGNOSTIC_JSON_BEGIN'
+          Get-Content -Raw -LiteralPath $evidencePath
+          Write-Host 'MISH_DIAGNOSTIC_JSON_END'
+
+      - name: Upload bounded diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mish-device-diagnostic-v1
+          path: ${{ runner.temp }}\mish-device-diagnostic-v1.json
+          if-no-files-found: warn
+          retention-days: 30
