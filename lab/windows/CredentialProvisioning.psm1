@@ -3,7 +3,7 @@ using namespace System.IO
 Set-StrictMode -Version Latest
 
 $script:ProvisioningAction = 'com.mobileproxymish.app.action.PROVISION_EXTERNAL_PROXY_V1'
-$script:ProvisioningComponent = 'com.mobileproxymish.app/.CredentialProvisioningReceiver'
+$script:DefaultProvisioningPackage = 'com.mobileproxymish.app'
 $script:PublicKeyExtra = 'client_public_key_spki_b64'
 $script:ChallengeExtra = 'challenge_hex'
 $script:StoreEntropy = [System.Text.Encoding]::UTF8.GetBytes(
@@ -67,6 +67,15 @@ function Assert-MishCredentialStorePath {
         }
     }
     return $fullPath
+}
+
+function Assert-MishProvisioningPackageName {
+    param([Parameter(Mandatory)][string] $PackageName)
+
+    if ($PackageName -notmatch '^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$') {
+        throw [ArgumentException]::new('Android provisioning package name is invalid.')
+    }
+    return $PackageName
 }
 
 function ConvertTo-MishLowerHex {
@@ -272,12 +281,15 @@ function Get-MishAdbProvisioningCiphertext {
     param(
         [Parameter(Mandatory)][string] $AdbPath,
         [Parameter(Mandatory)][string] $PublicKeyBase64,
-        [Parameter(Mandatory)][string] $ChallengeHex
+        [Parameter(Mandatory)][string] $ChallengeHex,
+        [string] $PackageName = $script:DefaultProvisioningPackage
     )
 
+    $resolvedPackage = Assert-MishProvisioningPackageName -PackageName $PackageName
+    $provisioningComponent = "$resolvedPackage/.CredentialProvisioningReceiver"
     $arguments = @(
         'shell', 'am', 'broadcast', '--user', '0',
-        '-n', $script:ProvisioningComponent,
+        '-n', $provisioningComponent,
         '-a', $script:ProvisioningAction,
         '--es', $script:PublicKeyExtra, $PublicKeyBase64,
         '--es', $script:ChallengeExtra, $ChallengeHex
@@ -345,10 +357,12 @@ function Invoke-MishExternalProxyCredentialProvisioning {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string] $AdbPath,
-        [string] $StorePath = (Get-MishDefaultCredentialStorePath)
+        [string] $StorePath = (Get-MishDefaultCredentialStorePath),
+        [string] $PackageName = $script:DefaultProvisioningPackage
     )
 
     $resolvedStorePath = Assert-MishCredentialStorePath -StorePath $StorePath
+    $resolvedPackage = Assert-MishProvisioningPackageName -PackageName $PackageName
     $rsa = [Security.Cryptography.RSA]::Create()
     $rsa.KeySize = 3072
     $challenge = New-Object byte[] 32
@@ -364,7 +378,8 @@ function Invoke-MishExternalProxyCredentialProvisioning {
         $ciphertext = Get-MishAdbProvisioningCiphertext `
             -AdbPath $AdbPath `
             -PublicKeyBase64 $publicKeyBase64 `
-            -ChallengeHex $challengeHex
+            -ChallengeHex $challengeHex `
+            -PackageName $resolvedPackage
         try {
             $plaintext = $rsa.Decrypt(
                 $ciphertext,
@@ -395,6 +410,7 @@ function Invoke-MishExternalProxyCredentialProvisioning {
             CredentialId = $envelope.CredentialId
             StorePath = $resolvedStorePath
             Protection = 'DPAPI-CurrentUser'
+            PackageName = $resolvedPackage
         }
     }
     finally {
