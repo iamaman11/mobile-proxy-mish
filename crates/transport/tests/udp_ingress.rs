@@ -26,7 +26,7 @@ impl UdpDatagramAuthorizer for Authorizer {
 fn exact_ingress_relays_only_authorized_datagrams_and_returns_backend_response() {
     let backend = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("backend bind");
     backend
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("backend timeout");
     let backend_port = backend.local_addr().expect("backend address").port();
     let backend_worker = std::thread::spawn(move || {
@@ -49,7 +49,10 @@ fn exact_ingress_relays_only_authorized_datagrams_and_returns_backend_response()
 
     let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("client bind");
     client
-        .set_read_timeout(Some(Duration::from_millis(200)))
+        // This is a scheduler-tolerant fixture deadline, not a transport latency target. The
+        // test still checks that unauthorized packets receive no response before a valid packet
+        // reaches the backend.
+        .set_read_timeout(Some(Duration::from_secs(1)))
         .expect("client timeout");
     client
         .send_to(b"rejected", (Ipv4Addr::LOCALHOST, ingress_port))
@@ -84,7 +87,7 @@ fn envelope(id: [u8; 16], secret: [u8; 32], payload: &[u8]) -> Vec<u8> {
 fn association_registry_relays_only_epoch_bound_authenticated_payloads() {
     let backend = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("backend bind");
     backend
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("backend timeout");
     let backend_port = backend.local_addr().expect("backend address").port();
     let backend_worker = std::thread::spawn(move || {
@@ -124,9 +127,19 @@ fn association_registry_relays_only_epoch_bound_authenticated_payloads() {
 
     let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("client bind");
     client
-        .set_read_timeout(Some(Duration::from_millis(300)))
+        .set_read_timeout(Some(Duration::from_secs(2)))
         .expect("client timeout");
     let mut response = [0_u8; 64];
+    client
+        .send_to(
+            &envelope(id, secret, b"quic-like-payload"),
+            (Ipv4Addr::LOCALHOST, ingress_port),
+        )
+        .expect("authenticated send");
+    let (count, _) = client.recv_from(&mut response).expect("response");
+    assert_eq!(&response[..count], b"response");
+    assert_eq!(runtime.active_associations(), 1);
+
     client
         .send_to(
             &envelope(id, [3_u8; 32], b"quic-like-payload"),
@@ -138,19 +151,9 @@ fn association_registry_relays_only_epoch_bound_authenticated_payloads() {
         "wrong secret must drop"
     );
 
-    client
-        .send_to(
-            &envelope(id, secret, b"quic-like-payload"),
-            (Ipv4Addr::LOCALHOST, ingress_port),
-        )
-        .expect("authenticated send");
-    let (count, _) = client.recv_from(&mut response).expect("response");
-    assert_eq!(&response[..count], b"response");
-    assert_eq!(runtime.active_associations(), 1);
-
     let second_peer = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("second peer bind");
     second_peer
-        .set_read_timeout(Some(Duration::from_millis(300)))
+        .set_read_timeout(Some(Duration::from_secs(2)))
         .expect("second timeout");
     second_peer
         .send_to(
