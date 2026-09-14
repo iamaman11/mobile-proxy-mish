@@ -13,9 +13,13 @@ import java.util.concurrent.atomic.AtomicLong
 /**
  * Bounded Magisk authority boundary for cellular policy routing.
  *
- * Root authority is acquired once per live root-shell generation and then cached. The policy
- * adapter still owns every typed RPDB/mangle decision; this class owns only the process-level
- * privilege capability. No arbitrary shell API is exposed to app consumers.
+ * Root authority is acquired once per live root-shell generation and then cached. An explicit
+ * denial or an unanswered interactive grant is terminal for the current app process so recovery
+ * cannot keep reopening Magisk prompts. After the operator grants permanent authority, one app
+ * restart establishes the cached shell and normal network recovery never asks Magisk again.
+ *
+ * The policy adapter still owns every typed RPDB/mangle decision; this class owns only the
+ * process-level privilege capability. No arbitrary shell API is exposed to app consumers.
  */
 class MagiskRootAuthority private constructor(
     private val process: RootProcess = SuProcess(),
@@ -27,9 +31,12 @@ class MagiskRootAuthority private constructor(
     )
 
     private var readyGeneration: Long? = null
+    private var terminalStatus: RootAuthorityStatus? = null
 
     @Synchronized
     fun probe(): RootAuthorityStatus {
+        terminalStatus?.let { return it }
+
         val currentGeneration = process.sessionGeneration()
         if (currentGeneration != null && currentGeneration == readyGeneration) {
             return RootAuthorityStatus.Ready
@@ -38,7 +45,7 @@ class MagiskRootAuthority private constructor(
 
         val identity = process.run(listOf("su", "-c", "id -u"))
         if (identity.timedOut) {
-            return RootAuthorityStatus.InteractiveGrantRequired
+            return RootAuthorityStatus.InteractiveGrantRequired.also { terminalStatus = it }
         }
         if (!identity.outputComplete) {
             return RootAuthorityStatus.Incomplete
@@ -47,7 +54,7 @@ class MagiskRootAuthority private constructor(
             return RootAuthorityStatus.Unavailable
         }
         if (identity.exitCode != 0 || identity.stdout.trim() != "0") {
-            return RootAuthorityStatus.Denied
+            return RootAuthorityStatus.Denied.also { terminalStatus = it }
         }
 
         // uid=0 alone is insufficient. The runtime must be able to inspect a complete RPDB
