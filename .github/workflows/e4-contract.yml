@@ -9,6 +9,7 @@ on:
       - 'lab/windows/E4Harness.psm1'
       - 'lab/windows/labctl.ps1'
       - 'lab/windows/test-e3-acceptance.ps1'
+      - 'lab/windows/test-e4-e3-binding.ps1'
       - 'lab/windows/test-e4-harness.ps1'
       - 'lab/windows/external-client-fixture.json'
       - 'docs/lab/E4_RUNNER.md'
@@ -22,6 +23,7 @@ on:
       - 'lab/windows/E4Harness.psm1'
       - 'lab/windows/labctl.ps1'
       - 'lab/windows/test-e3-acceptance.ps1'
+      - 'lab/windows/test-e4-e3-binding.ps1'
       - 'lab/windows/test-e4-harness.ps1'
       - 'lab/windows/external-client-fixture.json'
       - 'docs/lab/E4_RUNNER.md'
@@ -51,6 +53,7 @@ jobs:
             'lab/windows/E4Harness.psm1',
             'lab/windows/labctl.ps1',
             'lab/windows/test-e3-acceptance.ps1',
+            'lab/windows/test-e4-e3-binding.ps1',
             'lab/windows/test-e4-harness.ps1'
           )) {
             $tokens = $null
@@ -105,7 +108,8 @@ jobs:
             "'mish.lab.e3-acceptance/v1'",
             'E3 acceptance and E4 session are not the exact same PRODUCT RC bytes.',
             'Get-E4BindingSha256',
-            'Assert-E4E3Binding'
+            'Assert-E4E3Binding',
+            'Add-E4E3EvidenceProjection'
           )) {
             if (-not $binding.Contains($required)) {
               throw "E3/E4 same-byte binding is missing required text: $required"
@@ -143,6 +147,7 @@ jobs:
             'E3AcceptancePath',
             'Add-E4E3Binding',
             'Assert-E4E3Binding',
+            'Add-E4E3EvidenceProjection',
             "exit 3"
           )) {
             if (-not $entry.Contains($required)) {
@@ -153,6 +158,10 @@ jobs:
       - name: Run deterministic E3 acceptance projection tests
         shell: pwsh
         run: ./lab/windows/test-e3-acceptance.ps1
+
+      - name: Run deterministic E3-to-E4 durable binding tests
+        shell: pwsh
+        run: ./lab/windows/test-e4-e3-binding.ps1
 
       - name: Run deterministic E4 fail-closed contract tests
         shell: pwsh
