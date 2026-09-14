@@ -117,9 +117,12 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $workflow = Get-Content -Raw -LiteralPath '.github/workflows/e4-contract.yml'
-          if ($workflow -match '(?m)^\s*workflow_dispatch\s*:' -or
-              $workflow -match 'self-hosted' -or
-              $workflow -match 'E4_PASS=YES') {
+          $manualTrigger = 'workflow_' + 'dispatch:'
+          $selfHostedMarker = 'self' + '-hosted'
+          $physicalPassMarker = 'E4_' + 'PASS=YES'
+          if ($workflow -match ('(?m)^\s*' + [regex]::Escape($manualTrigger)) -or
+              $workflow.Contains($selfHostedMarker) -or
+              $workflow.Contains($physicalPassMarker)) {
             throw 'Hosted E4 contract workflow must never become a physical acceptance execution path.'
           }
           'E4_HOSTED_CONTRACT=PASS' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
