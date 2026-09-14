@@ -69,12 +69,11 @@ class MagiskRootAuthority private constructor(
             return RootAuthorityStatus.Incomplete
         }
 
+        // A persistent implementation publishes a generation and can cache this proof. Test/fake
+        // implementations and other non-persistent seams may legitimately have no generation; they
+        // still proved root for this call, they simply cannot reuse the proof on a later probe.
         readyGeneration = process.sessionGeneration()
-        return if (readyGeneration != null) {
-            RootAuthorityStatus.Ready
-        } else {
-            RootAuthorityStatus.Incomplete
-        }
+        return RootAuthorityStatus.Ready
     }
 
     internal companion object {
