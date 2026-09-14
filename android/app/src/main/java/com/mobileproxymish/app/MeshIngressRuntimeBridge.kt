@@ -6,6 +6,9 @@ import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import com.mobileproxymish.app.cellular.CellularRecoveryDetail
+import com.mobileproxymish.app.cellular.CellularRecoveryStage
+import com.mobileproxymish.app.cellular.CellularRecoveryTelemetry
 import com.mobileproxymish.ffi.MeshAdmissionState
 import com.mobileproxymish.ffi.MeshAdmissionView
 import com.mobileproxymish.ffi.MeshTransportController
@@ -49,6 +52,10 @@ internal fun classifyMeshVpnNetworks(
     1 -> AndroidMeshVpnObservation.UniqueVpn(currentVpnLocalIpv4.single().toList())
     else -> AndroidMeshVpnObservation.AmbiguousVpn
 }
+
+/** Recovery telemetry emits only on a false -> true edge, never on repeated callback snapshots. */
+internal fun recoveryTransitionBecameReady(previous: Boolean, current: Boolean): Boolean =
+    !previous && current
 
 /**
  * Public Mesh listeners are a derived serving effect, never proof of egress readiness. A new
@@ -106,6 +113,8 @@ internal class MeshIngressRuntimeBridge(
     private var proxyObservationJob: Job? = null
     private var readinessObservationJob: Job? = null
     private var egressReadiness: StateFlow<ProductReadinessState>? = null
+    private var lastRecoveryProxyReady = false
+    private var lastRecoveryReadinessReady = false
     @Volatile
     private var lastIngressFailure = MeshIngressDiagnosticFailure.NONE
     private val vpnRequest = NetworkRequest.Builder()
@@ -275,11 +284,32 @@ internal class MeshIngressRuntimeBridge(
             return@synchronized
         }
 
+        val proxyReady = proxyRuntime.snapshot.value == ProxyRuntimeSnapshot.Running
+        val readinessState = egressReadiness?.value ?: ProductReadinessState.UNKNOWN
+        val readinessReady = readinessState == ProductReadinessState.READY
+
+        if (recoveryTransitionBecameReady(lastRecoveryProxyReady, proxyReady)) {
+            CellularRecoveryTelemetry.emit(
+                stage = CellularRecoveryStage.PROXY_READY,
+                ownerSequence = null,
+                detail = CellularRecoveryDetail.PROXY_HEALTHY,
+            )
+        }
+        if (recoveryTransitionBecameReady(lastRecoveryReadinessReady, readinessReady)) {
+            CellularRecoveryTelemetry.emit(
+                stage = CellularRecoveryStage.READINESS_E2E_SUCCEEDED,
+                ownerSequence = null,
+                detail = CellularRecoveryDetail.READINESS_READY,
+            )
+        }
+        lastRecoveryProxyReady = proxyReady
+        lastRecoveryReadinessReady = readinessReady
+
         try {
             val epoch = view.admissionEpoch
             if (meshIngressServingAllowed(
-                    proxyRunning = proxyRuntime.snapshot.value == ProxyRuntimeSnapshot.Running,
-                    readiness = egressReadiness?.value ?: ProductReadinessState.UNKNOWN,
+                    proxyRunning = proxyReady,
+                    readiness = readinessState,
                     meshAdmitted = view.state == MeshAdmissionState.ADMITTED,
                     admissionEpoch = epoch,
                 )
@@ -316,7 +346,15 @@ internal class MeshIngressRuntimeBridge(
             lastIngressFailure = MeshIngressDiagnosticFailure.OTHER
             runCatching { activeController.stopIngress() }
         }
-        mutableSnapshot.value = ownerSnapshotOrNull(activeController)
+        val updatedView = ownerSnapshotOrNull(activeController)
+        mutableSnapshot.value = updatedView
+        if (recoveryTransitionBecameReady(view.ingressRunning, updatedView?.ingressRunning == true)) {
+            CellularRecoveryTelemetry.emit(
+                stage = CellularRecoveryStage.MESH_INGRESS_RUNNING,
+                ownerSequence = null,
+                detail = CellularRecoveryDetail.INGRESS_RUNNING,
+            )
+        }
     }
 
     private fun stopIngressFailClosed(activeController: MeshTransportController?) {
