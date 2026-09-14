@@ -17,6 +17,35 @@ class MagiskRootAuthorityTest {
     }
 
     @Test
+    fun readyIsCachedForSameRootSessionGeneration() {
+        val process = FakeProcess(
+            RootProcessResult(0, "0\n"),
+            RootProcessResult(0, "0: from all lookup local\n"),
+        ).apply { generation = 7L }
+        val authority = MagiskRootAuthority.forTesting(process)
+
+        assertEquals(RootAuthorityStatus.Ready, authority.probe())
+        assertEquals(RootAuthorityStatus.Ready, authority.probe())
+        assertEquals(2, process.calls)
+    }
+
+    @Test
+    fun newRootSessionGenerationRequiresFreshAuthorityProof() {
+        val process = FakeProcess(
+            RootProcessResult(0, "0\n"),
+            RootProcessResult(0, "0: from all lookup local\n"),
+            RootProcessResult(0, "0\n"),
+            RootProcessResult(0, "0: from all lookup local\n"),
+        ).apply { generation = 7L }
+        val authority = MagiskRootAuthority.forTesting(process)
+
+        assertEquals(RootAuthorityStatus.Ready, authority.probe())
+        process.generation = 8L
+        assertEquals(RootAuthorityStatus.Ready, authority.probe())
+        assertEquals(4, process.calls)
+    }
+
+    @Test
     fun deniedDoesNotAttemptSecondCommand() {
         val process = FakeProcess(RootProcessResult(1, "denied"))
         val authority = MagiskRootAuthority.forTesting(process)
@@ -65,10 +94,13 @@ class MagiskRootAuthorityTest {
         private val results = ArrayDeque(results.toList())
         var calls = 0
             private set
+        var generation: Long? = null
 
         override fun run(arguments: List<String>): RootProcessResult {
             calls += 1
             return results.removeFirst()
         }
+
+        override fun sessionGeneration(): Long? = generation
     }
 }
