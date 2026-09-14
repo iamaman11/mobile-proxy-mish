@@ -8,13 +8,13 @@ class RootSessionBootstrapTest {
     @Test
     fun exactStaleOwnerJumpIsRemovedAndCurrentUidJumpIsPreserved() {
         val process = FakeBootstrapProcess(
-            ipv4 = mutableListOf(
-                "-A OUTPUT -m owner --uid-owner 11001 -j MISH_DEBUG_EGRESS_V1",
-                "-A OUTPUT -m owner --uid-owner 12002 -j MISH_DEBUG_EGRESS_V1",
-            ),
-            ipv6 = mutableListOf(
-                "-A OUTPUT -m owner --uid-owner 11001 -j MISH_DEBUG_EGRESS_V1",
-            ),
+            ipv4 = exactPolicy(ipv4 = true).toMutableList().apply {
+                add("-A OUTPUT -m owner --uid-owner 11001 -j MISH_DEBUG_EGRESS_V1")
+                add("-A OUTPUT -m owner --uid-owner 12002 -j MISH_DEBUG_EGRESS_V1")
+            },
+            ipv6 = exactPolicy(ipv4 = false).toMutableList().apply {
+                add("-A OUTPUT -m owner --uid-owner 11001 -j MISH_DEBUG_EGRESS_V1")
+            },
         )
         val bootstrap = MishRootSessionBootstrap(
             productUid = 12002,
@@ -29,10 +29,14 @@ class RootSessionBootstrapTest {
     }
 
     @Test
-    fun malformedOrForeignReferenceIsNeverDeletedByBootstrap() {
-        val malformed = "-A OUTPUT -j MISH_DEBUG_EGRESS_V1"
+    fun malformedChainWithExactStaleJumpIsNeverModified() {
+        val stale = "-A OUTPUT -m owner --uid-owner 11001 -j MISH_DEBUG_EGRESS_V1"
         val process = FakeBootstrapProcess(
-            ipv4 = mutableListOf(malformed),
+            ipv4 = mutableListOf(
+                "-N MISH_DEBUG_EGRESS_V1",
+                "-A MISH_DEBUG_EGRESS_V1 -j MARK --set-xmark 0xdead/0xdead",
+                stale,
+            ),
             ipv6 = mutableListOf(),
         )
         val bootstrap = MishRootSessionBootstrap(
@@ -41,16 +45,36 @@ class RootSessionBootstrapTest {
         )
 
         assertTrue(bootstrap.reconcile(process))
-        assertTrue(process.ipv4.contains(malformed))
+        assertTrue(process.ipv4.contains(stale))
+        assertTrue(process.commands.none { it.contains(" -D OUTPUT ") })
+    }
+
+    @Test
+    fun foreignReferenceToExactChainPreventsBootstrapMutation() {
+        val stale = "-A OUTPUT -m owner --uid-owner 11001 -j MISH_DEBUG_EGRESS_V1"
+        val process = FakeBootstrapProcess(
+            ipv4 = exactPolicy(ipv4 = true).toMutableList().apply {
+                add(stale)
+                add("-A FORWARD -j MISH_DEBUG_EGRESS_V1")
+            },
+            ipv6 = mutableListOf(),
+        )
+        val bootstrap = MishRootSessionBootstrap(
+            productUid = 12002,
+            mishChain = "MISH_DEBUG_EGRESS_V1",
+        )
+
+        assertTrue(bootstrap.reconcile(process))
+        assertTrue(process.ipv4.contains(stale))
         assertTrue(process.commands.none { it.contains(" -D OUTPUT ") })
     }
 
     @Test
     fun failedExactDeleteFailsClosedWithoutBroadCleanup() {
         val process = FakeBootstrapProcess(
-            ipv4 = mutableListOf(
-                "-A OUTPUT -m owner --uid-owner 11001 -j MISH_DEBUG_EGRESS_V1",
-            ),
+            ipv4 = exactPolicy(ipv4 = true).toMutableList().apply {
+                add("-A OUTPUT -m owner --uid-owner 11001 -j MISH_DEBUG_EGRESS_V1")
+            },
             ipv6 = mutableListOf(),
             failDeletes = true,
         )
@@ -64,6 +88,20 @@ class RootSessionBootstrapTest {
         assertTrue(process.commands.none { it.contains(" -F ") || it.contains(" flush") })
     }
 
+    private fun exactPolicy(ipv4: Boolean): List<String> {
+        val chain = "MISH_DEBUG_EGRESS_V1"
+        val mark = "0x2000000"
+        val loopback = if (ipv4) "127.0.0.0/8" else "::1/128"
+        return listOf(
+            "-N $chain",
+            "-A $chain -d $loopback -j RETURN",
+            "-A $chain -j CONNMARK --restore-mark --nfmask $mark --ctmask $mark",
+            "-A $chain -m conntrack --ctstate NEW -j MARK --set-xmark $mark/$mark",
+            "-A $chain -m conntrack --ctstate NEW -m mark --mark $mark/$mark " +
+                "-j CONNMARK --save-mark --nfmask $mark --ctmask $mark",
+        )
+    }
+
     private class FakeBootstrapProcess(
         val ipv4: MutableList<String>,
         val ipv6: MutableList<String>,
@@ -75,8 +113,8 @@ class RootSessionBootstrapTest {
             val command = arguments.last()
             commands += command
             return when {
-                command == "iptables -t mangle -S OUTPUT" -> ok(ipv4)
-                command == "ip6tables -t mangle -S OUTPUT" -> ok(ipv6)
+                command == "iptables -t mangle -S" -> ok(ipv4)
+                command == "ip6tables -t mangle -S" -> ok(ipv6)
                 command.startsWith("iptables -t mangle -D OUTPUT ") ->
                     deleteExact(ipv4, command, "iptables")
                 command.startsWith("ip6tables -t mangle -D OUTPUT ") ->
