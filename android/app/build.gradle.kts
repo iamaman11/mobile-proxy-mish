@@ -187,6 +187,13 @@ android {
     }
 
     buildTypes {
+        getByName("debug") {
+            // Diagnostic/development bytes must never be package-compatible with the production
+            // appliance. This keeps the release UID and its device/root authorization boundary
+            // stable across local debug installs.
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+        }
         getByName("release") {
             if (releaseSigningRequested) {
                 signingConfig = signingConfigs.getByName("release")
@@ -196,6 +203,9 @@ android {
 
     buildFeatures {
         compose = true
+        // The variant-aware package-identity regression reads BuildConfig.APPLICATION_ID for
+        // both debug and release. Keep generation explicit instead of relying on AGP defaults.
+        buildConfig = true
     }
 
     packaging {
@@ -284,6 +294,7 @@ val verifyReleaseSingBoxPackaging = registerSingBoxPackagingVerifier(
 tasks.matching { it.name == "assembleDebug" }.configureEach {
     finalizedBy(verifyDebugSingBoxPackaging)
 }
+
 tasks.matching { it.name == "assembleRelease" }.configureEach {
     finalizedBy(verifyReleaseSingBoxPackaging)
 }

@@ -91,6 +91,11 @@ class CellularRuntimeBridge(
     private val policyExecutor = Executors.newSingleThreadExecutor { task ->
         Thread(task, "mish-cellular-policy").apply { isDaemon = true }
     }
+    private val rootRecoveryScheduler = Executors.newSingleThreadScheduledExecutor { task ->
+        Thread(task, "mish-root-authority-recovery").apply { isDaemon = true }
+    }
+    private val rootRecoveryPending = AtomicBoolean(false)
+    private val rootRecoveryBackoff = RootAuthorityRecoveryBackoff()
 
     val snapshot: StateFlow<CellularRuntimeSnapshot>
         get() = mutableSnapshot.asStateFlow()
@@ -278,6 +283,12 @@ class CellularRuntimeBridge(
             return
         }
 
+        if (policyResult is CellularRootPolicyResult.AuthorityUnavailable) {
+            scheduleRootAuthorityRecovery(activeController)
+        } else {
+            resetRootAuthorityRecovery()
+        }
+
         mutableSnapshot.value = when (policyResult) {
             CellularRootPolicyResult.Enforced -> {
                 val sequence = admission.lastSequence
@@ -325,6 +336,120 @@ class CellularRuntimeBridge(
         }
     }
 
+    private fun scheduleRootAuthorityRecovery(activeController: CellularController) {
+        if (closed.get() || !rootRecoveryPending.compareAndSet(false, true)) return
+        val delayMs = rootRecoveryBackoff.nextDelayMs()
+        try {
+            rootRecoveryScheduler.schedule(
+                {
+                    val shouldRun = rootRecoveryPending.compareAndSet(true, false) && !closed.get()
+                    if (shouldRun) {
+                        submitPolicyWork {
+                            if (!closed.get()) retryRootAuthority(activeController)
+                        }
+                    }
+                },
+                delayMs,
+                TimeUnit.MILLISECONDS,
+            )
+        } catch (_: RejectedExecutionException) {
+            rootRecoveryPending.set(false)
+        }
+    }
+
+    private fun retryRootAuthority(activeController: CellularController) {
+        val admission = currentAdmissionOrNull(activeController)
+        if (admission == null) {
+            mutableSnapshot.value = CellularRuntimeSnapshot.BoundaryUnavailable(
+                CellularBoundaryFailure.ForeignCallFailed,
+            )
+            return
+        }
+
+        // Before the first Android network observation there is no owner sequence to compare.
+        // Recover only the fail-closed base in that state; never manufacture ADMITTED authority.
+        if (admission.lastSequence == null) {
+            retryInitialFailClosedBase(activeController, admission)
+            return
+        }
+
+        val admittedHandle = admission.admittedNetworkHandle
+        var interfaceName = interfaceHints.interfaceFor(admittedHandle)
+        if (interfaceName == null && admittedHandle != null) {
+            interfaceName = try {
+                observer.interfaceNameFor(admittedHandle)
+            } catch (_: Exception) {
+                null
+            }
+            interfaceHints.observed(admittedHandle, interfaceName)
+        }
+
+        reconcileOwnerGeneration(
+            activeController = activeController,
+            admission = admission,
+            interfaceName = interfaceName,
+        )
+    }
+
+    private fun retryInitialFailClosedBase(
+        activeController: CellularController,
+        admission: CellularAdmissionView,
+    ) {
+        val quiesced = try {
+            activeController.closeRootPolicyGate()
+            activeController.awaitRootPolicyQuiesced(EFFECT_DRAIN_TIMEOUT_MS.toULong())
+        } catch (_: Exception) {
+            false
+        } catch (_: LinkageError) {
+            false
+        }
+        if (!quiesced) {
+            mutableSnapshot.value = CellularRuntimeSnapshot.BoundaryUnavailable(
+                CellularBoundaryFailure.RootPolicyReconcileFailed,
+            )
+            return
+        }
+
+        val result = try {
+            rootPolicy.failClosed()
+        } catch (_: Exception) {
+            mutableSnapshot.value = CellularRuntimeSnapshot.BoundaryUnavailable(
+                CellularBoundaryFailure.RootPolicyReconcileFailed,
+            )
+            return
+        }
+
+        mutableSnapshot.value = when (result) {
+            is CellularRootPolicyResult.AuthorityUnavailable -> {
+                scheduleRootAuthorityRecovery(activeController)
+                CellularRuntimeSnapshot.BoundaryUnavailable(
+                    CellularBoundaryFailure.RootAuthorityUnavailable,
+                )
+            }
+
+            is CellularRootPolicyResult.FailClosed -> {
+                resetRootAuthorityRecovery()
+                result.reason?.let {
+                    CellularRuntimeSnapshot.BoundaryUnavailable(
+                        CellularBoundaryFailure.RootPolicyUnavailable(it),
+                    )
+                } ?: CellularRuntimeSnapshot.OwnerSnapshot(admission)
+            }
+
+            CellularRootPolicyResult.Enforced -> {
+                resetRootAuthorityRecovery()
+                CellularRuntimeSnapshot.BoundaryUnavailable(
+                    CellularBoundaryFailure.RootPolicyReconcileFailed,
+                )
+            }
+        }
+    }
+
+    private fun resetRootAuthorityRecovery() {
+        rootRecoveryPending.set(false)
+        rootRecoveryBackoff.reset()
+    }
+
     private fun currentAdmissionOrNull(
         activeController: CellularController,
     ): CellularAdmissionView? = try {
@@ -363,25 +488,33 @@ class CellularRuntimeBridge(
             )
         }
         return when (val result = rootPolicy.failClosed()) {
-        is CellularRootPolicyResult.AuthorityUnavailable ->
+        is CellularRootPolicyResult.AuthorityUnavailable -> {
+            controller?.let(::scheduleRootAuthorityRecovery)
             CellularRuntimeSnapshot.BoundaryUnavailable(
                 CellularBoundaryFailure.RootAuthorityUnavailable,
             )
-
-        is CellularRootPolicyResult.FailClosed -> when {
-            result.reason != null -> CellularRuntimeSnapshot.BoundaryUnavailable(
-                CellularBoundaryFailure.RootPolicyUnavailable(result.reason),
-            )
-
-            preserveOnCleanFailClosed -> null
-            preferredFailure != null -> CellularRuntimeSnapshot.BoundaryUnavailable(preferredFailure)
-            else -> CellularRuntimeSnapshot.BoundaryUnavailable(
-                CellularBoundaryFailure.RootPolicyReconcileFailed,
-            )
         }
 
-        CellularRootPolicyResult.Enforced -> preferredFailure?.let {
-            CellularRuntimeSnapshot.BoundaryUnavailable(it)
+        is CellularRootPolicyResult.FailClosed -> {
+            resetRootAuthorityRecovery()
+            when {
+                result.reason != null -> CellularRuntimeSnapshot.BoundaryUnavailable(
+                    CellularBoundaryFailure.RootPolicyUnavailable(result.reason),
+                )
+
+                preserveOnCleanFailClosed -> null
+                preferredFailure != null -> CellularRuntimeSnapshot.BoundaryUnavailable(preferredFailure)
+                else -> CellularRuntimeSnapshot.BoundaryUnavailable(
+                    CellularBoundaryFailure.RootPolicyReconcileFailed,
+                )
+            }
+        }
+
+        CellularRootPolicyResult.Enforced -> {
+            resetRootAuthorityRecovery()
+            preferredFailure?.let {
+                CellularRuntimeSnapshot.BoundaryUnavailable(it)
+            }
         }
         }
     }
@@ -397,6 +530,8 @@ class CellularRuntimeBridge(
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
 
+        rootRecoveryPending.set(false)
+        rootRecoveryScheduler.shutdownNow()
         runCatching { controller?.closeRootPolicyGate() }
         observer.close()
         val cleanup = try {
