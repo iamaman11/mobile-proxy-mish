@@ -60,7 +60,7 @@ jobs:
             ~/.cargo/bin/cargo-ndk
             target
             android/app/build/vendor-cache/sing-box
-          key: integration-android-${{ runner.os }}-${{ env.CACHE_MODE }}-rust-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'vendor/sing-box/release.toml') }}
+          key: integration-android-${{ runner.os }}-${{ env.CACHE_MODE }}-rust-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/**/Cargo.toml', 'crates/**/*.rs', 'vendor/sing-box/release.toml') }}
           restore-keys: |
             integration-android-${{ runner.os }}-full-rust-${{ env.RUST_TOOLCHAIN }}-
             integration-android-${{ runner.os }}-static-rust-${{ env.RUST_TOOLCHAIN }}-
