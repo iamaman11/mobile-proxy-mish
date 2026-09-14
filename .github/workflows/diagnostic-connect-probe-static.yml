@@ -1,0 +1,82 @@
+name: Diagnostic CONNECT Probe Static
+
+on:
+  pull_request:
+    paths:
+      - 'lab/windows/DiagnosticConnectProbe.psm1'
+      - 'lab/windows/test-diagnostic-connect-probe.ps1'
+      - 'lab/windows/diagnose-loopback-connect.ps1'
+      - '.github/workflows/diagnostic-connect-probe-static.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'lab/windows/DiagnosticConnectProbe.psm1'
+      - 'lab/windows/test-diagnostic-connect-probe.ps1'
+      - 'lab/windows/diagnose-loopback-connect.ps1'
+      - '.github/workflows/diagnostic-connect-probe-static.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: Diagnostic CONNECT Probe Static
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Parse bounded diagnostic scripts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($path in @(
+            'lab/windows/DiagnosticConnectProbe.psm1',
+            'lab/windows/test-diagnostic-connect-probe.ps1',
+            'lab/windows/diagnose-loopback-connect.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path),
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -ne 0) {
+              $errors | ForEach-Object { Write-Error "${path}: $($_.Message)" }
+              throw "PowerShell parse failed for $path."
+            }
+          }
+
+      - name: Exercise CONNECT attribution regression
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & 'lab/windows/test-diagnostic-connect-probe.ps1'
+          if ($LASTEXITCODE -ne 0) {
+            throw "Diagnostic CONNECT attribution regression failed with exit code $LASTEXITCODE."
+          }
+
+      - name: Enforce read-only physical boundary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $text = Get-Content -Raw -LiteralPath 'lab/windows/diagnose-loopback-connect.ps1'
+          foreach ($forbidden in @(
+            '(?i)adb\s+uninstall',
+            '(?i)adb\s+install',
+            '(?i)airplane',
+            '(?i)settings\s+put',
+            '(?i)svc\s+data',
+            '(?i)magisk\s+--sqlite',
+            '(?i)terraform\s+apply',
+            '(?i)gradle(?:\.bat|\.exe)?\s',
+            '(?i)cargo(?:\.exe)?\s'
+          )) {
+            if ($text -match $forbidden) {
+              throw 'Loopback attribution diagnostic crossed its read-only/no-build boundary.'
+            }
+          }
