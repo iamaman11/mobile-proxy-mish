@@ -16,7 +16,10 @@ const READINESS_PROBE_PORT: u16 = 443;
 /// workers than the private Cellular Egress bridge can serve. Connections above this budget are
 /// rejected; they are never rerouted through a default/VPN path. Raising this value requires a
 /// measured Android/LAB capacity change, not merely a timeout increase.
-pub const EXTERNAL_TCP_SESSION_BUDGET: usize = 16;
+///
+/// DEVICE-1 capacity candidate: 64 sessions. This remains one shared, fail-closed bound for
+/// the public Mesh ingress and private bridge; it is not an unbounded concurrency setting.
+pub const EXTERNAL_TCP_SESSION_BUDGET: usize = 64;
 const DEPLOYMENT_MESH_ACCEPTED_CIDR_RAW: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../config/deployment/mesh-device-cidr.txt"
