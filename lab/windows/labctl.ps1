@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0, Mandatory)]
-    [ValidateSet('host', 'release', 'android', 'evidence', 'cloudflare', 'e3')]
+    [ValidateSet('host', 'release', 'android', 'evidence', 'cloudflare', 'e3', 'e4')]
     [string]$Area,
 
     [Parameter(Position = 1, Mandatory)]
@@ -26,6 +26,9 @@ param(
     [string]$InputPath,
     [string]$EvidencePath,
     [string]$MeshDeviceCidr,
+    [string]$SessionReceipt,
+    [string]$ObservationPath,
+    [string]$ExternalFixturePath,
     [string]$AdbPath = 'adb',
     [string]$E3Host = 'checkip.amazonaws.com',
     [ValidateRange(1, 65535)][int]$E3Port = 80,
@@ -99,12 +102,42 @@ try {
             default { throw "MISH_LABCTL_FAILURE|INPUT_INVALID|Unsupported command: $Area $Action" }
         }
     }
+    elseif ($Area -eq 'e4') {
+        Import-Module (Join-Path $PSScriptRoot 'E4Harness.psm1') -Force
+        switch ($Action) {
+            'plan' {
+                if (-not $VerificationReceipt -or -not $ReceiptPath) {
+                    throw 'MISH_LABCTL_FAILURE|INPUT_INVALID|E4 plan requires exact release verification and receipt path.'
+                }
+                if (-not $ExternalFixturePath) {
+                    $ExternalFixturePath = Join-Path $PSScriptRoot 'external-client-fixture.json'
+                }
+                $result = Invoke-E4Domain -Action plan `
+                    -ReleaseVerificationReceipt $VerificationReceipt `
+                    -ExternalFixturePath $ExternalFixturePath `
+                    -ReceiptPath $ReceiptPath
+            }
+            'finalize' {
+                if (-not $SessionReceipt -or -not $ObservationPath -or -not $EvidencePath) {
+                    throw 'MISH_LABCTL_FAILURE|INPUT_INVALID|E4 finalize requires exact session, physical observations, and evidence path.'
+                }
+                $result = Invoke-E4Domain -Action finalize `
+                    -SessionReceipt $SessionReceipt `
+                    -ObservationPath $ObservationPath `
+                    -EvidencePath $EvidencePath
+            }
+            default { throw "MISH_LABCTL_FAILURE|INPUT_INVALID|Unsupported command: $Area $Action" }
+        }
+    }
     else {
         Import-Module (Join-Path $PSScriptRoot 'Labctl.psm1') -Force
         $result = Invoke-Labctl @PSBoundParameters
     }
 
     $result | ConvertTo-Json -Depth 8 -Compress
+    if ([string]$result.result -eq 'BLOCKED') {
+        exit 3
+    }
     exit 0
 }
 catch {
