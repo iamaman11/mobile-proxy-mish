@@ -7,141 +7,95 @@ GitHub is the durable source of truth. Chat handoffs, copied status text, CI sum
 Before planning or mutating:
 
 1. read fresh protected `main`;
-2. read the current cross-component execution tracker (#86);
-3. inspect the current M1 integration PR and exact integration-trunk head;
-4. read the current slice PR when one exists;
-5. read only the natural-owner issue/contracts and implementation files touched by that slice;
+2. read Issue #135 as the current execution/checkpoint pointer;
+3. read Issue #134 only for the master PRODUCT/architecture plan and findings relevant to the active slice;
+4. inspect `fix/root-policy-reconciliation` and the current slice PR/head named by #135;
+5. read only the natural-owner contracts and implementation files required by that slice;
 6. distinguish current facts from historical evidence.
 
-One fresh baseline opens one bounded mutation window. Do not re-baseline after every write performed inside that same bounded window.
+One fresh baseline opens one bounded mutation window. Do not re-baseline after every write inside that same bounded window.
 
-## Three integration levels
-
-Do not confuse a coding batch, a review boundary and a `main` merge boundary.
-
-### 1. Commit-only work
-
-While one bounded slice is still being implemented, work on a short-lived slice branch created from the current M1 integration-trunk head.
-
-A commit should be coherent and reviewable. A remote push is not an editor save point. When several repository files must change through GitHub, prefer:
+## Engineering rule
 
 ```text
-prepare all edits
- -> one Git tree
- -> one commit
- -> one branch-ref update
+concrete product/operator problem
+ -> smallest safe change or smallest missing measurement
+ -> measurable result
+ -> preserved invariants
+ -> stop condition
 ```
 
-Do not open a PR merely because one or two files changed.
+Prefer NO CHANGE when the accepted requirement is already met. Do not introduce a framework, daemon, generic shell API, second owner, or refactor merely because it is possible.
 
-### 2. Slice review PR
+## Working lineage and slice rule
 
-Open a slice PR only when that bounded slice is coherent enough to audit as a unit.
+`main` is an accepted integration/evidence boundary, not a scratch branch. Current bounded implementation work continues from the integration lineage recorded by #135.
 
-The slice PR targets the M1 integration branch, **not `main`**. It should be opened review-ready (non-Draft) only after the implementation slice itself is coherent. Ordinary `opened` and `synchronize` events do not trigger the full CI workflow under the current CI contract.
-
-A normal slice contains at most:
+A normal implementation slice contains:
 
 - one natural owner;
-- one necessary platform/vendor/composition adapter;
-- the direct tests for that owner/adapter boundary.
+- at most one required platform/vendor/composition adapter;
+- direct tests for that owner/adapter boundary.
 
-If a proposed slice touches more than two semantic owners, or grows beyond roughly eight implementation/test files, split it unless the coupling is technically inseparable and the PR explains why.
+A slice PR targets the current integration lineage unless #135 explicitly records another base. After acceptance, update the integration pointer in #135. Do not merge the integration lineage to `main` merely to record progress.
 
-Exactly one implementation slice should be active at a time unless #86 records an explicit dependency reason for parallel slices.
+## CI and Android build rule
 
-Each slice PR body must record:
+The stable development delivery contract is `docs/architecture/DEVELOPMENT_PIPELINE.md`.
 
-```text
-OWNER
-GOAL
-BASE_SHA
-INVARIANTS
-FILES / BOUNDARIES TOUCHED
-TESTS / EVIDENCE
-NOT PROVEN
-FOLLOW-UP
-```
-
-Detailed code review happens at the slice PR. After it is accepted, squash-merge it into the M1 integration branch and delete the short-lived slice branch. Updating the integration branch does not itself justify a `main` merge or LAB run.
-
-### 3. Milestone PR to main
-
-The current M1 integration PR is a container for accepted slice results and the final cross-slice integration review. It is **not** the normal working diff for day-to-day implementation.
-
-Keep the M1 PR Draft while slices are still being assembled. Merge to `main` only when at least one of these is true:
-
-- the coherent integration milestone is complete as far as E1/E2 can prove it;
-- the next missing fact can only be obtained from a main-only LAB/provider/release path;
-- a natural-owner contract explicitly requires accepted `main`;
-- the change must establish a protected-main compatibility boundary before further work.
-
-Do not merge to `main` merely because one internal implementation stage or slice completed.
-
-## Context-budget rule
-
-The executor must not rely on remembering the whole integration diff.
-
-During implementation, the active working set is:
+Supported PRODUCT floor:
 
 ```text
-#86 current checkpoint
-+ current slice PR/branch
-+ one natural-owner contract
-+ one adapter boundary when required
-+ direct tests
+Android 11 / API 30
+armeabi-v7a
 ```
 
-Do not reload or reason line-by-line over the entire M1 PR unless performing final integration review.
+`android/app/build.gradle.kts` is the package/native floor authority. One `androidMinSdk=30` value must drive both Android `minSdk` and cargo-ndk `-P`. Android 23/26 compatibility is not a supported PRODUCT requirement.
 
-After each slice merge, #86 must update `COMPLETED_SLICES`, `CURRENT_SLICE` and the current integration head/PR pointer. Slice PR descriptions are durable implementation checkpoints; chat memory is not.
+### Integration PRs
 
-## CI rule
-
-CI is deliberate evidence, not an edit loop.
-
-Ordinary PR `synchronize` pushes do **not** trigger the CI workflow. Full CI is allowed only through deliberate evidence boundaries:
-
-- `workflow_dispatch` on an exact meaningful checkpoint head when hosted build/test evidence is genuinely needed;
-- `ready_for_review` on the final M1 PR head;
-- `push` to protected `main` after merge.
-
-A slice PR does not receive full CI merely because it exists. Use a manual exact-head checkpoint only when the slice has material build/integration uncertainty that cannot be closed by code review and direct tests alone, for example Rust/UniFFI/Gradle contract changes or another cross-language/toolchain boundary.
-
-Before the M1 merge, mark the M1 PR ready for review and require complete CI PASS on the exact PR head.
-
-If the M1 head changes after a ready-for-review validation, return it to Draft, accumulate the correction batch, then mark it ready again for a fresh exact-head CI.
-
-## Main rule
-
-`main` is an accepted integration/evidence boundary. Do not use `main` as a scratch integration branch or progress ledger.
-
-Record intermediate progress in #86, slice PRs and the Draft M1 PR.
-
-## Development LAB rule
-
-Development LAB consumes an exact accepted green PRODUCT `main` SHA. Never claim LAB evidence from a PR or integration branch.
-
-Do not create a new LAB candidate merely because a slice or M1 PR completed.
-
-Run development LAB only when #86 identifies a physical fact that cannot be legitimately established by E1/E2 evidence and that fact is needed for the next implementation decision or acceptance gate.
-
-Batch all code work that does not require that physical fact before crossing the `main -> LAB` boundary.
-
-## Physical correction loop
-
-When LAB reveals a physical defect, use:
+For Android/Rust/build changes targeting `fix/root-policy-reconciliation`, `Integration Android Preflight` is the canonical hosted gate:
 
 ```text
-typed physical finding
- -> bounded correction slice
- -> slice review
- -> deliberate exact-head CI when required
- -> one milestone merge
- -> main-only LAB if the physical fact must be re-proven
+draft -> compileDebugKotlin + lintDebug
+ready -> fast gate + unit + assemble + native/package verification
+      -> exact-head device-candidate artifact
 ```
 
-Do not merge each attempted line-level correction separately. Never guess a physical fact merely to avoid LAB.
+Do not replace hosted exact-head evidence with an untracked local build.
+
+### PRs to protected main
+
+`Rust Workspace` and `Android Compose Shell` remain required contexts.
+
+The main CI classifier is fail-safe:
+
+- explicit LAB/docs/device-consumer-only paths may satisfy those contexts with fast no-build PASS jobs;
+- PRODUCT/build inputs, CI policy, unknown paths, or ambiguity run the full Rust + Android gate;
+- `workflow_dispatch` always runs the full gate.
+
+After merge, `push -> main` is smoke-only: `Architecture Guards` run and duplicate Rust/Android rebuilds are skipped.
+
+## DEVICE-1 development diagnostic rule
+
+When #135 requires an irreducible physical fact for the next engineering decision, the normal path is:
+
+```text
+successful ready integration PR exact head
+ -> hosted device-candidate artifact
+ -> protected-main Device Candidate Physical workflow
+ -> self-hosted Windows LAB consumes exact artifact
+ -> candidate.json + SHA-256 verification
+ -> persistent LAB-only debug signing
+ -> adb install -r com.mobileproxymish.app.debug
+ -> bounded physical evidence
+```
+
+The Windows LAB is a consumer by default, not a builder. The normal candidate path must not run Gradle, Cargo, cargo-ndk, UniFFI generation, NDK compilation or APK assembly locally. Portable PowerShell is not a prerequisite for this path.
+
+If hosted artifact identity, digest, device identity or a required tool is wrong/missing, fail closed. Do not silently fall back to local build. A local build is an explicit engineering fallback only after a separate decision.
+
+Exact-head PR debug candidates are development diagnostic evidence, not PRODUCT release identity. Formal release/promotion continues to use the immutable RC/release contract in `docs/architecture/RELEASE.md`.
 
 ## Evidence law
 
@@ -149,7 +103,9 @@ Do not merge each attempted line-level correction separately. Never guess a phys
 E1 < E2 < E3 < E4
 ```
 
-Weaker evidence must never close a stronger claim. LAB, CI logs, README text, generated artifacts and chat summaries are not mutable product-state authorities.
+Weaker evidence must never close a stronger claim. A development DEVICE-1 diagnostic may inform the next implementation decision without becoming release acceptance.
+
+Do not persist secrets, raw public IPs, unrelated logcat, device identifiers or credential material in durable evidence.
 
 ## Architecture law
 
@@ -161,18 +117,16 @@ one fact -> one natural owner -> one write path -> one observation path
 
 Prefer an existing natural owner plus one narrow adapter.
 
-Do not introduce a second VPN/TUN, second cellular owner, generic root shell, generic control plane, wildcard proxy exposure, whole-UID routing, default/Wi-Fi/WARP public-egress fallback, or secret leakage.
+Do not introduce:
 
-## Current milestone policy
+- a second Android VPN/TUN;
+- a second Cellular Egress, Runtime Lifecycle or Readiness owner;
+- a generic root shell/control API;
+- whole-UID/default-route public egress policy;
+- Wi-Fi/default/WARP public-egress fallback;
+- a mutable LAB/runtime status database or second control plane;
+- false PASS from weaker or stale evidence.
 
-Until #86 changes the gate, M1 still owns the same product scope:
+## Physical uncertainty
 
-```text
-production Android lifecycle
- -> durable external client credentials
- -> bounded exact-address Mesh ingress
- -> DNS/readiness implementation
- -> TCP-only client hardening
-```
-
-The scope stays in one eventual `main` milestone merge, but implementation/review is split into bounded slice PRs targeting the M1 integration branch.
+Do not guess DEVICE-1, Magisk/root, RPDB, Cloudflare/provider or carrier facts from source code. When the next decision depends on real physical state, request or run the smallest bounded physical diagnostic and return sanitized typed evidence.

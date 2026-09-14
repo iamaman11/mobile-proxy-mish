@@ -1,58 +1,81 @@
 # Architecture decision index
 
-This file is a navigation index, not a second source of truth. Durable architecture decisions and stage acceptance live in GitHub Issues/PRs; code and versioned contracts live in Git.
+This file is a navigation index, not a second source of truth. Live execution state belongs to GitHub Issues; stable contracts live in versioned repository files.
 
-## Planning and architecture authority
+## Current authorities
 
-- Issue #1 — planning baseline for VM-free Android mobile proxy via Cloudflare Mesh.
-- Issue #2 — completed architecture owner containing A1-A14 and A13.5 decision history.
-- Issue #5 — completed ADR locking Rust-first core, Protobuf policy, Kotlin/Jetpack Compose/Material 3/StateFlow, UniFFI direction and related technology decisions.
-- Issue #4 — vendor facts that must be revalidated when implementation reaches the relevant external boundary.
-- Issue #22 — managed physical-lab prerequisite index; it is not a second CURRENT/product-stage pointer.
-- Issue #24 — Cloudflare IaC/bootstrap authority for supported provider desired configuration.
-- Issue #27 — Windows pre-Android Cloudflare/sing-box routing ownership contract and validation boundary.
+- Issue #135 — current execution/checkpoint pointer: stage, active slice, integration head, current blocker and required physical fact.
+- Issue #134 — master PRODUCT/architecture hardening plan and research findings. It does not become a second current-stage pointer.
+- `AGENTS.md` — executor startup, bounded-slice, CI and physical-uncertainty policy.
+- `docs/architecture/EXECUTION.md` — stable implementation/integration execution policy.
+- `docs/architecture/DEVELOPMENT_PIPELINE.md` — canonical development CI, Android product-floor, hosted exact-head candidate and DEVICE-1 diagnostic contract.
+- `docs/architecture/RELEASE.md` — formal immutable RC/release identity and promotion contract.
+- `docs/architecture/ACCEPTANCE.md` — evidence-level and development-vs-formal acceptance boundaries.
+- `docs/lab/PLAN.md` — physical LAB ownership/trust/execution architecture.
 
-## Physical repository derivation and governance
+## PRODUCT ownership contracts
 
-- Issue #6 — completed B0 physical-tree derivation from capability ownership/dependency rules.
-- Issue #7 / PR #8 — completed B1 repository/bootstrap implementation.
-- Issue #9 — completed main protection/ruleset blocker.
-- PR #73 — application-wide minimal-layer extension invariant: existing natural owner + one narrow adapter before any new architectural layer.
-- `AGENTS.md` — executor rules for baselining, batching, draft PRs, CI, `main` and LAB boundaries.
-- `docs/architecture/EXECUTION.md` — stable evidence-milestone integration policy; live status remains in Issues.
-- `docs/lab/PLAN.md` — stable managed-lab execution sequence and ownership boundaries; live stage status remains in Issues.
+- `docs/architecture/SYSTEM.md` — canonical product path and system topology.
+- `docs/architecture/OWNERSHIP.md` — natural-owner map.
+- `docs/architecture/DEPENDENCIES.md` — dependency direction and minimal-layer invariant.
+- `docs/architecture/CONTRACTS.md` — durable interface/contract navigation.
+- `docs/architecture/CELLULAR_ROOT_POLICY.md` — root-policy mechanism and fail-closed constraints.
 
-## Current implementation line
-
-- Issue #86 — current cross-component execution tracker to `PROXY_ON_PHONE_WORKING=YES`; it owns execution order and milestone gates only, not component semantics.
-- Issue #10 — single owner for B2 Cellular Egress implementation and E3 acceptance.
-- Issue #63 — physical Android/device behavior and root-policy characterization evidence owner.
-- Issue #75 — bounded PRODUCT root-policy mechanism/correction owner.
-- Issue #64 — final proxy-destination DNS ownership / anti-leak acceptance owner; early E1/E2 implementation work may be prepared before its final physical acceptance gate.
-- PR #11 — B2a cellular natural-owner semantics and Android observation seam.
-- PR #12 — B2b-1 stable UniFFI typed cellular contract.
-- PR #13 — B2b-2 Android native packaging/runtime bridge + owner-derived Compose projection.
-- PR #14 — historical B2c-1 exact-network lease/NDK bind seam. Physical target-topology evidence later showed the bind mechanism fails with `EPERM`; Issue #10 owns its replacement by the accepted root-policy path while preserving the existing Cellular Egress owner.
-
-Read live cross-component order from Issue #86. Read semantic/acceptance status from the relevant natural-owner issue. Device-specific findings live in Issue #63. Historical PRs and older closure plans remain implementation/evidence history and do not override later accepted execution disposition.
-
-## Windows / Mesh contract navigation
-
-- `docs/architecture/SYSTEM.md` — canonical product path and destination-based Windows route ownership: ordinary Internet via sing-box TUN, Mesh/device destinations via Cloudflare One Traffic only; Android public proxy egress is independently cellular-owned and fail-closed.
-- Issue #27 — bounded pre-Android Windows acceptance; MASQUE is primary and Cloudflare One WireGuard is only a concrete-defect fallback.
-- `docs/testing/E4_FULL_STACK.md` — later physical proof for the real Android Mesh proxy endpoint, cellular DNS/egress, browser compatibility and selected-app fail-closed behavior.
-
-## Test/evidence navigation
-
-- `docs/architecture/ACCEPTANCE.md` — E1/E2/E3/E4 evidence domains and readiness/acceptance separation.
-- `docs/testing/E3_PHYSICAL_CELLULAR.md` — executable physical Cellular Egress acceptance protocol for the current PRODUCT mechanism; old bind-based RC/harness evidence cannot satisfy the revised root-policy acceptance path.
-- `docs/testing/E4_FULL_STACK.md` — future Windows/Cloudflare/Mesh/Kameleo/Camoufox full-stack contract.
-- `.github/workflows/e3-physical-cellular.yml` — manual self-hosted E3 runner workflow; the workflow/harness must match the accepted PRODUCT mechanism before a future run may claim E3 PASS.
-
-## Non-authority rule
-
-Do not turn this index, README text, CI logs, test summaries, generated artifacts or chat handoffs into a mutable product-state authority. The project law remains:
+The project law remains:
 
 ```text
 one fact -> one natural owner -> one write path -> one observation path
 ```
+
+Prefer the existing natural owner plus one narrow adapter. Do not add a second VPN/TUN, second Cellular Egress/Runtime Lifecycle/Readiness owner, generic root shell/control API, mutable status database, or Wi-Fi/default/WARP public-egress fallback.
+
+## Android development delivery decision
+
+The supported appliance target is Android 11 / API 30 with `armeabi-v7a` PRODUCT ABI.
+
+Stable authority split:
+
+```text
+android/app/build.gradle.kts
+  -> one androidMinSdk=30 authority for Android minSdk + cargo-ndk -P
+
+android/gradle.properties
+  -> mishTargetAbi=armeabi-v7a
+
+lab/windows/toolchain.json
+  -> mirror min_sdk=30 and rust.target=armv7-linux-androideabi
+
+Integration Android Preflight
+  -> hosted exact-head debug/test build and verification
+
+Device Candidate Physical
+  -> protected-main exact-artifact consumer on DEVICE-1
+```
+
+Android 23/26 compatibility is not a supported PRODUCT requirement unless a future explicit product decision reopens it.
+
+## Development physical diagnostics vs formal release acceptance
+
+A successful ready integration PR may produce a short-lived exact-head debug candidate. When Issue #135 requires a physical fact for the next engineering decision, the protected-main consumer may install those exact verified bytes on DEVICE-1 without a local rebuild.
+
+That diagnostic path is not release identity and cannot be promoted.
+
+Formal release acceptance remains the stronger immutable RC/release path:
+
+```text
+PIN -> BUILD ONCE -> HASH -> SIGN -> ATTEST -> TEST EXACT BYTES -> PROMOTE EXACT BYTES
+```
+
+No development artifact or weaker evidence may be relabeled as formal E3/release acceptance.
+
+## Test/evidence navigation
+
+- `docs/testing/E3_PHYSICAL_CELLULAR.md` — formal physical Cellular Egress acceptance protocol.
+- `docs/testing/E4_FULL_STACK.md` — later Windows/Cloudflare/Mesh/Android/external-client full-stack contract.
+- `.github/workflows/integration-android-preflight.yml` — hosted development Android fast-to-full gate and device-candidate producer.
+- `.github/workflows/device-candidate-physical.yml` — protected-main development DEVICE-1 candidate consumer.
+- `.github/workflows/e3-physical-cellular.yml` — formal self-hosted E3 workflow; it must match the currently accepted PRODUCT mechanism before it can claim E3 PASS.
+
+## Non-authority rule
+
+README text, chat handoffs, generated artifacts, CI summaries and this index are not mutable product-state authorities. Always begin from fresh GitHub facts and the current authority named above.
