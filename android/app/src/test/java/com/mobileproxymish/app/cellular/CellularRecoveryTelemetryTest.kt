@@ -87,4 +87,24 @@ class CellularRecoveryTelemetryTest {
             line,
         )
     }
+
+    @Test
+    fun formatsDownstreamServingStagesWithoutSensitiveNetworkData() {
+        val line = formatCellularRecoveryObservation(
+            CellularRecoveryObservation(
+                stage = CellularRecoveryStage.MESH_INGRESS_RUNNING,
+                ownerSequence = null,
+                monotonicNanos = 777L,
+                detail = CellularRecoveryDetail.INGRESS_RUNNING,
+            ),
+        )
+
+        assertEquals(
+            "MISH_RECOVERY_V1 stage=MESH_INGRESS_RUNNING sequence=NONE monotonic_ns=777 " +
+                "detail=INGRESS_RUNNING",
+            line,
+        )
+        assertFalse(line.contains("100.96."))
+        assertFalse(line.contains("1080"))
+    }
 }
