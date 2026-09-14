@@ -41,6 +41,15 @@ jobs:
           if ($abi -ne 'armeabi-v7a') { throw "DEVICE-1 ABI must be armeabi-v7a; observed $abi" }
           Write-Host 'DEVICE_1_PREREQUISITES=PASS'
 
+      - name: Count visible sing-box processes without root
+        shell: powershell
+        run: |
+          $adb = 'C:\mish-lab\tools\android-sdk\platform-tools\adb.exe'
+          $rows = @(& $adb shell ps -A 2>$null)
+          if ($LASTEXITCODE -ne 0) { throw 'Non-root Android process snapshot failed.' }
+          $count = @($rows | Where-Object { $_ -match '(?i)(?:libsingbox|sing-box)' }).Count
+          Write-Host "VISIBLE_SING_BOX_PROCESS_COUNT=$count"
+
       - name: Collect and print one-shot diagnostic
         shell: powershell
         run: |
