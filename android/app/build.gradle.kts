@@ -187,6 +187,13 @@ android {
     }
 
     buildTypes {
+        getByName("debug") {
+            // Diagnostic/development bytes must never be package-compatible with the production
+            // appliance. This keeps the release UID and its device/root authorization boundary
+            // stable across local debug installs.
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+        }
         getByName("release") {
             if (releaseSigningRequested) {
                 signingConfig = signingConfigs.getByName("release")
