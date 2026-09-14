@@ -138,11 +138,12 @@ try {
                 if (-not $SessionReceipt -or -not $ObservationPath -or -not $EvidencePath) {
                     throw 'MISH_LABCTL_FAILURE|INPUT_INVALID|E4 finalize requires exact session, physical observations, and evidence path.'
                 }
-                [void](Assert-E4E3Binding -SessionReceipt $SessionReceipt)
+                $binding = Assert-E4E3Binding -SessionReceipt $SessionReceipt
                 $result = Invoke-E4Domain -Action finalize `
                     -SessionReceipt $SessionReceipt `
                     -ObservationPath $ObservationPath `
                     -EvidencePath $EvidencePath
+                [void](Add-E4E3EvidenceProjection -EvidencePath $EvidencePath -Binding $binding)
             }
             default { throw "MISH_LABCTL_FAILURE|INPUT_INVALID|Unsupported command: $Area $Action" }
         }
