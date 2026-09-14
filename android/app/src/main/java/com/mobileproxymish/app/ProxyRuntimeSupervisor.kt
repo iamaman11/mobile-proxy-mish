@@ -233,6 +233,15 @@ class ProxyRuntimeSupervisor internal constructor(
                 failLifecycle(RuntimeProcessFailure.CONFIGURATION_REJECTED)
                 return
             }
+            // Validate the exact generated config before root launch. Output is drained and
+            // discarded because it may mention sensitive runtime paths or credentials; only the
+            // bounded exit status influences lifecycle state.
+            if (!validatePrivateConfig()) {
+                runCatching { newBridge.stop() }
+                deleteCurrentGenerationFiles(removeManifest = true)
+                failLifecycle(RuntimeProcessFailure.CONFIGURATION_REJECTED)
+                return
+            }
 
             if (!writeRootLauncher()) {
                 runCatching { newBridge.stop() }
@@ -280,15 +289,10 @@ class ProxyRuntimeSupervisor internal constructor(
                 return
             }
 
-            // The child has consumed its configuration. Keep only the private PID/control
-            // identity needed for bounded root lifecycle control; credentials do not persist.
-            if (!deleteIfPresent(configFile)) {
-                terminateProcess(newChild, newPid)
-                runCatching { newBridge.stop() }
-                deleteCurrentGenerationFiles(removeManifest = true)
-                failLifecycle(RuntimeProcessFailure.CLEANUP_FAILED)
-                return
-            }
+            // Keep the 0600 app-private config for the lifetime of the child. DEVICE-1 shows
+            // that removing it immediately after the first accept can leave a live sing-box PID
+            // with its listeners gone. Exact stop/failed-start cleanup removes this generation
+            // file together with its PID/control records.
 
             if (closed.get()) {
                 terminateProcess(newChild, newPid)
@@ -402,6 +406,26 @@ class ProxyRuntimeSupervisor internal constructor(
         configFile.writeText(config, Charsets.UTF_8)
         Os.chmod(configFile.absolutePath, PRIVATE_FILE_MODE)
         true
+    } catch (_: Exception) {
+        false
+    }
+
+    private fun validatePrivateConfig(): Boolean = try {
+        val checker = ProcessBuilder(
+            binaryFile.absolutePath,
+            "check",
+            "-c",
+            configFile.absolutePath,
+        )
+            .directory(runtimeDir)
+            .redirectErrorStream(true)
+            .start()
+        drainOutput(checker)
+        if (!checker.waitFor(CONFIG_CHECK_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+            checker.destroyForcibly()
+            return false
+        }
+        checker.exitValue() == 0
     } catch (_: Exception) {
         false
     }
@@ -699,6 +723,7 @@ class ProxyRuntimeSupervisor internal constructor(
         const val LOOPBACK = "127.0.0.1"
         const val OUTBOUND_TIMEOUT_MS = 15_000L
         const val AUTHORIZED_ADMISSION_TIMEOUT_MS = 30_000L
+        const val CONFIG_CHECK_TIMEOUT_MS = 5_000L
         const val START_HEALTH_TIMEOUT_SECONDS = 5L
         const val HEALTH_RETRY_MS = 100L
         const val HEALTH_POLL_MS = 500L
