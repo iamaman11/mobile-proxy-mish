@@ -10,10 +10,10 @@ use std::io::{self, Read, Write};
 use std::net::{
     IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket,
 };
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const SOCKS_VERSION: u8 = 0x05;
 const USERNAME_PASSWORD_METHOD: u8 = 0x02;
@@ -35,6 +35,10 @@ const MAX_AUTH_FIELD_LEN: usize = u8::MAX as usize;
 const UDP_ASSOCIATION_MAX_TARGETS: usize = 16;
 const UDP_ASSOCIATION_MAX_DATAGRAM: usize = 16 * 1024;
 const UDP_ASSOCIATION_POLL: Duration = Duration::from_millis(50);
+// This is an internal bridge limit, not a bandwidth promise. It bounds both directions of one
+// SOCKS UDP association before data reaches the cellular connector.
+const UDP_ASSOCIATION_MAX_PACKETS_PER_SECOND: usize = 256;
+const UDP_ASSOCIATION_MAX_BYTES_PER_SECOND: usize = 1024 * 1024;
 
 /// Runtime-generation credentials for the private loopback SOCKS5 bridge.
 #[derive(Clone, PartialEq, Eq)]
@@ -541,6 +545,49 @@ struct UdpTargetWorker {
     response_worker: thread::JoinHandle<()>,
 }
 
+/// Shared, fixed-window association budget. A single TCP-authenticated association must not be
+/// able to turn the private loopback bridge into an unbounded cellular packet amplifier.
+struct UdpAssociationBudget {
+    started: Instant,
+    packets: usize,
+    bytes: usize,
+    max_packets: usize,
+    max_bytes: usize,
+}
+
+impl UdpAssociationBudget {
+    fn production() -> Self {
+        Self::new(
+            UDP_ASSOCIATION_MAX_PACKETS_PER_SECOND,
+            UDP_ASSOCIATION_MAX_BYTES_PER_SECOND,
+        )
+    }
+
+    fn new(max_packets: usize, max_bytes: usize) -> Self {
+        Self {
+            started: Instant::now(),
+            packets: 0,
+            bytes: 0,
+            max_packets,
+            max_bytes,
+        }
+    }
+
+    fn allow(&mut self, bytes: usize) -> bool {
+        if self.started.elapsed() >= Duration::from_secs(1) {
+            self.started = Instant::now();
+            self.packets = 0;
+            self.bytes = 0;
+        }
+        if self.packets >= self.max_packets || bytes > self.max_bytes.saturating_sub(self.bytes) {
+            return false;
+        }
+        self.packets += 1;
+        self.bytes += bytes;
+        true
+    }
+}
+
 /// Bounded local SOCKS5 UDP ASSOCIATE implementation.
 ///
 /// This is intentionally an internal loopback hop: the authenticated TCP control peer must be
@@ -567,6 +614,7 @@ fn serve_udp_associate<C: CellularOutboundConnector + ?Sized>(
     let mut control_probe = control.try_clone()?;
     control_probe.set_nonblocking(true)?;
     let stopped = Arc::new(AtomicBool::new(false));
+    let budget = Arc::new(Mutex::new(UdpAssociationBudget::production()));
     let response_socket = inbound.try_clone()?;
     let mut source_peer = None;
     let mut targets: HashMap<ConnectTarget, UdpTargetWorker> = HashMap::new();
@@ -600,6 +648,9 @@ fn serve_udp_associate<C: CellularOutboundConnector + ?Sized>(
             Some(_) => {}
             None => source_peer = Some(peer),
         }
+        if !budget.lock().is_ok_and(|mut budget| budget.allow(count)) {
+            continue;
+        }
 
         let Some((target, payload)) = parse_udp_request(&buffer[..count]) else {
             continue;
@@ -618,6 +669,7 @@ fn serve_udp_associate<C: CellularOutboundConnector + ?Sized>(
             let response_target = target.clone();
             let response_peer = peer;
             let response_stop = Arc::clone(&stopped);
+            let response_budget = Arc::clone(&budget);
             let response_worker = thread::Builder::new()
                 .name("mish-cellular-udp-response".to_owned())
                 .spawn(move || {
@@ -627,6 +679,7 @@ fn serve_udp_associate<C: CellularOutboundConnector + ?Sized>(
                         response_peer,
                         response_target,
                         response_stop,
+                        response_budget,
                     )
                 })
                 .map_err(|_| io::Error::other("UDP response worker unavailable"))?;
@@ -659,13 +712,16 @@ fn udp_response_loop(
     peer: SocketAddr,
     target: ConnectTarget,
     stopped: Arc<AtomicBool>,
+    budget: Arc<Mutex<UdpAssociationBudget>>,
 ) {
     let mut response = vec![0_u8; UDP_ASSOCIATION_MAX_DATAGRAM];
     while !stopped.load(Ordering::Acquire) {
         match socket.recv(&mut response) {
             Ok(count) => {
                 let frame = encode_udp_response(&target, &response[..count]);
-                let _ = inbound.send_to(&frame, peer);
+                if budget.lock().is_ok_and(|mut budget| budget.allow(frame.len())) {
+                    let _ = inbound.send_to(&frame, peer);
+                }
             }
             Err(error)
                 if matches!(
@@ -1008,6 +1064,18 @@ mod tests {
         let address = bridge.local_addr().expect("bound address");
         assert!(address.ip().is_loopback());
         assert_ne!(address.port(), 0);
+    }
+
+    #[test]
+    fn udp_association_budget_limits_packets_and_bytes_per_window() {
+        let mut budget = UdpAssociationBudget::new(2, 8);
+        assert!(budget.allow(3));
+        assert!(budget.allow(3));
+        assert!(!budget.allow(1));
+
+        let mut byte_budget = UdpAssociationBudget::new(4, 4);
+        assert!(byte_budget.allow(4));
+        assert!(!byte_budget.allow(1));
     }
 
     #[test]
