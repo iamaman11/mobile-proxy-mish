@@ -28,6 +28,11 @@ function Invoke-LabctlChild {
     return @($output)
 }
 
+function Write-JsonFile {
+    param($Value,[Parameter(Mandatory)][string]$Path)
+    [IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth 12), [Text.UTF8Encoding]::new($false))
+}
+
 function New-PassScenario {
     param([Parameter(Mandatory)][string]$Id)
     $facts = [ordered]@{}
@@ -75,8 +80,6 @@ function New-ObservationDocument {
             signing_certificate_sha256 = [string]$Session.Json.release.signing_certificate_sha256
         }
         scenarios = @($Session.Json.required_scenarios | ForEach-Object { New-PassScenario ([string]$_.id) })
-        # Deliberately secret/privacy-shaped arbitrary fields. Final durable E4 evidence must
-        # project through an allowlist and never copy these values.
         password = 'must-not-leak'
         token = 'must-not-leak'
         public_ip = '203.0.113.123'
@@ -90,6 +93,7 @@ try {
     $apkSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $apkPath).Hash.ToLowerInvariant()
     $source = '0123456789abcdef0123456789abcdef01234567'
     $cert = 'abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd'
+    $testSha = '1234123412341234123412341234123412341234123412341234123412341234'
 
     $releasePath = Join-Path $temp 'release-verification.json'
     $release = [ordered]@{
@@ -106,14 +110,58 @@ try {
             signing_certificate_sha256 = $cert
         }
     }
-    [IO.File]::WriteAllText($releasePath, ($release | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
+    Write-JsonFile $release $releasePath
 
-    # PLAN is deliberately non-accepting: it can bind identities and enumerate the mandatory
-    # physical matrix, but it can never claim E4 PASS.
+    $e3AcceptancePath = Join-Path $temp 'e3-acceptance.json'
+    $e3Acceptance = [ordered]@{
+        schema = 'mish.lab.e3-acceptance/v1'
+        result = 'PASS'
+        e3_pass = $true
+        repository = 'iamaman11/mobile-proxy-mish'
+        scenario = 'full-root-toggle'
+        execution_adapter = [ordered]@{
+            git_ref = 'refs/heads/main'
+            git_commit = '89abcdef0123456789abcdef0123456789abcdef'
+            run_id = '777'
+        }
+        release = [ordered]@{
+            tag = $release.tag
+            source_commit = $source
+            abi = $release.abi
+            apk_sha256 = $apkSha
+            signing_certificate_sha256 = $cert
+        }
+        harness = [ordered]@{
+            run_id = 123
+            artifact_id = 456
+            artifact_zip_sha256 = ('1' * 64)
+            test_apk_sha256 = $testSha
+            signing_certificate_sha256 = $cert
+            instrumentation_class = 'com.mobileproxymish.app.cellular.CellularE3InstrumentedTest'
+            instrumentation_component = 'com.mobileproxymish.app.test/androidx.test.runner.AndroidJUnitRunner'
+        }
+    }
+    Write-JsonFile $e3Acceptance $e3AcceptancePath
+
+    # A different E3 RC cannot prepare an E4 session for these PRODUCT bytes.
+    $wrongE3 = ($e3Acceptance | ConvertTo-Json -Depth 12 | ConvertFrom-Json)
+    $wrongE3.release.source_commit = 'f' * 40
+    $wrongE3Path = Join-Path $temp 'wrong-e3-acceptance.json'
+    Write-JsonFile $wrongE3 $wrongE3Path
+    Invoke-LabctlChild @(
+        'e4','plan',
+        '-VerificationReceipt',$releasePath,
+        '-E3AcceptancePath',$wrongE3Path,
+        '-ExternalFixturePath',$fixture,
+        '-ReceiptPath',(Join-Path $temp 'must-not-plan-wrong-e3.json')
+    ) 2 | Out-Null
+
+    # PLAN is deliberately non-accepting and is now also bound to exact E3 physical PASS bytes.
     $sessionPath = Join-Path $temp 'session.json'
     $planOutput = Invoke-LabctlChild @(
         'e4','plan',
         '-VerificationReceipt',$releasePath,
+        '-E3AcceptancePath',$e3AcceptancePath,
         '-ExternalFixturePath',$fixture,
         '-ReceiptPath',$sessionPath
     ) 0
@@ -123,15 +171,15 @@ try {
     Assert-True ($session.e4_pass -eq $false) 'E4 plan must never claim acceptance.'
     Assert-True ($session.no_evidence_escalation -eq $true) 'E4 plan must preserve NO_EVIDENCE_ESCALATION.'
     Assert-True (@($session.required_scenarios).Count -eq 25) 'Canonical E4 mandatory scenario count drifted.'
+    Assert-True ($session.e3_acceptance.schema -eq 'mish.lab.e3-acceptance/v1') 'E4 session did not preserve typed E3 acceptance binding.'
+    Assert-True ($session.e3_acceptance.sha256 -eq (Get-FileHash -Algorithm SHA256 -LiteralPath $e3AcceptancePath).Hash.ToLowerInvariant()) 'E4 session E3 acceptance digest mismatch.'
     Assert-True (($planOutput -join ' ') -match '"e4_pass":false') 'E4 plan command output must state e4_pass=false.'
 
     $sessionContext = [pscustomobject]@{ Path = $sessionPath; Json = $session }
     $observationPath = Join-Path $temp 'observations-pass.json'
     $observations = New-ObservationDocument $sessionContext
-    [IO.File]::WriteAllText($observationPath, ($observations | ConvertTo-Json -Depth 12), [Text.UTF8Encoding]::new($false))
+    Write-JsonFile $observations $observationPath
 
-    # Final acceptance is allowed only at the trusted Windows/protected-main boundary. Hosted
-    # tests project that boundary explicitly; production callers receive it from the runner.
     $savedEnvironment = @{
         GITHUB_REPOSITORY = $env:GITHUB_REPOSITORY
         GITHUB_REF = $env:GITHUB_REF
@@ -167,102 +215,60 @@ try {
         Assert-True (-not $passText.Contains('password')) 'E4 evidence leaked password-shaped field names.'
         Assert-True (-not $passText.Contains('token')) 'E4 evidence leaked token-shaped field names.'
 
-        # Missing external software is a typed BLOCKED outcome, never a green PASS. labctl uses
-        # exit code 3 so automation cannot accidentally treat the ceremony as accepted.
         $blocked = (($observations | ConvertTo-Json -Depth 12) | ConvertFrom-Json)
         $blockedScenario = @($blocked.scenarios | Where-Object { $_.id -eq 'kameleo_junglefox_real_client' })[0]
         $blockedScenario.status = 'BLOCKED'
         $blockedScenario | Add-Member -NotePropertyName reason_code -NotePropertyValue 'EXTERNAL_BINARY_UNAVAILABLE'
         $blockedPath = Join-Path $temp 'observations-blocked.json'
-        [IO.File]::WriteAllText($blockedPath, ($blocked | ConvertTo-Json -Depth 12), [Text.UTF8Encoding]::new($false))
+        Write-JsonFile $blocked $blockedPath
         $blockedEvidencePath = Join-Path $temp 'e4-blocked.json'
-        Invoke-LabctlChild @(
-            'e4','finalize',
-            '-SessionReceipt',$sessionPath,
-            '-ObservationPath',$blockedPath,
-            '-EvidencePath',$blockedEvidencePath
-        ) 3 | Out-Null
+        Invoke-LabctlChild @('e4','finalize','-SessionReceipt',$sessionPath,'-ObservationPath',$blockedPath,'-EvidencePath',$blockedEvidencePath) 3 | Out-Null
         $blockedEvidence = Get-Content -Raw -LiteralPath $blockedEvidencePath | ConvertFrom-Json
         Assert-True ($blockedEvidence.result -eq 'BLOCKED' -and $blockedEvidence.e4_pass -eq $false) 'Unavailable required client must BLOCK E4.'
 
-        # A real mandatory scenario failure writes sanitized FAIL evidence and exits non-zero.
         $failed = (($observations | ConvertTo-Json -Depth 12) | ConvertFrom-Json)
         $failedScenario = @($failed.scenarios | Where-Object { $_.id -eq 'selected_app_fail_closed' })[0]
         $failedScenario.status = 'FAIL'
         $failedScenario | Add-Member -NotePropertyName reason_code -NotePropertyValue 'DIRECT_FALLBACK_OBSERVED'
         $failedPath = Join-Path $temp 'observations-fail.json'
-        [IO.File]::WriteAllText($failedPath, ($failed | ConvertTo-Json -Depth 12), [Text.UTF8Encoding]::new($false))
+        Write-JsonFile $failed $failedPath
         $failedEvidencePath = Join-Path $temp 'e4-fail.json'
-        Invoke-LabctlChild @(
-            'e4','finalize',
-            '-SessionReceipt',$sessionPath,
-            '-ObservationPath',$failedPath,
-            '-EvidencePath',$failedEvidencePath
-        ) 2 | Out-Null
+        Invoke-LabctlChild @('e4','finalize','-SessionReceipt',$sessionPath,'-ObservationPath',$failedPath,'-EvidencePath',$failedEvidencePath) 2 | Out-Null
         $failedEvidence = Get-Content -Raw -LiteralPath $failedEvidencePath | ConvertFrom-Json
         Assert-True ($failedEvidence.result -eq 'FAIL' -and $failedEvidence.e4_pass -eq $false) 'Mandatory scenario failure must fail E4.'
 
-        # Five-minute idle and post-idle load are measurable gates, not labels.
         $shortIdle = (($observations | ConvertTo-Json -Depth 12) | ConvertFrom-Json)
-        $shortIdleScenario = @($shortIdle.scenarios | Where-Object { $_.id -eq 'background_idle_5m' })[0]
-        $shortIdleScenario.facts.observed_seconds = 299
-        $shortIdlePath = Join-Path $temp 'observations-short-idle.json'
-        [IO.File]::WriteAllText($shortIdlePath, ($shortIdle | ConvertTo-Json -Depth 12), [Text.UTF8Encoding]::new($false))
-        Invoke-LabctlChild @(
-            'e4','finalize',
-            '-SessionReceipt',$sessionPath,
-            '-ObservationPath',$shortIdlePath,
-            '-EvidencePath',(Join-Path $temp 'must-not-pass-short-idle.json')
-        ) 2 | Out-Null
+        (@($shortIdle.scenarios | Where-Object { $_.id -eq 'background_idle_5m' })[0]).facts.observed_seconds = 299
+        $shortIdlePath = Join-Path $temp 'observations-short-idle.json'; Write-JsonFile $shortIdle $shortIdlePath
+        Invoke-LabctlChild @('e4','finalize','-SessionReceipt',$sessionPath,'-ObservationPath',$shortIdlePath,'-EvidencePath',(Join-Path $temp 'must-not-pass-short-idle.json')) 2 | Out-Null
 
         $weakLoad = (($observations | ConvertTo-Json -Depth 12) | ConvertFrom-Json)
-        $weakLoadScenario = @($weakLoad.scenarios | Where-Object { $_.id -eq 'background_post_idle_10_session_load' })[0]
-        $weakLoadScenario.facts.successful_sessions = 9
-        $weakLoadPath = Join-Path $temp 'observations-weak-load.json'
-        [IO.File]::WriteAllText($weakLoadPath, ($weakLoad | ConvertTo-Json -Depth 12), [Text.UTF8Encoding]::new($false))
-        Invoke-LabctlChild @(
-            'e4','finalize',
-            '-SessionReceipt',$sessionPath,
-            '-ObservationPath',$weakLoadPath,
-            '-EvidencePath',(Join-Path $temp 'must-not-pass-weak-load.json')
-        ) 2 | Out-Null
+        (@($weakLoad.scenarios | Where-Object { $_.id -eq 'background_post_idle_10_session_load' })[0]).facts.successful_sessions = 9
+        $weakLoadPath = Join-Path $temp 'observations-weak-load.json'; Write-JsonFile $weakLoad $weakLoadPath
+        Invoke-LabctlChild @('e4','finalize','-SessionReceipt',$sessionPath,'-ObservationPath',$weakLoadPath,'-EvidencePath',(Join-Path $temp 'must-not-pass-weak-load.json')) 2 | Out-Null
 
-        # Observation identity is bound to the exact session receipt, not merely the same tag.
         $wrongSession = (($observations | ConvertTo-Json -Depth 12) | ConvertFrom-Json)
         $wrongSession.session_sha256 = '0' * 64
-        $wrongSessionPath = Join-Path $temp 'observations-wrong-session.json'
-        [IO.File]::WriteAllText($wrongSessionPath, ($wrongSession | ConvertTo-Json -Depth 12), [Text.UTF8Encoding]::new($false))
-        Invoke-LabctlChild @(
-            'e4','finalize',
-            '-SessionReceipt',$sessionPath,
-            '-ObservationPath',$wrongSessionPath,
-            '-EvidencePath',(Join-Path $temp 'must-not-pass-wrong-session.json')
-        ) 2 | Out-Null
+        $wrongSessionPath = Join-Path $temp 'observations-wrong-session.json'; Write-JsonFile $wrongSession $wrongSessionPath
+        Invoke-LabctlChild @('e4','finalize','-SessionReceipt',$sessionPath,'-ObservationPath',$wrongSessionPath,'-EvidencePath',(Join-Path $temp 'must-not-pass-wrong-session.json')) 2 | Out-Null
 
-        # Session identity is still byte-bound at finalization time. Stale/tampered APK bytes
-        # cannot be promoted by a previously prepared E4 session.
         [IO.File]::AppendAllText($apkPath, 'tampered')
-        Invoke-LabctlChild @(
-            'e4','finalize',
-            '-SessionReceipt',$sessionPath,
-            '-ObservationPath',$observationPath,
-            '-EvidencePath',(Join-Path $temp 'must-not-pass-tampered-apk.json')
-        ) 2 | Out-Null
+        Invoke-LabctlChild @('e4','finalize','-SessionReceipt',$sessionPath,'-ObservationPath',$observationPath,'-EvidencePath',(Join-Path $temp 'must-not-pass-tampered-apk.json')) 2 | Out-Null
         [IO.File]::WriteAllBytes($apkPath, [Text.Encoding]::UTF8.GetBytes('deterministic-e4-product-bytes'))
 
-        # Finalization cannot run from an arbitrary branch even with syntactically valid input.
+        # The E3 PASS receipt itself is immutable session authority. Changing it after plan closes E4.
+        [IO.File]::AppendAllText($e3AcceptancePath, 'tampered')
+        Invoke-LabctlChild @('e4','finalize','-SessionReceipt',$sessionPath,'-ObservationPath',$observationPath,'-EvidencePath',(Join-Path $temp 'must-not-pass-tampered-e3.json')) 2 | Out-Null
+        Write-JsonFile $e3Acceptance $e3AcceptancePath
+
         $env:GITHUB_REF = 'refs/heads/not-main'
-        Invoke-LabctlChild @(
-            'e4','finalize',
-            '-SessionReceipt',$sessionPath,
-            '-ObservationPath',$observationPath,
-            '-EvidencePath',(Join-Path $temp 'must-not-pass-untrusted-ref.json')
-        ) 2 | Out-Null
+        Invoke-LabctlChild @('e4','finalize','-SessionReceipt',$sessionPath,'-ObservationPath',$observationPath,'-EvidencePath',(Join-Path $temp 'must-not-pass-untrusted-ref.json')) 2 | Out-Null
         $env:GITHUB_REF = 'refs/heads/main'
     }
     finally {
         foreach ($key in $savedEnvironment.Keys) {
-            Set-Item -Path "Env:$key" -Value $savedEnvironment[$key]
+            if ($null -eq $savedEnvironment[$key]) { Remove-Item -Path "Env:$key" -ErrorAction SilentlyContinue }
+            else { Set-Item -Path "Env:$key" -Value $savedEnvironment[$key] }
         }
     }
 
