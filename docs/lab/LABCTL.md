@@ -64,6 +64,8 @@ cloudflare prove
 e3 verify
 e3 ready
 e3 execute
+e4 plan
+e4 finalize
 ```
 
 `android install` requires a PASS `mish.lab.release-verification/v1` receipt, re-checks the exact authorized tuple, and re-hashes the APK immediately before invoking ADB. Changing the APK after verification therefore fails before installation.
@@ -224,9 +226,39 @@ Wi-Fi is not an E3 correctness prerequisite and cannot satisfy Cellular Egress. 
 
 Unsupported/unvalidated IPv6 must remain fail closed. Whole-PRODUCT-UID routing and any dedicated egress helper remain prohibited assumptions until separately justified by physical privilege/lifecycle/isolation evidence.
 
+## E4 bounded commands
+
+E4 is formalized as a stateless two-phase acceptance coordinator. The detailed contract is in `docs/lab/E4_RUNNER.md` and `docs/testing/E4_FULL_STACK.md`.
+
+```text
+e4 plan
+  = bind a non-PASS E4 session to a PASS exact release-verification receipt,
+    still-identical PRODUCT APK bytes, the pinned external-client fixture,
+    and the canonical mandatory E4 scenario matrix
+
+e4 finalize
+  = on the accepted Windows x64/protected-main boundary, revalidate the
+    session-bound bytes and complete physical scenario observations, then
+    emit sanitized PASS/FAIL/BLOCKED evidence
+```
+
+`e4 plan` always emits `e4_pass=false` and `NO_EVIDENCE_ESCALATION`. Hosted E4 contract tests cannot claim physical acceptance.
+
+`e4 finalize` has machine-distinct outcomes:
+
+```text
+PASS    -> exit 0 / e4_pass=true
+FAIL    -> exit 2 / e4_pass=false
+BLOCKED -> exit 3 / e4_pass=false
+```
+
+A missing required external runtime is therefore not silently converted into PASS. Every canonical M1 scenario is mandatory, including literal five-minute background idle, ten-session post-idle load, Force Stop semantics, normal-stop cleanup, fresh root authorization, One Agent/One Client recovery, UDP/IPv6 fail-closed checks and the pinned real-client fixtures.
+
+The E4 coordinator is evidence machinery only. It does not build PRODUCT, mutate Cloudflare/provider state, edit Magisk policy, create routing truth, or own runtime readiness. Merging the coordinator does not execute E4 and does not change `PROXY_ON_PHONE_WORKING`.
+
 ## Trust and privacy rules
 
-The E3 simplification preserves all existing trust boundaries:
+The E3/E4 simplification preserves all existing trust boundaries:
 
 ```text
 NO untrusted PR execution on self-hosted runner
@@ -234,11 +266,12 @@ NO arbitrary-ref physical execution
 NO release signing key on Windows LAB
 NO Android rebuild on Windows LAB
 NO latest/ambiguous RC selection
-NO mutable GitHub Release as E3 byte authority
-NO human-copied per-RC digest/artifact tuple
+NO mutable GitHub Release as physical byte authority
+NO human-copied per-RC digest/artifact tuple as acceptance authority
 NO evidence escalation from hosted/pre-device proof
 NO carrier public-IP persistence
 NO device/SIM/network identifiers in durable public evidence
+NO arbitrary physical observation fields copied into E4 durable evidence
 ```
 
-A mutable, missing, ambiguous, expired, mismatched, non-canonical or stale-mechanism release/harness identity fails closed before physical execution.
+A mutable, missing, ambiguous, expired, mismatched, non-canonical or stale-mechanism release/harness identity fails closed before physical execution. E4 additionally refuses missing/duplicate/unknown scenarios, stale session bytes and untrusted finalization refs.
