@@ -5,7 +5,7 @@ param(
     [Parameter(Mandatory)][ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedSourceSha,
     [string]$AdbPath = 'C:\mish-lab\tools\android-sdk\platform-tools\adb.exe',
     [string]$AndroidSdkRoot = 'C:\mish-lab\tools\android-sdk',
-    [string]$StateRoot = 'C:\mish-lab\runner\_work\.mish-device-candidate',
+    [string]$StateRoot = 'C:\mish-lab\runner\.state\device-candidate',
     [switch]$VerifyOnly
 )
 
@@ -18,6 +18,7 @@ $testName = 'mobile-proxy-mish-debug-androidTest.apk'
 $applicationId = 'com.mobileproxymish.app.debug'
 $keystorePassword = 'mish-lab-device-candidate-v1'
 $keyAlias = 'mish-lab-device-candidate-v1'
+$legacyStateRoot = 'C:\mish-lab\runner\_work\.mish-device-candidate'
 
 function Stop-Candidate {
     param([Parameter(Mandatory)][string]$Category, [Parameter(Mandatory)][string]$Message)
@@ -32,6 +33,33 @@ function Get-Sha256 {
     return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
 }
 
+function Invoke-NativeCapture {
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [Parameter(Mandatory)][string[]]$Arguments
+    )
+
+    # Windows PowerShell 5.1 can promote native stderr to NativeCommandError when the caller
+    # uses ErrorActionPreference=Stop. Capture stderr as ordinary bounded text so the installer
+    # can classify the native exit code itself and always return a typed MISH failure.
+    $previousErrorActionPreference = $ErrorActionPreference
+    $lines = @()
+    $exitCode = -1
+    try {
+        $ErrorActionPreference = 'Continue'
+        $lines = @(& $FilePath @Arguments 2>&1 | ForEach-Object { [string]$_ })
+        $exitCode = [int]$LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+
+    return [pscustomobject]@{
+        ExitCode = $exitCode
+        Text = ($lines -join "`n")
+    }
+}
+
 function Invoke-Native {
     param(
         [Parameter(Mandatory)][string]$FilePath,
@@ -39,10 +67,11 @@ function Invoke-Native {
         [Parameter(Mandatory)][string]$Category,
         [Parameter(Mandatory)][string]$Message
     )
-    & $FilePath @Arguments
-    if ($LASTEXITCODE -ne 0) {
+    $result = Invoke-NativeCapture -FilePath $FilePath -Arguments $Arguments
+    if ($result.ExitCode -ne 0) {
         Stop-Candidate $Category $Message
     }
+    return $result
 }
 
 function Test-FullyQualifiedWindowsPath {
@@ -128,20 +157,19 @@ if ($VerifyOnly) {
 }
 
 $adb = Resolve-Executable $AdbPath
-$sdkManager = Resolve-Executable (Join-Path $AndroidSdkRoot 'cmdline-tools\latest\bin\sdkmanager.bat')
 $buildTools = Join-Path $AndroidSdkRoot 'build-tools\36.0.0'
-$apksigner = Join-Path $buildTools 'apksigner.bat'
-if (-not (Test-Path -LiteralPath $apksigner -PathType Leaf)) {
-    Invoke-Native $sdkManager @("--sdk_root=$AndroidSdkRoot", 'build-tools;36.0.0') 'HOST_PREREQUISITE_MISSING' 'Pinned Android build-tools 36.0.0 could not be materialized.'
-}
-$apksigner = Resolve-Executable $apksigner
+$apksigner = Resolve-Executable (Join-Path $buildTools 'apksigner.bat')
 $keytool = if ($env:JAVA_HOME) { Join-Path $env:JAVA_HOME 'bin\keytool.exe' } else { 'keytool.exe' }
 $keytool = Resolve-Executable $keytool
 
-$deviceRows = @(& $adb devices | Where-Object { $_ -match '^\S+\s+device\s*$' })
-if ($LASTEXITCODE -ne 0) {
+$deviceResult = Invoke-NativeCapture -FilePath $adb -Arguments @('devices')
+if ($deviceResult.ExitCode -ne 0) {
     Stop-Candidate 'DEVICE_UNAVAILABLE' 'adb devices failed.'
 }
+$deviceRows = @(
+    $deviceResult.Text -split "`r?`n" |
+        Where-Object { $_ -match '^\S+\s+device\s*$' }
+)
 if ($deviceRows.Count -ne 1) {
     Stop-Candidate 'DEVICE_UNAVAILABLE' 'Exactly one authorized DEVICE-1 is required.'
 }
@@ -149,7 +177,34 @@ if ($deviceRows.Count -ne 1) {
 $state = [IO.Path]::GetFullPath($StateRoot)
 [IO.Directory]::CreateDirectory($state) | Out-Null
 $keystore = Join-Path $state 'device-candidate.p12'
-if (-not (Test-Path -LiteralPath $keystore -PathType Leaf)) {
+$legacyKeystore = Join-Path $legacyStateRoot 'device-candidate.p12'
+
+if (Test-Path -LiteralPath $keystore -PathType Leaf) {
+    if (Test-Path -LiteralPath $legacyKeystore -PathType Leaf) {
+        $durableHash = Get-Sha256 $keystore
+        $legacyHash = Get-Sha256 $legacyKeystore
+        if ($durableHash -ne $legacyHash) {
+            Stop-Candidate 'SIGNING_IDENTITY_CONFLICT' 'Durable and legacy LAB signing identities differ; refusing to choose one implicitly.'
+        }
+    }
+}
+elseif (Test-Path -LiteralPath $legacyKeystore -PathType Leaf) {
+    Copy-Item -LiteralPath $legacyKeystore -Destination $keystore
+    $legacyHash = Get-Sha256 $legacyKeystore
+    $durableHash = Get-Sha256 $keystore
+    if ($legacyHash -ne $durableHash) {
+        Remove-Item -Force -LiteralPath $keystore -ErrorAction SilentlyContinue
+        Stop-Candidate 'SIGNING_MIGRATION_FAILED' 'LAB signing identity copy did not preserve exact bytes.'
+    }
+    Write-Host "Migrated existing LAB signing identity into durable state: $state"
+}
+else {
+    $installedProbe = Invoke-NativeCapture -FilePath $adb -Arguments @('shell', 'pm', 'path', $applicationId)
+    $debugAlreadyInstalled = $installedProbe.ExitCode -eq 0 -and $installedProbe.Text -match '(?m)^package:'
+    if ($debugAlreadyInstalled) {
+        Stop-Candidate 'SIGNING_IDENTITY_MISSING' 'Debug package is already installed but no known LAB signing identity exists; refusing to create an incompatible key.'
+    }
+
     Invoke-Native $keytool @(
         '-genkeypair',
         '-keystore', $keystore,
@@ -162,7 +217,7 @@ if (-not (Test-Path -LiteralPath $keystore -PathType Leaf)) {
         '-validity', '36500',
         '-dname', 'CN=MISH LAB Device Candidate,O=MISH LAB,C=ZZ',
         '-noprompt'
-    ) 'SIGNING_FAILED' 'Persistent LAB device-candidate signing key could not be created.'
+    ) 'SIGNING_FAILED' 'Persistent LAB device-candidate signing key could not be created.' | Out-Null
 }
 
 $signedProduct = Join-Path $root 'mobile-proxy-mish-debug-lab-signed.apk'
@@ -180,15 +235,15 @@ foreach ($pair in @(@($productPath, $signedProduct), @($testPath, $signedTest)))
         '--key-pass', "pass:$keystorePassword",
         '--out', $pair[1],
         $pair[0]
-    ) 'SIGNING_FAILED' 'LAB device-candidate APK signing failed.'
-    Invoke-Native $apksigner @('verify', '--verbose', $pair[1]) 'SIGNING_FAILED' 'LAB-signed candidate APK verification failed.'
+    ) 'SIGNING_FAILED' 'LAB device-candidate APK signing failed.' | Out-Null
+    Invoke-Native $apksigner @('verify', '--verbose', $pair[1]) 'SIGNING_FAILED' 'LAB-signed candidate APK verification failed.' | Out-Null
 }
 
-$certOutput = (& $apksigner verify --print-certs $signedProduct 2>&1 | Out-String)
-if ($LASTEXITCODE -ne 0) {
+$certResult = Invoke-NativeCapture -FilePath $apksigner -Arguments @('verify', '--print-certs', $signedProduct)
+if ($certResult.ExitCode -ne 0) {
     Stop-Candidate 'SIGNING_FAILED' 'LAB signing certificate projection failed.'
 }
-$certMatch = [regex]::Match($certOutput, '(?im)^Signer #1 certificate SHA-256 digest:\s*([0-9a-f:]{64,95})\s*$')
+$certMatch = [regex]::Match($certResult.Text, '(?im)^Signer #1 certificate SHA-256 digest:\s*([0-9a-f:]{64,95})\s*$')
 if (-not $certMatch.Success) {
     Stop-Candidate 'SIGNING_FAILED' 'LAB signing certificate digest could not be parsed.'
 }
@@ -197,9 +252,9 @@ if ($certSha -notmatch '^[0-9a-f]{64}$') {
     Stop-Candidate 'SIGNING_FAILED' 'LAB signing certificate digest is invalid.'
 }
 
-$installOutput = (& $adb install -r $signedProduct 2>&1 | Out-String)
-if ($LASTEXITCODE -ne 0 -or $installOutput -notmatch '(?m)^Success\s*$') {
-    if ($installOutput -match 'INSTALL_FAILED_UPDATE_INCOMPATIBLE') {
+$installResult = Invoke-NativeCapture -FilePath $adb -Arguments @('install', '-r', $signedProduct)
+if ($installResult.ExitCode -ne 0 -or $installResult.Text -notmatch '(?m)^Success\s*$') {
+    if ($installResult.Text -match 'INSTALL_FAILED_UPDATE_INCOMPATIBLE') {
         Stop-Candidate 'SIGNATURE_MIGRATION_REQUIRED' 'Existing debug package uses another signing identity; perform one explicit debug-package migration, then rerun. Production package is untouched.'
     }
     Stop-Candidate 'INSTALL_FAILED' 'adb install -r did not report Success.'
@@ -216,6 +271,7 @@ if ($LASTEXITCODE -ne 0 -or $installOutput -notmatch '(?m)^Success\s*$') {
     signed_product_apk_sha256 = Get-Sha256 $signedProduct
     signed_android_test_apk_sha256 = Get-Sha256 $signedTest
     lab_signing_certificate_sha256 = $certSha
+    signing_state_root = $state
     installed = $true
     local_build = $false
 } | ConvertTo-Json -Compress
