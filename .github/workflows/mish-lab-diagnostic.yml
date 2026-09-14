@@ -41,14 +41,33 @@ jobs:
           if ($abi -ne 'armeabi-v7a') { throw "DEVICE-1 ABI must be armeabi-v7a; observed $abi" }
           Write-Host 'DEVICE_1_PREREQUISITES=PASS'
 
-      - name: Count visible sing-box processes without root
+      - name: Verify visible sing-box generation ownership without root
         shell: powershell
         run: |
           $adb = 'C:\mish-lab\tools\android-sdk\platform-tools\adb.exe'
+          $package = 'com.mobileproxymish.app.debug'
           $rows = @(& $adb shell ps -A 2>$null)
           if ($LASTEXITCODE -ne 0) { throw 'Non-root Android process snapshot failed.' }
-          $count = @($rows | Where-Object { $_ -match '(?i)(?:libsingbox|sing-box)' }).Count
-          Write-Host "VISIBLE_SING_BOX_PROCESS_COUNT=$count"
+          $singBoxRows = @($rows | Where-Object { $_ -match '(?i)(?:libsingbox|sing-box)' })
+          Write-Host "VISIBLE_SING_BOX_PROCESS_COUNT=$($singBoxRows.Count)"
+
+          $manifest = (@(& $adb shell run-as $package cat 'no_backup/proxy-runtime/sing-box-current-generation' 2>$null) -join "`n").Trim()
+          if ($LASTEXITCODE -ne 0 -or $manifest -notmatch '^generation=([A-Za-z0-9_-]{24})$') {
+            Write-Host 'CURRENT_GENERATION_RECORD_AVAILABLE=False'
+            Write-Host 'CURRENT_GENERATION_PROCESS_MATCH=False'
+          } else {
+            $generation = $Matches[1]
+            $pidText = (@(& $adb shell run-as $package cat "no_backup/proxy-runtime/sing-box-$generation.pid" 2>$null) -join "`n").Trim()
+            if ($LASTEXITCODE -ne 0 -or $pidText -notmatch '^\d+$') {
+              Write-Host 'CURRENT_GENERATION_RECORD_AVAILABLE=False'
+              Write-Host 'CURRENT_GENERATION_PROCESS_MATCH=False'
+            } else {
+              $escapedPid = [regex]::Escape($pidText)
+              $matchesCurrent = @($singBoxRows | Where-Object { $_ -match "^\S+\s+$escapedPid\s+" }).Count -eq 1
+              Write-Host 'CURRENT_GENERATION_RECORD_AVAILABLE=True'
+              Write-Host "CURRENT_GENERATION_PROCESS_MATCH=$matchesCurrent"
+            }
+          }
 
       - name: Collect and print one-shot diagnostic
         shell: powershell
