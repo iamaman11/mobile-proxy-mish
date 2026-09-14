@@ -4,6 +4,7 @@ $ErrorActionPreference='Stop'
 $script:Repository='iamaman11/mobile-proxy-mish'
 $script:SessionSchema='mish.lab.e4-session/v1'
 $script:E3AcceptanceSchema='mish.lab.e3-acceptance/v1'
+$script:E4EvidenceSchema='mish.lab.e4-evidence/v1'
 $script:Hex40Pattern='^[0-9a-f]{40}$'
 $script:Hex64Pattern='^[0-9a-f]{64}$'
 
@@ -51,7 +52,8 @@ function Assert-E3AcceptanceMatchesSession {
        [string]$Acceptance.release.source_commit -ne [string]$Session.release.source_commit -or
        [string]$Acceptance.release.abi -ne [string]$Session.release.abi -or
        [string]$Acceptance.release.apk_sha256 -ne [string]$Session.release.apk_sha256 -or
-       [string]$Acceptance.release.signing_certificate_sha256 -ne [string]$Session.release.signing_certificate_sha256){
+       [string]$Acceptance.release.signing_certificate_sha256 -ne [string]$Session.release.signing_certificate_sha256 -or
+       [string]$Acceptance.harness.signing_certificate_sha256 -ne [string]$Session.release.signing_certificate_sha256){
         Stop-E4Binding 'IDENTITY_MISMATCH' 'E3 acceptance and E4 session are not the exact same PRODUCT RC bytes.'
     }
     return [pscustomobject]@{ commit=$commit; run_id=[string]$Acceptance.execution_adapter.run_id; test_apk_sha256=$testSha }
@@ -81,11 +83,7 @@ function Add-E4E3Binding {
         execution_run_id=$identity.run_id
         test_apk_sha256=$identity.test_apk_sha256
     }
-    if($session.PSObject.Properties['e3_acceptance']){
-        $session.e3_acceptance=$binding
-    }else{
-        $session|Add-Member -NotePropertyName e3_acceptance -NotePropertyValue $binding
-    }
+    if($session.PSObject.Properties['e3_acceptance']){$session.e3_acceptance=$binding}else{$session|Add-Member -NotePropertyName e3_acceptance -NotePropertyValue $binding}
     [void](Write-E4BindingJson $session $SessionReceipt)
     return [pscustomobject]@{result='READY';e4_pass=$false;e3_acceptance_sha256=$sha;receipt=[IO.Path]::GetFullPath($SessionReceipt)}
 }
@@ -112,4 +110,27 @@ function Assert-E4E3Binding {
     return [pscustomobject]@{result='PASS';e3_acceptance_sha256=$expected;execution_adapter_commit=$identity.commit;execution_run_id=$identity.run_id;test_apk_sha256=$identity.test_apk_sha256}
 }
 
-Export-ModuleMember -Function Add-E4E3Binding,Assert-E4E3Binding
+function Add-E4E3EvidenceProjection {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$EvidencePath,
+        [Parameter(Mandatory)]$Binding
+    )
+    $evidence=Read-E4BindingJson $EvidencePath
+    if([string]$evidence.schema -ne $script:E4EvidenceSchema){Stop-E4Binding 'ARTIFACT_INVALID' 'E4 evidence schema mismatch during E3 projection.'}
+    Assert-Hex64 ([string]$Binding.e3_acceptance_sha256) 'ProjectedE3AcceptanceSha256'
+    Assert-Hex40 ([string]$Binding.execution_adapter_commit) 'ProjectedE3ExecutionAdapterCommit'
+    Assert-Hex64 ([string]$Binding.test_apk_sha256) 'ProjectedE3TestApkSha256'
+    $projection=[ordered]@{
+        schema=$script:E3AcceptanceSchema
+        sha256=[string]$Binding.e3_acceptance_sha256
+        execution_adapter_commit=[string]$Binding.execution_adapter_commit
+        execution_run_id=[string]$Binding.execution_run_id
+        test_apk_sha256=[string]$Binding.test_apk_sha256
+    }
+    if($evidence.PSObject.Properties['e3_acceptance']){$evidence.e3_acceptance=$projection}else{$evidence|Add-Member -NotePropertyName e3_acceptance -NotePropertyValue $projection}
+    [void](Write-E4BindingJson $evidence $EvidencePath)
+    return [pscustomobject]@{result=[string]$evidence.result;e4_pass=[bool]$evidence.e4_pass;e3_acceptance_sha256=[string]$Binding.e3_acceptance_sha256;evidence=[IO.Path]::GetFullPath($EvidencePath)}
+}
+
+Export-ModuleMember -Function Add-E4E3Binding,Assert-E4E3Binding,Add-E4E3EvidenceProjection
