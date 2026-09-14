@@ -2,7 +2,6 @@ import java.io.File
 import java.io.InputStream
 import java.security.MessageDigest
 import java.util.zip.ZipFile
-import org.gradle.api.tasks.Delete
 import org.gradle.api.tasks.Exec
 
 plugins {
@@ -18,11 +17,13 @@ val generatedUniFfiPath = layout.buildDirectory
     .get()
     .asFile
     .absolutePath
+val generatedUniFfiFile = "$generatedUniFfiPath/com/mobileproxymish/ffi/mish_android_ffi.kt"
 val generatedJniLibsPath = layout.buildDirectory
     .dir("generated/rust-jni")
     .get()
     .asFile
     .absolutePath
+val generatedAndroidUniFfiFile = "$generatedJniLibsPath/${providers.gradleProperty("mishTargetAbi").orNull}/libmish_android_ffi.so"
 val generatedSingBoxJniPath = layout.buildDirectory
     .dir("generated/sing-box-jni")
     .get()
@@ -79,18 +80,30 @@ val hostLibraryName = when {
 val hostLibraryPath = "$repoRootPath/target/debug/$hostLibraryName"
 val buildPython = providers.environmentVariable("MISH_BUILD_PYTHON").orNull
     ?: if (System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) "python" else "python3"
-
-val cleanGeneratedUniFfi = tasks.register<Delete>("cleanGeneratedUniFfi") {
-    delete(generatedUniFfiPath)
-}
+val rustWorkspaceInputs = files(
+    "$repoRootPath/Cargo.toml",
+    "$repoRootPath/Cargo.lock",
+    "$repoRootPath/rust-toolchain.toml",
+    "$repoRootPath/crates",
+)
 
 val buildHostUniFfi = tasks.register<Exec>("buildHostUniFfi") {
+    inputs.files(rustWorkspaceInputs)
+    inputs.property("rustToolchain", "1.98.1")
+    outputs.file(hostLibraryPath)
     workingDir(repoRootPath)
     commandLine("cargo", "build", "-p", "mish-android-ffi", "--locked")
 }
 
 val generateUniFfiBindings = tasks.register<Exec>("generateUniFfiBindings") {
-    dependsOn(cleanGeneratedUniFfi, buildHostUniFfi)
+    dependsOn(buildHostUniFfi)
+    inputs.file(hostLibraryPath)
+    inputs.file("$repoRootPath/crates/android-ffi/uniffi.toml")
+    inputs.property("language", "kotlin")
+    outputs.file(generatedUniFfiFile)
+    doFirst {
+        File(generatedUniFfiPath).deleteRecursively()
+    }
     workingDir(repoRootPath)
     commandLine(
         "cargo",
@@ -112,12 +125,17 @@ val generateUniFfiBindings = tasks.register<Exec>("generateUniFfiBindings") {
     )
 }
 
-val cleanGeneratedJniLibs = tasks.register<Delete>("cleanGeneratedJniLibs") {
-    delete(generatedJniLibsPath)
-}
-
 val buildAndroidUniFfi = tasks.register<Exec>("buildAndroidUniFfi") {
-    dependsOn(generateUniFfiBindings, cleanGeneratedJniLibs)
+    inputs.files(rustWorkspaceInputs)
+    inputs.property("rustToolchain", "1.98.1")
+    inputs.property("cargoNdkVersion", "4.1.2")
+    inputs.property("androidNdkVersion", "29.0.14206865")
+    inputs.property("androidMinSdk", androidMinSdk)
+    inputs.property("mishTargetAbi", targetAbi)
+    outputs.file(generatedAndroidUniFfiFile)
+    doFirst {
+        File(generatedJniLibsPath).deleteRecursively()
+    }
     workingDir(repoRootPath)
     commandLine(
         "cargo",
@@ -235,7 +253,22 @@ android {
     }
 }
 
-tasks.named("preBuild") {
+// Static Android work needs only the generated Kotlin FFI contract. Android native artifacts are
+// package inputs, not compile/lint prerequisites. Keep the two paths independent so cheap failures
+// surface without cargo-ndk, the Android NDK, or sing-box materialization.
+tasks.matching {
+    (it.name.startsWith("compile") && it.name.endsWith("Kotlin")) || it.name.startsWith("lint")
+}.configureEach {
+    dependsOn(generateUniFfiBindings)
+}
+
+// AGP consumes generated JNI directories in its native merge tasks. Attach the producers at that
+// exact boundary instead of globally to preBuild, so every APK still contains the exact native
+// runtime while Kotlin/static work remains native-free.
+tasks.matching {
+    it.name.startsWith("merge") &&
+        (it.name.endsWith("NativeLibs") || it.name.endsWith("JniLibFolders"))
+}.configureEach {
     dependsOn(buildAndroidUniFfi, materializeSingBoxAndroid)
 }
 
