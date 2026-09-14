@@ -20,11 +20,46 @@ jobs:
     name: Architecture Guards
     if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.base.ref == 'main' && github.event.pull_request.draft == false) }}
     runs-on: ubuntu-latest
+    outputs:
+      full_product_gate: ${{ steps.scope.outputs.full_product_gate }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
+
+      - name: Classify required product gate
+        id: scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          full=false
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            full=true
+          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            BASE='${{ github.event.pull_request.base.sha }}'
+            HEAD='${{ github.event.pull_request.head.sha }}'
+            mapfile -t changed < <(git diff --name-only "$BASE" "$HEAD")
+            if [[ ${#changed[@]} -eq 0 ]]; then
+              full=true
+            else
+              for path in "${changed[@]}"; do
+                case "$path" in
+                  lab/*|docs/*|README.md|README.*|.github/workflows/device-candidate-physical.yml|.github/workflows/lab-host-static.yml|.github/workflows/lab-host-preflight.yml)
+                    ;;
+                  *)
+                    full=true
+                    break
+                    ;;
+                esac
+              done
+            fi
+          fi
+
+          echo "full_product_gate=$full" >> "$GITHUB_OUTPUT"
+          echo "Full Rust/Android product gate required: $full"
 
       - name: Verify accepted architecture invariants
         run: python3 tools/check_architecture.py
@@ -35,26 +70,36 @@ jobs:
     if: ${{ needs.architecture.result == 'success' && github.event_name != 'push' }}
     runs-on: ubuntu-latest
     steps:
+      - name: No Rust product inputs changed
+        if: ${{ needs.architecture.outputs.full_product_gate != 'true' }}
+        run: echo 'Required Rust Workspace context satisfied without rebuilding PRODUCT inputs.'
+
       - name: Checkout
+        if: ${{ needs.architecture.outputs.full_product_gate == 'true' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Install pinned Rust toolchain
+        if: ${{ needs.architecture.outputs.full_product_gate == 'true' }}
         run: |
           rustup toolchain install 1.98.1 --profile minimal --component clippy,rustfmt
           rustup override set 1.98.1
 
       - name: Format
+        if: ${{ needs.architecture.outputs.full_product_gate == 'true' }}
         run: cargo fmt --all --check
 
       - name: Clippy
+        if: ${{ needs.architecture.outputs.full_product_gate == 'true' }}
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Test
+        if: ${{ needs.architecture.outputs.full_product_gate == 'true' }}
         run: cargo test --workspace --locked
 
       - name: Generate and verify narrow UniFFI Kotlin contract
+        if: ${{ needs.architecture.outputs.full_product_gate == 'true' }}
         run: |
           set -euo pipefail
           cargo build -p mish-android-ffi --locked
@@ -83,6 +128,7 @@ jobs:
           done
 
       - name: Load pinned sing-box release manifest
+        if: ${{ needs.architecture.outputs.full_product_gate == 'true' }}
         run: |
           python3 - <<'PY'
           import os
@@ -122,6 +168,7 @@ jobs:
           PY
 
       - name: Verify pinned sing-box artifacts and product configuration
+        if: ${{ needs.architecture.outputs.full_product_gate == 'true' }}
         run: |
           set -euo pipefail
           SB_ROOT="$RUNNER_TEMP/sing-box"
@@ -153,6 +200,7 @@ jobs:
           echo "PRODUCT_CONFIG=$PRODUCT_CONFIG" >> "$GITHUB_ENV"
 
       - name: Exercise hosted sing-box proxy and auth matrix
+        if: ${{ needs.architecture.outputs.full_product_gate == 'true' }}
         run: |
           set -euo pipefail
           FIXTURE_CONFIG="$RUNNER_TEMP/sing-box-egress-fixture.json"
@@ -263,23 +311,31 @@ jobs:
     if: ${{ needs.architecture.result == 'success' && github.event_name != 'push' }}
     runs-on: ubuntu-latest
     steps:
+      - name: No Android product inputs changed
+        if: ${{ needs.architecture.outputs.full_product_gate != 'true' }}
+        run: echo 'Required Android Compose Shell context satisfied without rebuilding PRODUCT inputs.'
+
       - name: Checkout
+        if: ${{ needs.architecture.outputs.full_product_gate == 'true' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up JDK 17
+        if: ${{ needs.architecture.outputs.full_product_gate == 'true' }}
         uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
         with:
           distribution: temurin
           java-version: '17'
 
       - name: Set up pinned Gradle
+        if: ${{ needs.architecture.outputs.full_product_gate == 'true' }}
         uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
         with:
           gradle-version: '9.6.0'
 
       - name: Install pinned Rust Android tooling for target ABI
+        if: ${{ needs.architecture.outputs.full_product_gate == 'true' }}
         run: |
           set -euo pipefail
           TARGET_ABI="$(sed -n 's/^mishTargetAbi=//p' android/gradle.properties)"
@@ -295,18 +351,22 @@ jobs:
           echo "MISH_TARGET_ABI=$TARGET_ABI" >> "$GITHUB_ENV"
 
       - name: Install pinned Android NDK
+        if: ${{ needs.architecture.outputs.full_product_gate == 'true' }}
         run: |
           SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:?Android SDK root is not configured}}"
           SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
           NDK_PATH="$SDK_ROOT/ndk/29.0.14206865"
           test -x "$SDKMANAGER"
-          "$SDKMANAGER" "ndk;29.0.14206865"
+          if [[ ! -d "$NDK_PATH" ]]; then
+            "$SDKMANAGER" "ndk;29.0.14206865"
+          fi
           test -d "$NDK_PATH"
           echo "ANDROID_NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_ROOT=$NDK_PATH" >> "$GITHUB_ENV"
           echo "ANDROID_NDK=$NDK_PATH" >> "$GITHUB_ENV"
 
       - name: Lint, unit test, and assemble Android shell + physical test APK
+        if: ${{ needs.architecture.outputs.full_product_gate == 'true' }}
         run: |
           gradle --no-daemon -p android \
             :app:lintDebug \
@@ -315,6 +375,7 @@ jobs:
             :app:assembleDebugAndroidTest
 
       - name: Verify packaged native runtime and narrow UniFFI surface
+        if: ${{ needs.architecture.outputs.full_product_gate == 'true' }}
         run: |
           set -euo pipefail
           APK="android/app/build/outputs/apk/debug/app-debug.apk"
