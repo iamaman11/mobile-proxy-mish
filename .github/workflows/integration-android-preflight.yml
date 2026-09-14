@@ -4,6 +4,15 @@ on:
   pull_request:
     branches: [fix/root-policy-reconciliation]
     types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - '.github/workflows/integration-android-preflight.yml'
+      - 'android/**'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'vendor/sing-box/**'
+      - 'tools/materialize_sing_box_android.py'
 
 permissions:
   contents: read
@@ -12,9 +21,16 @@ concurrency:
   group: integration-android-preflight-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
+env:
+  RUST_TOOLCHAIN: '1.98.1'
+  CARGO_NDK_VERSION: '4.1.2'
+  ANDROID_NDK_VERSION: '29.0.14206865'
+  GRADLE_VERSION: '9.6.0'
+  CACHE_MODE: ${{ github.event.pull_request.draft && 'static' || 'full' }}
+
 jobs:
-  android-preflight:
-    name: Android Compile + Lint
+  android-gate:
+    name: Android Fast -> Full Gate
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -32,9 +48,38 @@ jobs:
       - name: Set up pinned Gradle
         uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
         with:
-          gradle-version: '9.6.0'
+          gradle-version: ${{ env.GRADLE_VERSION }}
 
-      - name: Install pinned Rust Android tooling for target ABI
+      - name: Restore Rust build cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            ~/.cargo/bin/cargo-ndk
+            target
+            android/app/build/vendor-cache/sing-box
+          key: integration-android-${{ runner.os }}-${{ env.CACHE_MODE }}-rust-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'vendor/sing-box/release.toml') }}
+          restore-keys: |
+            integration-android-${{ runner.os }}-full-rust-${{ env.RUST_TOOLCHAIN }}-
+            integration-android-${{ runner.os }}-static-rust-${{ env.RUST_TOOLCHAIN }}-
+
+      - name: Set up host Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup override set "$RUST_TOOLCHAIN"
+
+      - name: Fast Kotlin compile and lint
+        run: >-
+          gradle --no-daemon -p android
+          :app:compileDebugKotlin
+          :app:lintDebug
+
+      - name: Set up Android Rust toolchain
+        if: ${{ github.event.pull_request.draft == false }}
         shell: bash
         run: |
           set -euo pipefail
@@ -44,27 +89,73 @@ jobs:
             arm64-v8a) RUST_TARGET='aarch64-linux-android' ;;
             *) echo "Unsupported mishTargetAbi: $TARGET_ABI" >&2; exit 1 ;;
           esac
-          rustup toolchain install 1.98.1 --profile minimal
-          rustup override set 1.98.1
-          rustup target add "$RUST_TARGET"
-          cargo install cargo-ndk --version 4.1.2 --locked
+          rustup target add "$RUST_TARGET" --toolchain "$RUST_TOOLCHAIN"
+          if ! cargo ndk --version 2>/dev/null | grep -Fq "$CARGO_NDK_VERSION"; then
+            cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
+          fi
+          echo "MISH_TARGET_ABI=$TARGET_ABI" >> "$GITHUB_ENV"
 
-      - name: Install pinned Android NDK
+      - name: Set up pinned Android NDK
+        if: ${{ github.event.pull_request.draft == false }}
         shell: bash
         run: |
           set -euo pipefail
           SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:?Android SDK root is not configured}}"
           SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-          NDK_PATH="$SDK_ROOT/ndk/29.0.14206865"
+          NDK_PATH="$SDK_ROOT/ndk/$ANDROID_NDK_VERSION"
           test -x "$SDKMANAGER"
-          "$SDKMANAGER" "ndk;29.0.14206865"
+          if [[ ! -d "$NDK_PATH" ]]; then
+            "$SDKMANAGER" "ndk;$ANDROID_NDK_VERSION"
+          fi
           test -d "$NDK_PATH"
           echo "ANDROID_NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_ROOT=$NDK_PATH" >> "$GITHUB_ENV"
           echo "ANDROID_NDK=$NDK_PATH" >> "$GITHUB_ENV"
 
-      - name: Compile debug Kotlin
-        run: gradle --no-daemon -p android :app:compileDebugKotlin
+      - name: Unit test and assemble host gate
+        if: ${{ github.event.pull_request.draft == false }}
+        run: >-
+          gradle --no-daemon -p android
+          :app:testDebugUnitTest
+          :app:assembleDebug
+          :app:assembleDebugAndroidTest
 
-      - name: Lint debug
-        run: gradle --no-daemon -p android :app:lintDebug
+      - name: Verify packaged native runtime and UniFFI surface
+        if: ${{ github.event.pull_request.draft == false }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="android/app/build/outputs/apk/debug/app-debug.apk"
+          TEST_APK="android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"
+          NATIVE="android/app/build/generated/rust-jni/$MISH_TARGET_ABI/libmish_android_ffi.so"
+          GENERATED="android/app/build/generated/uniffi/kotlin/com/mobileproxymish/ffi/mish_android_ffi.kt"
+          test -f "$APK"
+          test -f "$TEST_APK"
+          test -f "$NATIVE"
+          test -f "$GENERATED"
+          unzip -l "$APK" | grep -q "lib/$MISH_TARGET_ABI/libmish_android_ffi.so"
+          unzip -l "$APK" | grep -q "lib/$MISH_TARGET_ABI/libjnidispatch.so"
+          unzip -l "$APK" | grep -q "lib/$MISH_TARGET_ABI/libsingbox.so"
+
+          SYMBOLS="$RUNNER_TEMP/mish-android-ffi.symbols"
+          readelf -Ws "$NATIVE" > "$SYMBOLS"
+          grep -Fq 'android_getaddrinfofornetwork' "$SYMBOLS"
+          if grep -Fq 'android_setsocknetwork' "$SYMBOLS"; then
+            echo 'superseded android_setsocknetwork leaked into PRODUCT FFI library' >&2
+            exit 1
+          fi
+
+          for symbol in \
+            CellularController \
+            MeshTransportController \
+            RuntimeLifecycleController \
+            RuntimeProcessLifecycleController \
+            proxyListenerPorts; do
+            grep -Fq "$symbol" "$GENERATED"
+          done
+          for forbidden in CellularNetworkLease admittedNetworkLease bindSocket resolveHost; do
+            if grep -Fq "$forbidden" "$GENERATED"; then
+              echo "network-scoped Android mechanism leaked into UniFFI surface: $forbidden" >&2
+              exit 1
+            fi
+          done
