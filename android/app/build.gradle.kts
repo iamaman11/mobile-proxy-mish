@@ -40,6 +40,10 @@ if (targetAbi !in setOf("armeabi-v7a", "arm64-v8a")) {
     throw GradleException("mishTargetAbi must be one of the explicitly supported Android ABIs.")
 }
 
+// DEVICE-1 is the fixed product appliance target: Android 11 / API 30.
+// Keep the Android package floor and Rust/NDK platform floor on one authority.
+val androidMinSdk = 30
+
 val releaseVersionName = providers.environmentVariable("MISH_RELEASE_VERSION_NAME").orNull
 val releaseVersionCode = providers.environmentVariable("MISH_RELEASE_VERSION_CODE").orNull?.let { raw ->
     raw.toIntOrNull()?.takeIf { it in 1..2_100_000_000 }
@@ -119,7 +123,7 @@ val buildAndroidUniFfi = tasks.register<Exec>("buildAndroidUniFfi") {
         "cargo",
         "ndk",
         "-P",
-        "23",
+        androidMinSdk.toString(),
         "-t",
         targetAbi,
         "-o",
@@ -164,7 +168,7 @@ android {
 
     defaultConfig {
         applicationId = "com.mobileproxymish.app"
-        minSdk = 23
+        minSdk = androidMinSdk
         targetSdk = 36
         versionCode = releaseVersionCode ?: 1
         versionName = releaseVersionName ?: "0.1.0-dev"
