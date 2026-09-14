@@ -27,6 +27,7 @@ class RuntimeReadinessInstrumentedTest {
         val readiness = app.runtimeController.readinessSnapshot.value
         val mesh = app.runtimeController.meshSnapshot.value
         val readinessDiagnostic = app.runtimeController.currentReadinessRuntime.diagnosticObservation()
+        val meshIngressFailure = app.runtimeController.currentMeshRuntime.diagnosticIngressFailure()
         val connectivity = context.getSystemService(ConnectivityManager::class.java)
         val currentVpnCount = connectivity.allNetworks.count { network ->
             connectivity.getNetworkCapabilities(network)
@@ -36,8 +37,10 @@ class RuntimeReadinessInstrumentedTest {
         println("MISH_RESTART_PROXY=${proxy.javaClass.simpleName}")
         println("MISH_RESTART_READINESS=$readiness")
         println("MISH_RESTART_MESH_STATE=${mesh?.state?.name.orEmpty()}")
+        println("MISH_RESTART_MESH_REASON=${mesh?.reason?.name ?: "NONE"}")
         println("MISH_RESTART_MESH_EPOCH_PRESENT=${mesh?.admissionEpoch != null}")
         println("MISH_RESTART_MESH_INGRESS=${mesh?.ingressRunning == true}")
+        println("MISH_RESTART_MESH_INGRESS_FAILURE=${meshIngressFailure.name}")
         println("MISH_RESTART_PLATFORM_VPN_COUNT=$currentVpnCount")
         println("MISH_RESTART_CELLULAR_STATE=${readinessDiagnostic.cellularState}")
         println("MISH_RESTART_CELLULAR_REASON=${readinessDiagnostic.cellularReason}")
