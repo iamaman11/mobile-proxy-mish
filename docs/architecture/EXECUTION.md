@@ -1,131 +1,136 @@
 # Development execution and integration policy
 
-This document explains how implementation work is batched between accepted `main` boundaries. It is a stable execution-policy companion to `AGENTS.md`; live stage status remains in Issue #86 and natural-owner issues.
+This document defines stable execution policy. Live stage/checkpoint state belongs to Issue #135. The master PRODUCT/architecture plan belongs to Issue #134. The concrete CI/device-candidate contract is `docs/architecture/DEVELOPMENT_PIPELINE.md`.
 
-## Core distinction
-
-Three units are intentionally different:
-
-```text
-commit batch != review slice != main evidence milestone
-```
-
-A small implementation stage is not automatically a PR, and a review PR is not automatically a `main` merge boundary.
-
-Canonical flow:
+## Core model
 
 ```text
 accepted main
- -> Draft M1 integration branch / PR
- -> short-lived slice branch
- -> coherent commit batch(es)
- -> slice PR -> M1 integration branch
- -> repeat bounded slices
- -> deliberate integration CI when justified
- -> final M1 ready-for-review exact-head CI
- -> one milestone merge to main
- -> accepted green main
- -> main-only LAB/provider/release boundary when actually required
+ -> current integration lineage from #135
+ -> one bounded slice
+ -> hosted evidence at the cheapest valid level
+ -> integration update
+ -> physical diagnostic only when the next fact genuinely requires it
+ -> milestone merge to main only at an accepted boundary
 ```
 
-Do not turn `main` into a progress ledger and do not turn the final M1 PR into the everyday working diff.
+A commit batch, a review slice, a physical diagnostic and a main merge are different units. Do not turn `main` into a progress ledger.
 
-## Current product milestone
-
-Until Issue #86 changes the gate, M1 contains:
-
-```text
-production Android lifecycle
- -> durable external client credentials
- -> bounded exact-address Mesh ingress
- -> DNS/readiness implementation
- -> TCP-only client hardening
-```
-
-These remain one eventual `main` evidence milestone, but they should be implemented and audited as bounded review slices.
-
-## Commit-only phase
-
-A slice begins as a short-lived branch from the exact current M1 integration head.
-
-While implementation is incomplete, use coherent commits without opening a PR for every edit. A remote push should represent a reviewable batch, not an editor save point.
-
-When GitHub APIs are used for several files, prefer one Git tree, one commit and one ref update.
-
-## Slice PR boundary
-
-Create a slice PR when the change is coherent enough to review independently. Its base is the M1 integration branch, not `main`.
+## Bounded slice
 
 Default slice budget:
 
 - one natural owner;
-- at most one required adapter/composition boundary;
+- at most one necessary platform/vendor/composition adapter;
 - direct tests for those semantics.
 
-A slice that crosses more than two semantic owners or grows beyond roughly eight implementation/test files should be split unless the coupling is inseparable and documented.
+A slice that crosses more than two semantic owners should be split unless the coupling is technically inseparable and documented.
 
-Only one slice is active by default. Slice PRs provide durable context checkpoints and must state owner, goal, base SHA, invariants, touched boundaries, tests/evidence, what remains unproven and follow-up work.
-
-After review, squash-merge the slice into the integration branch. That synchronization does not trigger a `main` merge, LAB run or ordinary CI cycle.
-
-## Context budget
-
-During slice work, an executor should load only:
+The active working set is intentionally small:
 
 ```text
-#86 current checkpoint
-current slice PR/branch
-relevant natural-owner issue/contracts
-one required adapter boundary
-corresponding direct tests
+#135 current checkpoint
++ current slice PR/head
++ relevant #134 finding when needed
++ one natural-owner contract
++ one adapter boundary when required
++ direct tests/evidence
 ```
 
-The entire M1 diff is read only for final cross-slice integration review or when a concrete dependency requires it.
+## Hosted CI
 
-After each slice merge, #86 records the completed slice, next slice and current integration pointer. This prevents chat/session memory from becoming a hidden source of truth.
+### Integration Android gate
 
-## CI granularity
-
-Ordinary PR `synchronize` pushes do **not** trigger CI.
-
-Full CI is intentionally created only by:
+For Android/Rust/build work targeting `fix/root-policy-reconciliation`:
 
 ```text
-workflow_dispatch on an exact checkpoint head when justified
-ready_for_review on the final M1 head
-push to protected main after merge
+draft PR
+ -> compileDebugKotlin
+ -> lintDebug
+
+ready PR
+ -> fast gate
+ -> unit tests
+ -> assembleDebug
+ -> assembleDebugAndroidTest
+ -> native/package verification
+ -> exact-head device-candidate artifact
 ```
 
-Slice PR existence alone is not a CI boundary. A deliberate manual checkpoint is justified when the slice changes a material cross-language/build contract or otherwise cannot be safely validated by review plus direct tests alone.
+The gate uses pinned toolchains and deterministic input-aware caches. Superseded runs are cancelled.
 
-Before the M1 merge, the M1 PR must be ready for review and complete required CI must pass on the exact head. If that head later changes, return it to Draft, batch corrections, then mark ready again.
+### Protected main gate
 
-## Main and LAB
+PRs to `main` must satisfy the branch-protection contexts `Rust Workspace` and `Android Compose Shell`.
 
-Development LAB accepts only an exact accepted green PRODUCT `main` SHA. PR and integration branches are not LAB source identity.
-
-Therefore the merge decision is:
+The path classifier is fail-safe:
 
 ```text
-Can the next required fact be established correctly at E1/E2?
-  YES -> keep working through bounded slices on the M1 integration branch.
-  NO  -> finish all independent E1/E2 slices, validate the final exact M1 head,
-         merge once, verify main, then request the bounded main-only physical fact.
+explicit non-product allowlist only
+ -> fast required-context PASS
+ -> no PRODUCT rebuild
+
+anything else / unknown / CI policy / PRODUCT input
+ -> full Rust + Android validation
 ```
 
-A LAB run is not triggered merely because a PR merged. Issue #86 must identify the physical fact and why it is required.
+`workflow_dispatch` always performs the full gate.
+
+After merge, `push -> main` performs the architecture smoke/invariants only; it does not repeat the expensive Rust/Android acceptance already established on the accepted PR head.
+
+## Android product floor
+
+The PRODUCT appliance target is Android 11 / API 30. `android/app/build.gradle.kts` owns one `androidMinSdk=30` value used by both Android `minSdk` and cargo-ndk `-P`.
+
+The PRODUCT ABI is selected by `android/gradle.properties` and is currently `armeabi-v7a`. The LAB bootstrap mirror must use Rust target `armv7-linux-androideabi`.
+
+Android 23/26 compatibility is not an accepted PRODUCT requirement. Do not add compatibility shims below API 30 without a new explicit product decision.
+
+## Development physical diagnostic
+
+Development physical work no longer requires a local Android rebuild or a merge to `main` solely to obtain test bytes.
+
+When #135 states that the next engineering decision requires DEVICE-1 evidence:
+
+```text
+successful ready integration PR exact head
+ -> exact-head hosted device candidate
+ -> protected-main Device Candidate Physical consumer
+ -> exact artifact/run/digest verification
+ -> self-hosted Windows LAB
+ -> built-in Windows PowerShell
+ -> API 30 / armeabi-v7a DEVICE-1 check
+ -> LAB-only stable debug signing
+ -> adb install -r com.mobileproxymish.app.debug
+ -> bounded sanitized physical evidence
+```
+
+The physical consumer is fail-closed and does not automatically build locally when the hosted candidate is unavailable or invalid.
+
+A local build remains a separate explicit diagnostic fallback, not the normal path and not evidence substitution.
+
+## Release/acceptance distinction
+
+An exact-head PR debug candidate is allowed for development diagnostics and evidence needed to choose the next implementation step. It is not release identity and cannot be promoted.
+
+Formal release acceptance continues to use exact immutable RC/release bytes under `docs/architecture/RELEASE.md` and the supply-chain law:
+
+```text
+PIN -> BUILD ONCE -> HASH -> SIGN -> ATTEST -> TEST EXACT BYTES -> PROMOTE EXACT BYTES
+```
 
 ## Physical correction loop
 
-When a main-only physical run reveals a defect:
-
 ```text
-typed/redacted physical finding
- -> bounded correction slice
- -> slice review
- -> deliberate exact-head CI when justified
- -> one milestone merge
- -> main-only physical re-proof only when necessary
+typed physical finding
+ -> smallest bounded correction slice
+ -> exact hosted validation
+ -> new exact-head candidate when physical re-proof is required
+ -> DEVICE-1 re-proof
 ```
 
-Never choose fwmarks, RPDB priorities, Mesh identity behavior, DNS ownership or Android/VPN interaction by guess merely to avoid a physical checkpoint.
+Do not merge each attempted correction to `main` simply to get an APK. Do not guess a physical fact to avoid DEVICE-1 evidence.
+
+## Stop conditions
+
+Stop a slice when its required deterministic evidence passes and the next missing fact belongs to another owner or requires physical reality. Prefer NO CHANGE when measurement shows the suspected subsystem is not materially responsible.
