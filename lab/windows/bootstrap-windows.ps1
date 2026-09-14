@@ -467,6 +467,15 @@ try {
     $sdkPackages = @($manifest.android.packages | ForEach-Object { [string]$_ })
     Invoke-NativeChecked -FilePath $sdkManager -Arguments (@("--sdk_root=$sdkRoot") + $sdkPackages)
 
+    $canonicalAdb = Join-Path $sdkRoot 'platform-tools\adb.exe'
+    if (-not (Test-Path -LiteralPath $canonicalAdb -PathType Leaf)) {
+        throw "Canonical ADB postcondition is not satisfied after sdkmanager: $canonicalAdb"
+    }
+    $canonicalAdbProbe = Invoke-NativeTextProbe -FilePath $canonicalAdb -ArgumentsLine 'version'
+    if ($canonicalAdbProbe.ExitCode -ne 0 -or $canonicalAdbProbe.Text -notmatch 'Android Debug Bridge') {
+        throw "Canonical ADB execution postcondition is not satisfied after sdkmanager: $canonicalAdb"
+    }
+
     Set-MachineVariable -Name 'RUSTUP_HOME' -Value $rustupHome
     Set-MachineVariable -Name 'CARGO_HOME' -Value $cargoHome
     Add-MachinePath -PathEntry (Join-Path $cargoHome 'bin')

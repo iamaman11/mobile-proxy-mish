@@ -75,6 +75,9 @@ jobs:
           if (-not ($sdkPackages -contains [string]$manifest.android.platform_package)) {
             throw 'Android platform package is missing from the bootstrap install set.'
           }
+          if (-not ($sdkPackages -contains 'platform-tools')) {
+            throw 'Android platform-tools is missing from the bootstrap install set.'
+          }
           if ([int]$manifest.android.compile_sdk_minor -ne 0) {
             throw 'Current product build uses base compileSdk and therefore requires minor API 0.'
           }
@@ -86,6 +89,7 @@ jobs:
 
           foreach ($path in @(
             'lab/windows/bootstrap-windows.ps1',
+            'lab/windows/repair-android-platform-tools.ps1',
             'lab/windows/host-preflight.ps1',
             'lab/windows/CredentialProvisioning.psm1',
             'lab/windows/test-credential-provisioning.ps1'
@@ -136,7 +140,10 @@ jobs:
             'Existing repository runner registration detected',
             'skipping token retrieval',
             'Restart-Service',
-            'Bootstrap host dependency self-test passed.'
+            'Bootstrap host dependency self-test passed.',
+            '$canonicalAdb = Join-Path $sdkRoot ''platform-tools\adb.exe''',
+            'Canonical ADB postcondition is not satisfied after sdkmanager',
+            'Canonical ADB execution postcondition is not satisfied after sdkmanager'
           )) {
             if (-not $bootstrapText.Contains($required)) {
               throw "LAB-1 bootstrap contract drifted: $required"
@@ -147,6 +154,33 @@ jobs:
           }
           if ($bootstrapText -match 'manifest\.powershell\.winget_id') {
             throw 'LAB-1 must not use WinGet/MSIX as the PowerShell service capability owner.'
+          }
+
+          $repairText = Get-Content -Raw -LiteralPath 'lab/windows/repair-android-platform-tools.ps1'
+          foreach ($required in @(
+            'Ensure-CanonicalAdb',
+            'sdkmanager exited with code $sdkManagerExit, but canonical ADB postcondition is not satisfied',
+            'Exactly one authorized DEVICE-1 must be visible through canonical ADB',
+            'ANDROID_API=30',
+            'ANDROID_ABI=armeabi-v7a',
+            'MAGISK_ROOT=PASS',
+            'LOCAL_BUILD_PERFORMED=NO',
+            'Android platform-tools repair self-test passed.'
+          )) {
+            if (-not $repairText.Contains($required)) {
+              throw "Bounded Android platform-tools repair contract drifted: $required"
+            }
+          }
+          foreach ($forbidden in @(
+            '(?i)gradle(?:\.bat|\.exe)?\s',
+            '(?i)cargo(?:\.exe)?\s',
+            '(?i)rustup(?:\.exe)?\s',
+            '(?i)ndk-build',
+            '(?i)actions-runner-win'
+          )) {
+            if ($repairText -match $forbidden) {
+              throw 'Bounded Android platform-tools repair must not install/build unrelated LAB or PRODUCT toolchains.'
+            }
           }
 
           $preflightText = Get-Content -Raw -LiteralPath 'lab/windows/host-preflight.ps1'
@@ -232,6 +266,19 @@ jobs:
             -SelfTest
           if ($LASTEXITCODE -ne 0) {
             throw "Bootstrap host dependency self-test failed with exit code $LASTEXITCODE."
+          }
+
+      - name: Exercise canonical ADB false-PASS regression
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dummySha = '0' * 40
+          & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
+            -File 'lab/windows/repair-android-platform-tools.ps1' `
+            -RepositoryCommit $dummySha `
+            -SelfTest
+          if ($LASTEXITCODE -ne 0) {
+            throw "Android platform-tools repair self-test failed with exit code $LASTEXITCODE."
           }
 
       - name: Exercise bounded external proxy credential provisioning contract
