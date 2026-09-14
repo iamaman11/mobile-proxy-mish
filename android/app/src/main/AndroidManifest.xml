@@ -33,6 +33,19 @@
         </service>
 
         <!--
+             Stable read-only diagnostics ABI for ADB/LAB. The applicationId placeholder keeps the
+             same contract for release and isolated debug packages while DUMP prevents ordinary
+             third-party applications from reading the snapshot.
+        -->
+        <provider
+            android:name=".MishDiagnosticsProvider"
+            android:authorities="${applicationId}.diagnostics"
+            android:enabled="true"
+            android:exported="true"
+            android:grantUriPermissions="false"
+            android:permission="android.permission.DUMP" />
+
+        <!--
              Deliberately exported only to callers holding the platform DUMP permission. The ADB
              shell holds that development-tool permission; ordinary third-party apps do not. No
              intent filter is declared, so provisioning also requires this exact component name.
