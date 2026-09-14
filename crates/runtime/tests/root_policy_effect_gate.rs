@@ -5,8 +5,8 @@ use mish_cellular_egress_bridge::OutboundConnectError;
 use mish_runtime::{CellularDnsResolver, CellularRuntimeCoordinator};
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, TcpStream};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 const SOCKS_VERSION: u8 = 0x05;
@@ -26,7 +26,8 @@ fn handle(raw: u64) -> NetworkHandle {
 }
 
 fn expect_fail_closed_domain_connect(port: u16) -> u8 {
-    let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).expect("connect private bridge");
+    let mut stream =
+        TcpStream::connect((Ipv4Addr::LOCALHOST, port)).expect("connect private bridge");
     stream
         .set_read_timeout(Some(IO_TIMEOUT))
         .expect("read timeout");
@@ -68,7 +69,9 @@ fn expect_fail_closed_domain_connect(port: u16) -> u8 {
         other => panic!("unexpected SOCKS reply address type {other}"),
     };
     let mut tail = vec![0_u8; remainder];
-    stream.read_exact(&mut tail).expect("read CONNECT reply tail");
+    stream
+        .read_exact(&mut tail)
+        .expect("read CONNECT reply tail");
     header[1]
 }
 
@@ -95,7 +98,10 @@ fn private_bridge_cannot_escape_before_root_authorization_or_after_cellular_loss
 
     // A listening private bridge is not authority. Before any admitted network/root-policy
     // authorization, the effect gate must reject the CONNECT before DNS or a public socket.
-    assert_eq!(expect_fail_closed_domain_connect(bridge.port()), HOST_UNREACHABLE);
+    assert_eq!(
+        expect_fail_closed_domain_connect(bridge.port()),
+        HOST_UNREACHABLE
+    );
     assert_eq!(resolver_calls.load(Ordering::SeqCst), 0);
 
     let admitted = runtime
@@ -112,7 +118,10 @@ fn private_bridge_cannot_escape_before_root_authorization_or_after_cellular_loss
 
     // Semantic cellular admission alone is deliberately insufficient. Android must reconcile
     // and explicitly authorize the exact root-policy generation first.
-    assert_eq!(expect_fail_closed_domain_connect(bridge.port()), HOST_UNREACHABLE);
+    assert_eq!(
+        expect_fail_closed_domain_connect(bridge.port()),
+        HOST_UNREACHABLE
+    );
     assert_eq!(resolver_calls.load(Ordering::SeqCst), 0);
 
     assert!(
@@ -126,7 +135,10 @@ fn private_bridge_cannot_escape_before_root_authorization_or_after_cellular_loss
 
     // Loss closes the gate synchronously with the owner transition. A stale previously-authorized
     // generation cannot reach DNS or fall back to a default/Wi-Fi/VPN path.
-    assert_eq!(expect_fail_closed_domain_connect(bridge.port()), HOST_UNREACHABLE);
+    assert_eq!(
+        expect_fail_closed_domain_connect(bridge.port()),
+        HOST_UNREACHABLE
+    );
     assert_eq!(resolver_calls.load(Ordering::SeqCst), 0);
 
     bridge.stop().expect("stop private bridge");
