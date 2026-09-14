@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/device-candidate-physical.yml'
+      - 'lab/windows/resolve-lab-powershell.ps1'
       - 'lab/windows/install-device-candidate.ps1'
       - 'lab/windows/test-device-candidate.ps1'
   workflow_dispatch:
@@ -43,6 +44,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           foreach ($path in @(
+            'lab/windows/resolve-lab-powershell.ps1',
             'lab/windows/install-device-candidate.ps1',
             'lab/windows/test-device-candidate.ps1'
           )) {
@@ -58,6 +60,7 @@ jobs:
               throw "PowerShell parse failed for $path."
             }
           }
+          ./lab/windows/resolve-lab-powershell.ps1 -VerifyOnly
           ./lab/windows/test-device-candidate.ps1
 
   resolve:
@@ -207,7 +210,6 @@ jobs:
     runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
     timeout-minutes: 15
     env:
-      LAB_POWERSHELL_EXE: C:\mish-lab\tools\powershell-7.6.6\pwsh.exe
       ADB_EXE: C:\mish-lab\tools\android-sdk\platform-tools\adb.exe
       ANDROID_SDK_ROOT: C:\mish-lab\tools\android-sdk
     steps:
@@ -216,6 +218,12 @@ jobs:
         with:
           persist-credentials: false
           clean: true
+
+      - name: Resolve exact LAB PowerShell
+        shell: cmd
+        run: |
+          powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".\lab\windows\resolve-lab-powershell.ps1" -ManifestPath ".\lab\windows\toolchain.json"
+          exit /b %ERRORLEVEL%
 
       - name: Verify physical LAB identity
         shell: cmd
@@ -251,10 +259,10 @@ jobs:
           >>"%GITHUB_STEP_SUMMARY%" echo - Installed package: `com.mobileproxymish.app.debug`
 
       - name: Upload bounded install receipt
-        if: ${{ always() && hashFiles(format('{0}/mish-device-candidate-install.json', runner.temp)) != '' }}
+        if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: device-candidate-install-pr-${{ needs.resolve.outputs.pr_number }}-${{ needs.resolve.outputs.source_sha }}
           path: ${{ runner.temp }}\mish-device-candidate-install.json
-          if-no-files-found: error
+          if-no-files-found: ignore
           retention-days: 7
