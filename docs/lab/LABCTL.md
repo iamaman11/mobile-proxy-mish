@@ -27,7 +27,7 @@ android install may consume only those still-identical bytes
 
 `latest` is never a machine input. Android product builds never run through `labctl`.
 
-For E3, the operator no longer copies that tuple manually. The E3 workflow accepts only an exact immutable `rc_tag` plus the execution `mode`, resolves the remaining release/harness identity on a hosted runner, and passes the resulting machine-owned tuple to the existing fail-closed `labctl` verifiers.
+For E3, the operator no longer copies that tuple manually. The E3 workflow resolves the exact active immutable RC and matching same-source/same-signing harness, then passes the machine-owned tuple to the existing fail-closed `labctl` verifiers.
 
 The release signing-certificate fingerprint remains a reviewed stable trust anchor in the E3 consumer workflow. Per-RC source SHA, APK digest, ABI, harness run/artifact IDs, harness ZIP digest and test-APK digest are derived from the exact native-immutable GitHub Release and matching release run rather than copied into the workflow for each candidate.
 
@@ -64,24 +64,21 @@ cloudflare prove
 e3 verify
 e3 ready
 e3 execute
+e3 accept
+e4 plan
+e4 finalize
 ```
 
 `android install` requires a PASS `mish.lab.release-verification/v1` receipt, re-checks the exact authorized tuple, and re-hashes the APK immediately before invoking ADB. Changing the APK after verification therefore fails before installation.
 
-`evidence collect` is the single managed-LAB durable evidence projection. It emits `mish.lab.evidence/v1` through an explicit allowlist; arbitrary receipt fields, local paths, device identifiers, public-IP literals and secret-shaped data are not copied into durable evidence.
+`evidence collect` is the managed-LAB readiness evidence projection. It emits `mish.lab.evidence/v1` through an explicit allowlist; arbitrary receipt fields, local paths, device identifiers, public-IP literals and secret-shaped data are not copied into durable evidence.
 
 ## E3 identity projection
 
-The E3 workflow has one hosted resolver job before the self-hosted Windows job. Its human release input is exactly:
+The E3 workflow has one hosted resolver job before the self-hosted Windows job. The hosted resolver proves:
 
 ```text
-rc_tag = vMAJOR.MINOR.PATCH-rc.N
-```
-
-The hosted resolver proves:
-
-```text
-exact tag syntax
+exact active RC tag syntax
  -> exact Git tag commit
  -> commit is in accepted main lineage
  -> published non-draft RC prerelease
@@ -112,7 +109,7 @@ So simplification removes manual identity transcription, not verification depth.
 
 ## E3 bounded commands
 
-The E3 surface changes execution/supply mechanics only; Issue #10 remains the semantic owner of the physical Cellular Egress positive/negative/recovery contract.
+The E3 surface changes execution/supply/evidence mechanics only; Issue #10 remains the semantic owner of the physical Cellular Egress positive/negative/recovery contract.
 
 ```text
 e3 verify
@@ -121,18 +118,23 @@ e3 verify
 
 e3 ready
   = create the pre-device domain readiness receipt after an explicit
-    zero-ADB observation; this receipt is not durable evidence by itself
+    zero-ADB observation; this receipt is not E3 acceptance
 
 e3 execute
   = PHONE-ON adapter for the continuous Issue #10 lifecycle
     positive -> cellular loss -> recovery using exact accepted bytes
+
+e3 accept
+  = after a successful physical e3 execute result, revalidate the exact
+    release/harness bytes and project mish.lab.e3-acceptance/v1 on the
+    accepted Windows x64 / protected-main boundary
 ```
 
 These are bounded stateless commands. They do not create a daemon, scheduler, status database, second E3 workflow, second CURRENT pointer, release registry, routing owner, or parallel semantic owner.
 
-`e3 execute` is evidence machinery, not the Cellular Egress owner. For the replacement root-policy architecture it must exercise the exact PRODUCT-owned adapter and observe owner-derived state; LAB/ADB root may perform only the explicitly authorized test mutation such as mobile-data loss/recovery. ADB root must not substitute for PRODUCT runtime root authority.
+`e3 execute` is evidence machinery, not the Cellular Egress owner. It exercises the exact PRODUCT-owned adapter and observes owner-derived state; LAB/ADB root may perform only the explicitly authorized mobile-data loss/recovery mutation. ADB root must not substitute for PRODUCT runtime root authority.
 
-The historical RC6/bind-based `e3 execute` behavior is not acceptance authority for the revised contract. Before a future run may claim E3 PASS, the workflow/harness/labctl execution path must be updated with the PRODUCT implementation so that it proves the root-policy semantics in `docs/testing/E3_PHYSICAL_CELLULAR.md`.
+`e3 accept` is deliberately separate from readiness. It requires `result=PASS`, `scenario=full-root-toggle`, `e3_pass=true` from the exact execution result plus matching still-identical PRODUCT and test APK bytes. It emits a sanitized receipt containing only GitHub execution identity, exact release identity and exact harness identity. The physical workflow uploads that receipt as `e3-acceptance-<RC>` only after the acceptance projection succeeds.
 
 `NO_EVIDENCE_ESCALATION` is mandatory: hosted RC resolution, `e3 verify`, hosted contract CI, `e3 ready` with `device_count=0`, or LAB-only root-policy canaries cannot claim E3 PASS.
 
@@ -172,30 +174,9 @@ From accepted protected `main`:
 Actions -> E3 Physical Cellular -> Run workflow
 ```
 
-Inputs:
+The operator does **not** enter or copy source commit, APK digest, signing certificate, harness run/artifact IDs, harness ZIP digest, or test APK digest. Those are resolved and verified from the exact native-immutable active RC identity.
 
-```text
-rc_tag = exact native-immutable RC tag
-mode   = pre-device-dry | full-root-toggle
-```
-
-`full-root-toggle` is the existing workflow mode name. The name does not define the PRODUCT egress mechanism; the executable harness must match the current accepted E3 contract.
-
-The operator does **not** enter or copy:
-
-```text
-source commit
-APK SHA-256
-signing certificate per RC
-harness run ID
-harness artifact ID
-harness ZIP SHA-256
-test APK SHA-256
-```
-
-Those are resolved and verified from the exact native-immutable RC identity.
-
-`mode=pre-device-dry` requires zero ADB devices, installs nothing, and may only produce:
+A pre-device proof, when used by the contract, requires zero ADB devices, installs nothing, and may only produce:
 
 ```text
 PHONE-ON READY
@@ -203,7 +184,7 @@ E3_PASS=NO
 NO_EVIDENCE_ESCALATION=PASS
 ```
 
-A future `mode=full-root-toggle` acceptance run must use an exact RC/harness pair implementing the revised root-policy path:
+The full physical acceptance path uses an exact RC/harness pair implementing the root-policy lifecycle:
 
 ```text
 request direct CELLULAR + INTERNET + NOT_VPN
@@ -218,15 +199,49 @@ request direct CELLULAR + INTERNET + NOT_VPN
  -> same PRODUCT lifecycle reacquires direct cellular
  -> fresh generation + fresh policy reconciliation
  -> cellular-owned public egress succeeds again
+ -> typed mish.lab.e3-acceptance/v1 projected and uploaded
 ```
 
-Wi-Fi is not an E3 correctness prerequisite and cannot satisfy Cellular Egress. Cloudflare/VPN-derived networks cannot satisfy the `NOT_VPN` owner policy. For the replacement path Cloudflare One Agent remains connected as the target-topology coexistence fixture, but E3 does not claim Mesh end-to-end acceptance.
+Wi-Fi is not an E3 correctness prerequisite and cannot satisfy Cellular Egress. Cloudflare/VPN-derived networks cannot satisfy the `NOT_VPN` owner policy. Cloudflare One Agent remains connected as the target-topology coexistence fixture, but E3 does not claim Mesh end-to-end acceptance.
 
 Unsupported/unvalidated IPv6 must remain fail closed. Whole-PRODUCT-UID routing and any dedicated egress helper remain prohibited assumptions until separately justified by physical privilege/lifecycle/isolation evidence.
 
+## E4 bounded commands
+
+E4 is formalized as a stateless two-phase acceptance coordinator. The detailed contract is in `docs/lab/E4_RUNNER.md` and `docs/testing/E4_FULL_STACK.md`.
+
+```text
+e4 plan
+  = bind a non-PASS E4 session to a PASS exact release-verification receipt,
+    a PASS mish.lab.e3-acceptance/v1 receipt for the exact same PRODUCT bytes,
+    still-identical PRODUCT APK bytes, the pinned external-client fixture,
+    and the canonical mandatory E4 scenario matrix
+
+e4 finalize
+  = on the accepted Windows x64/protected-main boundary, revalidate the
+    session-bound PRODUCT bytes, E3 acceptance digest, fixture and complete
+    physical scenario observations, then emit sanitized PASS/FAIL/BLOCKED evidence
+```
+
+`e4 plan` always emits `e4_pass=false` and `NO_EVIDENCE_ESCALATION`. It rejects readiness-only evidence, a different E3 RC, or a changed E3 acceptance receipt. Hosted E4 contract tests cannot claim physical acceptance.
+
+`e4 finalize` has machine-distinct outcomes:
+
+```text
+PASS    -> exit 0 / e4_pass=true
+FAIL    -> exit 2 / e4_pass=false
+BLOCKED -> exit 3 / e4_pass=false
+```
+
+PASS/BLOCKED durable E4 evidence includes the E3 acceptance SHA-256 and bounded E3 execution/test identity without persisting the local E3 receipt path. This makes the same-RC E3 -> E4 chain auditable without copying sensitive physical data.
+
+A missing required external runtime is not silently converted into PASS. Every canonical M1 scenario is mandatory, including literal five-minute background idle, ten-session post-idle load, Force Stop semantics, normal-stop cleanup, fresh root authorization, One Agent/One Client recovery, UDP/IPv6 fail-closed checks and the pinned real-client fixtures.
+
+The E4 coordinator is evidence machinery only. It does not build PRODUCT, mutate Cloudflare/provider state, edit Magisk policy, create routing truth, or own runtime readiness. Merging the coordinator does not execute E4 and does not change `PROXY_ON_PHONE_WORKING`.
+
 ## Trust and privacy rules
 
-The E3 simplification preserves all existing trust boundaries:
+The E3/E4 simplification preserves all existing trust boundaries:
 
 ```text
 NO untrusted PR execution on self-hosted runner
@@ -234,11 +249,13 @@ NO arbitrary-ref physical execution
 NO release signing key on Windows LAB
 NO Android rebuild on Windows LAB
 NO latest/ambiguous RC selection
-NO mutable GitHub Release as E3 byte authority
-NO human-copied per-RC digest/artifact tuple
-NO evidence escalation from hosted/pre-device proof
+NO mutable GitHub Release as physical byte authority
+NO human-copied per-RC digest/artifact tuple as acceptance authority
+NO readiness -> E3 PASS escalation
+NO E4 without exact typed E3 PASS for the same PRODUCT bytes
 NO carrier public-IP persistence
 NO device/SIM/network identifiers in durable public evidence
+NO arbitrary physical observation fields copied into E4 durable evidence
 ```
 
-A mutable, missing, ambiguous, expired, mismatched, non-canonical or stale-mechanism release/harness identity fails closed before physical execution.
+A mutable, missing, ambiguous, expired, mismatched, non-canonical or stale-mechanism release/harness identity fails closed before physical execution. E4 additionally refuses missing/duplicate/unknown scenarios, stale session bytes, changed E3 acceptance bytes and untrusted finalization refs.

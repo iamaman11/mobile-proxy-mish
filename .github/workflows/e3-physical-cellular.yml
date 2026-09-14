@@ -5,26 +5,32 @@ on:
     paths:
       - '.github/workflows/e3-physical-cellular.yml'
       - 'lab/windows/E3Harness.psm1'
+      - 'lab/windows/E3Acceptance.psm1'
       - 'lab/windows/Labctl.psm1'
       - 'lab/windows/labctl.ps1'
       - 'lab/windows/test-e3-harness.ps1'
+      - 'lab/windows/test-e3-acceptance.ps1'
       - 'lab/windows/test-e3-zero-input.ps1'
       - 'scripts/release/android_release.py'
       - 'scripts/release/e3_harness.py'
       - 'docs/lab/LABCTL.md'
+      - 'docs/lab/E4_RUNNER.md'
       - 'docs/testing/E3_PHYSICAL_CELLULAR.md'
   push:
     branches: [main]
     paths:
       - '.github/workflows/e3-physical-cellular.yml'
       - 'lab/windows/E3Harness.psm1'
+      - 'lab/windows/E3Acceptance.psm1'
       - 'lab/windows/Labctl.psm1'
       - 'lab/windows/labctl.ps1'
       - 'lab/windows/test-e3-harness.ps1'
+      - 'lab/windows/test-e3-acceptance.ps1'
       - 'lab/windows/test-e3-zero-input.ps1'
       - 'scripts/release/android_release.py'
       - 'scripts/release/e3_harness.py'
       - 'docs/lab/LABCTL.md'
+      - 'docs/lab/E4_RUNNER.md'
       - 'docs/testing/E3_PHYSICAL_CELLULAR.md'
   workflow_dispatch:
 
@@ -50,10 +56,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Test exact harness, Windows trust boundary, readiness projection, and zero-input selection
+      - name: Test exact harness, physical acceptance projection, Windows trust boundary, readiness, and zero-input selection
         shell: pwsh
         run: |
           ./lab/windows/test-e3-harness.ps1
+          ./lab/windows/test-e3-acceptance.ps1
           ./lab/windows/test-e3-zero-input.ps1
 
   resolve-rc:
@@ -448,8 +455,24 @@ jobs:
         if: ${{ env.RUN_MODE == 'full-root-toggle' }}
         shell: cmd
         run: |
-          "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".\lab\windows\labctl.ps1" e3 execute -VerificationReceipt "%RUNNER_TEMP%\mish-e3\verification.json" -HarnessVerificationReceipt "%RUNNER_TEMP%\mish-e3\harness-verification.json" -AdbPath "%ADB_EXE%" -E3Host "%E3_HOST%" -E3Port "%E3_PORT%" -E3Path "%E3_PATH%" -TimeoutSeconds 300
+          "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".\lab\windows\labctl.ps1" e3 execute -VerificationReceipt "%RUNNER_TEMP%\mish-e3\verification.json" -HarnessVerificationReceipt "%RUNNER_TEMP%\mish-e3\harness-verification.json" -AdbPath "%ADB_EXE%" -E3Host "%E3_HOST%" -E3Port "%E3_PORT%" -E3Path "%E3_PATH%" -TimeoutSeconds 300 > "%RUNNER_TEMP%\mish-e3\e3-execution.json"
           exit /b %ERRORLEVEL%
+
+      - name: Project typed E3 physical acceptance receipt
+        if: ${{ env.RUN_MODE == 'full-root-toggle' && success() }}
+        shell: cmd
+        run: |
+          "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".\lab\windows\labctl.ps1" e3 accept -VerificationReceipt "%RUNNER_TEMP%\mish-e3\verification.json" -HarnessVerificationReceipt "%RUNNER_TEMP%\mish-e3\harness-verification.json" -InputPath "%RUNNER_TEMP%\mish-e3\e3-execution.json" -EvidencePath "%RUNNER_TEMP%\mish-e3\e3-acceptance.json"
+          exit /b %ERRORLEVEL%
+
+      - name: Upload typed E3 physical acceptance evidence
+        if: ${{ env.RUN_MODE == 'full-root-toggle' && success() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e3-acceptance-${{ env.RC_TAG }}
+          path: ${{ runner.temp }}\mish-e3\e3-acceptance.json
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Publish E3 execution summary
         if: ${{ env.RUN_MODE == 'full-root-toggle' && success() }}
@@ -458,5 +481,6 @@ jobs:
           >>"%GITHUB_STEP_SUMMARY%" echo ### E3 physical cellular accepted ceremony
           >>"%GITHUB_STEP_SUMMARY%" echo - Exact product/harness bytes verified before installation.
           >>"%GITHUB_STEP_SUMMARY%" echo - Positive -^> negative -^> recovery positive completed.
+          >>"%GITHUB_STEP_SUMMARY%" echo - Typed acceptance: `mish.lab.e3-acceptance/v1` / exact same PRODUCT RC bytes.
           >>"%GITHUB_STEP_SUMMARY%" echo - Device-side public carrier IP is intentionally not persisted.
           >>"%GITHUB_STEP_SUMMARY%" echo - E3_PASS=YES

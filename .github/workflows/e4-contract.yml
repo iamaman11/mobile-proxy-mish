@@ -1,0 +1,186 @@
+name: E4 Acceptance Contract
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/e4-contract.yml'
+      - 'lab/windows/E3Acceptance.psm1'
+      - 'lab/windows/E4E3Binding.psm1'
+      - 'lab/windows/E4Harness.psm1'
+      - 'lab/windows/labctl.ps1'
+      - 'lab/windows/test-e3-acceptance.ps1'
+      - 'lab/windows/test-e4-e3-binding.ps1'
+      - 'lab/windows/test-e4-harness.ps1'
+      - 'lab/windows/external-client-fixture.json'
+      - 'docs/lab/E4_RUNNER.md'
+      - 'docs/testing/E4_FULL_STACK.md'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/e4-contract.yml'
+      - 'lab/windows/E3Acceptance.psm1'
+      - 'lab/windows/E4E3Binding.psm1'
+      - 'lab/windows/E4Harness.psm1'
+      - 'lab/windows/labctl.ps1'
+      - 'lab/windows/test-e3-acceptance.ps1'
+      - 'lab/windows/test-e4-e3-binding.ps1'
+      - 'lab/windows/test-e4-harness.ps1'
+      - 'lab/windows/external-client-fixture.json'
+      - 'docs/lab/E4_RUNNER.md'
+      - 'docs/testing/E4_FULL_STACK.md'
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: E4 Windows Contract
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate E3-to-E4 PowerShell syntax and authority boundary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($path in @(
+            'lab/windows/E3Acceptance.psm1',
+            'lab/windows/E4E3Binding.psm1',
+            'lab/windows/E4Harness.psm1',
+            'lab/windows/labctl.ps1',
+            'lab/windows/test-e3-acceptance.ps1',
+            'lab/windows/test-e4-e3-binding.ps1',
+            'lab/windows/test-e4-harness.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path),
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -ne 0) {
+              $errors | ForEach-Object { Write-Error "${path}: $($_.Message)" }
+              throw "PowerShell parse failed for $path."
+            }
+          }
+
+          $paths = @(
+            'lab/windows/E3Acceptance.psm1',
+            'lab/windows/E4E3Binding.psm1',
+            'lab/windows/E4Harness.psm1',
+            'lab/windows/labctl.ps1'
+          )
+          foreach ($forbidden in @(
+            '(?i)\b(gradle|cargo|rustc|rustup|sdkmanager|ndk-build)\b',
+            '(?i)MISH_ANDROID_RELEASE_(KEYSTORE|STORE_PASSWORD|KEY_ALIAS|KEY_PASSWORD)',
+            '(?i)CLOUDFLARE_API_TOKEN|R2_ACCESS_KEY|R2_SECRET',
+            '(?i)terraform\s+apply',
+            '(?i)registration\s+(new|token|delete)',
+            '(?i)tunnel\s+protocol\s+set',
+            '(?i)tunnel\s+ip\s+(add|remove)'
+          )) {
+            $matches = Select-String -Path $paths -Pattern $forbidden
+            if ($matches) {
+              $matches | ForEach-Object { Write-Error "Forbidden E4 authority expansion: $($_.Path):$($_.LineNumber)" }
+              throw "E4 runner violates acceptance-only authority boundary: $forbidden"
+            }
+          }
+
+          $e3 = Get-Content -Raw -LiteralPath 'lab/windows/E3Acceptance.psm1'
+          foreach ($required in @(
+            "'mish.lab.e3-acceptance/v1'",
+            "'full-root-toggle'",
+            'e3_pass=$true',
+            'Assert-PhysicalMain'
+          )) {
+            if (-not $e3.Contains($required)) {
+              throw "E3 acceptance projection is missing required text: $required"
+            }
+          }
+
+          $binding = Get-Content -Raw -LiteralPath 'lab/windows/E4E3Binding.psm1'
+          foreach ($required in @(
+            "'mish.lab.e3-acceptance/v1'",
+            'E3 acceptance and E4 session are not the exact same PRODUCT RC bytes.',
+            'Get-E4BindingSha256',
+            'Assert-E4E3Binding',
+            'Add-E4E3EvidenceProjection'
+          )) {
+            if (-not $binding.Contains($required)) {
+              throw "E3/E4 same-byte binding is missing required text: $required"
+            }
+          }
+
+          $module = Get-Content -Raw -LiteralPath 'lab/windows/E4Harness.psm1'
+          foreach ($required in @(
+            "'mish.lab.e4-session/v1'",
+            "'mish.lab.e4-observations/v1'",
+            "'mish.lab.e4-evidence/v1'",
+            "'background_idle_5m'",
+            "'background_post_idle_10_session_load'",
+            "'root_authority_loss_recovery'",
+            "'one_agent_fresh_epoch_reconnect'",
+            "'one_client_recovery'",
+            "'camoufox_real_client'",
+            "'kameleo_chroma_real_client'",
+            "'kameleo_junglefox_real_client'",
+            "'BLOCKED'",
+            'no_evidence_escalation = $true',
+            "Assert-PhysicalMain"
+          )) {
+            if (-not $module.Contains($required)) {
+              throw "E4 contract is missing required fail-closed text: $required"
+            }
+          }
+
+          $entry = Get-Content -Raw -LiteralPath 'lab/windows/labctl.ps1'
+          foreach ($required in @(
+            "'accept'",
+            "'e4'",
+            "'plan'",
+            "'finalize'",
+            'E3AcceptancePath',
+            'Add-E4E3Binding',
+            'Assert-E4E3Binding',
+            'Add-E4E3EvidenceProjection',
+            "exit 3"
+          )) {
+            if (-not $entry.Contains($required)) {
+              throw "labctl E3/E4 surface is missing required text: $required"
+            }
+          }
+
+      - name: Run deterministic E3 acceptance projection tests
+        shell: pwsh
+        run: ./lab/windows/test-e3-acceptance.ps1
+
+      - name: Run deterministic E3-to-E4 durable binding tests
+        shell: pwsh
+        run: ./lab/windows/test-e4-e3-binding.ps1
+
+      - name: Run deterministic E4 fail-closed contract tests
+        shell: pwsh
+        run: ./lab/windows/test-e4-harness.ps1
+
+      - name: Assert hosted contract cannot claim physical E4 acceptance
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $workflow = Get-Content -Raw -LiteralPath '.github/workflows/e4-contract.yml'
+          $manualTrigger = 'workflow_' + 'dispatch:'
+          $selfHostedMarker = 'self' + '-hosted'
+          $physicalPassMarker = 'E4_' + 'PASS=YES'
+          if ($workflow -match ('(?m)^\s*' + [regex]::Escape($manualTrigger)) -or
+              $workflow.Contains($selfHostedMarker) -or
+              $workflow.Contains($physicalPassMarker)) {
+            throw 'Hosted E4 contract workflow must never become a physical acceptance execution path.'
+          }
+          'E3_ACCEPTANCE_PROJECTION=CONTRACT_PASS' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          'E4_HOSTED_CONTRACT=PASS' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          'E4_PHYSICAL_EXECUTION=NO' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          'NO_EVIDENCE_ESCALATION=PASS' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
