@@ -1,4 +1,4 @@
-use mish_transport::{MeshIngressRuntime, MeshPortForward, MAX_MESH_SESSIONS};
+use mish_transport::{MAX_MESH_SESSIONS, MeshIngressRuntime, MeshPortForward};
 use std::io::Read;
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::sync::mpsc;
@@ -19,7 +19,10 @@ fn wait_until(deadline: Instant, mut predicate: impl FnMut() -> bool) {
 
 #[test]
 fn seventeenth_mesh_session_is_rejected_before_loopback_backend() {
-    assert_eq!(MAX_MESH_SESSIONS, 16, "M1 capacity contract changed unexpectedly");
+    assert_eq!(
+        MAX_MESH_SESSIONS, 16,
+        "M1 capacity contract changed unexpectedly"
+    );
 
     let backend = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind backend");
     let backend_port = backend.local_addr().expect("backend address").port();
@@ -36,7 +39,9 @@ fn seventeenth_mesh_session_is_rejected_before_loopback_backend() {
             let (stream, _) = backend.accept().expect("accept supported backend session");
             sockets.push(stream);
         }
-        accepted_tx.send(sockets.len()).expect("publish accepted count");
+        accepted_tx
+            .send(sockets.len())
+            .expect("publish accepted count");
 
         verify_rx.recv().expect("wait for overflow probe");
         backend
@@ -105,7 +110,10 @@ fn seventeenth_mesh_session_is_rejected_before_loopback_backend() {
                 std::io::ErrorKind::ConnectionReset
                     | std::io::ErrorKind::ConnectionAborted
                     | std::io::ErrorKind::BrokenPipe
-            ) => true,
+            ) =>
+        {
+            true
+        }
         Ok(_) => false,
         Err(error) => panic!("overflow session did not fail closed: {error}"),
     };
@@ -122,6 +130,8 @@ fn seventeenth_mesh_session_is_rejected_before_loopback_backend() {
 
     drop(overflow);
     drop(supported_clients);
-    wait_until(Instant::now() + IO_TIMEOUT, || runtime.active_sessions() == 0);
+    wait_until(Instant::now() + IO_TIMEOUT, || {
+        runtime.active_sessions() == 0
+    });
     runtime.stop().expect("bounded ingress clean stop");
 }
