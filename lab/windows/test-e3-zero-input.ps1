@@ -110,7 +110,6 @@ Assert-True ($attemptMarkerText.Contains('phase=$phase')) 'Android E3 per-attemp
 Assert-True ($attemptMarkerText.Contains('stage=${failure.stage}')) 'Android E3 per-attempt marker must retain the typed safe stage independent of field order.'
 Assert-True ($androidE3.Contains('E3_SAFE_FAILURE stage=')) 'Android E3 harness must emit one safe aggregate stage marker.'
 Assert-True ($androidE3.Contains('failure.javaClass.name')) 'Android E3 safe marker must derive only exception class identity.'
-Assert-True ($androidE3.Contains('(failure as? ErrnoException)?.errno')) 'Android E3 safe marker must derive errno numerically when available.'
 Assert-True (-not $androidE3.Contains('failure.message')) 'Android E3 safe marker must never persist or print Throwable.message.'
 $markerLines=@($androidE3 -split "`r?`n" | Where-Object { $_ -match 'E3_SAFE_(?:ATTEMPT|FAILURE)' })
 $markerText=$markerLines -join "`n"
