@@ -49,7 +49,7 @@
     "platform_package": "platforms;android-37.0",
     "platform_dir": "android-37.0",
     "target_sdk": 36,
-    "min_sdk": 23,
+    "min_sdk": 30,
     "ndk": "29.0.14206865",
     "packages": [
       "platform-tools",
