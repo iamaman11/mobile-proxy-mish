@@ -47,6 +47,14 @@ class MeshIngressRuntimeBridgeTest {
     }
 
     @Test
+    fun recoveryTelemetryEmitsOnlyOnRisingReadyEdge() {
+        assertTrue(recoveryTransitionBecameReady(previous = false, current = true))
+        assertFalse(recoveryTransitionBecameReady(previous = false, current = false))
+        assertFalse(recoveryTransitionBecameReady(previous = true, current = true))
+        assertFalse(recoveryTransitionBecameReady(previous = true, current = false))
+    }
+
+    @Test
     fun publicIngressWaitsForPrivateEgressReadiness() {
         assertFalse(
             meshIngressServingAllowed(
