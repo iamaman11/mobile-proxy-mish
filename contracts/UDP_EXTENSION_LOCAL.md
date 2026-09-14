@@ -1,7 +1,9 @@
 # Local UDP / QUIC extension contract (not enabled)
 
-Status: **local design branch only**. This contract deliberately does not enable QUIC, WebRTC,
-SOCKS UDP ASSOCIATE, a UDP listener, or a new root rule in the current PRODUCT.
+Status: **local design branch only**. It now contains a unit/integration-tested exact-address UDP
+relay primitive and an opaque, epoch-bound association registry. It deliberately does **not**
+enable QUIC, WebRTC, SOCKS UDP ASSOCIATE, Android runtime composition, or a new root rule in the
+current PRODUCT.
 
 M1 remains a TCP-only appliance. A UDP packet must fail closed until every requirement below is
 implemented and physically accepted together.
@@ -61,6 +63,27 @@ The new relay must not forward an arbitrary datagram merely because it arrived t
    DNS authority, or expiry removes the association and drops later datagrams.
 
 Do not put a long-lived bearer credential in a UDP payload, log, command line, or Windows route.
+
+### Current local primitive and the remaining control-plane boundary
+
+`mish-transport::UdpAssociationRegistry` currently recognizes a fixed binary envelope:
+
+```text
+"MUDP" | 16-byte opaque id | 32-byte per-association secret | non-empty UDP payload
+```
+
+It is a deliberately narrow local protocol fixture, not a browser-facing protocol. The registry
+pins the first exact source socket, redacts credential debug output, expires permits, and clears
+all permits when the Mesh epoch is replaced or revoked. The integration test proves that a wrong
+secret, second peer, and stale epoch do not reach the loopback backend, while an admitted payload
+round-trips.
+
+A browser's native QUIC implementation cannot emit this envelope. Therefore **a Windows companion
+or a real SOCKS5 UDP ASSOCIATE control bridge is mandatory** before browser QUIC can be enabled.
+That component must obtain a fresh opaque credential from an authenticated TCP control channel;
+the credential issuer must use platform secure randomness and must never log or persist the raw
+secret. The local registry is not an authorization API and must not be exposed to UI, network
+input, or arbitrary shell commands.
 
 ## Cellular root-policy extension
 

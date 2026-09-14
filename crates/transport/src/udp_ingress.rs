@@ -14,6 +14,8 @@ use std::time::{Duration, Instant};
 const POLL: Duration = Duration::from_millis(20);
 const IDLE: Duration = Duration::from_secs(30);
 const MAX_UDP_DATAGRAM: usize = 65_507;
+const ASSOCIATION_MAGIC: &[u8; 4] = b"MUDP";
+const ASSOCIATION_HEADER_BYTES: usize = 4 + 16 + 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct UdpAssociationId(u64);
@@ -65,6 +67,7 @@ impl UdpIngressBudget {
 pub struct AuthorizedUdpDatagram {
     association: UdpAssociationId,
     loopback_backend_port: u16,
+    payload_offset: usize,
 }
 
 impl AuthorizedUdpDatagram {
@@ -75,8 +78,137 @@ impl AuthorizedUdpDatagram {
             Some(Self {
                 association,
                 loopback_backend_port,
+                payload_offset: 0,
             })
         }
+    }
+
+    const fn enveloped(association: UdpAssociationId, loopback_backend_port: u16) -> Option<Self> {
+        if loopback_backend_port == 0 {
+            None
+        } else {
+            Some(Self {
+                association,
+                loopback_backend_port,
+                payload_offset: ASSOCIATION_HEADER_BYTES,
+            })
+        }
+    }
+}
+
+/// Per-generation opaque material issued only after authenticated TCP control.
+/// The value is redacted and must never be logged or exposed in a UI.
+#[derive(Clone, PartialEq, Eq)]
+pub struct UdpAssociationCredential {
+    id: [u8; 16],
+    secret: [u8; 32],
+}
+
+impl UdpAssociationCredential {
+    pub fn new(id: [u8; 16], secret: [u8; 32]) -> Option<Self> {
+        if all_zero(&id) || all_zero(&secret) {
+            None
+        } else {
+            Some(Self { id, secret })
+        }
+    }
+}
+
+impl std::fmt::Debug for UdpAssociationCredential {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("UdpAssociationCredential(<redacted>)")
+    }
+}
+
+/// Association owner for a future authenticated control bridge. Epoch replacement and revoke
+/// remove all permits. The first packet pins one exact Mesh peer socket.
+pub struct UdpAssociationRegistry {
+    state: Mutex<UdpAssociationState>,
+}
+
+struct UdpAssociationState {
+    epoch: u64,
+    permits: HashMap<[u8; 16], UdpAssociationPermit>,
+}
+
+struct UdpAssociationPermit {
+    association: UdpAssociationId,
+    secret: [u8; 32],
+    backend_port: u16,
+    expires: Instant,
+    peer: Option<SocketAddr>,
+}
+
+impl UdpAssociationRegistry {
+    pub fn new() -> Self {
+        Self {
+            state: Mutex::new(UdpAssociationState {
+                epoch: 0,
+                permits: HashMap::new(),
+            }),
+        }
+    }
+
+    pub fn replace_epoch(&self, epoch: u64) -> bool {
+        if epoch == 0 {
+            return false;
+        }
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        state.epoch = epoch;
+        state.permits.clear();
+        true
+    }
+
+    pub fn revoke_all(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.epoch = 0;
+            state.permits.clear();
+        }
+    }
+
+    pub fn issue(
+        &self,
+        epoch: u64,
+        credential: UdpAssociationCredential,
+        association: UdpAssociationId,
+        backend_port: u16,
+        ttl: Duration,
+    ) -> bool {
+        if backend_port == 0 || ttl.is_zero() {
+            return false;
+        }
+        let Some(expires) = Instant::now().checked_add(ttl) else {
+            return false;
+        };
+        self.state
+            .lock()
+            .map(|mut state| {
+                if state.epoch != epoch {
+                    return false;
+                }
+                state
+                    .permits
+                    .insert(
+                        credential.id,
+                        UdpAssociationPermit {
+                            association,
+                            secret: credential.secret,
+                            backend_port,
+                            expires,
+                            peer: None,
+                        },
+                    )
+                    .is_none()
+            })
+            .unwrap_or(false)
+    }
+}
+
+impl Default for UdpAssociationRegistry {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -84,6 +216,31 @@ impl AuthorizedUdpDatagram {
 /// packets here. Transport neither stores credentials nor parses a proxy protocol.
 pub trait UdpDatagramAuthorizer: Send + Sync + 'static {
     fn authorize(&self, peer: SocketAddr, datagram: &[u8]) -> Option<AuthorizedUdpDatagram>;
+}
+
+impl UdpDatagramAuthorizer for UdpAssociationRegistry {
+    fn authorize(&self, peer: SocketAddr, datagram: &[u8]) -> Option<AuthorizedUdpDatagram> {
+        if datagram.len() <= ASSOCIATION_HEADER_BYTES || &datagram[..4] != ASSOCIATION_MAGIC {
+            return None;
+        }
+        let mut id = [0_u8; 16];
+        id.copy_from_slice(&datagram[4..20]);
+        let supplied_secret = &datagram[20..ASSOCIATION_HEADER_BYTES];
+        let mut state = self.state.lock().ok()?;
+        if state.epoch == 0 {
+            return None;
+        }
+        let permit = state.permits.get_mut(&id)?;
+        if Instant::now() >= permit.expires || !constant_time_eq(&permit.secret, supplied_secret) {
+            return None;
+        }
+        match permit.peer {
+            Some(bound) if bound != peer => return None,
+            Some(_) => {}
+            None => permit.peer = Some(peer),
+        }
+        AuthorizedUdpDatagram::enveloped(permit.association, permit.backend_port)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -233,6 +390,9 @@ fn udp_loop(
         let Some(authorized) = authorizer.authorize(peer, &buffer[..count]) else {
             continue;
         };
+        if authorized.payload_offset >= count {
+            continue;
+        }
         let now = Instant::now();
         let mut state = associations.lock().unwrap_or_else(|p| p.into_inner());
         let at_capacity = state.len() >= budget.max_associations;
@@ -265,7 +425,9 @@ fn udp_loop(
         }
         association.packets_in_window += 1;
         association.last_activity = now;
-        let _ = association.backend.send(&buffer[..count]);
+        let _ = association
+            .backend
+            .send(&buffer[authorized.payload_offset..count]);
     }
 }
 
@@ -335,4 +497,21 @@ fn prune_idle(associations: &Mutex<HashMap<UdpAssociationId, Association>>) {
     for association in expired {
         association.stop();
     }
+}
+
+fn all_zero(bytes: &[u8]) -> bool {
+    bytes.iter().all(|byte| *byte == 0)
+}
+
+/// Avoid an early-exit secret comparison at this trust boundary. This does not replace a
+/// platform-keystore-backed credential issuer; it only makes verification deterministic.
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut different = 0_u8;
+    for (left, right) in left.iter().zip(right) {
+        different |= left ^ right;
+    }
+    different == 0
 }
