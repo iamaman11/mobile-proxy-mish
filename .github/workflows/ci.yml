@@ -32,7 +32,7 @@ jobs:
   rust:
     name: Rust Workspace
     needs: architecture
-    if: ${{ needs.architecture.result == 'success' }}
+    if: ${{ needs.architecture.result == 'success' && github.event_name != 'push' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -260,7 +260,7 @@ jobs:
   android:
     name: Android Compose Shell
     needs: architecture
-    if: ${{ needs.architecture.result == 'success' }}
+    if: ${{ needs.architecture.result == 'success' && github.event_name != 'push' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
