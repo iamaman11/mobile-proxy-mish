@@ -46,21 +46,23 @@ class MagiskRootAuthorityTest {
     }
 
     @Test
-    fun deniedDoesNotAttemptSecondCommand() {
+    fun deniedIsTerminalForCurrentAppProcess() {
         val process = FakeProcess(RootProcessResult(1, "denied"))
         val authority = MagiskRootAuthority.forTesting(process)
 
+        assertEquals(RootAuthorityStatus.Denied, authority.probe())
         assertEquals(RootAuthorityStatus.Denied, authority.probe())
         assertEquals(1, process.calls)
     }
 
     @Test
-    fun timeoutMeansInteractiveGrantRequired() {
-        val authority = MagiskRootAuthority.forTesting(
-            FakeProcess(RootProcessResult(-1, "", timedOut = true)),
-        )
+    fun unansweredInteractiveGrantIsTerminalForCurrentAppProcess() {
+        val process = FakeProcess(RootProcessResult(-1, "", timedOut = true))
+        val authority = MagiskRootAuthority.forTesting(process)
 
         assertEquals(RootAuthorityStatus.InteractiveGrantRequired, authority.probe())
+        assertEquals(RootAuthorityStatus.InteractiveGrantRequired, authority.probe())
+        assertEquals(1, process.calls)
     }
 
     @Test
