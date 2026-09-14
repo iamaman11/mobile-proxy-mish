@@ -1,6 +1,7 @@
 package com.mobileproxymish.app.cellular
 
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.os.Process
 import com.mobileproxymish.ffi.CellularAdmissionState
 import com.mobileproxymish.ffi.CellularAdmissionView
@@ -83,7 +84,14 @@ class CellularRuntimeBridge(
 ) : CellularObservationSink, Closeable {
     private val controller: CellularController?
     private val mutableSnapshot: MutableStateFlow<CellularRuntimeSnapshot>
-    private val rootPolicy = CellularRootPolicy(Process.myUid())
+    // Local diagnostic builds use a separate Android UID. Keep their root-policy objects in
+    // an isolated namespace so they cannot claim, remove, or mask a release appliance's
+    // fail-closed state during DEVICE-1 physical validation.
+    private val rootPolicy = CellularRootPolicy(
+        productUid = Process.myUid(),
+        debugIsolation = context.packageName.endsWith(".debug") &&
+            (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0,
+    )
     private val interfaceHints = CellularInterfaceHints()
     private val observer = CellularNetworkObserver(context.applicationContext, this)
     private val started = AtomicBoolean(false)

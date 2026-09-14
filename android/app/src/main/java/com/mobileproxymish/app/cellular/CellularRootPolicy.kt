@@ -52,8 +52,14 @@ class CellularRootPolicy internal constructor(
     private val productUid: Int,
     private val authority: MagiskRootAuthority,
     private val process: RootProcess,
+    // A local debug package has a distinct Android UID. It must never claim or clean the
+    // release package's global root-policy objects during DEVICE-1 diagnostics.
+    private val debugIsolation: Boolean = false,
 ) : Closeable {
     constructor(productUid: Int) : this(productUid, MagiskRootAuthority(), SuProcess())
+
+    internal constructor(productUid: Int, debugIsolation: Boolean) :
+        this(productUid, MagiskRootAuthority(), SuProcess(), debugIsolation)
 
     private var activeIdentity: PolicyIdentity? = null
 
@@ -694,15 +700,21 @@ class CellularRootPolicy internal constructor(
     private companion object {
         // Use one small deterministic candidate set; every mark/mask/priority tuple is
         // accepted only after live RPDB/mangle collision audit on the target.
-        val POLICY_CANDIDATES = listOf(
+        val RELEASE_POLICY_CANDIDATES = listOf(
             PolicyIdentity("0x200000", 0x200000UL, 9500, 9501),
             PolicyIdentity("0x400000", 0x400000UL, 9520, 9521),
             PolicyIdentity("0x800000", 0x800000UL, 9540, 9541),
             PolicyIdentity("0x1000000", 0x1000000UL, 9560, 9561),
         )
-        const val LEGACY_MARK_HEX = "0x200000"
+        val DEBUG_POLICY_CANDIDATES = listOf(
+            PolicyIdentity("0x2000000", 0x2000000UL, 9580, 9581),
+            PolicyIdentity("0x4000000", 0x4000000UL, 9600, 9601),
+            PolicyIdentity("0x8000000", 0x8000000UL, 9620, 9621),
+            PolicyIdentity("0x10000000", 0x10000000UL, 9640, 9641),
+        )
         const val MAX_RECONCILE_PASSES = 8
-        const val MISH_CHAIN = "MISH_EGRESS_V1"
+        const val RELEASE_MISH_CHAIN = "MISH_EGRESS_V1"
+        const val DEBUG_MISH_CHAIN = "MISH_DEBUG_EGRESS_V1"
         const val IPTABLES = "iptables"
         const val IP6TABLES = "ip6tables"
         const val IPV4_RULE_SHOW = "ip -4 rule show"
@@ -716,4 +728,13 @@ class CellularRootPolicy internal constructor(
         fun isSafeTableToken(value: String): Boolean =
             value.length in 1..32 && Regex("""[A-Za-z0-9_.-]+""").matches(value)
     }
+
+    private val POLICY_CANDIDATES: List<PolicyIdentity>
+        get() = if (debugIsolation) DEBUG_POLICY_CANDIDATES else RELEASE_POLICY_CANDIDATES
+
+    private val LEGACY_MARK_HEX: String
+        get() = POLICY_CANDIDATES.first().markHex
+
+    private val MISH_CHAIN: String
+        get() = if (debugIsolation) DEBUG_MISH_CHAIN else RELEASE_MISH_CHAIN
 }
