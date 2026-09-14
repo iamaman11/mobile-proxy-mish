@@ -19,7 +19,7 @@
     "version": "7.6.6",
     "asset": "PowerShell-7.6.6-win-x64.zip",
     "url": "https://github.com/PowerShell/PowerShell/releases/download/v7.6.6/PowerShell-7.6.6-win-x64.zip",
-    "sha256": "02fe458be20434428bffcb699c290860f19bb5f66a67e6b330067e3de801fb04a"
+    "sha256": "02fe458be20493fbdf43f61ea20610b811ee6c738ab1676c61b9cfcd1a33c860"
   },
   "java": {
     "major": 17,
