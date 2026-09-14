@@ -1,8 +1,6 @@
 name: MISH LAB Diagnostic
 
 on:
-  issue_comment:
-    types: [created]
   push:
     branches: [mish-lab-control]
 
@@ -16,15 +14,7 @@ concurrency:
 jobs:
   snapshot:
     name: Read-only DEVICE-1 snapshot
-    if: >-
-      (github.event_name == 'issue_comment' &&
-       github.event.issue.number == 163 &&
-       github.event.comment.user.login == 'iamaman11' &&
-       github.event.comment.body == '/mish-diag snapshot') ||
-      (github.event_name == 'push' &&
-       github.ref == 'refs/heads/mish-lab-control' &&
-       github.actor == 'iamaman11' &&
-       github.event.head_commit.message == '/mish-diag snapshot')
+    if: github.actor == 'iamaman11' && github.event.head_commit.message == '/mish-diag snapshot'
     runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
     timeout-minutes: 10
     env:
