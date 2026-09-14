@@ -23,7 +23,6 @@ val generatedJniLibsPath = layout.buildDirectory
     .get()
     .asFile
     .absolutePath
-val generatedAndroidUniFfiFile = "$generatedJniLibsPath/${providers.gradleProperty("mishTargetAbi").orNull}/libmish_android_ffi.so"
 val generatedSingBoxJniPath = layout.buildDirectory
     .dir("generated/sing-box-jni")
     .get()
@@ -40,6 +39,7 @@ val targetAbi = providers.gradleProperty("mishTargetAbi").orNull
 if (targetAbi !in setOf("armeabi-v7a", "arm64-v8a")) {
     throw GradleException("mishTargetAbi must be one of the explicitly supported Android ABIs.")
 }
+val generatedAndroidUniFfiFile = "$generatedJniLibsPath/$targetAbi/libmish_android_ffi.so"
 
 // DEVICE-1 is the fixed product appliance target: Android 11 / API 30.
 // Keep the Android package floor and Rust/NDK platform floor on one authority.
@@ -97,13 +97,11 @@ val buildHostUniFfi = tasks.register<Exec>("buildHostUniFfi") {
 
 val generateUniFfiBindings = tasks.register<Exec>("generateUniFfiBindings") {
     dependsOn(buildHostUniFfi)
+    inputs.files(rustWorkspaceInputs)
     inputs.file(hostLibraryPath)
     inputs.file("$repoRootPath/crates/android-ffi/uniffi.toml")
     inputs.property("language", "kotlin")
     outputs.file(generatedUniFfiFile)
-    doFirst {
-        File(generatedUniFfiPath).deleteRecursively()
-    }
     workingDir(repoRootPath)
     commandLine(
         "cargo",
@@ -133,9 +131,6 @@ val buildAndroidUniFfi = tasks.register<Exec>("buildAndroidUniFfi") {
     inputs.property("androidMinSdk", androidMinSdk)
     inputs.property("mishTargetAbi", targetAbi)
     outputs.file(generatedAndroidUniFfiFile)
-    doFirst {
-        File(generatedJniLibsPath).deleteRecursively()
-    }
     workingDir(repoRootPath)
     commandLine(
         "cargo",
