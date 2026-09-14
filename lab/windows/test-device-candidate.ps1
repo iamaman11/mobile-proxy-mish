@@ -51,10 +51,13 @@ try {
     if (($output -join ' ') -notmatch 'MISH_DEVICE_CANDIDATE_FAILURE\|DIGEST_MISMATCH\|') {
         throw "Tampered candidate failed for the wrong reason: $($output -join ' ')"
     }
-    $global:LASTEXITCODE = 0
 
     Write-Host 'Device candidate verification contract passed.'
 }
 finally {
     Remove-Item -Recurse -Force -LiteralPath $root -ErrorAction SilentlyContinue
 }
+
+# The negative subprocess is expected to fail and leaves $LASTEXITCODE non-zero.
+# Make the self-test's own successful contract explicit for GitHub Actions.
+exit 0
