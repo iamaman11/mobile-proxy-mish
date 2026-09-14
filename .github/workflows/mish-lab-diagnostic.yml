@@ -13,8 +13,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  inspect:
-    name: Read-only credential authority inspect
+  snapshot:
+    name: Read-only DEVICE-1 snapshot
     if: github.actor == 'iamaman11'
     runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
     timeout-minutes: 10
@@ -26,38 +26,40 @@ jobs:
           persist-credentials: false
           clean: true
 
-      - name: Inspect credential authority without secrets
+      - name: Verify physical DEVICE-1 prerequisites
+        shell: powershell
+        run: |
+          $adb = 'C:\mish-lab\tools\android-sdk\platform-tools\adb.exe'
+          $pwsh = 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe'
+          if (-not (Test-Path -LiteralPath $adb -PathType Leaf)) { throw "Canonical ADB is missing: $adb" }
+          if (-not (Test-Path -LiteralPath $pwsh -PathType Leaf)) { throw "Canonical LAB PowerShell is missing: $pwsh" }
+          $deviceRows = @(& $adb devices | Where-Object { $_ -match '^\S+\s+device\s*$' })
+          if ($LASTEXITCODE -ne 0 -or $deviceRows.Count -ne 1) { throw 'Exactly one authorized DEVICE-1 is required.' }
+          $api = (& $adb shell getprop ro.build.version.sdk).Trim()
+          $abi = (& $adb shell getprop ro.product.cpu.abi).Trim()
+          if ($api -ne '30') { throw "DEVICE-1 API must be 30; observed $api" }
+          if ($abi -ne 'armeabi-v7a') { throw "DEVICE-1 ABI must be armeabi-v7a; observed $abi" }
+          Write-Host 'DEVICE_1_PREREQUISITES=PASS'
+
+      - name: Collect and print one-shot diagnostic
         shell: powershell
         run: |
           $pwsh = 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe'
-          $adb = 'C:\mish-lab\tools\android-sdk\platform-tools\adb.exe'
-          if (-not (Test-Path -LiteralPath $pwsh -PathType Leaf)) { throw 'canonical pwsh missing' }
-          if (-not (Test-Path -LiteralPath $adb -PathType Leaf)) { throw 'canonical adb missing' }
-          & $pwsh -NoLogo -NoProfile -Command @'
-          $ErrorActionPreference = 'Stop'
-          Import-Module '.\lab\windows\CredentialProvisioning.psm1' -Force
-          $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-          $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
-          $store = Join-Path $localAppData 'MobileProxyMish\ClientCredentials\external-proxy.v1.dpapi'
-          Write-Host "RUNNER_IDENTITY=$identity"
-          Write-Host "CREDENTIAL_STORE_PRESENT=$([bool](Test-Path -LiteralPath $store -PathType Leaf))"
-          try {
-              $lease = Open-MishExternalProxyCredentialLease -StorePath $store
-              Write-Host 'CREDENTIAL_LEASE_OPEN=PASS'
-              Write-Host "CREDENTIAL_VERSION=$($lease.CredentialVersion)"
-          }
-          catch [System.IO.FileNotFoundException] {
-              Write-Host 'CREDENTIAL_LEASE_OPEN=FAIL'
-              Write-Host 'CREDENTIAL_LEASE_REASON=STORE_ABSENT'
-          }
-          catch [System.IO.InvalidDataException] {
-              Write-Host 'CREDENTIAL_LEASE_OPEN=FAIL'
-              Write-Host 'CREDENTIAL_LEASE_REASON=DPAPI_OR_ENVELOPE_INVALID'
-          }
-          catch {
-              Write-Host 'CREDENTIAL_LEASE_OPEN=FAIL'
-              Write-Host 'CREDENTIAL_LEASE_REASON=OTHER'
-          }
-          '@
-          Write-Host "PRODUCTION_PACKAGE_PRESENT=$([bool]((& $adb shell pm path com.mobileproxymish.app 2>$null) -match '^package:'))"
-          Write-Host "DEBUG_PACKAGE_PRESENT=$([bool]((& $adb shell pm path com.mobileproxymish.app.debug 2>$null) -match '^package:'))"
+          $evidencePath = Join-Path $env:RUNNER_TEMP 'mish-device-diagnostic-v1.json'
+          & $pwsh -NoLogo -NoProfile -File '.\lab\windows\collect-device-diagnostic.ps1' `
+            -AdbPath 'C:\mish-lab\tools\android-sdk\platform-tools\adb.exe' `
+            -PackageName 'com.mobileproxymish.app.debug' `
+            -EvidencePath $evidencePath
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host 'MISH_DIAGNOSTIC_JSON_BEGIN'
+          Get-Content -Raw -LiteralPath $evidencePath
+          Write-Host 'MISH_DIAGNOSTIC_JSON_END'
+
+      - name: Upload bounded diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mish-device-diagnostic-v1
+          path: ${{ runner.temp }}\mish-device-diagnostic-v1.json
+          if-no-files-found: warn
+          retention-days: 30
