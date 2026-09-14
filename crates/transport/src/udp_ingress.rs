@@ -3,7 +3,7 @@
 //! This is a transport primitive, not a raw public UDP relay. The Proxy Serving owner must
 //! authorize every datagram. Product composition deliberately does not construct it yet.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::Entry};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -235,10 +235,11 @@ fn udp_loop(
         };
         let now = Instant::now();
         let mut state = associations.lock().unwrap_or_else(|p| p.into_inner());
-        if !state.contains_key(&authorized.association) && state.len() >= budget.max_associations {
-            continue;
-        }
-        if !state.contains_key(&authorized.association) {
+        let at_capacity = state.len() >= budget.max_associations;
+        if let Entry::Vacant(entry) = state.entry(authorized.association) {
+            if at_capacity {
+                continue;
+            }
             let Some(association) = new_association(
                 peer,
                 authorized.loopback_backend_port,
@@ -247,7 +248,7 @@ fn udp_loop(
             ) else {
                 continue;
             };
-            state.insert(authorized.association, association);
+            entry.insert(association);
         }
         let Some(association) = state.get_mut(&authorized.association) else {
             continue;
