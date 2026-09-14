@@ -127,6 +127,10 @@ def main() -> None:
         "DEVICE-1 API must be 30",
         "DEVICE-1 ABI must be armeabi-v7a",
         "Verify, stable-sign, and install without rebuilding",
+        "merge-multiple: false",
+        "needs.resolve.outputs.artifact_name",
+        "DOWNLOAD_LAYOUT_MISMATCH",
+        "-CandidateDirectory $candidateDirectory",
         "Hosted build reused: **YES**",
         "Local Gradle/Rust/NDK build: **NO**",
         "Portable PowerShell prerequisite: **NO**",
@@ -134,6 +138,7 @@ def main() -> None:
         require(consumer, required, "protected physical candidate consumer contract drifted")
     for forbidden in (
         "pwsh.exe",
+        '-CandidateDirectory "$env:RUNNER_TEMP\\mish-device-candidate"',
         "gradle --no-daemon",
         "cargo build",
         "cargo ndk",

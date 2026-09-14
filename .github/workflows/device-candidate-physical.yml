@@ -30,6 +30,7 @@ concurrency:
 jobs:
   contract:
     name: Device Candidate Consumer Contract
+    if: ${{ github.event_name == 'pull_request' }}
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
@@ -63,7 +64,6 @@ jobs:
   resolve:
     name: Resolve exact successful candidate
     if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected == true }}
-    needs: contract
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -245,13 +245,21 @@ jobs:
           github-token: ${{ github.token }}
           repository: iamaman11/mobile-proxy-mish
           run-id: ${{ needs.resolve.outputs.run_id }}
+          merge-multiple: false
 
       - name: Verify, stable-sign, and install without rebuilding
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
+          $candidateDirectory = Join-Path `
+            "$env:RUNNER_TEMP\mish-device-candidate" `
+            '${{ needs.resolve.outputs.artifact_name }}'
+          $manifestPath = Join-Path $candidateDirectory 'candidate.json'
+          if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            throw 'MISH_DEVICE_CANDIDATE_FAILURE|DOWNLOAD_LAYOUT_MISMATCH|Resolved artifact directory does not contain candidate.json.'
+          }
           $receipt = & '.\lab\windows\install-device-candidate.ps1' `
-            -CandidateDirectory "$env:RUNNER_TEMP\mish-device-candidate" `
+            -CandidateDirectory $candidateDirectory `
             -ExpectedPrNumber '${{ needs.resolve.outputs.pr_number }}' `
             -ExpectedSourceSha '${{ needs.resolve.outputs.source_sha }}' `
             -AdbPath $env:ADB_EXE `
