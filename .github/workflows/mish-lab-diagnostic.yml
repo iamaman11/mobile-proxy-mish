@@ -55,11 +55,34 @@ jobs:
           Get-Content -Raw -LiteralPath $evidencePath
           Write-Host 'MISH_DIAGNOSTIC_JSON_END'
 
+      - name: Collect bounded loopback CONNECT attribution
+        shell: powershell
+        run: |
+          $pwsh = 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe'
+          $evidencePath = Join-Path $env:RUNNER_TEMP 'mish-loopback-connect-diagnostic-v1.json'
+          & $pwsh -NoLogo -NoProfile -File '.\lab\windows\diagnose-loopback-connect.ps1' `
+            -AdbPath 'C:\mish-lab\tools\android-sdk\platform-tools\adb.exe' `
+            -PackageName 'com.mobileproxymish.app.debug' `
+            -EvidencePath $evidencePath
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host 'MISH_LOOPBACK_DIAGNOSTIC_JSON_BEGIN'
+          Get-Content -Raw -LiteralPath $evidencePath
+          Write-Host 'MISH_LOOPBACK_DIAGNOSTIC_JSON_END'
+
       - name: Upload bounded diagnostic evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: mish-device-diagnostic-v1
           path: ${{ runner.temp }}\mish-device-diagnostic-v1.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload bounded loopback CONNECT evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mish-loopback-connect-diagnostic-v1
+          path: ${{ runner.temp }}\mish-loopback-connect-diagnostic-v1.json
           if-no-files-found: warn
           retention-days: 30
