@@ -157,6 +157,7 @@ $payloadMatch = [regex]::Match($contentOutput, 'payload_b64=(?<payload>[A-Za-z0-
 if (-not $payloadMatch.Success) {
     Stop-MishDiagnostic 'SNAPSHOT_INVALID' 'Android diagnostics bridge returned no V1 payload.'
 }
+$payloadBytes = $null
 try {
     $payloadBytes = [Convert]::FromBase64String($payloadMatch.Groups['payload'].Value)
     $androidJson = [Text.Encoding]::UTF8.GetString($payloadBytes)
