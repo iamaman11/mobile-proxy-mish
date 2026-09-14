@@ -26,15 +26,20 @@ jobs:
           persist-credentials: false
           clean: true
 
-      - name: Verify physical LAB identity
+      - name: Verify physical DEVICE-1 prerequisites
         shell: powershell
         run: |
+          $adb = 'C:\mish-lab\tools\android-sdk\platform-tools\adb.exe'
           $pwsh = 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe'
-          if (-not (Test-Path -LiteralPath $pwsh -PathType Leaf)) {
-            throw "Canonical LAB PowerShell is missing: $pwsh"
-          }
-          & $pwsh -NoLogo -NoProfile -File '.\lab\windows\labctl.ps1' host inspect -PhysicalLab
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path -LiteralPath $adb -PathType Leaf)) { throw "Canonical ADB is missing: $adb" }
+          if (-not (Test-Path -LiteralPath $pwsh -PathType Leaf)) { throw "Canonical LAB PowerShell is missing: $pwsh" }
+          $deviceRows = @(& $adb devices | Where-Object { $_ -match '^\S+\s+device\s*$' })
+          if ($LASTEXITCODE -ne 0 -or $deviceRows.Count -ne 1) { throw 'Exactly one authorized DEVICE-1 is required.' }
+          $api = (& $adb shell getprop ro.build.version.sdk).Trim()
+          $abi = (& $adb shell getprop ro.product.cpu.abi).Trim()
+          if ($api -ne '30') { throw "DEVICE-1 API must be 30; observed $api" }
+          if ($abi -ne 'armeabi-v7a') { throw "DEVICE-1 ABI must be armeabi-v7a; observed $abi" }
+          Write-Host 'DEVICE_1_PREREQUISITES=PASS'
 
       - name: Collect and print one-shot diagnostic
         shell: powershell
