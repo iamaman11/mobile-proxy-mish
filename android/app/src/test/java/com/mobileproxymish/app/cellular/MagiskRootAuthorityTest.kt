@@ -66,6 +66,37 @@ class MagiskRootAuthorityTest {
     }
 
     @Test
+    fun prematureNonZeroSuExitPreservesDenialEvidence() {
+        assertEquals(
+            RootProcessResult(
+                exitCode = 1,
+                stdout = "permission denied\n",
+            ),
+            SuProcess.prematureExitResult(
+                exitCode = 1,
+                stdout = "permission denied\n",
+                outputComplete = true,
+            ),
+        )
+    }
+
+    @Test
+    fun prematureZeroSuExitNeverClaimsCommandCompletion() {
+        assertEquals(
+            RootProcessResult(
+                exitCode = -1,
+                stdout = "",
+                outputComplete = false,
+            ),
+            SuProcess.prematureExitResult(
+                exitCode = 0,
+                stdout = "0\n",
+                outputComplete = true,
+            ),
+        )
+    }
+
+    @Test
     fun incompleteIdentityOutputNeverGrantsRootAuthority() {
         val process = FakeProcess(
             RootProcessResult(0, "0\n", outputComplete = false),
