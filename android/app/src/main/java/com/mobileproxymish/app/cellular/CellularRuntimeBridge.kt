@@ -74,6 +74,18 @@ internal fun sameCellularOwnerGeneration(
     expected.state == current.state &&
     expected.admittedNetworkHandle == current.admittedNetworkHandle
 
+/** Only transport/incomplete authority states are expected to recover without operator action. */
+internal fun shouldRetryRootAuthority(status: RootAuthorityStatus): Boolean = when (status) {
+    RootAuthorityStatus.Unavailable,
+    RootAuthorityStatus.Incomplete,
+    -> true
+
+    RootAuthorityStatus.Ready,
+    RootAuthorityStatus.InteractiveGrantRequired,
+    RootAuthorityStatus.Denied,
+    -> false
+}
+
 /**
  * One process-generation bridge between Android observations, the Rust natural owner,
  * and the narrow root policy-routing adapter that realizes an already owner-admitted
@@ -309,7 +321,9 @@ class CellularRuntimeBridge(
             return
         }
 
-        if (policyResult is CellularRootPolicyResult.AuthorityUnavailable) {
+        if (policyResult is CellularRootPolicyResult.AuthorityUnavailable &&
+            shouldRetryRootAuthority(policyResult.status)
+        ) {
             scheduleRootAuthorityRecovery(activeController)
         } else {
             resetRootAuthorityRecovery()
@@ -447,7 +461,11 @@ class CellularRuntimeBridge(
 
         mutableSnapshot.value = when (result) {
             is CellularRootPolicyResult.AuthorityUnavailable -> {
-                scheduleRootAuthorityRecovery(activeController)
+                if (shouldRetryRootAuthority(result.status)) {
+                    scheduleRootAuthorityRecovery(activeController)
+                } else {
+                    resetRootAuthorityRecovery()
+                }
                 CellularRuntimeSnapshot.BoundaryUnavailable(
                     CellularBoundaryFailure.RootAuthorityUnavailable,
                 )
@@ -514,34 +532,38 @@ class CellularRuntimeBridge(
             )
         }
         return when (val result = rootPolicy.failClosed()) {
-        is CellularRootPolicyResult.AuthorityUnavailable -> {
-            controller?.let(::scheduleRootAuthorityRecovery)
-            CellularRuntimeSnapshot.BoundaryUnavailable(
-                CellularBoundaryFailure.RootAuthorityUnavailable,
-            )
-        }
-
-        is CellularRootPolicyResult.FailClosed -> {
-            resetRootAuthorityRecovery()
-            when {
-                result.reason != null -> CellularRuntimeSnapshot.BoundaryUnavailable(
-                    CellularBoundaryFailure.RootPolicyUnavailable(result.reason),
-                )
-
-                preserveOnCleanFailClosed -> null
-                preferredFailure != null -> CellularRuntimeSnapshot.BoundaryUnavailable(preferredFailure)
-                else -> CellularRuntimeSnapshot.BoundaryUnavailable(
-                    CellularBoundaryFailure.RootPolicyReconcileFailed,
+            is CellularRootPolicyResult.AuthorityUnavailable -> {
+                if (shouldRetryRootAuthority(result.status)) {
+                    controller?.let(::scheduleRootAuthorityRecovery)
+                } else {
+                    resetRootAuthorityRecovery()
+                }
+                CellularRuntimeSnapshot.BoundaryUnavailable(
+                    CellularBoundaryFailure.RootAuthorityUnavailable,
                 )
             }
-        }
 
-        CellularRootPolicyResult.Enforced -> {
-            resetRootAuthorityRecovery()
-            preferredFailure?.let {
-                CellularRuntimeSnapshot.BoundaryUnavailable(it)
+            is CellularRootPolicyResult.FailClosed -> {
+                resetRootAuthorityRecovery()
+                when {
+                    result.reason != null -> CellularRuntimeSnapshot.BoundaryUnavailable(
+                        CellularBoundaryFailure.RootPolicyUnavailable(result.reason),
+                    )
+
+                    preserveOnCleanFailClosed -> null
+                    preferredFailure != null -> CellularRuntimeSnapshot.BoundaryUnavailable(preferredFailure)
+                    else -> CellularRuntimeSnapshot.BoundaryUnavailable(
+                        CellularBoundaryFailure.RootPolicyReconcileFailed,
+                    )
+                }
             }
-        }
+
+            CellularRootPolicyResult.Enforced -> {
+                resetRootAuthorityRecovery()
+                preferredFailure?.let {
+                    CellularRuntimeSnapshot.BoundaryUnavailable(it)
+                }
+            }
         }
     }
 
