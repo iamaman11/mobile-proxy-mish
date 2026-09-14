@@ -204,28 +204,30 @@ if ($null -ne $meshAddress) {
 $lease = $null
 $credentialLeaseAvailable = $false
 $credentialStorePath = $null
-try {
-    Import-Module (Join-Path $PSScriptRoot 'CredentialProvisioning.psm1') -Force
-    $credentialTempRoot = if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
-        $env:RUNNER_TEMP
-    } else {
-        $env:TEMP
+if ([bool]$android.credential.active) {
+    try {
+        Import-Module (Join-Path $PSScriptRoot 'CredentialProvisioning.psm1') -Force
+        $credentialTempRoot = if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
+            $env:RUNNER_TEMP
+        } else {
+            $env:TEMP
+        }
+        if ([string]::IsNullOrWhiteSpace($credentialTempRoot)) {
+            throw 'A temporary directory is unavailable for the bounded credential lease.'
+        }
+        $credentialStorePath = Join-Path `
+            ([IO.Path]::GetFullPath($credentialTempRoot)) `
+            ('mish-diagnostic-credential-' + [Guid]::NewGuid().ToString('N') + '.dpapi')
+        [void](Invoke-MishExternalProxyCredentialProvisioning `
+            -AdbPath $AdbPath `
+            -PackageName $PackageName `
+            -StorePath $credentialStorePath)
+        $lease = Open-MishExternalProxyCredentialLease -StorePath $credentialStorePath
+        $credentialLeaseAvailable = $null -ne $lease
     }
-    if ([string]::IsNullOrWhiteSpace($credentialTempRoot)) {
-        throw 'A temporary directory is unavailable for the bounded credential lease.'
+    catch {
+        $credentialLeaseAvailable = $false
     }
-    $credentialStorePath = Join-Path `
-        ([IO.Path]::GetFullPath($credentialTempRoot)) `
-        ('mish-diagnostic-credential-' + [Guid]::NewGuid().ToString('N') + '.dpapi')
-    [void](Invoke-MishExternalProxyCredentialProvisioning `
-        -AdbPath $AdbPath `
-        -PackageName $PackageName `
-        -StorePath $credentialStorePath)
-    $lease = Open-MishExternalProxyCredentialLease -StorePath $credentialStorePath
-    $credentialLeaseAvailable = $null -ne $lease
-}
-catch {
-    $credentialLeaseAvailable = $false
 }
 
 $adbForwardPort = $null
@@ -260,6 +262,9 @@ finally {
         Remove-Item -LiteralPath $credentialStorePath -Force -ErrorAction SilentlyContinue
     }
 }
+
+$pidFinal = Invoke-MishAdbText -Arguments @('shell', 'pidof', $PackageName)
+$pidStable = $pidStable -and ($pidFinal -ceq $pidBefore)
 
 $classification = switch ($true) {
     (-not $pidStable) { 'INVALID_PROCESS_CHANGED_DURING_CAPTURE'; break }
