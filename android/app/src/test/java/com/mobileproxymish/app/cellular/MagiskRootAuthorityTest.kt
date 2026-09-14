@@ -1,6 +1,8 @@
 package com.mobileproxymish.app.cellular
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MagiskRootAuthorityTest {
@@ -79,6 +81,15 @@ class MagiskRootAuthorityTest {
         assertEquals(RootAuthorityStatus.InteractiveGrantRequired, authority.probe())
         assertEquals(RootAuthorityStatus.InteractiveGrantRequired, authority.probe())
         assertEquals(1, process.calls)
+    }
+
+    @Test
+    fun onlyTransientAuthorityStatesAreAutomaticallyRetried() {
+        assertTrue(shouldRetryRootAuthority(RootAuthorityStatus.Unavailable))
+        assertTrue(shouldRetryRootAuthority(RootAuthorityStatus.Incomplete))
+        assertFalse(shouldRetryRootAuthority(RootAuthorityStatus.Ready))
+        assertFalse(shouldRetryRootAuthority(RootAuthorityStatus.Denied))
+        assertFalse(shouldRetryRootAuthority(RootAuthorityStatus.InteractiveGrantRequired))
     }
 
     @Test
