@@ -4,16 +4,38 @@ This document defines the repository-owned execution boundary for E4. It operati
 
 ## Current scope
 
-The repository provides two bounded commands:
+The repository provides bounded acceptance commands:
 
 ```text
+labctl e3 accept
 labctl e4 plan
 labctl e4 finalize
 ```
 
 They are acceptance coordination primitives. They do not build Android, mutate Cloudflare desired state, configure Magisk policy, own runtime readiness, or create a daemon/scheduler/status database.
 
-No E4 physical acceptance has been executed merely because these commands or their hosted contract tests exist.
+No E3/E4 physical acceptance has been executed merely because these commands or their hosted contract tests exist.
+
+## E3 acceptance handoff
+
+Physical `e3 execute` remains the owner of the phone positive -> cellular loss -> fresh recovery ceremony. After that exact command returns `e3_pass=true`, the trusted Windows/protected-main workflow projects the result through:
+
+```text
+labctl e3 accept
+```
+
+The command revalidates the still-identical PRODUCT APK, the same-source/same-signing E3 harness and the exact physical execution result, then emits:
+
+```text
+mish.lab.e3-acceptance/v1
+result = PASS
+e3_pass = true
+scenario = full-root-toggle
+```
+
+The receipt contains only bounded identity/evidence facts: execution-adapter Git SHA/run, exact RC tag/source/ABI/APK SHA-256/signing certificate, exact harness run/artifact/digests and instrumentation identity. It contains no device serial, SIM identity, public carrier IP, local path or raw device output.
+
+A PHONE-ON readiness receipt is not E3 acceptance and cannot satisfy this handoff.
 
 ## Phase 1 — plan
 
@@ -21,11 +43,12 @@ No E4 physical acceptance has been executed merely because these commands or the
 
 ```text
 PASS mish.lab.release-verification/v1 receipt
+PASS mish.lab.e3-acceptance/v1 receipt for the exact same RC bytes
 exact still-identical PRODUCT APK bytes
 pinned lab/windows/external-client-fixture.json
 ```
 
-It re-hashes the PRODUCT APK and fixture, validates the M1 TCP-only proxy surface, binds the exact RC source/APK/signing identity, and emits:
+It re-hashes the PRODUCT APK, the E3 acceptance receipt and fixture, validates that E3 accepted the exact same tag/source/ABI/APK SHA-256/signing identity, validates the M1 TCP-only proxy surface, and emits:
 
 ```text
 mish.lab.e4-session/v1
@@ -34,6 +57,8 @@ e4_pass = false
 no_evidence_escalation = true
 ```
 
+The E4 session stores the SHA-256 of the exact E3 acceptance receipt. `e4 finalize` re-hashes that receipt again. Therefore a different RC, a readiness-only proof, a changed E3 receipt, or a changed PRODUCT APK fails closed before E4 acceptance.
+
 The session contains the canonical mandatory E4 scenario matrix. `plan` cannot emit E4 PASS.
 
 Example:
@@ -41,6 +66,7 @@ Example:
 ```powershell
 .\lab\windows\labctl.ps1 e4 plan `
   -VerificationReceipt C:\bounded\release-verification.json `
+  -E3AcceptancePath C:\bounded\e3-acceptance.json `
   -ReceiptPath C:\bounded\e4-session.json
 ```
 
@@ -84,7 +110,7 @@ The known Camoufox/Playwright SOCKS5 fixture compatibility finding does not auth
 
 ## Phase 2 — physical observations
 
-A bounded physical executor produces one `mish.lab.e4-observations/v1` document bound to the exact SHA-256 of the prepared E4 session. The observation document is ephemeral input, not durable public evidence.
+A bounded physical executor produces one `mish.lab.e4-observations/v1` document bound to the exact SHA-256 of the prepared E4 session. Because the session includes the exact E3 acceptance digest, the observation set is transitively tied to the same E3-accepted immutable RC. The observation document is ephemeral input, not durable public evidence.
 
 Each canonical scenario appears exactly once with one status:
 
@@ -147,7 +173,7 @@ Force Stop is deliberately preserved as the Android platform/user override. E4 t
 
 ## Phase 3 — finalize
 
-`e4 finalize` is the only command that can produce E4 acceptance evidence. It requires the accepted Windows x64 boundary on protected `main`, re-hashes the session-bound PRODUCT APK and fixture again, verifies the exact observation/session/release identity, rejects missing/duplicate/unknown scenarios, and enforces the measurable facts above.
+`e4 finalize` is the only command that can produce E4 acceptance evidence. It requires the accepted Windows x64 boundary on protected `main`, re-hashes the session-bound PRODUCT APK, E3 acceptance receipt and fixture again, verifies the exact observation/session/release identity, rejects missing/duplicate/unknown scenarios, and enforces the measurable facts above.
 
 Example:
 
@@ -183,21 +209,26 @@ selected non-sensitive acceptance measurements/booleans
 completion timestamp
 ```
 
-It intentionally does not copy arbitrary observation fields. Password/token-shaped data, public carrier IPs, DNS addresses, device/SIM identifiers, local filesystem paths and raw vendor diagnostics must remain absent from durable public evidence.
+The exact E3 acceptance receipt remains session authority and is revalidated before finalization; the E4 observation/session digest chain prevents substituting another E3 result underneath an already prepared ceremony.
+
+E4 durable evidence intentionally does not copy arbitrary observation fields. Password/token-shaped data, public carrier IPs, DNS addresses, device/SIM identifiers, local filesystem paths and raw vendor diagnostics must remain absent from durable public evidence.
 
 ## Hosted contract boundary
 
-`.github/workflows/e4-contract.yml` runs only deterministic hosted Windows contract tests on pull requests and pushes to `main`. It has no self-hosted runner, no manual physical trigger, and no path that can claim physical E4 acceptance.
+`.github/workflows/e4-contract.yml` runs only deterministic hosted Windows contract tests on pull requests and pushes to `main`. It has no self-hosted runner, no manual physical trigger, and no path that can claim physical E3 or E4 acceptance.
 
 The hosted contract proves fail-closed behavior including:
 
 ```text
-plan cannot claim PASS
+E3 acceptance projection rejects wrong execution identity and changed APK bytes
+E4 plan rejects an E3 receipt for different PRODUCT bytes
+E4 plan cannot claim PASS
 all 25 scenarios are mandatory
 299 seconds cannot satisfy the 5-minute gate
 9/10 post-idle sessions cannot satisfy load acceptance
 wrong session identity fails
 changed APK bytes fail
+changed E3 acceptance receipt fails
 untrusted refs fail finalization
 required external client absence becomes BLOCKED/exit 3
 mandatory scenario failure becomes FAIL/exit 2
@@ -206,7 +237,7 @@ durable evidence does not copy secret/privacy-shaped arbitrary input
 
 ## Physical execution remains later
 
-The physical ceremony is intentionally not run as part of introducing this coordinator. After a fresh immutable PRODUCT RC exists and E3 passes on those exact bytes, the Windows/local physical adapter may collect the E4 observations against the same RC and invoke `e4 finalize`.
+The physical ceremony is intentionally not run as part of introducing this coordinator. After a fresh immutable PRODUCT RC exists, formal E3 must pass and emit `mish.lab.e3-acceptance/v1`; only then may `e4 plan` prepare the Windows/full-stack ceremony for those same bytes.
 
 Until that later physical ceremony completes with PASS:
 
