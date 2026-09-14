@@ -238,6 +238,17 @@ class CellularRuntimeBridge(
 
         if (closed.get()) return
 
+        if (event is CellularNetworkEvent.Observed &&
+            event.isCellular && event.hasInternet && event.isValidated && event.isNotVpn &&
+            admission.state == CellularAdmissionState.ADMITTED &&
+            admission.lastSequence == event.sequence.toULong()
+        ) {
+            CellularRecoveryTelemetry.emit(
+                stage = CellularRecoveryStage.CELLULAR_VALIDATED,
+                ownerSequence = admission.lastSequence,
+            )
+        }
+
         val admittedHandle = admission.admittedNetworkHandle
         var interfaceName = interfaceHints.interfaceFor(admittedHandle)
         if (interfaceName == null && admittedHandle != null) {
@@ -284,6 +295,12 @@ class CellularRuntimeBridge(
             return
         }
 
+        val ownerSequence = admission.lastSequence
+        CellularRecoveryTelemetry.emit(
+            stage = CellularRecoveryStage.POLICY_EXECUTOR_STARTED,
+            ownerSequence = ownerSequence,
+        )
+        val drainStartedNanos = System.nanoTime()
         val quiesced = try {
             activeController.awaitRootPolicyQuiesced(EFFECT_DRAIN_TIMEOUT_MS.toULong())
         } catch (_: LinkageError) {
@@ -291,6 +308,16 @@ class CellularRuntimeBridge(
         } catch (_: Exception) {
             false
         }
+        CellularRecoveryTelemetry.emit(
+            stage = CellularRecoveryStage.ROOT_EFFECT_DRAIN_COMPLETED,
+            ownerSequence = ownerSequence,
+            elapsedNanos = System.nanoTime() - drainStartedNanos,
+            detail = if (quiesced) {
+                CellularRecoveryDetail.QUIESCED
+            } else {
+                CellularRecoveryDetail.DRAIN_FAILED
+            },
+        )
         if (!quiesced) {
             mutableSnapshot.value = CellularRuntimeSnapshot.BoundaryUnavailable(
                 CellularBoundaryFailure.RootPolicyReconcileFailed,
@@ -298,9 +325,16 @@ class CellularRuntimeBridge(
             return
         }
 
+        val reconcileStartedNanos = System.nanoTime()
         val policyResult = rootPolicy.reconcile(
             admitted = admission.state == CellularAdmissionState.ADMITTED,
             interfaceName = interfaceName,
+        )
+        CellularRecoveryTelemetry.emit(
+            stage = CellularRecoveryStage.ROOT_RECONCILE_COMPLETED,
+            ownerSequence = ownerSequence,
+            elapsedNanos = System.nanoTime() - reconcileStartedNanos,
+            policyResult = policyResult,
         )
 
         val after = currentAdmissionOrNull(activeController)
@@ -324,7 +358,7 @@ class CellularRuntimeBridge(
         if (policyResult is CellularRootPolicyResult.AuthorityUnavailable &&
             shouldRetryRootAuthority(policyResult.status)
         ) {
-            scheduleRootAuthorityRecovery(activeController)
+            scheduleRootAuthorityRecovery(activeController, ownerSequence)
         } else {
             resetRootAuthorityRecovery()
         }
@@ -345,6 +379,11 @@ class CellularRuntimeBridge(
                     false
                 }
                 if (authorized) {
+                    CellularRecoveryTelemetry.emit(
+                        stage = CellularRecoveryStage.ROOT_POLICY_AUTHORIZED,
+                        ownerSequence = sequence,
+                        detail = CellularRecoveryDetail.AUTHORIZED,
+                    )
                     CellularRuntimeSnapshot.OwnerSnapshot(admission)
                 } else {
                     snapshotForFailClosed(
@@ -376,9 +415,18 @@ class CellularRuntimeBridge(
         }
     }
 
-    private fun scheduleRootAuthorityRecovery(activeController: CellularController) {
+    private fun scheduleRootAuthorityRecovery(
+        activeController: CellularController,
+        ownerSequence: ULong? = null,
+    ) {
         if (closed.get() || !rootRecoveryPending.compareAndSet(false, true)) return
         val delayMs = rootRecoveryBackoff.nextDelayMs()
+        CellularRecoveryTelemetry.emit(
+            stage = CellularRecoveryStage.ROOT_AUTHORITY_BACKOFF,
+            ownerSequence = ownerSequence,
+            detail = CellularRecoveryDetail.BACKOFF_SCHEDULED,
+            backoffMs = delayMs,
+        )
         try {
             rootRecoveryScheduler.schedule(
                 {
@@ -462,7 +510,7 @@ class CellularRuntimeBridge(
         mutableSnapshot.value = when (result) {
             is CellularRootPolicyResult.AuthorityUnavailable -> {
                 if (shouldRetryRootAuthority(result.status)) {
-                    scheduleRootAuthorityRecovery(activeController)
+                    scheduleRootAuthorityRecovery(activeController, admission.lastSequence)
                 } else {
                     resetRootAuthorityRecovery()
                 }
@@ -534,7 +582,7 @@ class CellularRuntimeBridge(
         return when (val result = rootPolicy.failClosed()) {
             is CellularRootPolicyResult.AuthorityUnavailable -> {
                 if (shouldRetryRootAuthority(result.status)) {
-                    controller?.let(::scheduleRootAuthorityRecovery)
+                    controller?.let { scheduleRootAuthorityRecovery(it) }
                 } else {
                     resetRootAuthorityRecovery()
                 }
