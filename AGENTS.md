@@ -17,6 +17,46 @@ Issue #134 is the current master PRODUCT/architecture/research plan for the hard
 
 One fresh baseline opens one bounded mutation window. Do not re-baseline after every write performed inside that same bounded window.
 
+## Product engineering rule — outcome before code
+
+MISH is developed as a **simple, reliable and efficient product**, not as a code-production exercise.
+
+Every proposed implementation, refactor, optimization, abstraction, test expansion or diagnostic mechanism must answer, before code is added:
+
+```text
+concrete product / operator problem
+ -> meaningful consequence if left unchanged
+ -> smallest safe change that resolves or measures it
+ -> measurable result / acceptance signal
+ -> preserved invariants
+ -> stop condition
+```
+
+Default decision rule:
+
+```text
+if current behavior already satisfies the accepted product requirement safely and with adequate measured margin
+ -> NO CHANGE is a valid and preferred outcome
+```
+
+Do not optimize for code volume, module count, number of tests, architectural novelty, abstraction purity, use of async/libsu/frameworks, or the highest benchmark/concurrency number. Those are not product success metrics by themselves.
+
+Prefer, in order:
+
+```text
+reuse an existing natural owner / mechanism
+ -> remove unnecessary work or duplication
+ -> make the smallest local correction
+ -> add one narrow typed adapter only when a real boundary requires it
+ -> add a new layer/process/framework only when a concrete ownership, privilege, lifecycle or failure-isolation fact proves it necessary
+```
+
+Tests, diagnostics, telemetry and refactors are support mechanisms. They are justified only by a concrete correctness, reliability, operability, maintainability or efficiency outcome. File size alone is not a defect. A broader rewrite is never justified merely because a different design looks cleaner.
+
+Efficiency means measured product efficiency: recovery latency, resource headroom, CPU/battery/thermal cost, bounded concurrency, operator effort and failure containment. Never trade away reliability or fail-closed behavior for a cosmetic simplification or benchmark win.
+
+When evidence is insufficient, obtain the smallest diagnostic fact needed; do not speculate and do not build a framework in anticipation of a hypothetical problem.
+
 ## Three integration levels
 
 Do not confuse a coding batch, a review boundary and a `main` merge boundary.
