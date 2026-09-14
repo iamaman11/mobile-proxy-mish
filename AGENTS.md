@@ -7,11 +7,13 @@ GitHub is the durable source of truth. Chat handoffs, copied status text, CI sum
 Before planning or mutating:
 
 1. read fresh protected `main`;
-2. read the current cross-component execution tracker (#86);
-3. inspect the current M1 integration PR and exact integration-trunk head;
-4. read the current slice PR when one exists;
+2. read the active execution checkpoint — currently Issue #135; if that checkpoint explicitly hands off to a successor, follow the successor rather than historical trackers;
+3. inspect the exact current working/integration head and milestone PR named by that checkpoint, when one exists;
+4. read the current slice PR/branch when one exists;
 5. read only the natural-owner issue/contracts and implementation files touched by that slice;
 6. distinguish current facts from historical evidence.
+
+Issue #134 is the current master PRODUCT/architecture/research plan for the hardening milestone. Issue #86 is historical M1 / E3-E4 / release-acceptance context and should be read only when a concrete acceptance or release-lineage fact requires it.
 
 One fresh baseline opens one bounded mutation window. Do not re-baseline after every write performed inside that same bounded window.
 
@@ -21,7 +23,7 @@ Do not confuse a coding batch, a review boundary and a `main` merge boundary.
 
 ### 1. Commit-only work
 
-While one bounded slice is still being implemented, work on a short-lived slice branch created from the current M1 integration-trunk head.
+While one bounded slice is still being implemented, work on a short-lived slice branch created from the exact current integration/working head named by the active checkpoint.
 
 A commit should be coherent and reviewable. A remote push is not an editor save point. When several repository files must change through GitHub, prefer:
 
@@ -38,7 +40,7 @@ Do not open a PR merely because one or two files changed.
 
 Open a slice PR only when that bounded slice is coherent enough to audit as a unit.
 
-The slice PR targets the M1 integration branch, **not `main`**. It should be opened review-ready (non-Draft) only after the implementation slice itself is coherent. Ordinary `opened` and `synchronize` events do not trigger the full CI workflow under the current CI contract.
+The slice PR targets the current integration branch named by the active checkpoint, **not `main`**, unless that checkpoint explicitly records a different review boundary. It should be opened review-ready (non-Draft) only after the implementation slice itself is coherent. Ordinary `opened` and `synchronize` events do not trigger the full CI workflow under the current CI contract.
 
 A normal slice contains at most:
 
@@ -48,7 +50,7 @@ A normal slice contains at most:
 
 If a proposed slice touches more than two semantic owners, or grows beyond roughly eight implementation/test files, split it unless the coupling is technically inseparable and the PR explains why.
 
-Exactly one implementation slice should be active at a time unless #86 records an explicit dependency reason for parallel slices.
+Exactly one implementation slice should be active at a time unless the active checkpoint records an explicit dependency reason for parallel slices.
 
 Each slice PR body must record:
 
@@ -63,13 +65,13 @@ NOT PROVEN
 FOLLOW-UP
 ```
 
-Detailed code review happens at the slice PR. After it is accepted, squash-merge it into the M1 integration branch and delete the short-lived slice branch. Updating the integration branch does not itself justify a `main` merge or LAB run.
+Detailed code review happens at the slice PR. After it is accepted, squash-merge it into the current integration branch and delete the short-lived slice branch. Updating the integration branch does not itself justify a `main` merge or LAB run.
 
 ### 3. Milestone PR to main
 
-The current M1 integration PR is a container for accepted slice results and the final cross-slice integration review. It is **not** the normal working diff for day-to-day implementation.
+The current milestone integration PR, when one exists, is a container for accepted slice results and the final cross-slice integration review. It is **not** the normal working diff for day-to-day implementation.
 
-Keep the M1 PR Draft while slices are still being assembled. Merge to `main` only when at least one of these is true:
+Keep the milestone PR Draft while slices are still being assembled. Merge to `main` only when at least one of these is true:
 
 - the coherent integration milestone is complete as far as E1/E2 can prove it;
 - the next missing fact can only be obtained from a main-only LAB/provider/release path;
@@ -85,52 +87,68 @@ The executor must not rely on remembering the whole integration diff.
 During implementation, the active working set is:
 
 ```text
-#86 current checkpoint
+active execution checkpoint (currently #135)
 + current slice PR/branch
++ only the referenced #134 finding/stage when needed
 + one natural-owner contract
 + one adapter boundary when required
 + direct tests
 ```
 
-Do not reload or reason line-by-line over the entire M1 PR unless performing final integration review.
+Do not reload or reason line-by-line over the entire milestone diff, the entire #86 history, or the entire #134 comment history unless a concrete integration/acceptance question requires it.
 
-After each slice merge, #86 must update `COMPLETED_SLICES`, `CURRENT_SLICE` and the current integration head/PR pointer. Slice PR descriptions are durable implementation checkpoints; chat memory is not.
+After each slice merge, the active checkpoint must update `COMPLETED_SLICES`, `CURRENT_STAGE`, `CURRENT_SLICE`, the current integration head/PR pointer, evidence, blocker and next decision. Slice PR descriptions are durable implementation checkpoints; chat memory is not.
 
 ## CI rule
 
 CI is deliberate evidence, not an edit loop.
 
-Ordinary PR `synchronize` pushes do **not** trigger the CI workflow. Full CI is allowed only through deliberate evidence boundaries:
+Ordinary PR `synchronize` pushes do **not** trigger CI. Full CI is allowed only through deliberate evidence boundaries:
 
 - `workflow_dispatch` on an exact meaningful checkpoint head when hosted build/test evidence is genuinely needed;
-- `ready_for_review` on the final M1 PR head;
+- `ready_for_review` on the final milestone PR head;
 - `push` to protected `main` after merge.
 
 A slice PR does not receive full CI merely because it exists. Use a manual exact-head checkpoint only when the slice has material build/integration uncertainty that cannot be closed by code review and direct tests alone, for example Rust/UniFFI/Gradle contract changes or another cross-language/toolchain boundary.
 
-Before the M1 merge, mark the M1 PR ready for review and require complete CI PASS on the exact PR head.
-
-If the M1 head changes after a ready-for-review validation, return it to Draft, accumulate the correction batch, then mark it ready again for a fresh exact-head CI.
+Before the milestone merge, mark the milestone PR ready for review and require complete CI PASS on the exact PR head. If that head changes after a ready-for-review validation, return it to Draft, accumulate the correction batch, then mark it ready again for a fresh exact-head CI.
 
 ## Main rule
 
 `main` is an accepted integration/evidence boundary. Do not use `main` as a scratch integration branch or progress ledger.
 
-Record intermediate progress in #86, slice PRs and the Draft M1 PR.
+Record intermediate progress in the active execution checkpoint, slice PRs and the Draft milestone PR.
+
+## Diagnostic / local-agent rule
+
+When a material implementation decision depends on a DEVICE-1, Windows, Cloudflare One Client/Mesh, ADB, Magisk/root, real network, timing, resource or other runtime fact that source code and hosted CI cannot establish correctly, do not guess.
+
+Use:
+
+```text
+exact missing fact
+ -> smallest bounded read-only/diagnostic local-agent experiment
+ -> exact baseline + sanitized evidence
+ -> implementation decision
+```
+
+The local/Windows agent is a diagnostic/physical executor, not a second product-state authority. Diagnostic evidence from a working branch/candidate does not become E3/E4 acceptance. Relevant sanitized conclusions must be written back to the active checkpoint or the appropriate natural-owner/master-plan issue.
+
+Never expose raw secrets, credentials, device identifiers, carrier public IPs or other excluded sensitive facts.
 
 ## Development LAB rule
 
-Development LAB consumes an exact accepted green PRODUCT `main` SHA. Never claim LAB evidence from a PR or integration branch.
+Formal Development LAB consumes an exact accepted green PRODUCT `main` SHA. Never claim LAB/E3/E4 evidence from a PR or integration branch.
 
-Do not create a new LAB candidate merely because a slice or M1 PR completed.
+Do not create a new LAB candidate merely because a slice or milestone PR completed.
 
-Run development LAB only when #86 identifies a physical fact that cannot be legitimately established by E1/E2 evidence and that fact is needed for the next implementation decision or acceptance gate.
+Run formal Development LAB only when the active checkpoint identifies a physical fact that cannot be legitimately established by E1/E2 evidence and that fact is needed for the next implementation decision or acceptance gate.
 
-Batch all code work that does not require that physical fact before crossing the `main -> LAB` boundary.
+Batch all independent code work that does not require that physical fact before crossing the `main -> LAB` boundary.
 
 ## Physical correction loop
 
-When LAB reveals a physical defect, use:
+When LAB or a bounded diagnostic run reveals a physical defect, use:
 
 ```text
 typed physical finding
@@ -138,10 +156,10 @@ typed physical finding
  -> slice review
  -> deliberate exact-head CI when required
  -> one milestone merge
- -> main-only LAB if the physical fact must be re-proven
+ -> main-only LAB re-proof when the stronger physical fact must be re-established
 ```
 
-Do not merge each attempted line-level correction separately. Never guess a physical fact merely to avoid LAB.
+Do not merge each attempted line-level correction separately. Never guess a physical fact merely to avoid a diagnostic or LAB checkpoint.
 
 ## Evidence law
 
@@ -165,14 +183,6 @@ Do not introduce a second VPN/TUN, second cellular owner, generic root shell, ge
 
 ## Current milestone policy
 
-Until #86 changes the gate, M1 still owns the same product scope:
+The live stage is defined by the active execution checkpoint, currently #135, under the #134 master plan. At the time of this policy update the current stage begins with bounded P0 recovery attribution before evidence-selected recovery/root optimization, followed by the ordered #134 P1-P11 work.
 
-```text
-production Android lifecycle
- -> durable external client credentials
- -> bounded exact-address Mesh ingress
- -> DNS/readiness implementation
- -> TCP-only client hardening
-```
-
-The scope stays in one eventual `main` milestone merge, but implementation/review is split into bounded slice PRs targeting the M1 integration branch.
+Issue #86 remains the historical M1 finish-line and E3/E4/release-acceptance record; it is not the ordinary current-stage working set.
