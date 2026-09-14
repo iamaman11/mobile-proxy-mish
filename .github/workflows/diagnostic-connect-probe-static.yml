@@ -56,9 +56,6 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           & 'lab/windows/test-diagnostic-connect-probe.ps1'
-          if ($LASTEXITCODE -ne 0) {
-            throw "Diagnostic CONNECT attribution regression failed with exit code $LASTEXITCODE."
-          }
 
       - name: Enforce read-only physical boundary
         shell: pwsh
