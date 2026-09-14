@@ -44,8 +44,19 @@ try {
     }
 
     Add-Content -Encoding UTF8 -LiteralPath $product -Value 'tampered'
-    $output = @(& $pwsh @arguments 2>&1)
-    if ($LASTEXITCODE -eq 0) {
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        # Windows PowerShell 5.1 turns native stderr into error records. The subprocess
+        # is expected to fail here, so capture its output/exit code without promoting
+        # that expected stderr to a terminating error in the parent self-test.
+        $ErrorActionPreference = 'Continue'
+        $output = @(& $pwsh @arguments 2>&1)
+        $negativeExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($negativeExitCode -eq 0) {
         throw 'Tampered candidate unexpectedly passed verification.'
     }
     if (($output -join ' ') -notmatch 'MISH_DEVICE_CANDIDATE_FAILURE\|DIGEST_MISMATCH\|') {

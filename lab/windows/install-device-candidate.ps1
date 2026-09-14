@@ -45,9 +45,14 @@ function Invoke-Native {
     }
 }
 
+function Test-FullyQualifiedWindowsPath {
+    param([Parameter(Mandatory)][string]$Path)
+    return $Path -match '^(?:[A-Za-z]:[\\/]|\\\\)'
+}
+
 function Resolve-Executable {
     param([Parameter(Mandatory)][string]$PathOrName)
-    if ([IO.Path]::IsPathFullyQualified($PathOrName)) {
+    if (Test-FullyQualifiedWindowsPath $PathOrName) {
         if (-not (Test-Path -LiteralPath $PathOrName -PathType Leaf)) {
             Stop-Candidate 'HOST_PREREQUISITE_MISSING' "Required executable is missing: $PathOrName"
         }

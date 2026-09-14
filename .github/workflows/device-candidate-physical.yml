@@ -38,8 +38,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Parse and exercise candidate verifier
-        shell: pwsh
+      - name: Parse and exercise candidate verifier on Windows PowerShell
+        shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           foreach ($path in @(
@@ -207,7 +207,6 @@ jobs:
     runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
     timeout-minutes: 15
     env:
-      LAB_POWERSHELL_EXE: C:\mish-lab\tools\powershell-7.6.6\pwsh.exe
       ADB_EXE: C:\mish-lab\tools\android-sdk\platform-tools\adb.exe
       ANDROID_SDK_ROOT: C:\mish-lab\tools\android-sdk
     steps:
@@ -217,11 +216,26 @@ jobs:
           persist-credentials: false
           clean: true
 
-      - name: Verify physical LAB identity
-        shell: cmd
+      - name: Verify physical DEVICE-1 prerequisites
+        shell: powershell
         run: |
-          "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".\lab\windows\labctl.ps1" host inspect -PhysicalLab
-          exit /b %ERRORLEVEL%
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path -LiteralPath $env:ADB_EXE -PathType Leaf)) {
+            throw "MISH_DEVICE_CANDIDATE_FAILURE|HOST_PREREQUISITE_MISSING|ADB is missing: $env:ADB_EXE"
+          }
+          $deviceRows = @(& $env:ADB_EXE devices | Where-Object { $_ -match '^\S+\s+device\s*$' })
+          if ($LASTEXITCODE -ne 0 -or $deviceRows.Count -ne 1) {
+            throw 'MISH_DEVICE_CANDIDATE_FAILURE|DEVICE_UNAVAILABLE|Exactly one authorized DEVICE-1 is required.'
+          }
+          $api = (& $env:ADB_EXE shell getprop ro.build.version.sdk).Trim()
+          $abi = (& $env:ADB_EXE shell getprop ro.product.cpu.abi).Trim()
+          if ($api -ne '30') {
+            throw "MISH_DEVICE_CANDIDATE_FAILURE|DEVICE_IDENTITY_MISMATCH|DEVICE-1 API must be 30; observed $api."
+          }
+          if ($abi -ne 'armeabi-v7a') {
+            throw "MISH_DEVICE_CANDIDATE_FAILURE|DEVICE_IDENTITY_MISMATCH|DEVICE-1 ABI must be armeabi-v7a; observed $abi."
+          }
+          Write-Host 'DEVICE-1 prerequisite check passed: one authorized API 30 / armeabi-v7a device.'
 
       - name: Download exact hosted candidate
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -233,10 +247,16 @@ jobs:
           run-id: ${{ needs.resolve.outputs.run_id }}
 
       - name: Verify, stable-sign, and install without rebuilding
-        shell: cmd
+        shell: powershell
         run: |
-          "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".\lab\windows\install-device-candidate.ps1" -CandidateDirectory "%RUNNER_TEMP%\mish-device-candidate" -ExpectedPrNumber "${{ needs.resolve.outputs.pr_number }}" -ExpectedSourceSha "${{ needs.resolve.outputs.source_sha }}" -AdbPath "%ADB_EXE%" -AndroidSdkRoot "%ANDROID_SDK_ROOT%" > "%RUNNER_TEMP%\mish-device-candidate-install.json"
-          exit /b %ERRORLEVEL%
+          $ErrorActionPreference = 'Stop'
+          $receipt = & '.\lab\windows\install-device-candidate.ps1' `
+            -CandidateDirectory "$env:RUNNER_TEMP\mish-device-candidate" `
+            -ExpectedPrNumber '${{ needs.resolve.outputs.pr_number }}' `
+            -ExpectedSourceSha '${{ needs.resolve.outputs.source_sha }}' `
+            -AdbPath $env:ADB_EXE `
+            -AndroidSdkRoot $env:ANDROID_SDK_ROOT
+          $receipt | Set-Content -Encoding UTF8 -LiteralPath "$env:RUNNER_TEMP\mish-device-candidate-install.json"
 
       - name: Publish physical handoff summary
         if: ${{ always() }}
@@ -248,13 +268,14 @@ jobs:
           >>"%GITHUB_STEP_SUMMARY%" echo - Artifact: `${{ needs.resolve.outputs.artifact_name }}`
           >>"%GITHUB_STEP_SUMMARY%" echo - Hosted build reused: **YES**
           >>"%GITHUB_STEP_SUMMARY%" echo - Local Gradle/Rust/NDK build: **NO**
+          >>"%GITHUB_STEP_SUMMARY%" echo - Portable PowerShell prerequisite: **NO**
           >>"%GITHUB_STEP_SUMMARY%" echo - Installed package: `com.mobileproxymish.app.debug`
 
       - name: Upload bounded install receipt
-        if: ${{ always() && hashFiles(format('{0}/mish-device-candidate-install.json', runner.temp)) != '' }}
+        if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: device-candidate-install-pr-${{ needs.resolve.outputs.pr_number }}-${{ needs.resolve.outputs.source_sha }}
           path: ${{ runner.temp }}\mish-device-candidate-install.json
-          if-no-files-found: error
+          if-no-files-found: ignore
           retention-days: 7
