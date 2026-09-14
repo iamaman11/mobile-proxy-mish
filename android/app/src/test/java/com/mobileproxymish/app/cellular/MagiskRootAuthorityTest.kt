@@ -56,6 +56,22 @@ class MagiskRootAuthorityTest {
     }
 
     @Test
+    fun provenNonZeroDenialIsTerminalEvenWhenOutputWasTruncated() {
+        val process = FakeProcess(
+            RootProcessResult(
+                exitCode = 1,
+                stdout = "",
+                outputComplete = false,
+            ),
+        )
+        val authority = MagiskRootAuthority.forTesting(process)
+
+        assertEquals(RootAuthorityStatus.Denied, authority.probe())
+        assertEquals(RootAuthorityStatus.Denied, authority.probe())
+        assertEquals(1, process.calls)
+    }
+
+    @Test
     fun unansweredInteractiveGrantIsTerminalForCurrentAppProcess() {
         val process = FakeProcess(RootProcessResult(-1, "", timedOut = true))
         val authority = MagiskRootAuthority.forTesting(process)
