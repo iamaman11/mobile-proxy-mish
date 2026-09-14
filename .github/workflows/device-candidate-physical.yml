@@ -1,0 +1,260 @@
+name: Device Candidate Physical
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/device-candidate-physical.yml'
+      - 'lab/windows/install-device-candidate.ps1'
+      - 'lab/windows/test-device-candidate.ps1'
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Integration PR number whose current exact head should be installed on DEVICE-1'
+        required: true
+        type: string
+      expected_head_sha:
+        description: 'Optional 40-hex guard for the expected PR head'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+concurrency:
+  group: device-candidate-physical
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    name: Device Candidate Consumer Contract
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Parse and exercise candidate verifier
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($path in @(
+            'lab/windows/install-device-candidate.ps1',
+            'lab/windows/test-device-candidate.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path),
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -ne 0) {
+              $errors | ForEach-Object { Write-Error "${path}: $($_.Message)" }
+              throw "PowerShell parse failed for $path."
+            }
+          }
+          ./lab/windows/test-device-candidate.ps1
+
+  resolve:
+    name: Resolve exact successful candidate
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected == true }}
+    needs: contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      pr_number: ${{ steps.candidate.outputs.pr_number }}
+      source_sha: ${{ steps.candidate.outputs.source_sha }}
+      head_branch: ${{ steps.candidate.outputs.head_branch }}
+      artifact_id: ${{ steps.candidate.outputs.artifact_id }}
+      artifact_name: ${{ steps.candidate.outputs.artifact_name }}
+      artifact_digest: ${{ steps.candidate.outputs.artifact_digest }}
+      run_id: ${{ steps.candidate.outputs.run_id }}
+    steps:
+      - name: Resolve current PR head and exact successful artifact
+        id: candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          if [[ -n "$EXPECTED_HEAD_SHA" ]]; then
+            [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          fi
+
+          ROOT="$RUNNER_TEMP/device-candidate-resolve"
+          mkdir -p "$ROOT"
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" > "$ROOT/pr.json"
+
+          readarray -t PR_META < <(python3 - "$ROOT/pr.json" "$GITHUB_REPOSITORY" "$PR_NUMBER" "$EXPECTED_HEAD_SHA" <<'PY'
+          import json
+          import re
+          import sys
+          path, repository, requested_pr, expected = sys.argv[1:]
+          pr = json.load(open(path, encoding='utf-8'))
+          head = str((pr.get('head') or {}).get('sha') or '')
+          head_branch = str((pr.get('head') or {}).get('ref') or '')
+          head_repo = str((((pr.get('head') or {}).get('repo') or {}).get('full_name')) or '')
+          base = str((pr.get('base') or {}).get('ref') or '')
+          if pr.get('state') != 'open' or pr.get('draft') is not False:
+              raise SystemExit('device candidate requires an open ready PR')
+          if str(pr.get('number')) != requested_pr:
+              raise SystemExit('resolved PR identity mismatch')
+          if base != 'fix/root-policy-reconciliation':
+              raise SystemExit('device candidate PR must target fix/root-policy-reconciliation')
+          if head_repo != repository:
+              raise SystemExit('device candidate must originate from the canonical repository')
+          if not re.fullmatch(r'[0-9a-f]{40}', head):
+              raise SystemExit('device candidate head SHA is invalid')
+          if expected and head != expected:
+              raise SystemExit('current PR head does not match expected_head_sha')
+          if not head_branch:
+              raise SystemExit('device candidate head branch is missing')
+          print(head)
+          print(head_branch)
+          PY
+          )
+          SOURCE_SHA="${PR_META[0]}"
+          HEAD_BRANCH="${PR_META[1]}"
+          ARTIFACT_NAME="device-candidate-pr-$PR_NUMBER-$SOURCE_SHA"
+
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=$ARTIFACT_NAME&per_page=100" > "$ROOT/artifacts.json"
+          readarray -t ART_META < <(python3 - "$ROOT/artifacts.json" "$ARTIFACT_NAME" "$SOURCE_SHA" "$HEAD_BRANCH" <<'PY'
+          import json
+          import re
+          import sys
+          path, name, source, branch = sys.argv[1:]
+          data = json.load(open(path, encoding='utf-8'))
+          matches = []
+          for artifact in data.get('artifacts', []):
+              run = artifact.get('workflow_run') or {}
+              digest = str(artifact.get('digest') or '')
+              if (
+                  artifact.get('name') == name
+                  and artifact.get('expired') is False
+                  and run.get('head_sha') == source
+                  and run.get('head_branch') == branch
+                  and re.fullmatch(r'sha256:[0-9a-f]{64}', digest)
+              ):
+                  matches.append(artifact)
+          if not matches:
+              raise SystemExit('no non-expired exact-head device candidate artifact exists')
+          matches.sort(key=lambda item: (str(item.get('created_at') or ''), int(item.get('id') or 0)), reverse=True)
+          artifact = matches[0]
+          run = artifact.get('workflow_run') or {}
+          print(int(artifact['id']))
+          print(int(run['id']))
+          print(str(artifact['digest']))
+          PY
+          )
+          ARTIFACT_ID="${ART_META[0]}"
+          RUN_ID="${ART_META[1]}"
+          ARTIFACT_DIGEST="${ART_META[2]}"
+
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > "$ROOT/run.json"
+          python3 - "$ROOT/run.json" "$SOURCE_SHA" "$HEAD_BRANCH" "$PR_NUMBER" <<'PY'
+          import json
+          import sys
+          path, source, branch, pr_number = sys.argv[1:]
+          run = json.load(open(path, encoding='utf-8'))
+          if run.get('name') != 'Integration Android Preflight':
+              raise SystemExit('candidate artifact did not originate from Integration Android Preflight')
+          if run.get('path') != '.github/workflows/integration-android-preflight.yml':
+              raise SystemExit('candidate workflow path mismatch')
+          if run.get('event') != 'pull_request' or run.get('status') != 'completed' or run.get('conclusion') != 'success':
+              raise SystemExit('candidate workflow is not a successful completed PR run')
+          if run.get('head_sha') != source or run.get('head_branch') != branch:
+              raise SystemExit('candidate workflow head identity mismatch')
+          prs = run.get('pull_requests') or []
+          if prs and all(str(item.get('number')) != pr_number for item in prs):
+              raise SystemExit('candidate workflow PR identity mismatch')
+          PY
+
+          {
+            echo "pr_number=$PR_NUMBER"
+            echo "source_sha=$SOURCE_SHA"
+            echo "head_branch=$HEAD_BRANCH"
+            echo "artifact_id=$ARTIFACT_ID"
+            echo "artifact_name=$ARTIFACT_NAME"
+            echo "artifact_digest=$ARTIFACT_DIGEST"
+            echo "run_id=$RUN_ID"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish resolved candidate summary
+        shell: bash
+        run: |
+          {
+            echo '### Exact device candidate resolved'
+            echo '- PR: `#${{ steps.candidate.outputs.pr_number }}`'
+            echo '- Source: `${{ steps.candidate.outputs.source_sha }}`'
+            echo '- Hosted run: `${{ steps.candidate.outputs.run_id }}`'
+            echo '- Artifact: `${{ steps.candidate.outputs.artifact_name }}`'
+            echo '- Artifact digest: `${{ steps.candidate.outputs.artifact_digest }}`'
+            echo '- Local build required: **NO**'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  physical:
+    name: Install exact candidate on DEVICE-1
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected == true }}
+    needs: resolve
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 15
+    env:
+      LAB_POWERSHELL_EXE: C:\mish-lab\tools\powershell-7.6.6\pwsh.exe
+      ADB_EXE: C:\mish-lab\tools\android-sdk\platform-tools\adb.exe
+      ANDROID_SDK_ROOT: C:\mish-lab\tools\android-sdk
+    steps:
+      - name: Checkout accepted main consumer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          clean: true
+
+      - name: Verify physical LAB identity
+        shell: cmd
+        run: |
+          "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".\lab\windows\labctl.ps1" host inspect -PhysicalLab
+          exit /b %ERRORLEVEL%
+
+      - name: Download exact hosted candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.resolve.outputs.artifact_id }}
+          path: ${{ runner.temp }}\mish-device-candidate
+          github-token: ${{ github.token }}
+          repository: iamaman11/mobile-proxy-mish
+          run-id: ${{ needs.resolve.outputs.run_id }}
+
+      - name: Verify, stable-sign, and install without rebuilding
+        shell: cmd
+        run: |
+          "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".\lab\windows\install-device-candidate.ps1" -CandidateDirectory "%RUNNER_TEMP%\mish-device-candidate" -ExpectedPrNumber "${{ needs.resolve.outputs.pr_number }}" -ExpectedSourceSha "${{ needs.resolve.outputs.source_sha }}" -AdbPath "%ADB_EXE%" -AndroidSdkRoot "%ANDROID_SDK_ROOT%" > "%RUNNER_TEMP%\mish-device-candidate-install.json"
+          exit /b %ERRORLEVEL%
+
+      - name: Publish physical handoff summary
+        if: ${{ always() }}
+        shell: cmd
+        run: |
+          >>"%GITHUB_STEP_SUMMARY%" echo ### DEVICE-1 candidate handoff
+          >>"%GITHUB_STEP_SUMMARY%" echo - PR: `#${{ needs.resolve.outputs.pr_number }}`
+          >>"%GITHUB_STEP_SUMMARY%" echo - Source: `${{ needs.resolve.outputs.source_sha }}`
+          >>"%GITHUB_STEP_SUMMARY%" echo - Artifact: `${{ needs.resolve.outputs.artifact_name }}`
+          >>"%GITHUB_STEP_SUMMARY%" echo - Hosted build reused: **YES**
+          >>"%GITHUB_STEP_SUMMARY%" echo - Local Gradle/Rust/NDK build: **NO**
+          >>"%GITHUB_STEP_SUMMARY%" echo - Installed package: `com.mobileproxymish.app.debug`
+
+      - name: Upload bounded install receipt
+        if: ${{ always() && hashFiles(format('{0}/mish-device-candidate-install.json', runner.temp)) != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: device-candidate-install-pr-${{ needs.resolve.outputs.pr_number }}-${{ needs.resolve.outputs.source_sha }}
+          path: ${{ runner.temp }}\mish-device-candidate-install.json
+          if-no-files-found: error
+          retention-days: 7
