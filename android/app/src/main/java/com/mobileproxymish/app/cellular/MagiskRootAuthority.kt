@@ -279,7 +279,10 @@ internal class SuProcess : RootProcess {
                     continue
                 }
                 if (line == EOF_SENTINEL) {
-                    return unavailableOutcome()
+                    return prematureShellExitOutcome(
+                        stdout = captured.toString(),
+                        outputComplete = outputComplete,
+                    )
                 }
                 if (line.startsWith("$marker:")) {
                     val exitCode = line.substringAfter(':').toIntOrNull()
@@ -327,6 +330,31 @@ internal class SuProcess : RootProcess {
             }
         }
 
+        private fun prematureShellExitOutcome(
+            stdout: String,
+            outputComplete: Boolean,
+        ): CommandOutcome {
+            val exited = try {
+                process.waitFor(PREMATURE_EXIT_CAPTURE_MILLIS, TimeUnit.MILLISECONDS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                false
+            }
+            val exitCode = if (exited) {
+                try {
+                    process.exitValue()
+                } catch (_: IllegalThreadStateException) {
+                    null
+                }
+            } else {
+                null
+            }
+            return CommandOutcome(
+                result = prematureExitResult(exitCode, stdout, outputComplete),
+                transportHealthy = false,
+            )
+        }
+
         private fun unavailableOutcome(): CommandOutcome = CommandOutcome(
             result = RootProcessResult(
                 exitCode = -1,
@@ -345,6 +373,30 @@ internal class SuProcess : RootProcess {
         /** Shares one DEVICE-1 Magisk shell across all typed root clients in the app process. */
         fun <T> serializedRootSession(block: () -> T): T = synchronized(ROOT_PROCESS_LOCK) {
             block()
+        }
+
+        /**
+         * Preserve a proven non-zero `su` process exit that occurred before the command marker.
+         * This is how an explicit Magisk denial survives transport EOF and becomes terminal instead
+         * of being misclassified as retryable Incomplete. A zero/unknown pre-marker exit can never
+         * prove command completion, so it remains fail-closed and non-authoritative.
+         */
+        internal fun prematureExitResult(
+            exitCode: Int?,
+            stdout: String,
+            outputComplete: Boolean,
+        ): RootProcessResult = if (exitCode != null && exitCode != 0) {
+            RootProcessResult(
+                exitCode = exitCode,
+                stdout = stdout,
+                outputComplete = outputComplete,
+            )
+        } else {
+            RootProcessResult(
+                exitCode = -1,
+                stdout = "",
+                outputComplete = false,
+            )
         }
 
         private fun liveSessionOrCreate(): RootShellSession? {
@@ -368,6 +420,7 @@ internal class SuProcess : RootProcess {
 
         const val COMMAND_TIMEOUT_NANOS = 10_000_000_000L
         const val PROCESS_STOP_TIMEOUT_MILLIS = 500L
+        const val PREMATURE_EXIT_CAPTURE_MILLIS = 250L
         const val MAX_OUTPUT_BYTES = 4096
         const val MARKER_PREFIX = "__MISH_ROOT_DONE_"
         const val EOF_SENTINEL = "__MISH_ROOT_TRANSPORT_EOF__"
