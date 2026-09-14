@@ -6,6 +6,7 @@ on:
       - '.github/workflows/device-candidate-physical.yml'
       - 'lab/windows/install-device-candidate.ps1'
       - 'lab/windows/test-device-candidate.ps1'
+      - 'lab/windows/toolchain.json'
   workflow_dispatch:
     inputs:
       pr_number:
@@ -251,33 +252,74 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $candidateDirectory = Join-Path `
-            "$env:RUNNER_TEMP\mish-device-candidate" `
-            '${{ needs.resolve.outputs.artifact_name }}'
-          $manifestPath = Join-Path $candidateDirectory 'candidate.json'
-          if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
-            throw 'MISH_DEVICE_CANDIDATE_FAILURE|DOWNLOAD_LAYOUT_MISMATCH|Resolved artifact directory does not contain candidate.json.'
+          $receiptPath = "$env:RUNNER_TEMP\mish-device-candidate-install.json"
+          try {
+            $candidateDirectory = Join-Path `
+              "$env:RUNNER_TEMP\mish-device-candidate" `
+              '${{ needs.resolve.outputs.artifact_name }}'
+            $manifestPath = Join-Path $candidateDirectory 'candidate.json'
+            if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+              throw 'MISH_DEVICE_CANDIDATE_FAILURE|DOWNLOAD_LAYOUT_MISMATCH|Resolved artifact directory does not contain candidate.json.'
+            }
+            $receipt = & '.\lab\windows\install-device-candidate.ps1' `
+              -CandidateDirectory $candidateDirectory `
+              -ExpectedPrNumber '${{ needs.resolve.outputs.pr_number }}' `
+              -ExpectedSourceSha '${{ needs.resolve.outputs.source_sha }}' `
+              -AdbPath $env:ADB_EXE `
+              -AndroidSdkRoot $env:ANDROID_SDK_ROOT
+            $receipt | Set-Content -Encoding UTF8 -LiteralPath $receiptPath
           }
-          $receipt = & '.\lab\windows\install-device-candidate.ps1' `
-            -CandidateDirectory $candidateDirectory `
-            -ExpectedPrNumber '${{ needs.resolve.outputs.pr_number }}' `
-            -ExpectedSourceSha '${{ needs.resolve.outputs.source_sha }}' `
-            -AdbPath $env:ADB_EXE `
-            -AndroidSdkRoot $env:ANDROID_SDK_ROOT
-          $receipt | Set-Content -Encoding UTF8 -LiteralPath "$env:RUNNER_TEMP\mish-device-candidate-install.json"
+          catch {
+            $message = [string]$_.Exception.Message
+            $category = 'UNCLASSIFIED'
+            if ($message -match 'MISH_DEVICE_CANDIDATE_FAILURE\|([^|]+)\|') {
+              $category = $Matches[1]
+            }
+            [pscustomobject]@{
+              result = 'FAIL'
+              category = $category
+              pr_number = [int]'${{ needs.resolve.outputs.pr_number }}'
+              source_sha = '${{ needs.resolve.outputs.source_sha }}'
+              application_id = 'com.mobileproxymish.app.debug'
+              installed = $false
+              local_build = $false
+            } | ConvertTo-Json -Compress | Set-Content -Encoding UTF8 -LiteralPath $receiptPath
+            throw
+          }
 
       - name: Publish physical handoff summary
         if: ${{ always() }}
-        shell: cmd
+        shell: powershell
         run: |
-          >>"%GITHUB_STEP_SUMMARY%" echo ### DEVICE-1 candidate handoff
-          >>"%GITHUB_STEP_SUMMARY%" echo - PR: `#${{ needs.resolve.outputs.pr_number }}`
-          >>"%GITHUB_STEP_SUMMARY%" echo - Source: `${{ needs.resolve.outputs.source_sha }}`
-          >>"%GITHUB_STEP_SUMMARY%" echo - Artifact: `${{ needs.resolve.outputs.artifact_name }}`
-          >>"%GITHUB_STEP_SUMMARY%" echo - Hosted build reused: **YES**
-          >>"%GITHUB_STEP_SUMMARY%" echo - Local Gradle/Rust/NDK build: **NO**
-          >>"%GITHUB_STEP_SUMMARY%" echo - Portable PowerShell prerequisite: **NO**
-          >>"%GITHUB_STEP_SUMMARY%" echo - Installed package: `com.mobileproxymish.app.debug`
+          $ErrorActionPreference = 'Stop'
+          $receiptPath = "$env:RUNNER_TEMP\mish-device-candidate-install.json"
+          $result = 'NO_RECEIPT'
+          $category = 'NONE'
+          if (Test-Path -LiteralPath $receiptPath -PathType Leaf) {
+            try {
+              $receipt = Get-Content -Raw -LiteralPath $receiptPath | ConvertFrom-Json
+              $result = [string]$receipt.result
+              if ($receipt.PSObject.Properties.Name -contains 'category') {
+                $category = [string]$receipt.category
+              }
+            }
+            catch {
+              $result = 'INVALID_RECEIPT'
+              $category = 'RECEIPT_PARSE_FAILED'
+            }
+          }
+          @(
+            '### DEVICE-1 candidate handoff',
+            '- PR: `#${{ needs.resolve.outputs.pr_number }}`',
+            '- Source: `${{ needs.resolve.outputs.source_sha }}`',
+            '- Artifact: `${{ needs.resolve.outputs.artifact_name }}`',
+            '- Hosted build reused: **YES**',
+            '- Local Gradle/Rust/NDK build: **NO**',
+            '- Portable PowerShell prerequisite: **NO**',
+            '- Target package: `com.mobileproxymish.app.debug`',
+            "- Install result: **$result**",
+            "- Failure category: $category"
+          ) | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_STEP_SUMMARY
 
       - name: Upload bounded install receipt
         if: ${{ always() }}

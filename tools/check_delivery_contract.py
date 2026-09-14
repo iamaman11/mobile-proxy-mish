@@ -53,7 +53,7 @@ def main() -> None:
         r'"-P"\s*,\s*"(?:23|26)"',
         "API 23/26 native compatibility must not return",
     )
-    require(build, "dependsOn(generateUniFfiBindings)", "Kotlin/static work must depend only on generated UniFFI Kotlin")
+    require(build, "dependsOn(generateUniFfiBindings)", "Kotlin/static work must depend only on generated UniFFi Kotlin")
     require(
         build,
         "dependsOn(buildAndroidUniFfi, materializeSingBoxAndroid)",
@@ -86,6 +86,12 @@ def main() -> None:
         )
     if toolchain.get("android", {}).get("ndk") != "29.0.14206865":
         raise SystemExit("delivery contract: LAB Android NDK pin drifted from the accepted build contract")
+    android_packages = toolchain.get("android", {}).get("packages") or []
+    if "build-tools;36.0.0" not in android_packages:
+        raise SystemExit(
+            "delivery contract: canonical LAB bootstrap must provision build-tools;36.0.0 "
+            "before the physical consumer runs"
+        )
 
     ci = ".github/workflows/ci.yml"
     for required in (
@@ -115,6 +121,24 @@ def main() -> None:
     ):
         require(producer, required, "hosted exact-head candidate producer contract drifted")
 
+    installer = "lab/windows/install-device-candidate.ps1"
+    for required in (
+        "C:\\mish-lab\\runner\\.state\\device-candidate",
+        "C:\\mish-lab\\runner\\_work\\.mish-device-candidate",
+        "Invoke-NativeCapture",
+        "SIGNING_IDENTITY_CONFLICT",
+        "SIGNING_MIGRATION_FAILED",
+        "SIGNING_IDENTITY_MISSING",
+        "@('install', '-r', $signedProduct)",
+        "signing_state_root = $state",
+    ):
+        require(installer, required, "DEVICE-1 installer simplification contract drifted")
+    forbid(
+        installer,
+        "sdkmanager.bat",
+        "physical consumer must not provision Android build-tools during an install",
+    )
+
     consumer = ".github/workflows/device-candidate-physical.yml"
     for required in (
         "github.ref == 'refs/heads/main'",
@@ -134,6 +158,10 @@ def main() -> None:
         "Hosted build reused: **YES**",
         "Local Gradle/Rust/NDK build: **NO**",
         "Portable PowerShell prerequisite: **NO**",
+        "Target package: `com.mobileproxymish.app.debug`",
+        "Install result:",
+        "result = 'FAIL'",
+        "category = $category",
     ):
         require(consumer, required, "protected physical candidate consumer contract drifted")
     for forbidden in (
@@ -144,8 +172,9 @@ def main() -> None:
         "cargo ndk",
         "uniffi-bindgen",
         "assembleDebug",
+        "Installed package:",
     ):
-        forbid(consumer, forbidden, "normal DEVICE-1 consumer must not become a local Android builder")
+        forbid(consumer, forbidden, "normal DEVICE-1 consumer must stay deterministic and truthful")
 
     pipeline = "docs/architecture/DEVELOPMENT_PIPELINE.md"
     for required in (

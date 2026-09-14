@@ -54,6 +54,7 @@
     "packages": [
       "platform-tools",
       "platforms;android-37.0",
+      "build-tools;36.0.0",
       "ndk;29.0.14206865"
     ]
   }
