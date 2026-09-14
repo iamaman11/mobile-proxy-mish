@@ -47,13 +47,16 @@ class MagiskRootAuthority private constructor(
         if (identity.timedOut) {
             return RootAuthorityStatus.InteractiveGrantRequired.also { terminalStatus = it }
         }
-        if (!identity.outputComplete) {
-            return RootAuthorityStatus.Incomplete
-        }
         if (identity.exitCode == 126 || identity.exitCode == 127) {
             return RootAuthorityStatus.Unavailable
         }
-        if (identity.exitCode != 0 || identity.stdout.trim() != "0") {
+        if (identity.exitCode > 0) {
+            return RootAuthorityStatus.Denied.also { terminalStatus = it }
+        }
+        if (!identity.outputComplete || identity.exitCode != 0) {
+            return RootAuthorityStatus.Incomplete
+        }
+        if (identity.stdout.trim() != "0") {
             return RootAuthorityStatus.Denied.also { terminalStatus = it }
         }
 
