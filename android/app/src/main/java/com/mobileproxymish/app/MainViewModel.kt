@@ -117,6 +117,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             "cellular.root_policy_rule_mutation_failed"
         CellularRootPolicyFailure.VerificationFailed ->
             "cellular.root_policy_verification_failed"
+        CellularRootPolicyFailure.MangleChainCreationFailed ->
+            "cellular.root_policy_mangle_chain_creation_failed"
+        CellularRootPolicyFailure.OwnerNewMarkRuleFailed ->
+            "cellular.root_policy_owner_new_mark_rule_failed"
+        CellularRootPolicyFailure.OutputJumpCreationFailed ->
+            "cellular.root_policy_output_jump_creation_failed"
+        CellularRootPolicyFailure.MangleVerificationFailed ->
+            "cellular.root_policy_mangle_verification_failed"
+        CellularRootPolicyFailure.LookupRuleCreationFailed ->
+            "cellular.root_policy_lookup_rule_creation_failed"
+        CellularRootPolicyFailure.RouteLookupVerificationFailed ->
+            "cellular.root_policy_route_lookup_verification_failed"
+        CellularRootPolicyFailure.ExactCleanupFailed ->
+            "cellular.root_policy_exact_cleanup_failed"
     }
 
     private fun proxyReasonCode(reason: RuntimeProcessFailure): String = when (reason) {
@@ -133,6 +147,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         RuntimeProcessFailure.CHILD_PID_OR_PERSISTENCE_FAILED ->
             "proxy.child_pid_or_persistence_failed"
         RuntimeProcessFailure.HEALTH_CHECK_FAILED -> "proxy.health_check_failed"
+        RuntimeProcessFailure.LISTENER_CONTRACT_UNAVAILABLE ->
+            "proxy.listener_contract_unavailable"
+        RuntimeProcessFailure.LOOPBACK_LISTENER_UNAVAILABLE ->
+            "proxy.loopback_listener_unavailable"
         RuntimeProcessFailure.CHILD_EXITED -> "proxy.child_exited"
         RuntimeProcessFailure.PRIVATE_BRIDGE_UNHEALTHY -> "proxy.private_bridge_unhealthy"
         RuntimeProcessFailure.CLEANUP_FAILED -> "proxy.cleanup_failed"

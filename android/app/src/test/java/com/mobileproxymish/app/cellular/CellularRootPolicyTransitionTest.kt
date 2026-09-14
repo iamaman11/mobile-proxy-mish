@@ -38,7 +38,7 @@ class CellularRootPolicyTransitionTest {
         val result = policy(process).reconcile(admitted = false, interfaceName = null)
 
         assertEquals(
-            CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.RuleMutationFailed),
+            CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.MangleVerificationFailed),
             result,
         )
         assertEquals(1, process.ipv4JumpCount)
@@ -56,7 +56,7 @@ class CellularRootPolicyTransitionTest {
         val result = policy(process).reconcile(admitted = false, interfaceName = null)
 
         assertEquals(
-            CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.RuleMutationFailed),
+            CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.OwnerNewMarkRuleFailed),
             result,
         )
         assertEquals(0, process.ipv4JumpCount)

@@ -185,6 +185,16 @@ class ProxyRuntimeSupervisor internal constructor(
                 return
             }
 
+            // A private bridge opened before the asynchronously reconciled Cellular Egress
+            // generation is authorized can fail its listener health check spuriously. This is a
+            // dependency gate, not another readiness state: the cellular adapter's published
+            // OwnerSnapshot remains the sole authority for admission and root-policy success.
+            if (!cellularRuntime.awaitAuthorizedAdmission(AUTHORIZED_ADMISSION_TIMEOUT_MS)) {
+                deleteCurrentGenerationFiles(removeManifest = true)
+                failLifecycle(RuntimeProcessFailure.PRIVATE_BRIDGE_UNAVAILABLE)
+                return
+            }
+
             // Private bridge credentials stay intentionally ephemeral and generation-scoped.
             val privateUsername = randomCredential()
             val privatePassword = randomCredential()
@@ -261,11 +271,12 @@ class ProxyRuntimeSupervisor internal constructor(
             }
             drainOutput(newChild)
 
-            if (!waitForHealthy(newBridge)) {
+            val healthFailure = waitForHealthy(newBridge)
+            if (healthFailure != null) {
                 terminateProcess(newChild, newPid)
                 runCatching { newBridge.stop() }
                 deleteCurrentGenerationFiles(removeManifest = true)
-                failLifecycle(RuntimeProcessFailure.HEALTH_CHECK_FAILED)
+                failLifecycle(healthFailure)
                 return
             }
 
@@ -314,7 +325,7 @@ class ProxyRuntimeSupervisor internal constructor(
                         if (!confirmedLoopbackHealthFailure(consecutiveLoopbackFailures)) {
                             null
                         } else if (isExactRootSingBoxAlive(childPid ?: -1)) {
-                            RuntimeProcessFailure.HEALTH_CHECK_FAILED
+                            RuntimeProcessFailure.LOOPBACK_LISTENER_UNAVAILABLE
                         } else {
                             RuntimeProcessFailure.CHILD_EXITED
                         }
@@ -351,29 +362,30 @@ class ProxyRuntimeSupervisor internal constructor(
         thread.start()
     }
 
-    private fun waitForHealthy(privateBridge: CellularBridgeRuntime): Boolean {
+    /** Returns a sanitized typed failure; config, credentials and process output stay private. */
+    private fun waitForHealthy(privateBridge: CellularBridgeRuntime): RuntimeProcessFailure? {
         val publicPorts = try {
             proxyListenerPorts().map { it.toInt() }
         } catch (_: LinkageError) {
-            return false
+            return RuntimeProcessFailure.LISTENER_CONTRACT_UNAVAILABLE
         } catch (_: Exception) {
-            return false
+            return RuntimeProcessFailure.LISTENER_CONTRACT_UNAVAILABLE
         }
-        if (publicPorts.isEmpty()) return false
+        if (publicPorts.isEmpty()) return RuntimeProcessFailure.LISTENER_CONTRACT_UNAVAILABLE
 
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(START_HEALTH_TIMEOUT_SECONDS)
         while (System.nanoTime() < deadline) {
             val recordedPid = awaitRecordedPid()
             if (recordedPid == null || !isExactRootSingBoxAlive(recordedPid)) {
-                return false
+                return RuntimeProcessFailure.CHILD_EXITED
             }
             if (!runCatching { privateBridge.isHealthy() }.getOrDefault(false)) {
-                return false
+                return RuntimeProcessFailure.PRIVATE_BRIDGE_UNHEALTHY
             }
-            if (publicPorts.all(::canConnectLoopback)) return true
+            if (publicPorts.all(::canConnectLoopback)) return null
             Thread.sleep(HEALTH_RETRY_MS)
         }
-        return false
+        return RuntimeProcessFailure.LOOPBACK_LISTENER_UNAVAILABLE
     }
 
     private fun canConnectLoopback(port: Int): Boolean = try {
@@ -686,6 +698,7 @@ class ProxyRuntimeSupervisor internal constructor(
         const val MAGISK_SU = "su"
         const val LOOPBACK = "127.0.0.1"
         const val OUTBOUND_TIMEOUT_MS = 15_000L
+        const val AUTHORIZED_ADMISSION_TIMEOUT_MS = 30_000L
         const val START_HEALTH_TIMEOUT_SECONDS = 5L
         const val HEALTH_RETRY_MS = 100L
         const val HEALTH_POLL_MS = 500L

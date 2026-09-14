@@ -347,6 +347,7 @@ class MishRuntimeController internal constructor(
     private companion object {
         val RECOVERABLE_PROXY_FAILURES = setOf(
             RuntimeProcessFailure.HEALTH_CHECK_FAILED,
+            RuntimeProcessFailure.LOOPBACK_LISTENER_UNAVAILABLE,
             RuntimeProcessFailure.CHILD_EXITED,
             RuntimeProcessFailure.PRIVATE_BRIDGE_UNHEALTHY,
         )

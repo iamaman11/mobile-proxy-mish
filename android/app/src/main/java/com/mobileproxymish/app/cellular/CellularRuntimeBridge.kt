@@ -161,6 +161,24 @@ class CellularRuntimeBridge(
         }
     }
 
+    /**
+     * Bounded composition gate for a dependent proxy generation. This reads the existing
+     * Cellular Egress projection only: it neither creates an admission state nor authorizes a
+     * route. An admitted OwnerSnapshot is published only after the same generation passed exact
+     * root-policy reconciliation and Rust authorization.
+     */
+    internal fun awaitAuthorizedAdmission(timeoutMs: Long): Boolean {
+        if (timeoutMs <= 0L || closed.get()) return false
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
+        while (!closed.get() && System.nanoTime() < deadline) {
+            val admission = (mutableSnapshot.value as? CellularRuntimeSnapshot.OwnerSnapshot)
+                ?.admission
+            if (admission?.state == CellularAdmissionState.ADMITTED) return true
+            Thread.sleep(AUTHORIZED_ADMISSION_POLL_MS)
+        }
+        return false
+    }
+
     override fun onEvent(event: CellularNetworkEvent) {
         if (closed.get()) return
 
@@ -585,6 +603,7 @@ class CellularRuntimeBridge(
     }
 
     private companion object {
+        const val AUTHORIZED_ADMISSION_POLL_MS = 100L
         const val CLOSE_TIMEOUT_SECONDS = 60L
         const val EFFECT_DRAIN_TIMEOUT_MS = 20_000L
     }

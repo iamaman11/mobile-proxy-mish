@@ -260,6 +260,8 @@ pub enum RuntimeProcessFailure {
     ChildProcessStartFailed,
     ChildPidOrPersistenceFailed,
     HealthCheckFailed,
+    ListenerContractUnavailable,
+    LoopbackListenerUnavailable,
     ChildExited,
     PrivateBridgeUnhealthy,
     CleanupFailed,

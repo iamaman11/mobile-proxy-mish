@@ -152,6 +152,8 @@ pub enum RuntimeProcessFailure {
     ChildProcessStartFailed,
     ChildPidOrPersistenceFailed,
     HealthCheckFailed,
+    ListenerContractUnavailable,
+    LoopbackListenerUnavailable,
     ChildExited,
     PrivateBridgeUnhealthy,
     CleanupFailed,
@@ -292,6 +294,12 @@ fn map_process_failure_out(failure: OwnerRuntimeProcessFailure) -> RuntimeProces
             RuntimeProcessFailure::ChildPidOrPersistenceFailed
         }
         OwnerRuntimeProcessFailure::HealthCheckFailed => RuntimeProcessFailure::HealthCheckFailed,
+        OwnerRuntimeProcessFailure::ListenerContractUnavailable => {
+            RuntimeProcessFailure::ListenerContractUnavailable
+        }
+        OwnerRuntimeProcessFailure::LoopbackListenerUnavailable => {
+            RuntimeProcessFailure::LoopbackListenerUnavailable
+        }
         OwnerRuntimeProcessFailure::ChildExited => RuntimeProcessFailure::ChildExited,
         OwnerRuntimeProcessFailure::PrivateBridgeUnhealthy => {
             RuntimeProcessFailure::PrivateBridgeUnhealthy
@@ -328,6 +336,12 @@ fn map_process_failure_in(failure: RuntimeProcessFailure) -> OwnerRuntimeProcess
             OwnerRuntimeProcessFailure::ChildPidOrPersistenceFailed
         }
         RuntimeProcessFailure::HealthCheckFailed => OwnerRuntimeProcessFailure::HealthCheckFailed,
+        RuntimeProcessFailure::ListenerContractUnavailable => {
+            OwnerRuntimeProcessFailure::ListenerContractUnavailable
+        }
+        RuntimeProcessFailure::LoopbackListenerUnavailable => {
+            OwnerRuntimeProcessFailure::LoopbackListenerUnavailable
+        }
         RuntimeProcessFailure::ChildExited => OwnerRuntimeProcessFailure::ChildExited,
         RuntimeProcessFailure::PrivateBridgeUnhealthy => {
             OwnerRuntimeProcessFailure::PrivateBridgeUnhealthy
