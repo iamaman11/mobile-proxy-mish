@@ -9,7 +9,7 @@ use mish_cellular_egress_bridge::{
     CellularOutboundConnector, ConnectTarget, OutboundConnectError, TargetHost,
 };
 use std::fmt;
-use std::net::{IpAddr, SocketAddr, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpStream, UdpSocket};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -116,6 +116,20 @@ impl CellularOutboundConnector for CellularOutboundRuntimeConnector {
             |_authority, address, attempt_deadline| {
                 connect_root_policy_socket(address, attempt_deadline)
             },
+        )
+    }
+
+    fn connect_udp(&self, target: &ConnectTarget) -> Result<UdpSocket, OutboundConnectError> {
+        let deadline = Instant::now()
+            .checked_add(self.operation_timeout)
+            .ok_or(OutboundConnectError::Rejected)?;
+        connect_host_with(
+            &self.owner,
+            target.host(),
+            target.port(),
+            deadline,
+            |authority, domain, deadline| self.resolver.resolve(authority, domain, deadline),
+            |_authority, address, _attempt_deadline| connect_root_policy_udp_socket(address),
         )
     }
 }
@@ -268,6 +282,19 @@ fn connect_root_policy_socket(
             OutboundConnectError::Failed
         }
     })
+}
+
+/// Ordinary PRODUCT-UID UDP socket. The root-policy adapter remains the only routing mechanic;
+/// no Android network bind and no default-route retry is introduced here.
+fn connect_root_policy_udp_socket(address: SocketAddr) -> Result<UdpSocket, OutboundConnectError> {
+    if !address.is_ipv4() {
+        return Err(OutboundConnectError::Rejected);
+    }
+    let socket = UdpSocket::bind(("0.0.0.0", 0)).map_err(|_| OutboundConnectError::Failed)?;
+    socket
+        .connect(address)
+        .map_err(|_| OutboundConnectError::Failed)?;
+    Ok(socket)
 }
 
 /// Private deterministic operation seam used to prove owner sequencing/currentness and bounded

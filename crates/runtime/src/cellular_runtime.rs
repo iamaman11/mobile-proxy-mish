@@ -16,7 +16,7 @@ use mish_cellular_egress_bridge::{
 };
 use mish_configuration::EXTERNAL_TCP_SESSION_BUDGET;
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpStream, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
@@ -243,6 +243,14 @@ impl CellularOutboundConnector for RootPolicyGatedConnector {
             .acquire()
             .ok_or(OutboundConnectError::Unavailable)?;
         self.inner.connect(target)
+    }
+
+    fn connect_udp(&self, target: &ConnectTarget) -> Result<UdpSocket, OutboundConnectError> {
+        let _permit = self
+            .effect_gate
+            .acquire()
+            .ok_or(OutboundConnectError::Unavailable)?;
+        self.inner.connect_udp(target)
     }
 }
 

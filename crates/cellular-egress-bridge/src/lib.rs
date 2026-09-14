@@ -6,7 +6,9 @@
 
 use std::fmt;
 use std::io::{self, Read, Write};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::net::{
+    IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket,
+};
 use std::thread;
 
 const SOCKS_VERSION: u8 = 0x05;
@@ -146,6 +148,15 @@ impl std::error::Error for OutboundConnectError {}
 pub trait CellularOutboundConnector: Send + Sync {
     /// Connects one typed target or fails closed without a default-network fallback.
     fn connect(&self, target: &ConnectTarget) -> Result<TcpStream, OutboundConnectError>;
+
+    /// Creates one owner-authorized cellular UDP socket or fails closed.
+    ///
+    /// The default is deliberate: introducing UDP support requires the private bridge's SOCKS
+    /// association/authentication implementation and must never silently enable it for an
+    /// existing TCP-only connector.
+    fn connect_udp(&self, _target: &ConnectTarget) -> Result<UdpSocket, OutboundConnectError> {
+        Err(OutboundConnectError::Rejected)
+    }
 }
 
 /// Protocol failures for one SOCKS5 session.
