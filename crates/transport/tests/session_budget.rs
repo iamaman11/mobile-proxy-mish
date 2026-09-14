@@ -18,10 +18,10 @@ fn wait_until(deadline: Instant, mut predicate: impl FnMut() -> bool) {
 }
 
 #[test]
-fn seventeenth_mesh_session_is_rejected_before_loopback_backend() {
+fn sixty_fifth_mesh_session_is_rejected_before_loopback_backend() {
     assert_eq!(
-        MAX_MESH_SESSIONS, 16,
-        "M1 capacity contract changed unexpectedly"
+        MAX_MESH_SESSIONS, 64,
+        "DEVICE-1 capacity candidate changed unexpectedly"
     );
 
     let backend = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind backend");
@@ -99,8 +99,8 @@ fn seventeenth_mesh_session_is_rejected_before_loopback_backend() {
         .expect("overflow read timeout");
 
     // The edge may complete the kernel TCP handshake before its userspace accept loop observes
-    // capacity. It must then close the 17th client without connecting the private loopback
-    // backend and without displacing any of the 16 admitted sessions.
+    // capacity. It must then close the 65th client without connecting the private loopback
+    // backend and without displacing any of the 64 admitted sessions.
     let mut byte = [0_u8; 1];
     let closed = match overflow.read(&mut byte) {
         Ok(0) => true,
@@ -117,7 +117,7 @@ fn seventeenth_mesh_session_is_rejected_before_loopback_backend() {
         Ok(_) => false,
         Err(error) => panic!("overflow session did not fail closed: {error}"),
     };
-    assert!(closed, "17th Mesh session remained usable");
+    assert!(closed, "65th Mesh session remained usable");
     assert_eq!(runtime.active_sessions(), MAX_MESH_SESSIONS);
 
     verify_tx.send(()).expect("ask backend to check overflow");
@@ -125,7 +125,7 @@ fn seventeenth_mesh_session_is_rejected_before_loopback_backend() {
     let overflow_reached_backend = backend_thread.join().expect("backend thread");
     assert!(
         !overflow_reached_backend,
-        "17th Mesh session reached the private backend instead of being rejected at the edge"
+        "65th Mesh session reached the private backend instead of being rejected at the edge"
     );
 
     drop(overflow);
