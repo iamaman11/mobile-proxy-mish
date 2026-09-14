@@ -34,9 +34,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Checkout
+      - name: Checkout exact PR head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
       - name: Set up JDK 17
@@ -159,3 +160,70 @@ jobs:
               exit 1
             fi
           done
+
+      - name: Stage exact-head device candidate
+        if: ${{ github.event.pull_request.draft == false }}
+        shell: bash
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/device-candidate"
+          mkdir -p "$ROOT"
+          PRODUCT_SRC="android/app/build/outputs/apk/debug/app-debug.apk"
+          TEST_SRC="android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"
+          PRODUCT_DST="$ROOT/mobile-proxy-mish-debug.apk"
+          TEST_DST="$ROOT/mobile-proxy-mish-debug-androidTest.apk"
+          cp "$PRODUCT_SRC" "$PRODUCT_DST"
+          cp "$TEST_SRC" "$TEST_DST"
+          PRODUCT_SHA="$(sha256sum "$PRODUCT_DST" | awk '{print $1}')"
+          TEST_SHA="$(sha256sum "$TEST_DST" | awk '{print $1}')"
+          python3 - "$ROOT/candidate.json" "$PR_NUMBER" "$SOURCE_SHA" "$BASE_SHA" "$PRODUCT_SHA" "$TEST_SHA" "$MISH_TARGET_ABI" <<'PY'
+          import json
+          import sys
+          path, pr, source, base, product_sha, test_sha, abi = sys.argv[1:]
+          payload = {
+              "schema": "mish-device-candidate-v1",
+              "pr_number": int(pr),
+              "source_sha": source,
+              "base_sha": base,
+              "application_id": "com.mobileproxymish.app.debug",
+              "target_abi": abi,
+              "product_apk": {
+                  "name": "mobile-proxy-mish-debug.apk",
+                  "sha256": product_sha,
+              },
+              "android_test_apk": {
+                  "name": "mobile-proxy-mish-debug-androidTest.apk",
+                  "sha256": test_sha,
+              },
+          }
+          with open(path, "w", encoding="utf-8", newline="\n") as handle:
+              json.dump(payload, handle, sort_keys=True, separators=(",", ":"))
+              handle.write("\n")
+          PY
+
+      - name: Upload exact-head device candidate
+        if: ${{ github.event.pull_request.draft == false }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: device-candidate-pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/device-candidate
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Publish device candidate summary
+        if: ${{ github.event.pull_request.draft == false }}
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          {
+            echo '### Device candidate ready'
+            echo "- Source SHA: \`$SOURCE_SHA\`"
+            echo "- Artifact: \`device-candidate-pr-${{ github.event.pull_request.number }}-$SOURCE_SHA\`"
+            echo '- Local build required: **NO**'
+            echo '- Install target: **com.mobileproxymish.app.debug**'
+          } >> "$GITHUB_STEP_SUMMARY"
