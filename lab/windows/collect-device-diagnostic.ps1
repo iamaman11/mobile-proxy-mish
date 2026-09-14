@@ -203,9 +203,25 @@ if ($null -ne $meshAddress) {
 
 $lease = $null
 $credentialLeaseAvailable = $false
+$credentialStorePath = $null
 try {
     Import-Module (Join-Path $PSScriptRoot 'CredentialProvisioning.psm1') -Force
-    $lease = Open-MishExternalProxyCredentialLease
+    $credentialTempRoot = if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
+        $env:RUNNER_TEMP
+    } else {
+        $env:TEMP
+    }
+    if ([string]::IsNullOrWhiteSpace($credentialTempRoot)) {
+        throw 'A temporary directory is unavailable for the bounded credential lease.'
+    }
+    $credentialStorePath = Join-Path `
+        ([IO.Path]::GetFullPath($credentialTempRoot)) `
+        ('mish-diagnostic-credential-' + [Guid]::NewGuid().ToString('N') + '.dpapi')
+    [void](Invoke-MishExternalProxyCredentialProvisioning `
+        -AdbPath $AdbPath `
+        -PackageName $PackageName `
+        -StorePath $credentialStorePath)
+    $lease = Open-MishExternalProxyCredentialLease -StorePath $credentialStorePath
     $credentialLeaseAvailable = $null -ne $lease
 }
 catch {
@@ -240,6 +256,9 @@ finally {
         & $AdbPath forward --remove "tcp:$adbForwardPort" 2>$null | Out-Null
     }
     $lease = $null
+    if ($null -ne $credentialStorePath -and (Test-Path -LiteralPath $credentialStorePath -PathType Leaf)) {
+        Remove-Item -LiteralPath $credentialStorePath -Force -ErrorAction SilentlyContinue
+    }
 }
 
 $classification = switch ($true) {
@@ -272,6 +291,7 @@ $evidence = [ordered]@{
             port_3128 = $tcp3128
         }
         credential_lease_available = $credentialLeaseAvailable
+        credential_source = 'bounded_package_provisioning'
         adb_loopback_proxy_e2e = $loopbackProbe
         mesh_proxy_e2e = $meshProbe
     }
