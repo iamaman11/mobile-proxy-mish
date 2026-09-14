@@ -2,78 +2,18 @@ name: MISH LAB Diagnostic
 
 on:
   push:
-    branches: [mish-lab-control]
+    branches:
+      - mish-lab-control
 
 permissions:
   contents: read
 
-concurrency:
-  group: mish-lab-diagnostic
-  cancel-in-progress: false
-
 jobs:
-  snapshot:
-    name: Read-only DEVICE-1 snapshot
-    if: github.actor == 'iamaman11' && github.event.head_commit.message == '/mish-diag snapshot'
-    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
-    timeout-minutes: 10
-    env:
-      ADB_EXE: C:\mish-lab\tools\android-sdk\platform-tools\adb.exe
-      EVIDENCE_PATH: ${{ runner.temp }}\mish-device-diagnostic-v1.json
+  validate:
+    name: Validate control entrypoint
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout protected main diagnostics bridge
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: main
-          persist-credentials: false
-          clean: true
-
-      - name: Verify physical LAB identity
-        shell: powershell
+      - name: Confirm owner-only control branch event
         run: |
-          .\lab\windows\labctl.ps1 host inspect -PhysicalLab
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Collect one-shot diagnostic
-        shell: powershell
-        run: |
-          .\lab\windows\collect-device-diagnostic.ps1 `
-            -AdbPath "$env:ADB_EXE" `
-            -PackageName 'com.mobileproxymish.app.debug' `
-            -EvidencePath "$env:EVIDENCE_PATH"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Publish bounded diagnostic summary
-        if: ${{ always() }}
-        shell: powershell
-        run: |
-          if (-not (Test-Path -LiteralPath $env:EVIDENCE_PATH -PathType Leaf)) {
-            "### MISH LAB Diagnostic`n`nEvidence collection did not produce a report." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-            exit 0
-          }
-          $evidence = Get-Content -Raw -LiteralPath $env:EVIDENCE_PATH | ConvertFrom-Json
-          @(
-            '### MISH LAB Diagnostic',
-            '',
-            "- Classification: **$($evidence.classification)**",
-            "- PID stable: **$($evidence.pid_stable)**",
-            "- Android readiness: **$($evidence.android.readiness.state)**",
-            "- Cellular: **$($evidence.android.cellular.state)**",
-            "- Root policy authorized: **$($evidence.android.root.policy_authorized)**",
-            "- Proxy: **$($evidence.android.proxy.state)**",
-            "- Mesh admission: **$($evidence.android.mesh.state)**",
-            "- Mesh ingress: **$($evidence.android.mesh.ingress_running)**",
-            "- ADB-loopback authenticated E2E: **$($evidence.external.adb_loopback_proxy_e2e.result)** / $($evidence.external.adb_loopback_proxy_e2e.reason)",
-            "- Windows-Mesh authenticated E2E: **$($evidence.external.mesh_proxy_e2e.result)** / $($evidence.external.mesh_proxy_e2e.reason)",
-            '',
-            'No airplane-mode toggle, reinstall, root-policy mutation, Cloudflare mutation or local build is performed.'
-          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-
-      - name: Upload bounded diagnostic evidence
-        if: ${{ always() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: mish-device-diagnostic-v1-${{ github.run_id }}
-          path: ${{ runner.temp }}\mish-device-diagnostic-v1.json
-          if-no-files-found: warn
-          retention-days: 30
+          test "${{ github.actor }}" = "iamaman11"
+          test "${{ github.ref }}" = "refs/heads/mish-lab-control"
