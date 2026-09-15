@@ -1,12 +1,12 @@
 package com.mobileproxymish.app
 
 import android.content.Context
-import android.os.Process as AndroidProcess
 import android.system.Os
 import android.util.Base64
 import com.mobileproxymish.app.cellular.CellularRuntimeBridge
 import com.mobileproxymish.app.cellular.SuProcess
 import com.mobileproxymish.ffi.CellularBridgeRuntime
+import com.mobileproxymish.ffi.RuntimeCurrentProcessDecision
 import com.mobileproxymish.ffi.RuntimeProcessFailure
 import com.mobileproxymish.ffi.RuntimeProcessLifecycleController
 import com.mobileproxymish.ffi.RuntimeProcessSnapshotView
@@ -147,7 +147,7 @@ class ProxyRuntimeSupervisor internal constructor(
     internal fun diagnosticObservation(): ProxyRuntimeDiagnosticObservation = synchronized(lock) {
         val currentBridge = bridge
         ProxyRuntimeDiagnosticObservation(
-            childAlive = ownedChildAccepted && childPid != null && canonicalLoopbackListenersReachable(),
+            childAlive = ownedChildAccepted && childPid != null,
             privateBridgePort = runCatching { currentBridge?.port()?.toInt() }.getOrNull(),
             privateBridgeHealthy = currentBridge?.let {
                 runCatching { it.isHealthy() }.getOrDefault(false)
@@ -262,7 +262,7 @@ class ProxyRuntimeSupervisor internal constructor(
 
             ownedRootChildMayExist = true
             if (!runRootScript(rootLauncherFile)) {
-                val clean = cleanupFailedStart(pid = null, privateBridge = newBridge)
+                val clean = cleanupFailedStart(privateBridge = newBridge)
                 failLifecycle(
                     if (clean) RuntimeProcessFailure.CHILD_PROCESS_START_FAILED
                     else RuntimeProcessFailure.CLEANUP_FAILED,
@@ -270,25 +270,28 @@ class ProxyRuntimeSupervisor internal constructor(
                 return
             }
 
-            val newPid = awaitRecordedPid()
+            val (newPid, identityFailure) = awaitCurrentOwnedPid()
             if (newPid == null) {
-                val clean = cleanupFailedStart(pid = null, privateBridge = newBridge)
+                val clean = cleanupFailedStart(privateBridge = newBridge)
                 failLifecycle(
-                    if (clean) RuntimeProcessFailure.CHILD_PID_OR_PERSISTENCE_FAILED
-                    else RuntimeProcessFailure.CLEANUP_FAILED,
+                    if (clean) {
+                        identityFailure ?: RuntimeProcessFailure.CHILD_PID_OR_PERSISTENCE_FAILED
+                    } else {
+                        RuntimeProcessFailure.CLEANUP_FAILED
+                    },
                 )
                 return
             }
 
             val healthFailure = waitForHealthy(newBridge, newPid)
             if (healthFailure != null) {
-                val clean = cleanupFailedStart(pid = newPid, privateBridge = newBridge)
+                val clean = cleanupFailedStart(privateBridge = newBridge)
                 failLifecycle(if (clean) healthFailure else RuntimeProcessFailure.CLEANUP_FAILED)
                 return
             }
 
             if (closed.get()) {
-                val clean = cleanupFailedStart(pid = newPid, privateBridge = newBridge)
+                val clean = cleanupFailedStart(privateBridge = newBridge)
                 if (clean) stopLifecycle() else failLifecycle(RuntimeProcessFailure.CLEANUP_FAILED)
                 return
             }
@@ -311,8 +314,17 @@ class ProxyRuntimeSupervisor internal constructor(
     ) {
         val thread = Thread({
             var consecutiveLoopbackFailures = 0
+            var nextOwnershipCheck = 0L
             while (!closed.get()) {
+                val now = System.nanoTime()
+                val ownershipFailure = if (now >= nextOwnershipCheck) {
+                    nextOwnershipCheck = now + TimeUnit.MILLISECONDS.toNanos(OWNERSHIP_POLL_MS)
+                    currentProcessFailure(expectedPid)
+                } else {
+                    null
+                }
                 val reason = when {
+                    ownershipFailure != null -> ownershipFailure
                     !runCatching { expectedBridge.isHealthy() }.getOrDefault(false) ->
                         RuntimeProcessFailure.PRIVATE_BRIDGE_UNHEALTHY
                     canonicalLoopbackListenersReachable() -> {
@@ -323,10 +335,9 @@ class ProxyRuntimeSupervisor internal constructor(
                         consecutiveLoopbackFailures += 1
                         if (!confirmedLoopbackHealthFailure(consecutiveLoopbackFailures)) {
                             null
-                        } else if (isExactRootSingBoxAlive(expectedPid)) {
-                            RuntimeProcessFailure.LOOPBACK_LISTENER_UNAVAILABLE
                         } else {
-                            RuntimeProcessFailure.CHILD_EXITED
+                            currentProcessFailure(expectedPid)
+                                ?: RuntimeProcessFailure.LOOPBACK_LISTENER_UNAVAILABLE
                         }
                     }
                 }
@@ -381,7 +392,10 @@ class ProxyRuntimeSupervisor internal constructor(
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(START_HEALTH_TIMEOUT_SECONDS)
         while (System.nanoTime() < deadline) {
             val first = observeStartupHealth(privateBridge, expectedPid, publicPorts)
-            if (!first.exactChildAlive) return RuntimeProcessFailure.CHILD_EXITED
+            if (!first.exactChildAlive) {
+                return currentProcessFailure(expectedPid)
+                    ?: RuntimeProcessFailure.STALE_PROCESS_IDENTITY_MISMATCH
+            }
             if (!first.privateBridgeHealthy) return RuntimeProcessFailure.PRIVATE_BRIDGE_UNHEALTHY
             if (!first.listenersReachable) {
                 Thread.sleep(HEALTH_RETRY_MS)
@@ -390,7 +404,10 @@ class ProxyRuntimeSupervisor internal constructor(
 
             Thread.sleep(START_OWNERSHIP_STABILITY_MS)
             val second = observeStartupHealth(privateBridge, expectedPid, publicPorts)
-            if (!second.exactChildAlive) return RuntimeProcessFailure.CHILD_EXITED
+            if (!second.exactChildAlive) {
+                return currentProcessFailure(expectedPid)
+                    ?: RuntimeProcessFailure.STALE_PROCESS_IDENTITY_MISMATCH
+            }
             if (!second.privateBridgeHealthy) return RuntimeProcessFailure.PRIVATE_BRIDGE_UNHEALTHY
             if (stableStartupHealth(first, second)) return null
         }
@@ -402,10 +419,26 @@ class ProxyRuntimeSupervisor internal constructor(
         expectedPid: Int,
         publicPorts: List<Int>,
     ): ProxyStartupHealthObservation = ProxyStartupHealthObservation(
-        exactChildAlive = isExactRootSingBoxAlive(expectedPid),
+        exactChildAlive = currentProcessFailure(expectedPid) == null,
         privateBridgeHealthy = runCatching { privateBridge.isHealthy() }.getOrDefault(false),
         listenersReachable = publicPorts.all(::canConnectLoopback),
     )
+
+    private fun currentProcessFailure(expectedPid: Int): RuntimeProcessFailure? {
+        val resolution = processReconciler.resolveCurrentProcess(configFile)
+            ?: return RuntimeProcessFailure.STALE_PROCESS_IDENTITY_MISMATCH
+        return when (resolution.decision) {
+            RuntimeCurrentProcessDecision.EXACT -> {
+                val actual = resolution.current?.pid?.toLong()
+                if (actual == expectedPid.toLong()) null
+                else RuntimeProcessFailure.STALE_PROCESS_IDENTITY_MISMATCH
+            }
+            RuntimeCurrentProcessDecision.ABSENT -> RuntimeProcessFailure.CHILD_EXITED
+            RuntimeCurrentProcessDecision.CONFLICT,
+            RuntimeCurrentProcessDecision.FAIL_CLOSED,
+            -> RuntimeProcessFailure.STALE_PROCESS_IDENTITY_MISMATCH
+        }
+    }
 
     private fun canConnectLoopback(port: Int): Boolean = try {
         Socket().use { socket ->
@@ -509,20 +542,12 @@ class ProxyRuntimeSupervisor internal constructor(
     }
 
     private fun writeRootLauncher(): Boolean = try {
-        val appUid = AndroidProcess.myUid()
-        if (!isSafeOwnedPath(configFile) || !isSafeOwnedPath(pidFile) || !isSafeNativePath(binaryFile)) {
-            return false
-        }
+        if (!isSafeOwnedPath(configFile) || !isSafeNativePath(binaryFile)) return false
         rootLauncherFile.writeText(
             """
             #!/system/bin/sh
             umask 077
             /system/bin/toybox nohup "${binaryFile.absolutePath}" run -c "${configFile.absolutePath}" </dev/null >/dev/null 2>&1 &
-            child_pid="${'$'}!"
-            case "${'$'}child_pid" in ''|*[!0-9]*) exit 124;; esac
-            printf '%s\n' "${'$'}child_pid" > "${pidFile.absolutePath}" || exit 125
-            chown $appUid:$appUid "${pidFile.absolutePath}" || exit 126
-            chmod 600 "${pidFile.absolutePath}" || exit 127
             exit 0
             """.trimIndent() + "\n",
             Charsets.UTF_8,
@@ -544,66 +569,55 @@ class ProxyRuntimeSupervisor internal constructor(
         }.getOrDefault(false)
     }
 
-    private fun writeRootControl(action: String): Boolean = try {
-        if (action !in ROOT_ACTIONS || !isSafeOwnedPath(configFile) || !isSafeOwnedPath(pidFile) ||
-            !isSafeNativePath(binaryFile)
-        ) return false
-        rootControlFile.writeText(
-            """
-            #!/system/bin/sh
-            set -eu
-            pid="${'$'}(cat "${pidFile.absolutePath}")"
-            case "${'$'}pid" in ''|*[!0-9]*) exit 64;; esac
-            exact_pid() {
-              [ -r "/proc/${'$'}pid/cmdline" ] || return 1
-              actual="${'$'}(tr '\000' ' ' < "/proc/${'$'}pid/cmdline" 2>/dev/null || true)"
-              case "${'$'}actual" in *"/${SING_BOX_LIBRARY} run -c ${configFile.absolutePath}"*) return 0;; *) return 1;; esac
-            }
-            exact_pid || exit 20
-            case "$action" in
-              status) exit 0 ;;
-              stop)
-                kill -TERM "${'$'}pid" 2>/dev/null || exit 3
-                i=0
-                while [ "${'$'}i" -lt 60 ]; do
-                  exact_pid || exit 0
-                  sleep 0.05
-                  i=${'$'}((i + 1))
-                done
-                exact_pid || exit 0
-                kill -KILL "${'$'}pid" 2>/dev/null || exit 4
-                i=0
-                while [ "${'$'}i" -lt 40 ]; do
-                  exact_pid || exit 0
-                  sleep 0.05
-                  i=${'$'}((i + 1))
-                done
-                exit 5
-                ;;
-            esac
-            """.trimIndent() + "\n",
-            Charsets.UTF_8,
-        )
-        Os.chmod(rootControlFile.absolutePath, ROOT_SCRIPT_MODE)
-        true
-    } catch (_: Exception) {
-        false
-    }
-
     private fun isSafeOwnedPath(file: File): Boolean = file.absolutePath
         .let { it.startsWith(runtimeDir.absolutePath + "/") && SAFE_PATH.matches(it) }
 
     private fun isSafeNativePath(file: File): Boolean = file.absolutePath
         .let { it.startsWith(appContext.applicationInfo.nativeLibraryDir + "/") && SAFE_PATH.matches(it) }
 
-    private fun awaitRecordedPid(): Int? {
+    private fun awaitCurrentOwnedPid(): Pair<Int?, RuntimeProcessFailure?> {
         val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(PID_RECORD_TIMEOUT_MS)
+        var sawConflict = false
         while (System.nanoTime() < deadline) {
-            val pid = runCatching { pidFile.readText(Charsets.US_ASCII).trim().toIntOrNull() }.getOrNull()
-            if (pid != null && pid > 0) return pid
+            val resolution = processReconciler.resolveCurrentProcess(configFile)
+                ?: return null to RuntimeProcessFailure.STALE_PROCESS_IDENTITY_MISMATCH
+            when (resolution.decision) {
+                RuntimeCurrentProcessDecision.EXACT -> {
+                    val rawPid = resolution.current?.pid?.toLong()
+                        ?: return null to RuntimeProcessFailure.STALE_PROCESS_IDENTITY_MISMATCH
+                    if (rawPid <= 0 || rawPid > Int.MAX_VALUE.toLong()) {
+                        return null to RuntimeProcessFailure.STALE_PROCESS_IDENTITY_MISMATCH
+                    }
+                    val pid = rawPid.toInt()
+                    if (!persistCanonicalPid(pid)) {
+                        return null to RuntimeProcessFailure.CHILD_PID_OR_PERSISTENCE_FAILED
+                    }
+                    return pid to null
+                }
+                RuntimeCurrentProcessDecision.ABSENT -> Unit
+                RuntimeCurrentProcessDecision.CONFLICT -> sawConflict = true
+                RuntimeCurrentProcessDecision.FAIL_CLOSED ->
+                    return null to RuntimeProcessFailure.STALE_PROCESS_IDENTITY_MISMATCH
+            }
             Thread.sleep(PID_RECORD_RETRY_MS)
         }
-        return null
+        return null to if (sawConflict) {
+            RuntimeProcessFailure.STALE_PROCESS_IDENTITY_MISMATCH
+        } else {
+            RuntimeProcessFailure.CHILD_PID_OR_PERSISTENCE_FAILED
+        }
+    }
+
+    private fun persistCanonicalPid(pid: Int): Boolean = try {
+        if (pid <= 0 || !isSafeOwnedPath(pidFile)) return false
+        FileOutputStream(pidFile).use { output ->
+            output.write("$pid\n".toByteArray(Charsets.US_ASCII))
+            output.fd.sync()
+        }
+        Os.chmod(pidFile.absolutePath, PRIVATE_FILE_MODE)
+        true
+    } catch (_: Exception) {
+        false
     }
 
     /** Rust-owned reconciliation proves all app-owned stale processes absent before identity reset. */
@@ -611,22 +625,6 @@ class ProxyRuntimeSupervisor internal constructor(
         if (!cleanupOwnedOrphanProcesses()) return@runCatching false
         deleteCurrentGenerationFiles(removeManifest = activeGenerationId != null)
     }.getOrDefault(false)
-
-    private fun isExactRootSingBoxAlive(pid: Int): Boolean = runRootControl("status", pid) == 0
-
-    private fun stopExactRootSingBox(pid: Int): Boolean =
-        runRootControl("stop", pid) in setOf(0, ROOT_CONTROL_PROCESS_ABSENT)
-
-    private fun runRootControl(action: String, pid: Int): Int {
-        if (pid <= 0 || action !in ROOT_ACTIONS) return -1
-        val recorded = runCatching { pidFile.readText(Charsets.US_ASCII).trim().toIntOrNull() }.getOrNull()
-        if (recorded != pid || !writeRootControl(action)) return -1
-        return runCatching {
-            SuProcess().run(listOf(MAGISK_SU, "-c", rootControlFile.absolutePath)).let { result ->
-                if (!result.timedOut && result.outputComplete) result.exitCode else -1
-            }
-        }.getOrDefault(-1)
-    }
 
     private fun drainOutput(process: Process) {
         Thread({
@@ -646,15 +644,11 @@ class ProxyRuntimeSupervisor internal constructor(
     }
 
     private fun cleanupFailedStart(
-        pid: Int?,
         privateBridge: CellularBridgeRuntime,
     ): Boolean {
         val terminationConfirmed = if (!ownedRootChildMayExist) {
             true
         } else {
-            // Exact stop is a best-effort fast path only. Rust reconciliation is the authoritative
-            // proof that no app-owned child/sibling remains, so it must never be short-circuited.
-            if (pid != null) runCatching { stopExactRootSingBox(pid) }
             cleanupOwnedOrphanProcesses()
         }
         if (terminationConfirmed) ownedRootChildMayExist = false
@@ -676,12 +670,10 @@ class ProxyRuntimeSupervisor internal constructor(
         ownedChildAccepted = false
         servingCredentialVersion = null
 
-        val currentPid = childPid
         val currentBridge = bridge
         val terminationConfirmed = if (!ownedRootChildMayExist) {
             true
         } else {
-            if (currentPid != null) runCatching { stopExactRootSingBox(currentPid) }
             cleanupOwnedOrphanProcesses()
         }
         if (terminationConfirmed) {
@@ -795,16 +787,15 @@ class ProxyRuntimeSupervisor internal constructor(
         const val START_OWNERSHIP_STABILITY_MS = 500L
         const val HEALTH_RETRY_MS = 100L
         const val HEALTH_POLL_MS = 500L
+        const val OWNERSHIP_POLL_MS = 3_000L
         const val HEALTH_CONNECT_TIMEOUT_MS = 250
         const val PID_RECORD_TIMEOUT_MS = 5_000L
-        const val PID_RECORD_RETRY_MS = 25L
+        const val PID_RECORD_RETRY_MS = 50L
         const val CLOSE_TIMEOUT_SECONDS = 25L
         const val PRIVATE_FILE_MODE = 384 // 0600
         const val ROOT_SCRIPT_MODE = 448 // 0700
-        const val ROOT_CONTROL_PROCESS_ABSENT = 20
         val SAFE_PATH = Regex("""/[A-Za-z0-9_./~=-]+""")
         val GENERATION_ID = Regex("""[A-Za-z0-9_-]{24}""")
-        val ROOT_ACTIONS = setOf("status", "stop")
         val RECOVERABLE_UNEXPECTED_FAILURES = setOf(
             RuntimeProcessFailure.HEALTH_CHECK_FAILED,
             RuntimeProcessFailure.CHILD_EXITED,
