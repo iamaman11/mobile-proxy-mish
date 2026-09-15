@@ -2,7 +2,7 @@
 param(
     [string] $AdbPath = 'C:\mish-lab\tools\android-sdk\platform-tools\adb.exe',
     [string] $PackageName = 'com.mobileproxymish.app.debug',
-    [string] $ComponentName = 'com.mobileproxymish.app.debug/.MainActivity',
+    [string] $ComponentName = 'com.mobileproxymish.app.debug/com.mobileproxymish.app.MainActivity',
     [ValidateRange(5, 180)][int] $StartupTimeoutSeconds = 75,
     [ValidateRange(1, 10)][int] $StablePidSamples = 3,
     [ValidateRange(100, 5000)][int] $PollIntervalMs = 1000,
