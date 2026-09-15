@@ -42,6 +42,8 @@ def main() -> None:
         "cycle_id",
         "Explicitly restart app and wait for bounded stable state",
         "start-device-app.ps1",
+        '-ComponentName "$env:PACKAGE_NAME/com.mobileproxymish.app.MainActivity"',
+        '"- Classification: $([string]$report.classification)"',
         "collect-device-diagnostic.ps1",
         "select-device-cycle-probe.ps1",
         "collect-runtime-identity.ps1",
@@ -61,11 +63,13 @@ def main() -> None:
         "uniffi-bindgen",
         "pm uninstall",
         "adb uninstall",
+        '$env:PACKAGE_NAME/.MainActivity',
+        '"- Classification: `$([string]$report.classification)`"',
     ):
         forbid(
             workflow,
             forbidden,
-            "orchestrator must delegate installation and must never become a builder/uninstaller",
+            "orchestrator must delegate installation and preserve parse-safe exact launch/summary contracts",
         )
 
     physical = ".github/workflows/device-candidate-physical.yml"
@@ -79,6 +83,7 @@ def main() -> None:
 
     start = "lab/windows/start-device-app.ps1"
     for required in (
+        "com.mobileproxymish.app.debug/com.mobileproxymish.app.MainActivity",
         "am', 'force-stop'",
         "am', 'start', '-W'",
         "snapshot_v1",
@@ -87,6 +92,7 @@ def main() -> None:
         "readinessState -ceq 'READY'",
     ):
         require(start, required, "deterministic app start/stabilization contract drifted")
+    forbid(start, "com.mobileproxymish.app.debug/.MainActivity", "launcher component must use the manifest class namespace")
     forbid(start, "su'", "app start stage must stay non-root")
 
     selector = "lab/windows/select-device-cycle-probe.ps1"
