@@ -33,6 +33,7 @@ env:
   PACKAGE_NAME: com.mobileproxymish.app.debug
   ADB_EXE: C:\\mish-lab\\tools\\android-sdk\\platform-tools\\adb.exe
   ANDROID_SDK_ROOT: C:\\mish-lab\\tools\\android-sdk
+  DEVICE_CYCLE_PWSH_VERSION: '7.6.6'
 
 jobs:
   contract:
@@ -47,7 +48,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
       - name: Exercise orchestration and installer contracts
-        shell: powershell
+        shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           .\lab\windows\test-device-candidate.ps1
@@ -243,8 +244,17 @@ jobs:
           persist-credentials: false
           clean: true
 
+      - name: Verify pinned PowerShell 7 runtime
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -File "{0}"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($PSVersionTable.PSEdition -cne 'Core' -or $PSVersionTable.PSVersion.ToString() -cne $env:DEVICE_CYCLE_PWSH_VERSION) {
+            throw "MISH_DEVICE_CYCLE_FAILURE|POWERSHELL_RUNTIME_MISMATCH|Expected PowerShell $env:DEVICE_CYCLE_PWSH_VERSION; observed $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)"
+          }
+          Write-Host "DEVICE_CYCLE_PWSH=$($PSVersionTable.PSVersion)"
+
       - name: Verify physical DEVICE-1 prerequisites
-        shell: powershell
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -File "{0}"'
         run: |
           $ErrorActionPreference = 'Stop'
           if (-not (Test-Path -LiteralPath $env:ADB_EXE -PathType Leaf)) {
@@ -274,7 +284,7 @@ jobs:
           merge-multiple: false
 
       - name: Install exact signed candidate without rebuilding
-        shell: powershell
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -File "{0}"'
         run: |
           $ErrorActionPreference = 'Stop'
           $receiptPath = "$env:RUNNER_TEMP\mish-device-candidate-install.json"
@@ -305,7 +315,7 @@ jobs:
           }
 
       - name: Verify installed APK bytes and signing identity
-        shell: powershell
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -File "{0}"'
         run: |
           $ErrorActionPreference = 'Stop'
           .\lab\windows\verify-installed-candidate.ps1 `
@@ -316,7 +326,7 @@ jobs:
 
       - name: Record in-run install identity
         id: identity
-        shell: powershell
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -File "{0}"'
         run: |
           "install_run_id=$env:GITHUB_RUN_ID" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_OUTPUT
 
@@ -350,8 +360,17 @@ jobs:
           persist-credentials: false
           clean: true
 
+      - name: Verify pinned PowerShell 7 runtime
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -File "{0}"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($PSVersionTable.PSEdition -cne 'Core' -or $PSVersionTable.PSVersion.ToString() -cne $env:DEVICE_CYCLE_PWSH_VERSION) {
+            throw "MISH_DEVICE_CYCLE_FAILURE|POWERSHELL_RUNTIME_MISMATCH|Expected PowerShell $env:DEVICE_CYCLE_PWSH_VERSION; observed $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)"
+          }
+          Write-Host "DEVICE_CYCLE_PWSH=$($PSVersionTable.PSVersion)"
+
       - name: Verify physical DEVICE-1 prerequisites
-        shell: powershell
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -File "{0}"'
         run: |
           $ErrorActionPreference = 'Stop'
           if (-not (Test-Path -LiteralPath $env:ADB_EXE -PathType Leaf)) {
@@ -370,7 +389,7 @@ jobs:
 
       - name: Explicitly restart app and wait for bounded stable state
         if: ${{ needs.resolve.outputs.mode != 'probe_only' }}
-        shell: powershell
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -File "{0}"'
         run: |
           $ErrorActionPreference = 'Stop'
           .\lab\windows\start-device-app.ps1 `
@@ -382,7 +401,7 @@ jobs:
       - name: Collect one canonical diagnostic snapshot
         if: ${{ needs.resolve.outputs.mode != 'probe_only' }}
         continue-on-error: true
-        shell: powershell
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -File "{0}"'
         run: |
           $ErrorActionPreference = 'Stop'
           .\lab\windows\collect-device-diagnostic.ps1 `
@@ -393,7 +412,7 @@ jobs:
       - name: Explicit probe only - runtime identity
         if: ${{ needs.resolve.outputs.mode == 'probe_only' && needs.resolve.outputs.probe == 'runtime_identity' }}
         continue-on-error: true
-        shell: powershell
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -File "{0}"'
         run: |
           $ErrorActionPreference = 'Stop'
           .\lab\windows\collect-runtime-identity.ps1 `
@@ -404,7 +423,7 @@ jobs:
       - name: Explicit probe only - loopback CONNECT
         if: ${{ needs.resolve.outputs.mode == 'probe_only' && needs.resolve.outputs.probe == 'loopback_connect' }}
         continue-on-error: true
-        shell: powershell
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -File "{0}"'
         run: |
           $ErrorActionPreference = 'Stop'
           .\lab\windows\diagnose-loopback-connect.ps1 `
@@ -415,7 +434,7 @@ jobs:
       - name: Build observational cycle report
         id: report
         if: ${{ always() }}
-        shell: powershell
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -File "{0}"'
         env:
           MODE: ${{ needs.resolve.outputs.mode }}
           PR_NUMBER: ${{ needs.resolve.outputs.pr_number }}
@@ -459,7 +478,7 @@ jobs:
 
       - name: Publish cycle summary and stop for analysis
         if: ${{ always() }}
-        shell: powershell
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -File "{0}"'
         run: |
           $reportPath = "$env:RUNNER_TEMP\mish-device-cycle-v1.json"
           if (Test-Path -LiteralPath $reportPath -PathType Leaf) {
@@ -483,7 +502,7 @@ jobs:
 
       - name: Enforce observed result
         if: ${{ always() }}
-        shell: powershell
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -File "{0}"'
         run: |
           $path = "$env:RUNNER_TEMP\mish-device-cycle-v1.json"
           if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
