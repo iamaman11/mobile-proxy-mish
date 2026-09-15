@@ -575,10 +575,10 @@ class ProxyRuntimeSupervisor internal constructor(
             !isSafeOwnedPath(ownedOrphanCleanupFile)
         ) return false
 
-        // The app-private noBackup runtime path is stable across replacement APK versions while
-        // nativeLibraryDir may change. `/proc/<pid>/comm` is only a cheap shell-builtin prefilter
-        // that keeps the scan inside the shared root-command deadline; exact argv shape + the
-        // private config path remain the only authority to terminate a process.
+        // Startup scans are already bounded to one pass. Avoid a lossy `/proc/<pid>/comm`
+        // prefilter: DEVICE-1 proved that an app-owned sing-box can remain visible while that
+        // prefilter misses it. Exact positional argv plus this app-private runtime config path are
+        // sufficient ownership authority and do not widen termination to unrelated processes.
         ownedOrphanCleanupFile.writeText(
             """
             #!/system/bin/sh
@@ -587,9 +587,14 @@ class ProxyRuntimeSupervisor internal constructor(
             owned_pid() {
               pid="${'$'}1"
               [ -r "/proc/${'$'}pid/cmdline" ] || return 1
-              actual="${'$'}(tr '\000' ' ' < "/proc/${'$'}pid/cmdline" 2>/dev/null || true)"
-              case "${'$'}actual" in
-                *"/${SING_BOX_LIBRARY} run -c ${'$'}runtime/sing-box-"*.json\ |*"/${SING_BOX_LIBRARY} run -c ${'$'}runtime/${LEGACY_CONFIG_FILE} ") return 0 ;;
+              actual="${'$'}(tr '\000' '\n' < "/proc/${'$'}pid/cmdline" 2>/dev/null || true)"
+              set -- ${'$'}actual
+              [ "${'$'}#" -eq 4 ] || return 1
+              case "${'$'}1" in */${SING_BOX_LIBRARY}) ;; *) return 1 ;; esac
+              [ "${'$'}2" = run ] || return 1
+              [ "${'$'}3" = -c ] || return 1
+              case "${'$'}4" in
+                "${'$'}runtime"/sing-box-*.json|"${'$'}runtime"/${LEGACY_CONFIG_FILE}) return 0 ;;
                 *) return 1 ;;
               esac
             }
@@ -597,14 +602,6 @@ class ProxyRuntimeSupervisor internal constructor(
             for proc in /proc/[0-9]*; do
               pid="${'$'}{proc#/proc/}"
               case "${'$'}pid" in ''|*[!0-9]*) exit 64;; esac
-              process_name=""
-              if ! IFS= read -r process_name < "/proc/${'$'}pid/comm" 2>/dev/null; then
-                continue
-              fi
-              case "${'$'}process_name" in
-                *singbox*|*sing-box*) ;;
-                *) continue ;;
-              esac
               if owned_pid "${'$'}pid"; then
                 kill -TERM "${'$'}pid" 2>/dev/null || true
                 pids="${'$'}pids ${'$'}pid"
