@@ -10,6 +10,9 @@ on:
       - 'lab/windows/collect-runtime-identity.ps1'
       - 'lab/windows/new-device-cycle-report.ps1'
       - 'lab/windows/test-device-cycle.ps1'
+      - 'tools/check_device_cycle_contract.py'
+      - 'tools/check_architecture.py'
+      - 'docs/architecture/DEVELOPMENT_PIPELINE.md'
   workflow_run:
     workflows: ['Integration Android Preflight']
     types: [completed]
@@ -69,6 +72,7 @@ jobs:
       - name: Checkout exact PR head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
       - name: Exercise orchestration contract
@@ -76,6 +80,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           .\lab\windows\test-device-cycle.ps1
+          python .\tools\check_device_cycle_contract.py
 
   resolve:
     name: Resolve trusted cycle request
@@ -221,7 +226,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   install:
-    name: Exact artifact -> adb install -r
+    name: Exact artifact -> canonical replacement install
     needs: resolve
     if: ${{ needs.resolve.outputs.eligible == 'true' && (needs.resolve.outputs.mode == 'full' || needs.resolve.outputs.mode == 'install_only') }}
     runs-on: ubuntu-latest
@@ -274,7 +279,7 @@ jobs:
                 echo "canonical physical consumer failed: run=$child_id conclusion=${state[1]}" >&2
                 exit 1
               fi
-              echo "DEVICE_CANDIDATE_INSTALL=PASS"
+              echo 'DEVICE_CANDIDATE_INSTALL=PASS'
               exit 0
             fi
             sleep 5
@@ -289,7 +294,8 @@ jobs:
           {
             echo '### Exact candidate install'
             echo '- Canonical child run: `${{ steps.child.outputs.install_run_id }}`'
-            echo '- Install mode: `adb install -r`'
+            echo '- Install owner: `Device Candidate Physical`'
+            echo '- Replacement install: **YES**'
             echo '- Local build: **NO**'
             echo '- Result: `${{ job.status }}`'
           } >> "$GITHUB_STEP_SUMMARY"
@@ -543,15 +549,8 @@ jobs:
           Run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
           EOF
           )"
-          comments="$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments?per_page=100")"
-          comment_id="$(python3 - "$marker" <<<"$comments" <<'PY'
-          import json, sys
-          marker = sys.argv[1]
-          data = json.load(sys.stdin)
-          matches = [item for item in data if marker in str(item.get('body') or '')]
-          print(matches[-1]['id'] if matches else '')
-          PY
-          )"
+          comment_id="$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments?per_page=100" \
+            --jq 'map(select(.body | contains("<!-- mish-device-cycle-checkpoint -->"))) | last | .id // empty')"
           payload="$(jq -nc --arg body "$body" '{body:$body}')"
           if [[ -n "$comment_id" ]]; then
             gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" --input - <<<"$payload" >/dev/null
