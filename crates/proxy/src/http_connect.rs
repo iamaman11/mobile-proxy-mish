@@ -97,7 +97,9 @@ fn parse_connect_authority(authority: &str) -> Result<ProxyConnectTarget, HttpCo
     if host.is_empty()
         || port.is_empty()
         || host.contains(':')
-        || host.bytes().any(|byte| matches!(byte, b'/' | b'@' | b'#' | b'?'))
+        || host
+            .bytes()
+            .any(|byte| matches!(byte, b'/' | b'@' | b'#' | b'?'))
     {
         return Err(HttpConnectError::InvalidTarget);
     }
@@ -121,9 +123,8 @@ fn parse_port(raw: &str) -> Result<u16, HttpConnectError> {
 }
 
 fn expected_basic_authorization(credentials: &ProxyCredentialMaterial) -> String {
-    let mut material = Vec::with_capacity(
-        credentials.username().len() + credentials.password().len() + 1,
-    );
+    let mut material =
+        Vec::with_capacity(credentials.username().len() + credentials.password().len() + 1);
     material.extend_from_slice(credentials.username().as_bytes());
     material.push(b':');
     material.extend_from_slice(credentials.password().as_bytes());
@@ -212,8 +213,7 @@ mod tests {
     use crate::ProxyTargetHost;
 
     fn credentials() -> ProxyCredentialMaterial {
-        ProxyCredentialMaterial::new("public-user", "public-password")
-            .expect("valid credentials")
+        ProxyCredentialMaterial::new("public-user", "public-password").expect("valid credentials")
     }
 
     fn request(authority: &str, authorization: &str) -> Vec<u8> {
@@ -226,7 +226,10 @@ mod tests {
     #[test]
     fn authenticated_domain_remains_unresolved() {
         let parsed = parse_http_connect_request(
-            &request("example.invalid:443", "Basic cHVibGljLXVzZXI6cHVibGljLXBhc3N3b3Jk"),
+            &request(
+                "example.invalid:443",
+                "Basic cHVibGljLXVzZXI6cHVibGljLXBhc3N3b3Jk",
+            ),
             &credentials(),
         )
         .expect("CONNECT accepted");
@@ -241,7 +244,10 @@ mod tests {
     #[test]
     fn ipv4_and_bracketed_ipv6_are_typed_without_dns() {
         let ipv4 = parse_http_connect_request(
-            &request("203.0.113.10:8443", "Basic cHVibGljLXVzZXI6cHVibGljLXBhc3N3b3Jk"),
+            &request(
+                "203.0.113.10:8443",
+                "Basic cHVibGljLXVzZXI6cHVibGljLXBhc3N3b3Jk",
+            ),
             &credentials(),
         )
         .expect("IPv4 accepted");
@@ -251,7 +257,10 @@ mod tests {
         );
 
         let ipv6 = parse_http_connect_request(
-            &request("[2001:db8::1]:443", "Basic cHVibGljLXVzZXI6cHVibGljLXBhc3N3b3Jk"),
+            &request(
+                "[2001:db8::1]:443",
+                "Basic cHVibGljLXVzZXI6cHVibGljLXBhc3N3b3Jk",
+            ),
             &credentials(),
         )
         .expect("IPv6 accepted");
@@ -292,14 +301,20 @@ mod tests {
         );
         assert_eq!(
             parse_http_connect_request(
-                &request("example.invalid:0", "Basic cHVibGljLXVzZXI6cHVibGljLXBhc3N3b3Jk"),
+                &request(
+                    "example.invalid:0",
+                    "Basic cHVibGljLXVzZXI6cHVibGljLXBhc3N3b3Jk"
+                ),
                 &credentials(),
             ),
             Err(HttpConnectError::InvalidTarget)
         );
         assert_eq!(
             parse_http_connect_request(
-                &request("2001:db8::1:443", "Basic cHVibGljLXVzZXI6cHVibGljLXBhc3N3b3Jk"),
+                &request(
+                    "2001:db8::1:443",
+                    "Basic cHVibGljLXVzZXI6cHVibGljLXBhc3N3b3Jk"
+                ),
                 &credentials(),
             ),
             Err(HttpConnectError::InvalidTarget)
