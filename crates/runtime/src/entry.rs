@@ -13,5 +13,8 @@ pub use cellular_connector::*;
 mod cellular_runtime;
 pub use cellular_runtime::*;
 
+mod private_bridge_connector;
+pub use private_bridge_connector::*;
+
 mod proxy_runtime;
 pub use proxy_runtime::*;
