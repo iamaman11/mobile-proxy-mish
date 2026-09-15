@@ -4,9 +4,7 @@
 //! `mish-proxy`. This crate owns only the temporary loopback listener required while PRODUCT is
 //! still migrating away from the external sing-box child.
 
-use mish_proxy::{
-    ProxyCredentialMaterial, ProxyPolicyError, ProxyProtocol, serve_proxy_session,
-};
+use mish_proxy::{ProxyCredentialMaterial, ProxyPolicyError, ProxyProtocol, serve_proxy_session};
 use std::fmt;
 use std::io;
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
