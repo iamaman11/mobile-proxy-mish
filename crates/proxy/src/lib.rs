@@ -6,11 +6,18 @@
 
 mod http_connect;
 mod mixed;
+mod session;
 mod socks5;
 mod target;
 
 pub use http_connect::{HttpConnectError, parse_http_connect_request};
-pub use mixed::{MixedConnectError, accept_mixed_connect};
+pub use mixed::{
+    HttpConnectStreamError, MixedConnectError, accept_http_connect_stream, accept_mixed_connect,
+};
+pub use session::{
+    ProxyOutboundConnectError, ProxyOutboundConnector, ProxyRelayStats, ProxySessionError,
+    serve_proxy_session,
+};
 pub use socks5::{
     Socks5ProtocolError, Socks5Reply, Socks5SessionError, accept_socks5_connect, write_socks5_reply,
 };
