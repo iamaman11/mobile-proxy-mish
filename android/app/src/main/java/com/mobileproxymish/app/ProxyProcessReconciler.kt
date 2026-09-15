@@ -69,6 +69,7 @@ internal class ProxyProcessReconciler(
             val argv = parts.drop(OBSERVATION_PREFIX_FIELDS)
             if (argv.size > MAX_OBSERVED_ARGV) return null
             if (argv.any { it.length > MAX_ARG_CHARS || !SAFE_ARG.matches(it) }) return null
+            if (!procCmdlineSnapshotMatchesDigest(argv, digest)) return null
 
             observations += RuntimeProcessObservationView(
                 pid = pid,
@@ -153,12 +154,12 @@ internal class ProxyProcessReconciler(
 
     private fun writeTerminationScript(targets: List<RuntimeProcessTerminationTargetView>): Boolean = try {
         if (!isSafeOwnedPath(terminationScript)) return false
+        if (targets.any { target ->
+                target.pid == 0uL || !SHA256_HEX.matches(target.cmdlineDigest)
+            }) return false
         val cases = targets.joinToString("\n") { target ->
             val pid = target.pid.toString()
             val digest = target.cmdlineDigest
-            if (pid.toULongOrNull()?.let { it > 0uL } != true || !SHA256_HEX.matches(digest)) {
-                return false
-            }
             "    $pid) printf '%s\\n' '$digest' ;;"
         }
         val pids = targets.joinToString(" ") { it.pid.toString() }
