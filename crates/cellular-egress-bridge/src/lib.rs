@@ -31,11 +31,12 @@ impl BridgeCredentials {
     pub fn new(username: String, password: String) -> Result<Self, BridgeConfigError> {
         validate_auth_field(&username, BridgeConfigError::InvalidUsername)?;
         validate_auth_field(&password, BridgeConfigError::InvalidPassword)?;
-        let material = ProxyCredentialMaterial::new(username, password).map_err(|error| match error {
-            ProxyPolicyError::EmptyUsername => BridgeConfigError::InvalidUsername,
-            ProxyPolicyError::EmptyPassword => BridgeConfigError::InvalidPassword,
-            ProxyPolicyError::WildcardListenAddress => BridgeConfigError::InvalidUsername,
-        })?;
+        let material =
+            ProxyCredentialMaterial::new(username, password).map_err(|error| match error {
+                ProxyPolicyError::EmptyUsername => BridgeConfigError::InvalidUsername,
+                ProxyPolicyError::EmptyPassword => BridgeConfigError::InvalidPassword,
+                ProxyPolicyError::WildcardListenAddress => BridgeConfigError::InvalidUsername,
+            })?;
         Ok(Self { material })
     }
 
@@ -152,7 +153,9 @@ impl BridgeListener {
         credentials: BridgeCredentials,
     ) -> Result<Self, BridgeBindError> {
         if !address.is_loopback() {
-            return Err(BridgeBindError::Config(BridgeConfigError::NonLoopbackAddress));
+            return Err(BridgeBindError::Config(
+                BridgeConfigError::NonLoopbackAddress,
+            ));
         }
         let listener =
             TcpListener::bind(SocketAddr::new(address, port)).map_err(BridgeBindError::Io)?;
@@ -303,7 +306,9 @@ mod tests {
         let result = BridgeListener::bind(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0, credentials());
         assert!(matches!(
             result,
-            Err(BridgeBindError::Config(BridgeConfigError::NonLoopbackAddress))
+            Err(BridgeBindError::Config(
+                BridgeConfigError::NonLoopbackAddress
+            ))
         ));
     }
 
