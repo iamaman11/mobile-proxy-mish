@@ -109,7 +109,8 @@ where
         }
         sessions
             .into_iter()
-            .filter(|session| session.join().expect("proxy session"))
+            .map(|session| session.join().expect("proxy session"))
+            .filter(|success| *success)
             .count()
     });
     (address, handle)
