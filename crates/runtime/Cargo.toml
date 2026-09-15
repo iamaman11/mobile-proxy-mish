@@ -14,6 +14,7 @@ path = "src/entry.rs"
 mish-cellular = { path = "../cellular" }
 mish-cellular-egress-bridge = { path = "../cellular-egress-bridge" }
 mish-configuration = { path = "../configuration" }
+mish-proxy = { path = "../proxy" }
 
 [lints]
 workspace = true
