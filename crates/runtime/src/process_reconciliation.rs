@@ -18,6 +18,12 @@ pub struct RuntimeProcessObservation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeProcessIdentity {
+    pub pid: u64,
+    pub cmdline_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeProcessTerminationTarget {
     pub pid: u64,
     pub cmdline_digest: String,
@@ -36,6 +42,20 @@ pub struct RuntimeProcessCleanupPlan {
     pub terminate: Vec<RuntimeProcessTerminationTarget>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeCurrentProcessDecision {
+    Exact,
+    Absent,
+    Conflict,
+    FailClosed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeCurrentProcessResolution {
+    pub decision: RuntimeCurrentProcessDecision,
+    pub current: Option<RuntimeProcessIdentity>,
+}
+
 /// Classify one bounded process snapshot against the only accepted PRODUCT launch shape.
 ///
 /// Prefix/suffix wrapper argv are tolerated because old process generations may have been started
@@ -49,18 +69,15 @@ pub fn plan_runtime_process_cleanup(
     observations: &[RuntimeProcessObservation],
 ) -> RuntimeProcessCleanupPlan {
     if !is_safe_runtime_dir(runtime_dir) {
-        return fail_closed();
+        return fail_closed_cleanup();
     }
 
     let mut terminate = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
 
     for observation in observations {
-        if observation.pid == 0
-            || !is_sha256_hex(&observation.cmdline_digest)
-            || !seen.insert(observation.pid)
-        {
-            return fail_closed();
+        if !valid_observation_identity(observation, &mut seen) {
+            return fail_closed_cleanup();
         }
 
         let mentions_owned_config = observation
@@ -68,16 +85,11 @@ pub fn plan_runtime_process_cleanup(
             .iter()
             .any(|arg| is_owned_config_path(runtime_dir, arg));
         let mentions_runtime_binary = observation.argv.iter().any(|arg| is_runtime_binary(arg));
-        let owned = observation.argv.windows(4).any(|window| {
-            is_runtime_binary(&window[0])
-                && window[1] == "run"
-                && window[2] == "-c"
-                && is_owned_config_path(runtime_dir, &window[3])
-        });
+        let owned = exact_owned_config(runtime_dir, observation).is_some();
 
         if owned {
             if observation.unsafe_argv {
-                return fail_closed();
+                return fail_closed_cleanup();
             }
             terminate.push(RuntimeProcessTerminationTarget {
                 pid: observation.pid,
@@ -92,7 +104,7 @@ pub fn plan_runtime_process_cleanup(
         if mentions_owned_config
             || (mentions_runtime_binary && (observation.truncated || observation.unsafe_argv))
         {
-            return fail_closed();
+            return fail_closed_cleanup();
         }
     }
 
@@ -109,10 +121,111 @@ pub fn plan_runtime_process_cleanup(
     }
 }
 
-fn fail_closed() -> RuntimeProcessCleanupPlan {
+/// Resolve the one exact process serving the current generation.
+///
+/// The launcher PID is deliberately not an input. Android/root supplies only bounded process
+/// observations; this owner binds the accepted current PID to the exact current config path. Any
+/// app-owned sibling, duplicate current process, malformed app-private candidate, or ambiguous
+/// snapshot fails closed instead of allowing listener reachability to publish a false RUNNING.
+pub fn resolve_current_runtime_process(
+    runtime_dir: &str,
+    current_config_path: &str,
+    observations: &[RuntimeProcessObservation],
+) -> RuntimeCurrentProcessResolution {
+    if !is_safe_runtime_dir(runtime_dir) || !is_owned_config_path(runtime_dir, current_config_path) {
+        return fail_closed_resolution();
+    }
+
+    let mut seen = std::collections::BTreeSet::new();
+    let mut current = Vec::new();
+    let mut stale_owned = false;
+
+    for observation in observations {
+        if !valid_observation_identity(observation, &mut seen) {
+            return fail_closed_resolution();
+        }
+
+        let mentions_owned_config = observation
+            .argv
+            .iter()
+            .any(|arg| is_owned_config_path(runtime_dir, arg));
+        let mentions_runtime_binary = observation.argv.iter().any(|arg| is_runtime_binary(arg));
+        let owned_config = exact_owned_config(runtime_dir, observation);
+
+        if let Some(config) = owned_config {
+            if observation.unsafe_argv {
+                return fail_closed_resolution();
+            }
+            if config == current_config_path {
+                current.push(RuntimeProcessIdentity {
+                    pid: observation.pid,
+                    cmdline_digest: observation.cmdline_digest.clone(),
+                });
+            } else {
+                stale_owned = true;
+            }
+            continue;
+        }
+
+        if mentions_owned_config
+            || (mentions_runtime_binary && (observation.truncated || observation.unsafe_argv))
+        {
+            return fail_closed_resolution();
+        }
+    }
+
+    if stale_owned || current.len() > 1 {
+        return RuntimeCurrentProcessResolution {
+            decision: RuntimeCurrentProcessDecision::Conflict,
+            current: None,
+        };
+    }
+
+    match current.pop() {
+        Some(identity) => RuntimeCurrentProcessResolution {
+            decision: RuntimeCurrentProcessDecision::Exact,
+            current: Some(identity),
+        },
+        None => RuntimeCurrentProcessResolution {
+            decision: RuntimeCurrentProcessDecision::Absent,
+            current: None,
+        },
+    }
+}
+
+fn valid_observation_identity(
+    observation: &RuntimeProcessObservation,
+    seen: &mut std::collections::BTreeSet<u64>,
+) -> bool {
+    observation.pid != 0
+        && is_sha256_hex(&observation.cmdline_digest)
+        && seen.insert(observation.pid)
+}
+
+fn exact_owned_config<'a>(
+    runtime_dir: &str,
+    observation: &'a RuntimeProcessObservation,
+) -> Option<&'a str> {
+    observation.argv.windows(4).find_map(|window| {
+        (is_runtime_binary(&window[0])
+            && window[1] == "run"
+            && window[2] == "-c"
+            && is_owned_config_path(runtime_dir, &window[3]))
+        .then_some(window[3].as_str())
+    })
+}
+
+fn fail_closed_cleanup() -> RuntimeProcessCleanupPlan {
     RuntimeProcessCleanupPlan {
         decision: RuntimeProcessCleanupDecision::FailClosed,
         terminate: Vec::new(),
+    }
+}
+
+fn fail_closed_resolution() -> RuntimeCurrentProcessResolution {
+    RuntimeCurrentProcessResolution {
+        decision: RuntimeCurrentProcessDecision::FailClosed,
+        current: None,
     }
 }
 
@@ -267,5 +380,93 @@ mod tests {
             plan_runtime_process_cleanup(RUNTIME, &[candidate]).decision,
             RuntimeProcessCleanupDecision::FailClosed
         );
+    }
+
+    #[test]
+    fn current_process_resolution_uses_exact_current_config_not_launcher_pid() {
+        let config = current_config();
+        let resolution = resolve_current_runtime_process(
+            RUNTIME,
+            &config,
+            &[observation(
+                303,
+                &[
+                    "/system/bin/toybox",
+                    "nohup",
+                    "/data/app/lib/libsingbox.so",
+                    "run",
+                    "-c",
+                    &config,
+                ],
+            )],
+        );
+        assert_eq!(resolution.decision, RuntimeCurrentProcessDecision::Exact);
+        assert_eq!(resolution.current.expect("exact current process").pid, 303);
+    }
+
+    #[test]
+    fn current_process_resolution_ignores_foreign_and_reports_absent() {
+        let config = current_config();
+        let resolution = resolve_current_runtime_process(
+            RUNTIME,
+            &config,
+            &[observation(
+                404,
+                &[
+                    "/data/local/tmp/libsingbox.so",
+                    "run",
+                    "-c",
+                    "/data/local/tmp/foreign.json",
+                ],
+            )],
+        );
+        assert_eq!(resolution.decision, RuntimeCurrentProcessDecision::Absent);
+        assert!(resolution.current.is_none());
+    }
+
+    #[test]
+    fn stale_owned_sibling_or_duplicate_current_is_conflict() {
+        let current = current_config();
+        let stale = format!("{RUNTIME}/sing-box-zyxwvutsrqponmlkjihgfedc.json");
+        let current_observation = observation(
+            505,
+            &["/data/app/lib/libsingbox.so", "run", "-c", &current],
+        );
+        let stale_observation = observation(
+            506,
+            &["/data/app/lib/libsingbox.so", "run", "-c", &stale],
+        );
+        assert_eq!(
+            resolve_current_runtime_process(
+                RUNTIME,
+                &current,
+                &[current_observation.clone(), stale_observation],
+            )
+            .decision,
+            RuntimeCurrentProcessDecision::Conflict
+        );
+
+        let mut duplicate = current_observation.clone();
+        duplicate.pid = 507;
+        assert_eq!(
+            resolve_current_runtime_process(RUNTIME, &current, &[current_observation, duplicate])
+                .decision,
+            RuntimeCurrentProcessDecision::Conflict
+        );
+    }
+
+    #[test]
+    fn ambiguous_current_candidate_fails_closed() {
+        let config = current_config();
+        let resolution = resolve_current_runtime_process(
+            RUNTIME,
+            &config,
+            &[observation(606, &["/system/bin/sh", "-c", &config])],
+        );
+        assert_eq!(
+            resolution.decision,
+            RuntimeCurrentProcessDecision::FailClosed
+        );
+        assert!(resolution.current.is_none());
     }
 }
