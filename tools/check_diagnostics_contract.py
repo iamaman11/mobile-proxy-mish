@@ -68,6 +68,9 @@ def main() -> None:
     require(workflow, "github.event.comment.user.login == 'iamaman11'", "owner gate")
     require(workflow, "github.event.comment.body == '/mish-diag snapshot'", "strict command grammar")
     require(workflow, 'collect-device-diagnostic.ps1', "canonical collector")
+    require(workflow, '$env:RUNNER_TEMP\\mish-device-diagnostic-v1.json', "runtime evidence path")
+    require(workflow, '${{ runner.temp }}\\mish-device-diagnostic-v1.json', "step-scoped artifact path")
+    forbid(workflow, 'EVIDENCE_PATH: ${{ runner.temp }}', "runner context in job-level env")
 
     print("diagnostics contract: PASS")
 
