@@ -14,11 +14,37 @@ $ErrorActionPreference = 'Stop'
 $schema = 'mish.device-start/v1'
 $snapshotMethod = 'snapshot_v1'
 
+function Write-MishDeviceStartFailureReceipt {
+    param([Parameter(Mandatory)][string] $Category)
+    try {
+        $failureReceipt = [ordered]@{
+            schema = $schema
+            collected_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
+            result = 'FAIL'
+            package = $PackageName
+            component = $ComponentName
+            failure_category = $Category
+        }
+        $fullReceiptPath = [IO.Path]::GetFullPath($ReceiptPath)
+        $parent = Split-Path -Parent $fullReceiptPath
+        if ($parent) { [IO.Directory]::CreateDirectory($parent) | Out-Null }
+        [IO.File]::WriteAllText(
+            $fullReceiptPath,
+            (($failureReceipt | ConvertTo-Json -Depth 4) + [Environment]::NewLine),
+            [Text.UTF8Encoding]::new($false)
+        )
+    }
+    catch {
+        # Preserve the original typed launcher failure even if evidence persistence is unavailable.
+    }
+}
+
 function Stop-MishDeviceStart {
     param(
         [Parameter(Mandatory)][string] $Category,
         [Parameter(Mandatory)][string] $Message
     )
+    Write-MishDeviceStartFailureReceipt -Category $Category
     throw "MISH_DEVICE_START_FAILURE|$Category|$Message"
 }
 
@@ -145,9 +171,11 @@ if ($finalPid.ExitCode -ne 0 -or $finalPid.Text -cne $stablePid) {
 
 $receipt = [ordered]@{
     schema = $schema
+    collected_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
     result = 'PASS'
     package = $PackageName
     component = $ComponentName
+    failure_category = 'NONE'
     pid = [int]$stablePid
     pid_stable = $true
     terminal_observation = $terminalObservation
