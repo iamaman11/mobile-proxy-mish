@@ -208,7 +208,7 @@ fn read_connect_reply(stream: &mut TcpStream) -> Result<(), OutboundConnectError
     if header[1] != 0 {
         return Err(match header[1] {
             0x02 => OutboundConnectError::Rejected,
-            0x03 | 0x04 | 0x05 | 0x06 => OutboundConnectError::Unavailable,
+            0x03..=0x06 => OutboundConnectError::Unavailable,
             _ => OutboundConnectError::Failed,
         });
     }
