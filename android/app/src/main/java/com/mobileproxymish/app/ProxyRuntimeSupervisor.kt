@@ -576,8 +576,9 @@ class ProxyRuntimeSupervisor internal constructor(
         ) return false
 
         // The app-private noBackup runtime path is stable across replacement APK versions while
-        // nativeLibraryDir may change. Matching exact argv shape + that private config path safely
-        // catches an orphan created by an older APK without broad process-name killing.
+        // nativeLibraryDir may change. `/proc/<pid>/comm` is only a cheap shell-builtin prefilter
+        // that keeps the scan inside the shared root-command deadline; exact argv shape + the
+        // private config path remain the only authority to terminate a process.
         ownedOrphanCleanupFile.writeText(
             """
             #!/system/bin/sh
@@ -596,6 +597,14 @@ class ProxyRuntimeSupervisor internal constructor(
             for proc in /proc/[0-9]*; do
               pid="${'$'}{proc#/proc/}"
               case "${'$'}pid" in ''|*[!0-9]*) exit 64;; esac
+              process_name=""
+              if ! IFS= read -r process_name < "/proc/${'$'}pid/comm" 2>/dev/null; then
+                continue
+              fi
+              case "${'$'}process_name" in
+                *singbox*|*sing-box*) ;;
+                *) continue ;;
+              esac
               if owned_pid "${'$'}pid"; then
                 kill -TERM "${'$'}pid" 2>/dev/null || true
                 pids="${'$'}pids ${'$'}pid"
