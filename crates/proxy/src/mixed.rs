@@ -29,7 +29,7 @@ pub fn accept_mixed_connect<S: Read + Write>(
             Ok((ProxyProtocol::Socks5, target))
         }
         HTTP_CONNECT_DISCRIMINATOR => {
-            let target = accept_http_connect(&mut replay, credentials)?;
+            let target = accept_http_connect_stream(&mut replay, credentials)?;
             Ok((ProxyProtocol::Http, target))
         }
         _ => Err(MixedConnectError::UnsupportedProtocol),
@@ -49,26 +49,31 @@ fn read_discriminator<R: Read>(stream: &mut R) -> Result<u8, MixedConnectError> 
     }
 }
 
-fn accept_http_connect<R: Read>(
+/// Reads exactly one bounded HTTP CONNECT header from a stream and leaves tunnel bytes unread.
+pub fn accept_http_connect_stream<R: Read>(
     stream: &mut R,
     credentials: &ProxyCredentialMaterial,
-) -> Result<ProxyConnectTarget, MixedConnectError> {
+) -> Result<ProxyConnectTarget, HttpConnectStreamError> {
     let mut request = Vec::new();
 
     loop {
         let mut byte = [0_u8; 1];
         match stream.read(&mut byte) {
-            Ok(0) => return Err(MixedConnectError::Http(HttpConnectError::IncompleteHeader)),
+            Ok(0) => {
+                return Err(HttpConnectStreamError::Protocol(
+                    HttpConnectError::IncompleteHeader,
+                ));
+            }
             Ok(1) => request.push(byte[0]),
             Ok(_) => unreachable!("one-byte read cannot return more than one byte"),
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(MixedConnectError::Io(error)),
+            Err(error) => return Err(HttpConnectStreamError::Io(error)),
         }
 
         match parse_http_connect_request(&request, credentials) {
             Err(HttpConnectError::IncompleteHeader) => {}
             Ok(target) => return Ok(target),
-            Err(error) => return Err(MixedConnectError::Http(error)),
+            Err(error) => return Err(HttpConnectStreamError::Protocol(error)),
         }
     }
 }
@@ -111,11 +116,47 @@ impl<S: Write> Write for ReplayIo<'_, S> {
 }
 
 #[derive(Debug)]
+pub enum HttpConnectStreamError {
+    Io(io::Error),
+    Protocol(HttpConnectError),
+}
+
+impl fmt::Display for HttpConnectStreamError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(error) => write!(formatter, "HTTP CONNECT stream I/O failed: {error}"),
+            Self::Protocol(error) => write!(formatter, "HTTP CONNECT protocol failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for HttpConnectStreamError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            Self::Protocol(error) => Some(error),
+        }
+    }
+}
+
+impl From<io::Error> for HttpConnectStreamError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl From<HttpConnectError> for HttpConnectStreamError {
+    fn from(error: HttpConnectError) -> Self {
+        Self::Protocol(error)
+    }
+}
+
+#[derive(Debug)]
 pub enum MixedConnectError {
     EmptyStream,
     UnsupportedProtocol,
     Io(io::Error),
-    Http(HttpConnectError),
+    Http(HttpConnectStreamError),
     Socks5(Socks5SessionError),
 }
 
@@ -143,6 +184,12 @@ impl std::error::Error for MixedConnectError {
             Self::Socks5(error) => Some(error),
             Self::EmptyStream | Self::UnsupportedProtocol => None,
         }
+    }
+}
+
+impl From<HttpConnectStreamError> for MixedConnectError {
+    fn from(error: HttpConnectStreamError) -> Self {
+        Self::Http(error)
     }
 }
 
@@ -270,7 +317,9 @@ mod tests {
         let mut incomplete = TestIo::new(b"CONNECT example.invalid:443 HTTP/1.1\r\n".to_vec());
         assert!(matches!(
             accept_mixed_connect(&mut incomplete, &credentials()),
-            Err(MixedConnectError::Http(HttpConnectError::IncompleteHeader))
+            Err(MixedConnectError::Http(HttpConnectStreamError::Protocol(
+                HttpConnectError::IncompleteHeader
+            )))
         ));
     }
 }
