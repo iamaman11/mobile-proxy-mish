@@ -4,18 +4,20 @@
 //! `mish-proxy`. This crate owns only the temporary loopback listener required while PRODUCT is
 //! still migrating away from the external sing-box child.
 
-use mish_proxy::{ProxyCredentialMaterial, ProxyPolicyError, ProxyProtocol, serve_proxy_session};
+use mish_proxy::{ProxyPolicyError, serve_proxy_session};
 use std::fmt;
 use std::io;
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 
 const MAX_AUTH_FIELD_LEN: usize = u8::MAX as usize;
 
+pub use mish_proxy::serve_proxy_session as serve_session;
 pub use mish_proxy::{
-    ProxyConnectTarget as ConnectTarget, ProxyOutboundConnectError as OutboundConnectError,
-    ProxyOutboundConnector as CellularOutboundConnector, ProxyRelayStats as RelayStats,
-    ProxySessionError as SessionError, ProxyTargetHost as TargetHost,
-    Socks5ProtocolError as ProtocolError,
+    ProxyConnectTarget as ConnectTarget, ProxyCredentialMaterial,
+    ProxyOutboundConnectError as OutboundConnectError,
+    ProxyOutboundConnector as CellularOutboundConnector, ProxyProtocol,
+    ProxyRelayStats as RelayStats, ProxyServingPlan, ProxySessionError as SessionError,
+    ProxyTargetHost as TargetHost, Socks5ProtocolError as ProtocolError,
 };
 
 /// Runtime-generation credentials retained only as a compatibility façade for the
