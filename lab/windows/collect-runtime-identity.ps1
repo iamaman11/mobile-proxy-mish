@@ -62,11 +62,11 @@ foreach ($pidFile in $pidFiles) {
     $generation = $Matches[1]
     $pidText = (@(& $AdbPath shell run-as $PackageName cat "$runtimePath/$pidFile" 2>$null) -join "`n").Trim()
     if ($LASTEXITCODE -ne 0 -or $pidText -notmatch '^\d+$') { continue }
-    $pid = [int]$pidText
+    $recordedPidValue = [int]$pidText
     $recordedPidCount += 1
-    $recordedPids += $pid
+    $recordedPids += $recordedPidValue
     if ($null -ne $currentGeneration -and $generation -ceq $currentGeneration) {
-        $currentRecordedPid = $pid
+        $currentRecordedPid = $recordedPidValue
     }
     $escapedPid = [regex]::Escape($pidText)
     $matchesVisible = @($singBoxRows | Where-Object { $_ -match "^\S+\s+$escapedPid\s+" }).Count -eq 1
