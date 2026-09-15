@@ -88,6 +88,23 @@ $cycleResult = switch ($Mode) {
     }
 }
 
+# This field answers a different question from cycle_result. `cycle_result=PASS` can mean that a
+# targeted read-only probe was collected successfully. Only `full` installs/verifies the exact
+# candidate and then exercises the canonical PRODUCT baseline, so only that mode can accept/reject
+# the exact PRODUCT candidate. LAB/infrastructure failure leaves PRODUCT acceptance unevaluated.
+$exactCandidateAcceptance = if ($Mode -cne 'full') {
+    'NOT_EVALUATED'
+}
+elseif ($cycleResult -ceq 'PASS') {
+    'PASS'
+}
+elseif ($cycleResult -ceq 'PRODUCT_FAIL') {
+    'FAIL'
+}
+else {
+    'NOT_EVALUATED'
+}
+
 $sourceIdentityClaim = if ($Mode -in @('full', 'install_only')) {
     'EXACT_INSTALLED_CANDIDATE'
 }
@@ -113,8 +130,7 @@ $report = [ordered]@{
     install_run_id = $InstallRunId
     cycle_result = $cycleResult
     classification = $classification
-    launch = $launch
-    diagnostic = $diagnostic
+    exact_candidate_acceptance = $exactCandidateAcceptance
     targeted_probe = [ordered]@{
         requested = $RequestedProbe
         automatic = $false
@@ -134,6 +150,7 @@ if ($parent) { [IO.Directory]::CreateDirectory($parent) | Out-Null }
 
 Write-Host "MISH_DEVICE_CYCLE_RESULT=$cycleResult"
 Write-Host "MISH_DEVICE_CYCLE_CLASSIFICATION=$classification"
+Write-Host "MISH_DEVICE_CYCLE_EXACT_CANDIDATE_ACCEPTANCE=$exactCandidateAcceptance"
 Write-Host "MISH_DEVICE_CYCLE_SOURCE_IDENTITY=$sourceIdentityClaim"
 Write-Host "MISH_DEVICE_CYCLE_CONTROL_SHA=$ControlSha"
 Write-Host "MISH_DEVICE_CYCLE_REPORT=$fullOutputPath"
