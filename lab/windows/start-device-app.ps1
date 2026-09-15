@@ -78,6 +78,7 @@ $deadline = [DateTimeOffset]::UtcNow.AddSeconds($StartupTimeoutSeconds)
 $lastPid = $null
 $stableCount = 0
 $stablePid = $null
+$proxyRunningSamples = 0
 $proxyState = 'UNKNOWN'
 $readinessState = 'UNKNOWN'
 $terminalObservation = 'TIMEOUT'
@@ -88,6 +89,7 @@ while ([DateTimeOffset]::UtcNow -lt $deadline) {
     if ($null -eq $pid) {
         $lastPid = $null
         $stableCount = 0
+        $proxyRunningSamples = 0
         Start-Sleep -Milliseconds $PollIntervalMs
         continue
     }
@@ -98,6 +100,7 @@ while ([DateTimeOffset]::UtcNow -lt $deadline) {
     else {
         $lastPid = $pid
         $stableCount = 1
+        $proxyRunningSamples = 0
     }
 
     if ($stableCount -ge $StablePidSamples) {
@@ -113,6 +116,16 @@ while ([DateTimeOffset]::UtcNow -lt $deadline) {
             if ($readinessState -ceq 'READY') {
                 $terminalObservation = 'READY'
                 break
+            }
+            if ($proxyState -ceq 'RUNNING') {
+                $proxyRunningSamples += 1
+                if ($proxyRunningSamples -ge 2) {
+                    $terminalObservation = 'PROXY_RUNNING'
+                    break
+                }
+            }
+            else {
+                $proxyRunningSamples = 0
             }
         }
     }
