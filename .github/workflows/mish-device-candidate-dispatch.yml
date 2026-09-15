@@ -1,0 +1,54 @@
+name: MISH Device Candidate Dispatch
+
+on:
+  push:
+    branches:
+      - mish-lab-control
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: mish-device-candidate-dispatch
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    name: Dispatch protected-main candidate consumer
+    if: github.actor == 'iamaman11' && startsWith(github.event.head_commit.message, '/mish-install ')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Parse bounded install command and dispatch canonical workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$COMMIT_MESSAGE" =~ ^/mish-install\ pr=([1-9][0-9]*)\ sha=([0-9a-f]{40})$ ]]; then
+            pr_number="${BASH_REMATCH[1]}"
+            expected_sha="${BASH_REMATCH[2]}"
+          else
+            echo 'Install command must be exactly: /mish-install pr=<number> sha=<40-hex>' >&2
+            exit 64
+          fi
+
+          payload="$(jq -nc \
+            --arg pr "$pr_number" \
+            --arg sha "$expected_sha" \
+            '{ref:"main",inputs:{pr_number:$pr,expected_head_sha:$sha}}')"
+
+          curl --proto '=https' --tlsv1.2 --fail-with-body --silent --show-error \
+            --request POST \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/$REPOSITORY/actions/workflows/device-candidate-physical.yml/dispatches" \
+            --data "$payload"
+
+          echo "DEVICE_CANDIDATE_DISPATCH=REQUESTED"
+          echo "PR_NUMBER=$pr_number"
+          echo "EXPECTED_HEAD_SHA=$expected_sha"
