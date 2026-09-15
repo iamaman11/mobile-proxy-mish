@@ -94,6 +94,8 @@ def main() -> None:
         "am', 'start', '-W'",
         "snapshot_v1",
         "processIdResult",
+        "Write-MishDeviceStartFailureReceipt",
+        "failure_category",
         "PROCESS_NOT_STABLE",
         "PRODUCT_TERMINAL_FAILURE",
         "readinessState -ceq 'READY'",
@@ -125,6 +127,17 @@ def main() -> None:
         require(runtime_identity, required, "runtime identity probe contract drifted")
     forbid(runtime_identity, " su ", "runtime identity probe must stay read-only/non-root")
 
+    report = "lab/windows/new-device-cycle-report.ps1"
+    for required in (
+        "LAB_LAUNCH_",
+        "LAB_PROBE_SELECTION_FAILED",
+        "LAB_TARGETED_PROBE_COLLECTION_FAILED",
+        "targetedRequired",
+        "evidence_present",
+        "MANUAL_PROBE_COMPLETED",
+    ):
+        require(report, required, "cycle report must preserve LAB attribution and reject missing requested evidence")
+
     test = "lab/windows/test-device-cycle.ps1"
     for required in (
         "DEVICE_CYCLE_CONTRACT=PASS",
@@ -134,16 +147,24 @@ def main() -> None:
         "ownership failure wins over transport classification",
         "loopback failure selects raw CONNECT probe",
         "Explicit manual probe override was not preserved",
-        "PRODUCT_FAIL",
+        "Product failure was not preserved while optional targeted evidence was missing.",
+        "Typed launcher failure was not preserved as a LAB failure.",
+        "Missing probe-only evidence must fail closed instead of reporting PASS.",
+        "Missing requested diagnose-only probe evidence must fail closed.",
+        "Probe-only PASS requires actual targeted evidence.",
     ):
         require(test, required, "device-cycle executable regression coverage drifted")
 
     docs = "docs/architecture/DEVELOPMENT_PIPELINE.md"
     for required in (
+        "## DEVICE-1 development candidate installer",
+        "post-install launch/diagnostics belong to `device-cycle.yml`",
+        "bounded install receipt / handoff back to Device Cycle",
         "## Canonical DEVICE-1 repair cycle",
         "full / install_only / diagnose_only / probe_only",
         "Automatic mode never runs airplane recovery",
         "Manual modes do not weaken exact-head provenance",
+        "first evidence-producing diagnostic action is the canonical aggregate",
     ):
         require(docs, required, "stable device-cycle documentation drifted")
 
