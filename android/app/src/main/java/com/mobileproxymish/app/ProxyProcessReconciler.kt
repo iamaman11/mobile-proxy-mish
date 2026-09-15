@@ -2,10 +2,12 @@ package com.mobileproxymish.app
 
 import android.system.Os
 import com.mobileproxymish.app.cellular.SuProcess
+import com.mobileproxymish.ffi.RuntimeCurrentProcessResolutionView
 import com.mobileproxymish.ffi.RuntimeProcessCleanupDecision
 import com.mobileproxymish.ffi.RuntimeProcessObservationView
 import com.mobileproxymish.ffi.RuntimeProcessTerminationTargetView
 import com.mobileproxymish.ffi.planRuntimeProcessCleanup
+import com.mobileproxymish.ffi.resolveCurrentRuntimeProcess
 import java.io.File
 
 /**
@@ -45,6 +47,18 @@ internal class ProxyProcessReconciler(
             planRuntimeProcessCleanup(runtimeDir.absolutePath, finalObservations)
         }.getOrNull() ?: return false
         return finalPlan.decision == RuntimeProcessCleanupDecision.CLEAN
+    }
+
+    fun resolveCurrentProcess(configFile: File): RuntimeCurrentProcessResolutionView? {
+        if (!isSafeOwnedPath(configFile)) return null
+        val observations = observeCandidates() ?: return null
+        return runCatching {
+            resolveCurrentRuntimeProcess(
+                runtimeDir.absolutePath,
+                configFile.absolutePath,
+                observations,
+            )
+        }.getOrNull()
     }
 
     private fun observeCandidates(): List<RuntimeProcessObservationView>? {
