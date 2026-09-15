@@ -6,8 +6,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Android-side tests cover only effect ordering/redaction. Lifecycle state transitions are owned
- * and directly tested in `crates/runtime`; Kotlin deliberately has no parallel lifecycle machine.
+ * Android-side tests cover only effect ordering/redaction and small lifecycle adapter invariants.
+ * Lifecycle state transitions are owned and directly tested in `crates/runtime`; Kotlin deliberately
+ * has no parallel lifecycle machine.
  */
 class ProxyRuntimeLifecycleTest {
     @Test
@@ -15,6 +16,45 @@ class ProxyRuntimeLifecycleTest {
         assertFalse(confirmedLoopbackHealthFailure(1))
         assertFalse(confirmedLoopbackHealthFailure(2))
         assertTrue(confirmedLoopbackHealthFailure(3))
+    }
+
+    @Test
+    fun startupHealthRejectsStaleListenerWhenCurrentChildDoesNotSurviveStabilityGap() {
+        val first = ProxyStartupHealthObservation(
+            exactChildAlive = true,
+            privateBridgeHealthy = true,
+            listenersReachable = true,
+        )
+        val second = ProxyStartupHealthObservation(
+            exactChildAlive = false,
+            privateBridgeHealthy = true,
+            listenersReachable = true,
+        )
+
+        assertFalse(stableStartupHealth(first, second))
+        assertTrue(stableStartupHealth(first, first))
+    }
+
+    @Test
+    fun generationIdentityIsRetainedUntilPossibleRootChildTerminationIsConfirmed() {
+        assertFalse(
+            generationIdentityMayBeDeleted(
+                ownedChildMayExist = true,
+                terminationConfirmed = false,
+            ),
+        )
+        assertTrue(
+            generationIdentityMayBeDeleted(
+                ownedChildMayExist = true,
+                terminationConfirmed = true,
+            ),
+        )
+        assertTrue(
+            generationIdentityMayBeDeleted(
+                ownedChildMayExist = false,
+                terminationConfirmed = false,
+            ),
+        )
     }
 
     @Test
