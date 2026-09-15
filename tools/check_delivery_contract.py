@@ -49,7 +49,7 @@ def main() -> None:
     )
     forbid_regex(build, r"\bminSdk\s*=\s*(?:23|26)\b", "API 23/26 package compatibility must not return")
     forbid_regex(build, r'"-P"\s*,\s*"(?:23|26)"', "API 23/26 native compatibility must not return")
-    require(build, "dependsOn(generateUniFfiBindings)", "Kotlin/static work must depend only on generated UniFFi Kotlin")
+    require(build, "dependsOn(generateUniFfiBindings)", "Kotlin/static work must depend only on generated UniFFI Kotlin")
     require(
         build,
         "dependsOn(buildAndroidUniFfi, materializeSingBoxAndroid)",
@@ -152,6 +152,7 @@ def main() -> None:
         "C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe",
         "DEVICE_CYCLE_PWSH_VERSION: '7.6.6'",
         "Verify pinned PowerShell 7 runtime",
+        "-Command \". ''{0}''\"",
         "DEVICE-1 API must be 30",
         "DEVICE-1 ABI must be armeabi-v7a",
         "merge-multiple: false",
@@ -172,6 +173,7 @@ def main() -> None:
         "Dispatch canonical physical installer",
         "device-candidate-physical.yml/dispatches",
         "shell: powershell",
+        '-File "{0}"',
         '-CandidateDirectory "$env:RUNNER_TEMP\\mish-device-candidate"',
         "gradle --no-daemon",
         "cargo build",
