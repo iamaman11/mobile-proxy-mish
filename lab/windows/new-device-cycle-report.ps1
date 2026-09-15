@@ -30,26 +30,62 @@ $diagnostic = Read-OptionalJson -Path $DiagnosticEvidencePath
 $selection = Read-OptionalJson -Path $ProbeSelectionPath
 $targeted = Read-OptionalJson -Path $TargetedEvidencePath
 
+$launchFailed = $null -ne $launch -and [string]$launch.result -ceq 'FAIL'
+$launchFailureCategory = if ($launchFailed) { [string]$launch.failure_category } else { '' }
+if ($launchFailed -and $launchFailureCategory -notmatch '^[A-Z0-9_]+$') {
+    $launchFailureCategory = 'UNKNOWN'
+}
+$selectedProbe = if ($null -ne $selection) { [string]$selection.selected } else { '' }
+$targetedRequired = $selectedProbe -notin @('', 'none')
+$targetedMissing = $targetedRequired -and $null -eq $targeted
+
 $classification = switch ($Mode) {
     'install_only' { 'INSTALL_ONLY_PASS'; break }
-    'probe_only' { 'MANUAL_PROBE_COMPLETED'; break }
+    'probe_only' {
+        if ($null -eq $selection) { 'LAB_PROBE_SELECTION_FAILED' }
+        elseif (-not $targetedRequired) { 'LAB_PROBE_NOT_SELECTED' }
+        elseif ($targetedMissing) { 'LAB_TARGETED_PROBE_COLLECTION_FAILED' }
+        else { 'MANUAL_PROBE_COMPLETED' }
+        break
+    }
     default {
-        if ($null -eq $diagnostic) { 'DIAGNOSTIC_COLLECTION_FAILED' }
-        else { [string]$diagnostic.classification }
+        if ($launchFailed) {
+            "LAB_LAUNCH_$launchFailureCategory"
+        }
+        elseif ($null -eq $diagnostic) {
+            'DIAGNOSTIC_COLLECTION_FAILED'
+        }
+        elseif ($null -eq $selection) {
+            'LAB_PROBE_SELECTION_FAILED'
+        }
+        else {
+            $diagnosticClassification = [string]$diagnostic.classification
+            if ($diagnosticClassification -ceq 'PASS' -and $targetedMissing) {
+                'LAB_TARGETED_PROBE_COLLECTION_FAILED'
+            }
+            else {
+                $diagnosticClassification
+            }
+        }
     }
 }
 
 $cycleResult = switch ($Mode) {
     'install_only' { 'PASS'; break }
-    'probe_only' { 'PASS'; break }
+    'probe_only' {
+        if ($classification -ceq 'MANUAL_PROBE_COMPLETED') { 'PASS' } else { 'LAB_FAIL' }
+        break
+    }
     default {
-        if ($null -eq $diagnostic) {
-            'LAB_FAIL'
-        }
-        elseif ($classification -ceq 'PASS') {
+        if ($classification -ceq 'PASS') {
             'PASS'
         }
-        elseif ($classification -like 'WINDOWS_*' -or $classification -like 'INVALID_*') {
+        elseif (
+            $null -eq $diagnostic -or
+            $classification -like 'LAB_*' -or
+            $classification -like 'WINDOWS_*' -or
+            $classification -like 'INVALID_*'
+        ) {
             'LAB_FAIL'
         }
         else {
@@ -86,6 +122,8 @@ $report = [ordered]@{
     diagnostic = $diagnostic
     targeted_probe = [ordered]@{
         selection = $selection
+        required = $targetedRequired
+        evidence_present = $null -ne $targeted
         evidence = $targeted
     }
 }

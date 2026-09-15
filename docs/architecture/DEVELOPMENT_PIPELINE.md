@@ -82,9 +82,9 @@ It contains the isolated debug APK, AndroidTest APK, and `candidate.json` with e
 
 Artifacts are short-lived CI evidence. If an exact-head artifact expires, rerun the hosted gate for that same exact head or produce a new exact head; never silently substitute bytes from another commit.
 
-## DEVICE-1 development diagnostic consumer
+## DEVICE-1 development candidate installer
 
-`.github/workflows/device-candidate-physical.yml` is the protected-main consumer for development diagnostics.
+`.github/workflows/device-candidate-physical.yml` is the protected-main consumer and installer for exact hosted development candidates. It owns artifact verification, stable LAB signing and replacement installation only; post-install launch/diagnostics belong to `device-cycle.yml`.
 
 Inputs identify the integration PR and optionally pin its expected current head SHA. The workflow must fail closed unless all of these are true:
 
@@ -109,7 +109,7 @@ protected main workflow
  -> create/reuse persistent LAB-only debug signing identity
  -> sign isolated debug APKs
  -> adb install -r com.mobileproxymish.app.debug
- -> physical diagnostic/evidence collection
+ -> bounded install receipt / handoff back to Device Cycle
 ```
 
 The normal DEVICE-1 candidate path must not invoke Gradle, Cargo, cargo-ndk, UniFFI generation, NDK compilation or local APK assembly. Portable PowerShell is not a prerequisite for this path.
@@ -146,7 +146,7 @@ The canonical manual modes are `full / install_only / diagnose_only / probe_only
 
 Manual modes do not weaken exact-head provenance. Any mode that installs an APK still goes through `device-candidate-physical.yml`, `candidate.json`, exact artifact/run identity, APK SHA-256 verification, persistent LAB signing identity and `adb install -r`. The orchestrator contains no APK build/install implementation of its own and must not perform uninstall.
 
-The first diagnostic action after launch is always the existing aggregate snapshot. Extra diagnosis is adaptive and bounded:
+Launcher stabilization may read the same read-only `snapshot_v1` projection to observe a stable PID and terminal PRODUCT state. After the launcher stage returns, the first evidence-producing diagnostic action is the canonical aggregate `mish.diagnostics/v1` collection. Extra diagnosis is adaptive and bounded:
 
 ```text
 proxy ownership / cleanup failure
