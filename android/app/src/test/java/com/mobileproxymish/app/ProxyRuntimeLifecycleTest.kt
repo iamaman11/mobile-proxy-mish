@@ -72,17 +72,19 @@ class ProxyRuntimeLifecycleTest {
     }
 
     @Test
-    fun orphanCleanupPrefiltersProcScanBeforeExactCmdlineValidation() {
+    fun orphanCleanupChecksEveryProcEntryByExactPositionalArgv() {
         val source = repositoryFile(
             "android/app/src/main/java/com/mobileproxymish/app/ProxyRuntimeSupervisor.kt",
         ).readText()
 
-        val commPrefilter = source.indexOf("read -r process_name < \"/proc/")
-        val exactOwnedCheck = source.indexOf("if owned_pid")
-
-        assertTrue(commPrefilter >= 0)
-        assertTrue(source.contains("*singbox*|*sing-box*)"))
-        assertTrue(exactOwnedCheck > commPrefilter)
+        assertTrue(source.contains("set -- "))
+        assertTrue(source.contains("[ \"\${'$'}#\" -eq 4 ] || return 1"))
+        assertTrue(source.contains("case \"\${'$'}1\" in */\${SING_BOX_LIBRARY})"))
+        assertTrue(source.contains("[ \"\${'$'}2\" = run ] || return 1"))
+        assertTrue(source.contains("[ \"\${'$'}3\" = -c ] || return 1"))
+        assertTrue(source.contains("\"\${'$'}runtime\"/sing-box-*.json"))
+        assertFalse(source.contains("read -r process_name < \"/proc/"))
+        assertFalse(source.contains("*singbox*|*sing-box*)"))
         assertFalse(source.contains("pkill"))
     }
 
