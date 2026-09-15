@@ -84,9 +84,9 @@ $readinessState = 'UNKNOWN'
 $terminalObservation = 'TIMEOUT'
 
 while ([DateTimeOffset]::UtcNow -lt $deadline) {
-    $pidResult = Invoke-AdbCapture -Arguments @('shell', 'pidof', $PackageName)
-    $pid = if ($pidResult.ExitCode -eq 0 -and $pidResult.Text -match '^\d+$') { $pidResult.Text } else { $null }
-    if ($null -eq $pid) {
+    $processIdResult = Invoke-AdbCapture -Arguments @('shell', 'pidof', $PackageName)
+    $processId = if ($processIdResult.ExitCode -eq 0 -and $processIdResult.Text -match '^\d+$') { $processIdResult.Text } else { $null }
+    if ($null -eq $processId) {
         $lastPid = $null
         $stableCount = 0
         $proxyRunningSamples = 0
@@ -94,17 +94,17 @@ while ([DateTimeOffset]::UtcNow -lt $deadline) {
         continue
     }
 
-    if ($pid -ceq $lastPid) {
+    if ($processId -ceq $lastPid) {
         $stableCount += 1
     }
     else {
-        $lastPid = $pid
+        $lastPid = $processId
         $stableCount = 1
         $proxyRunningSamples = 0
     }
 
     if ($stableCount -ge $StablePidSamples) {
-        $stablePid = $pid
+        $stablePid = $processId
         $snapshot = Read-AndroidSnapshot
         if ($null -ne $snapshot) {
             $proxyState = [string]$snapshot.proxy.state
