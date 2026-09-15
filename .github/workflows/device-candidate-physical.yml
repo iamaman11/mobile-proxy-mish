@@ -1,4 +1,5 @@
 name: Device Candidate Physical
+run-name: Device Candidate Physical ${{ inputs.cycle_id || '' }}
 
 on:
   pull_request:
@@ -15,6 +16,11 @@ on:
         type: string
       expected_head_sha:
         description: 'Optional 40-hex guard for the expected PR head'
+        required: false
+        default: ''
+        type: string
+      cycle_id:
+        description: 'Optional opaque correlation id supplied by the trusted device-cycle orchestrator'
         required: false
         default: ''
         type: string
@@ -198,6 +204,7 @@ jobs:
             echo '- Hosted run: `${{ steps.candidate.outputs.run_id }}`'
             echo '- Artifact: `${{ steps.candidate.outputs.artifact_name }}`'
             echo '- Artifact digest: `${{ steps.candidate.outputs.artifact_digest }}`'
+            echo '- Cycle id: `${{ inputs.cycle_id }}`'
             echo '- Local build required: **NO**'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -283,6 +290,7 @@ jobs:
               application_id = 'com.mobileproxymish.app.debug'
               installed = $false
               local_build = $false
+              cycle_id = '${{ inputs.cycle_id }}'
             } | ConvertTo-Json -Compress | Set-Content -Encoding UTF8 -LiteralPath $receiptPath
             throw
           }
@@ -313,6 +321,7 @@ jobs:
             '- PR: `#${{ needs.resolve.outputs.pr_number }}`',
             '- Source: `${{ needs.resolve.outputs.source_sha }}`',
             '- Artifact: `${{ needs.resolve.outputs.artifact_name }}`',
+            '- Cycle id: `${{ inputs.cycle_id }}`',
             '- Hosted build reused: **YES**',
             '- Local Gradle/Rust/NDK build: **NO**',
             '- Portable PowerShell prerequisite: **NO**',
