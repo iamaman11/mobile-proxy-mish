@@ -94,13 +94,16 @@ def main() -> None:
         raise SystemExit("device cycle contract: install job boundary is missing")
     physical_text = physical_jobs[1]
     pinned_pwsh = r"C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive"
-    github_command_shell = "-Command \". ''{0}''\""
+    github_scriptblock_shell = "-Command \"& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))\""
     if pinned_pwsh not in physical_text:
         raise SystemExit("device cycle contract: DEVICE-1 jobs must execute through pinned portable PowerShell 7.6.6")
-    if github_command_shell not in physical_text:
-        raise SystemExit("device cycle contract: pinned PowerShell must execute GitHub's extensionless temp script through -Command")
-    if '-File "{0}"' in workflow_text:
-        raise SystemExit("device cycle contract: PowerShell -File must not receive GitHub's extensionless temp script")
+    if github_scriptblock_shell not in physical_text:
+        raise SystemExit("device cycle contract: pinned PowerShell must execute GitHub's extensionless temp script from text through ScriptBlock::Create")
+    if "Get-Content -Raw -LiteralPath ''{0}''" not in physical_text or "[ScriptBlock]::Create" not in physical_text:
+        raise SystemExit("device cycle contract: GitHub extensionless temp script must be read as text before execution")
+    for broken_shell in ('-File "{0}"', "-Command \". ''{0}''\""):
+        if broken_shell in workflow_text:
+            raise SystemExit(f"device cycle contract: broken extensionless PowerShell invocation must not return: {broken_shell}")
     if "DEVICE_CYCLE_PWSH_VERSION: '7.6.6'" not in workflow_text:
         raise SystemExit("device cycle contract: pinned PowerShell version fact is missing")
     if physical_text.count("Verify pinned PowerShell 7 runtime") != 2:
