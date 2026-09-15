@@ -6,8 +6,10 @@ on:
       - '.github/workflows/device-cycle.yml'
       - '.github/workflows/device-candidate-physical.yml'
       - 'lab/windows/start-device-app.ps1'
-      - 'lab/windows/select-device-cycle-probe.ps1'
+      - 'lab/windows/collect-device-diagnostic.ps1'
+      - 'lab/windows/DeviceDiagnosticClassification.psm1'
       - 'lab/windows/collect-runtime-identity.ps1'
+      - 'lab/windows/diagnose-loopback-connect.ps1'
       - 'lab/windows/new-device-cycle-report.ps1'
       - 'lab/windows/test-device-cycle.ps1'
       - 'tools/check_device_cycle_contract.py'
@@ -28,7 +30,7 @@ on:
         default: ''
         type: string
       mode:
-        description: 'Bounded cycle stage to execute'
+        description: 'One explicit stage sequence to execute'
         required: true
         default: full
         type: choice
@@ -38,12 +40,11 @@ on:
           - diagnose_only
           - probe_only
       probe:
-        description: 'Targeted diagnostic probe; auto is valid for full/diagnose_only'
+        description: 'Explicit read-only probe; valid only with probe_only'
         required: true
-        default: auto
+        default: none
         type: choice
         options:
-          - auto
           - none
           - loopback_connect
           - runtime_identity
@@ -74,7 +75,6 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
-
       - name: Exercise orchestration contract
         shell: powershell
         run: |
@@ -83,7 +83,7 @@ jobs:
           python .\tools\check_device_cycle_contract.py
 
   resolve:
-    name: Resolve trusted cycle request
+    name: Resolve completed build and exact request
     if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -91,12 +91,13 @@ jobs:
       eligible: ${{ steps.resolve.outputs.eligible }}
       pr_number: ${{ steps.resolve.outputs.pr_number }}
       source_sha: ${{ steps.resolve.outputs.source_sha }}
+      control_sha: ${{ steps.resolve.outputs.control_sha }}
       mode: ${{ steps.resolve.outputs.mode }}
       probe: ${{ steps.resolve.outputs.probe }}
       hosted_run_id: ${{ steps.resolve.outputs.hosted_run_id }}
       cycle_id: ${{ steps.resolve.outputs.cycle_id }}
     steps:
-      - name: Resolve PR, exact head, mode and automatic eligibility
+      - name: Resolve PR, exact head and completed build
         id: resolve
         shell: bash
         env:
@@ -116,6 +117,8 @@ jobs:
           hosted_run_id=''
 
           if [[ "$EVENT_NAME" == 'workflow_run' ]]; then
+            # A completed event is not enough: installation is forbidden unless the entire exact-head
+            # Integration Android Preflight concluded successfully.
             if [[ "$WORKFLOW_RUN_CONCLUSION" != 'success' ]]; then
               echo 'eligible=false' >> "$GITHUB_OUTPUT"
               echo "cycle_id=$cycle_id" >> "$GITHUB_OUTPUT"
@@ -137,7 +140,7 @@ jobs:
             pr_number="${prs[0]}"
             source_sha="$WORKFLOW_RUN_HEAD_SHA"
             mode='full'
-            probe='auto'
+            probe='none'
             hosted_run_id="$WORKFLOW_RUN_ID"
           else
             pr_number="$MANUAL_PR"
@@ -148,14 +151,16 @@ jobs:
 
           [[ "$pr_number" =~ ^[1-9][0-9]*$ ]]
           [[ "$mode" =~ ^(full|install_only|diagnose_only|probe_only)$ ]]
-          [[ "$probe" =~ ^(auto|none|loopback_connect|runtime_identity)$ ]]
-          if [[ "$mode" == 'probe_only' && "$probe" =~ ^(auto|none)$ ]]; then
-            echo 'probe_only requires an explicit loopback_connect or runtime_identity probe' >&2
+          [[ "$probe" =~ ^(none|loopback_connect|runtime_identity)$ ]]
+          if [[ "$mode" == 'probe_only' && "$probe" == 'none' ]]; then
+            echo 'probe_only requires an explicit read-only probe' >&2
             exit 64
           fi
-          if [[ -n "$source_sha" ]]; then
-            [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]
+          if [[ "$mode" != 'probe_only' && "$probe" != 'none' ]]; then
+            echo 'full/install_only/diagnose_only do not choose probes; analysis must request probe_only explicitly' >&2
+            exit 64
           fi
+          if [[ -n "$source_sha" ]]; then [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]; fi
 
           root="$RUNNER_TEMP/device-cycle-resolve"
           mkdir -p "$root"
@@ -189,6 +194,7 @@ jobs:
           current_sha="${meta[0]}"
           eligible="${meta[1]}"
 
+          # A successful build for an older head is not installable after the PR moves.
           if [[ "$EVENT_NAME" == 'workflow_run' && "$current_sha" != "$WORKFLOW_RUN_HEAD_SHA" ]]; then
             echo 'eligible=false' >> "$GITHUB_OUTPUT"
             echo "cycle_id=$cycle_id" >> "$GITHUB_OUTPUT"
@@ -200,11 +206,11 @@ jobs:
             exit 0
           fi
 
-          source_sha="$current_sha"
           {
             echo 'eligible=true'
             echo "pr_number=$pr_number"
-            echo "source_sha=$source_sha"
+            echo "source_sha=$current_sha"
+            echo "control_sha=$GITHUB_SHA"
             echo "mode=$mode"
             echo "probe=$probe"
             echo "hosted_run_id=$hosted_run_id"
@@ -218,15 +224,15 @@ jobs:
           {
             echo '### Device cycle request'
             echo '- PR: `#${{ steps.resolve.outputs.pr_number }}`'
-            echo '- Exact head: `${{ steps.resolve.outputs.source_sha }}`'
+            echo '- PRODUCT head: `${{ steps.resolve.outputs.source_sha }}`'
+            echo '- CONTROL SHA: `${{ steps.resolve.outputs.control_sha }}`'
             echo '- Mode: `${{ steps.resolve.outputs.mode }}`'
-            echo '- Probe: `${{ steps.resolve.outputs.probe }}`'
-            echo '- Hosted run: `${{ steps.resolve.outputs.hosted_run_id }}`'
-            echo '- Cycle id: `${{ steps.resolve.outputs.cycle_id }}`'
+            echo '- Explicit probe: `${{ steps.resolve.outputs.probe }}`'
+            echo '- Completed hosted run: `${{ steps.resolve.outputs.hosted_run_id }}`'
           } >> "$GITHUB_STEP_SUMMARY"
 
   install:
-    name: Exact artifact -> canonical replacement install
+    name: Install -> verify installed exact bytes
     needs: resolve
     if: ${{ needs.resolve.outputs.eligible == 'true' && (needs.resolve.outputs.mode == 'full' || needs.resolve.outputs.mode == 'install_only') }}
     runs-on: ubuntu-latest
@@ -234,21 +240,23 @@ jobs:
     outputs:
       install_run_id: ${{ steps.child.outputs.install_run_id }}
     steps:
-      - name: Dispatch canonical protected-main physical consumer
+      - name: Dispatch canonical physical installer
         id: child
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ needs.resolve.outputs.pr_number }}
           SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          CONTROL_SHA: ${{ needs.resolve.outputs.control_sha }}
           CYCLE_ID: ${{ needs.resolve.outputs.cycle_id }}
         run: |
           set -euo pipefail
           payload="$(jq -nc \
             --arg pr "$PR_NUMBER" \
             --arg sha "$SOURCE_SHA" \
+            --arg control "$CONTROL_SHA" \
             --arg cycle "$CYCLE_ID" \
-            '{ref:"main",inputs:{pr_number:$pr,expected_head_sha:$sha,cycle_id:$cycle}}')"
+            '{ref:"main",inputs:{pr_number:$pr,expected_head_sha:$sha,control_sha:$control,cycle_id:$cycle}}')"
           curl --proto '=https' --tlsv1.2 --fail-with-body --silent --show-error \
             --request POST \
             --header "Accept: application/vnd.github+json" \
@@ -266,42 +274,35 @@ jobs:
             sleep 2
           done
           if [[ -z "$child_id" ]]; then
-            echo 'canonical physical consumer run was not correlated inside the bounded dispatch window' >&2
+            echo 'canonical physical installer was not correlated inside the bounded dispatch window' >&2
             exit 70
           fi
           echo "install_run_id=$child_id" >> "$GITHUB_OUTPUT"
+
+          child_head="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$child_id" --jq '.head_sha')"
+          if [[ "$child_head" != "$CONTROL_SHA" ]]; then
+            echo "control SHA moved before physical execution: expected=$CONTROL_SHA observed=$child_head" >&2
+            exit 65
+          fi
 
           deadline=$((SECONDS + 1200))
           while (( SECONDS < deadline )); do
             readarray -t state < <(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$child_id" --jq '.status, (.conclusion // "")')
             if [[ "${state[0]}" == 'completed' ]]; then
               if [[ "${state[1]}" != 'success' ]]; then
-                echo "canonical physical consumer failed: run=$child_id conclusion=${state[1]}" >&2
+                echo "canonical physical installer failed: run=$child_id conclusion=${state[1]}" >&2
                 exit 1
               fi
-              echo 'DEVICE_CANDIDATE_INSTALL=PASS'
+              echo 'DEVICE_CANDIDATE_INSTALL_AND_VERIFY=PASS'
               exit 0
             fi
             sleep 5
           done
-          echo "canonical physical consumer timed out: run=$child_id" >&2
+          echo "canonical physical installer timed out: run=$child_id" >&2
           exit 124
 
-      - name: Publish install handoff
-        if: ${{ always() }}
-        shell: bash
-        run: |
-          {
-            echo '### Exact candidate install'
-            echo '- Canonical child run: `${{ steps.child.outputs.install_run_id }}`'
-            echo '- Install owner: `Device Candidate Physical`'
-            echo '- Replacement install: **YES**'
-            echo '- Local build: **NO**'
-            echo '- Result: `${{ job.status }}`'
-          } >> "$GITHUB_STEP_SUMMARY"
-
   diagnose:
-    name: Launch -> snapshot -> targeted probe
+    name: Launch -> canonical diagnostic
     needs: [resolve, install]
     if: >-
       ${{ always() && needs.resolve.outputs.eligible == 'true' && needs.resolve.outputs.mode != 'install_only' &&
@@ -311,12 +312,11 @@ jobs:
     outputs:
       cycle_result: ${{ steps.report.outputs.cycle_result }}
       classification: ${{ steps.report.outputs.classification }}
-      selected_probe: ${{ steps.select.outputs.selected_probe }}
     steps:
-      - name: Checkout accepted main diagnostic consumer
+      - name: Checkout exact control implementation
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: main
+          ref: ${{ needs.resolve.outputs.control_sha }}
           persist-credentials: false
           clean: true
 
@@ -339,7 +339,6 @@ jobs:
           Write-Host 'DEVICE_CYCLE_PREREQUISITES=PASS'
 
       - name: Explicitly restart app and wait for bounded stable state
-        id: launch
         if: ${{ needs.resolve.outputs.mode != 'probe_only' }}
         shell: powershell
         run: |
@@ -351,7 +350,6 @@ jobs:
             -ReceiptPath "$env:RUNNER_TEMP\mish-device-start-v1.json"
 
       - name: Collect one canonical diagnostic snapshot
-        id: diagnostic
         if: ${{ needs.resolve.outputs.mode != 'probe_only' }}
         continue-on-error: true
         shell: powershell
@@ -362,47 +360,9 @@ jobs:
             -PackageName $env:PACKAGE_NAME `
             -EvidencePath "$env:RUNNER_TEMP\mish-device-diagnostic-v1.json"
 
-      - name: Select one bounded targeted probe
-        id: select
-        shell: powershell
-        env:
-          MODE: ${{ needs.resolve.outputs.mode }}
-          REQUESTED_PROBE: ${{ needs.resolve.outputs.probe }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $selectionPath = "$env:RUNNER_TEMP\mish-device-cycle-probe-selection-v1.json"
-          if ($env:MODE -ceq 'probe_only') {
-            $selected = $env:REQUESTED_PROBE
-            [ordered]@{
-              schema = 'mish.device-cycle-probe-selection/v1'
-              requested = $selected
-              selected = $selected
-              classification = 'MANUAL_PROBE_ONLY'
-              proxy_failure = ''
-            } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $selectionPath
-          }
-          elseif (Test-Path -LiteralPath "$env:RUNNER_TEMP\mish-device-diagnostic-v1.json" -PathType Leaf) {
-            $selection = .\lab\windows\select-device-cycle-probe.ps1 `
-              -DiagnosticEvidencePath "$env:RUNNER_TEMP\mish-device-diagnostic-v1.json" `
-              -RequestedProbe $env:REQUESTED_PROBE `
-              -OutputPath $selectionPath | ConvertFrom-Json
-            $selected = [string]$selection.selected
-          }
-          else {
-            $selected = 'none'
-            [ordered]@{
-              schema = 'mish.device-cycle-probe-selection/v1'
-              requested = $env:REQUESTED_PROBE
-              selected = 'none'
-              classification = 'DIAGNOSTIC_COLLECTION_FAILED'
-              proxy_failure = ''
-            } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $selectionPath
-          }
-          "selected_probe=$selected" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_OUTPUT
-          Write-Host "DEVICE_CYCLE_TARGETED_PROBE=$selected"
-
-      - name: Targeted probe - runtime identity
-        if: ${{ steps.select.outputs.selected_probe == 'runtime_identity' }}
+      - name: Explicit probe only - runtime identity
+        if: ${{ needs.resolve.outputs.mode == 'probe_only' && needs.resolve.outputs.probe == 'runtime_identity' }}
+        continue-on-error: true
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -411,8 +371,9 @@ jobs:
             -PackageName $env:PACKAGE_NAME `
             -EvidencePath "$env:RUNNER_TEMP\mish-targeted-probe-v1.json"
 
-      - name: Targeted probe - loopback CONNECT attribution
-        if: ${{ steps.select.outputs.selected_probe == 'loopback_connect' }}
+      - name: Explicit probe only - loopback CONNECT
+        if: ${{ needs.resolve.outputs.mode == 'probe_only' && needs.resolve.outputs.probe == 'loopback_connect' }}
+        continue-on-error: true
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -421,7 +382,7 @@ jobs:
             -PackageName $env:PACKAGE_NAME `
             -EvidencePath "$env:RUNNER_TEMP\mish-targeted-probe-v1.json"
 
-      - name: Build one bounded cycle report
+      - name: Build observational cycle report
         id: report
         if: ${{ always() }}
         shell: powershell
@@ -429,8 +390,10 @@ jobs:
           MODE: ${{ needs.resolve.outputs.mode }}
           PR_NUMBER: ${{ needs.resolve.outputs.pr_number }}
           SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          CONTROL_SHA: ${{ needs.resolve.outputs.control_sha }}
           HOSTED_RUN_ID: ${{ needs.resolve.outputs.hosted_run_id }}
           INSTALL_RUN_ID: ${{ needs.install.outputs.install_run_id }}
+          REQUESTED_PROBE: ${{ needs.resolve.outputs.probe }}
         run: |
           $ErrorActionPreference = 'Stop'
           $targeted = "$env:RUNNER_TEMP\mish-targeted-probe-v1.json"
@@ -439,11 +402,12 @@ jobs:
             -Mode $env:MODE `
             -PrNumber ([int]$env:PR_NUMBER) `
             -SourceSha $env:SOURCE_SHA `
+            -ControlSha $env:CONTROL_SHA `
             -HostedRunId $env:HOSTED_RUN_ID `
             -InstallRunId $env:INSTALL_RUN_ID `
             -LaunchReceiptPath "$env:RUNNER_TEMP\mish-device-start-v1.json" `
             -DiagnosticEvidencePath "$env:RUNNER_TEMP\mish-device-diagnostic-v1.json" `
-            -ProbeSelectionPath "$env:RUNNER_TEMP\mish-device-cycle-probe-selection-v1.json" `
+            -RequestedProbe $env:REQUESTED_PROBE `
             -TargetedEvidencePath $targeted `
             -OutputPath "$env:RUNNER_TEMP\mish-device-cycle-v1.json" | Out-Host
           $report = Get-Content -Raw -LiteralPath "$env:RUNNER_TEMP\mish-device-cycle-v1.json" | ConvertFrom-Json
@@ -459,7 +423,6 @@ jobs:
             ${{ runner.temp }}\mish-device-cycle-v1.json
             ${{ runner.temp }}\mish-device-start-v1.json
             ${{ runner.temp }}\mish-device-diagnostic-v1.json
-            ${{ runner.temp }}\mish-device-cycle-probe-selection-v1.json
             ${{ runner.temp }}\mish-targeted-probe-v1.json
           if-no-files-found: warn
           retention-days: 30
@@ -474,17 +437,19 @@ jobs:
             @(
               '### DEVICE-1 cycle',
               '- PR: `#${{ needs.resolve.outputs.pr_number }}`',
-              '- Exact head: `${{ needs.resolve.outputs.source_sha }}`',
+              '- PRODUCT head: `${{ needs.resolve.outputs.source_sha }}`',
+              '- CONTROL SHA: `${{ needs.resolve.outputs.control_sha }}`',
               '- Mode: `${{ needs.resolve.outputs.mode }}`',
               "- Result: **$([string]$report.cycle_result)**",
               "- Classification: $([string]$report.classification)",
-              '- Targeted probe: `${{ steps.select.outputs.selected_probe }}`',
+              '- Explicit probe: `${{ needs.resolve.outputs.probe }}`',
+              '- Automatic repair/probe decision: **NO**',
               '- Airplane recovery: **NOT RUN by baseline cycle**'
             ) | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_STEP_SUMMARY
           }
 
-      - name: Enforce full/diagnostic acceptance result
-        if: ${{ always() && (needs.resolve.outputs.mode == 'full' || needs.resolve.outputs.mode == 'diagnose_only') }}
+      - name: Enforce observed result
+        if: ${{ always() }}
         shell: powershell
         run: |
           $path = "$env:RUNNER_TEMP\mish-device-cycle-v1.json"
@@ -509,14 +474,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ needs.resolve.outputs.pr_number }}
           SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          CONTROL_SHA: ${{ needs.resolve.outputs.control_sha }}
           MODE: ${{ needs.resolve.outputs.mode }}
+          PROBE: ${{ needs.resolve.outputs.probe }}
           HOSTED_RUN_ID: ${{ needs.resolve.outputs.hosted_run_id }}
           INSTALL_RESULT: ${{ needs.install.result }}
           INSTALL_RUN_ID: ${{ needs.install.outputs.install_run_id }}
           DIAGNOSE_RESULT: ${{ needs.diagnose.result }}
           CYCLE_RESULT: ${{ needs.diagnose.outputs.cycle_result }}
           CLASSIFICATION: ${{ needs.diagnose.outputs.classification }}
-          SELECTED_PROBE: ${{ needs.diagnose.outputs.selected_probe }}
         run: |
           set -euo pipefail
           marker='<!-- mish-device-cycle-checkpoint -->'
@@ -534,7 +500,8 @@ jobs:
           ## DEVICE-1 cycle checkpoint
 
           \`\`\`text
-          EXACT_HEAD=$SOURCE_SHA
+          PRODUCT_SHA=$SOURCE_SHA
+          CONTROL_SHA=$CONTROL_SHA
           MODE=$MODE
           HOSTED_RUN_ID=$HOSTED_RUN_ID
           INSTALL_RESULT=$INSTALL_RESULT
@@ -542,7 +509,8 @@ jobs:
           DIAGNOSE_RESULT=$DIAGNOSE_RESULT
           DEVICE_CYCLE=$cycle_result
           CLASSIFICATION=$classification
-          TARGETED_PROBE=$SELECTED_PROBE
+          EXPLICIT_PROBE=$PROBE
+          AUTOMATIC_REPAIR_DECISION=NO
           AIRPLANE=NOT_RUN
           \`\`\`
 

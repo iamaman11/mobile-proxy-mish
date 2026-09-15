@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/device-candidate-physical.yml'
       - 'lab/windows/install-device-candidate.ps1'
+      - 'lab/windows/verify-installed-candidate.ps1'
       - 'lab/windows/test-device-candidate.ps1'
       - 'lab/windows/toolchain.json'
   workflow_dispatch:
@@ -15,12 +16,15 @@ on:
         required: true
         type: string
       expected_head_sha:
-        description: 'Optional 40-hex guard for the expected PR head'
-        required: false
-        default: ''
+        description: 'Exact 40-hex PRODUCT head expected by the caller'
+        required: true
+        type: string
+      control_sha:
+        description: 'Exact protected-main CONTROL SHA whose installer scripts must execute'
+        required: true
         type: string
       cycle_id:
-        description: 'Optional opaque correlation id supplied by the trusted device-cycle orchestrator'
+        description: 'Opaque correlation id supplied by the trusted device-cycle orchestrator'
         required: false
         default: ''
         type: string
@@ -41,17 +45,18 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
-      - name: Checkout
+      - name: Checkout exact PR head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
-
-      - name: Parse and exercise candidate verifier on Windows PowerShell
+      - name: Parse and exercise install verification contracts
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           foreach ($path in @(
             'lab/windows/install-device-candidate.ps1',
+            'lab/windows/verify-installed-candidate.ps1',
             'lab/windows/test-device-candidate.ps1'
           )) {
             $tokens = $null
@@ -81,6 +86,7 @@ jobs:
       artifact_name: ${{ steps.candidate.outputs.artifact_name }}
       artifact_digest: ${{ steps.candidate.outputs.artifact_digest }}
       run_id: ${{ steps.candidate.outputs.run_id }}
+      control_sha: ${{ steps.candidate.outputs.control_sha }}
     steps:
       - name: Resolve current PR head and exact successful artifact
         id: candidate
@@ -89,21 +95,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
           EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+          CONTROL_SHA: ${{ inputs.control_sha }}
         run: |
           set -euo pipefail
           [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
-          if [[ -n "$EXPECTED_HEAD_SHA" ]]; then
-            [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$CONTROL_SHA" =~ ^[0-9a-f]{40}$ ]]
+          if [[ "$GITHUB_SHA" != "$CONTROL_SHA" ]]; then
+            echo "physical workflow control SHA drifted: expected=$CONTROL_SHA observed=$GITHUB_SHA" >&2
+            exit 65
           fi
 
           ROOT="$RUNNER_TEMP/device-candidate-resolve"
           mkdir -p "$ROOT"
           gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" > "$ROOT/pr.json"
-
           readarray -t PR_META < <(python3 - "$ROOT/pr.json" "$GITHUB_REPOSITORY" "$PR_NUMBER" "$EXPECTED_HEAD_SHA" <<'PY'
-          import json
-          import re
-          import sys
+          import json, re, sys
           path, repository, requested_pr, expected = sys.argv[1:]
           pr = json.load(open(path, encoding='utf-8'))
           head = str((pr.get('head') or {}).get('sha') or '')
@@ -120,7 +127,7 @@ jobs:
               raise SystemExit('device candidate must originate from the canonical repository')
           if not re.fullmatch(r'[0-9a-f]{40}', head):
               raise SystemExit('device candidate head SHA is invalid')
-          if expected and head != expected:
+          if head != expected:
               raise SystemExit('current PR head does not match expected_head_sha')
           if not head_branch:
               raise SystemExit('device candidate head branch is missing')
@@ -134,9 +141,7 @@ jobs:
 
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=$ARTIFACT_NAME&per_page=100" > "$ROOT/artifacts.json"
           readarray -t ART_META < <(python3 - "$ROOT/artifacts.json" "$ARTIFACT_NAME" "$SOURCE_SHA" "$HEAD_BRANCH" <<'PY'
-          import json
-          import re
-          import sys
+          import json, re, sys
           path, name, source, branch = sys.argv[1:]
           data = json.load(open(path, encoding='utf-8'))
           matches = []
@@ -167,8 +172,7 @@ jobs:
 
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > "$ROOT/run.json"
           python3 - "$ROOT/run.json" "$SOURCE_SHA" "$HEAD_BRANCH" "$PR_NUMBER" <<'PY'
-          import json
-          import sys
+          import json, sys
           path, source, branch, pr_number = sys.argv[1:]
           run = json.load(open(path, encoding='utf-8'))
           if run.get('name') != 'Integration Android Preflight':
@@ -192,24 +196,11 @@ jobs:
             echo "artifact_name=$ARTIFACT_NAME"
             echo "artifact_digest=$ARTIFACT_DIGEST"
             echo "run_id=$RUN_ID"
+            echo "control_sha=$CONTROL_SHA"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Publish resolved candidate summary
-        shell: bash
-        run: |
-          {
-            echo '### Exact device candidate resolved'
-            echo '- PR: `#${{ steps.candidate.outputs.pr_number }}`'
-            echo '- Source: `${{ steps.candidate.outputs.source_sha }}`'
-            echo '- Hosted run: `${{ steps.candidate.outputs.run_id }}`'
-            echo '- Artifact: `${{ steps.candidate.outputs.artifact_name }}`'
-            echo '- Artifact digest: `${{ steps.candidate.outputs.artifact_digest }}`'
-            echo '- Cycle id: `${{ inputs.cycle_id }}`'
-            echo '- Local build required: **NO**'
-          } >> "$GITHUB_STEP_SUMMARY"
-
   physical:
-    name: Install exact candidate on DEVICE-1
+    name: Install and verify exact candidate on DEVICE-1
     if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected == true }}
     needs: resolve
     runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
@@ -218,9 +209,10 @@ jobs:
       ADB_EXE: C:\mish-lab\tools\android-sdk\platform-tools\adb.exe
       ANDROID_SDK_ROOT: C:\mish-lab\tools\android-sdk
     steps:
-      - name: Checkout accepted main consumer
+      - name: Checkout exact control implementation
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.resolve.outputs.control_sha }}
           persist-credentials: false
           clean: true
 
@@ -243,7 +235,6 @@ jobs:
           if ($abi -ne 'armeabi-v7a') {
             throw "MISH_DEVICE_CANDIDATE_FAILURE|DEVICE_IDENTITY_MISMATCH|DEVICE-1 ABI must be armeabi-v7a; observed $abi."
           }
-          Write-Host 'DEVICE-1 prerequisite check passed: one authorized API 30 / armeabi-v7a device.'
 
       - name: Download exact hosted candidate
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -255,15 +246,13 @@ jobs:
           run-id: ${{ needs.resolve.outputs.run_id }}
           merge-multiple: false
 
-      - name: Verify, stable-sign, and install without rebuilding
+      - name: Install exact signed candidate without rebuilding
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           $receiptPath = "$env:RUNNER_TEMP\mish-device-candidate-install.json"
           try {
-            $candidateDirectory = Join-Path `
-              "$env:RUNNER_TEMP\mish-device-candidate" `
-              '${{ needs.resolve.outputs.artifact_name }}'
+            $candidateDirectory = Join-Path "$env:RUNNER_TEMP\mish-device-candidate" '${{ needs.resolve.outputs.artifact_name }}'
             $manifestPath = Join-Path $candidateDirectory 'candidate.json'
             if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
               throw 'MISH_DEVICE_CANDIDATE_FAILURE|DOWNLOAD_LAYOUT_MISMATCH|Resolved artifact directory does not contain candidate.json.'
@@ -277,64 +266,52 @@ jobs:
             $receipt | Set-Content -Encoding UTF8 -LiteralPath $receiptPath
           }
           catch {
-            $message = [string]$_.Exception.Message
-            $category = 'UNCLASSIFIED'
-            if ($message -match 'MISH_DEVICE_CANDIDATE_FAILURE\|([^|]+)\|') {
-              $category = $Matches[1]
-            }
             [pscustomobject]@{
               result = 'FAIL'
-              category = $category
+              category = 'INSTALL_FAILED'
               pr_number = [int]'${{ needs.resolve.outputs.pr_number }}'
               source_sha = '${{ needs.resolve.outputs.source_sha }}'
-              application_id = 'com.mobileproxymish.app.debug'
               installed = $false
               local_build = $false
-              cycle_id = '${{ inputs.cycle_id }}'
             } | ConvertTo-Json -Compress | Set-Content -Encoding UTF8 -LiteralPath $receiptPath
             throw
           }
+
+      - name: Verify installed APK bytes and signing identity
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\verify-installed-candidate.ps1 `
+            -InstallReceiptPath "$env:RUNNER_TEMP\mish-device-candidate-install.json" `
+            -AdbPath $env:ADB_EXE `
+            -AndroidSdkRoot $env:ANDROID_SDK_ROOT `
+            -ReceiptPath "$env:RUNNER_TEMP\mish-device-install-verification-v1.json" | Out-Host
 
       - name: Publish physical handoff summary
         if: ${{ always() }}
         shell: powershell
         run: |
-          $ErrorActionPreference = 'Stop'
-          $receiptPath = "$env:RUNNER_TEMP\mish-device-candidate-install.json"
-          $result = 'NO_RECEIPT'
-          $category = 'NONE'
-          if (Test-Path -LiteralPath $receiptPath -PathType Leaf) {
-            try {
-              $receipt = Get-Content -Raw -LiteralPath $receiptPath | ConvertFrom-Json
-              $result = [string]$receipt.result
-              if ($receipt.PSObject.Properties.Name -contains 'category') {
-                $category = [string]$receipt.category
-              }
-            }
-            catch {
-              $result = 'INVALID_RECEIPT'
-              $category = 'RECEIPT_PARSE_FAILED'
-            }
-          }
+          $installPath = "$env:RUNNER_TEMP\mish-device-candidate-install.json"
+          $verifyPath = "$env:RUNNER_TEMP\mish-device-install-verification-v1.json"
+          $installResult = if (Test-Path -LiteralPath $installPath) { [string](Get-Content -Raw $installPath | ConvertFrom-Json).result } else { 'NO_RECEIPT' }
+          $verifyResult = if (Test-Path -LiteralPath $verifyPath) { [string](Get-Content -Raw $verifyPath | ConvertFrom-Json).result } else { 'NO_RECEIPT' }
           @(
-            '### DEVICE-1 candidate handoff',
-            '- PR: `#${{ needs.resolve.outputs.pr_number }}`',
-            '- Source: `${{ needs.resolve.outputs.source_sha }}`',
-            '- Artifact: `${{ needs.resolve.outputs.artifact_name }}`',
-            '- Cycle id: `${{ inputs.cycle_id }}`',
+            '### DEVICE-1 exact candidate handoff',
+            '- PRODUCT SHA: `${{ needs.resolve.outputs.source_sha }}`',
+            '- CONTROL SHA: `${{ needs.resolve.outputs.control_sha }}`',
             '- Hosted build reused: **YES**',
-            '- Local Gradle/Rust/NDK build: **NO**',
-            '- Portable PowerShell prerequisite: **NO**',
-            '- Target package: `com.mobileproxymish.app.debug`',
-            "- Install result: **$result**",
-            "- Failure category: $category"
+            '- Local build: **NO**',
+            "- Install: **$installResult**",
+            "- Installed exact bytes/signing verification: **$verifyResult**"
           ) | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_STEP_SUMMARY
 
-      - name: Upload bounded install receipt
+      - name: Upload bounded install evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: device-candidate-install-pr-${{ needs.resolve.outputs.pr_number }}-${{ needs.resolve.outputs.source_sha }}
-          path: ${{ runner.temp }}\mish-device-candidate-install.json
-          if-no-files-found: ignore
+          path: |
+            ${{ runner.temp }}\mish-device-candidate-install.json
+            ${{ runner.temp }}\mish-device-install-verification-v1.json
+          if-no-files-found: warn
           retention-days: 7

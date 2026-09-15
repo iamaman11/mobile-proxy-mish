@@ -4,11 +4,12 @@ param(
     [string] $Mode,
     [Parameter(Mandatory)][ValidateRange(1, 2147483647)][int] $PrNumber,
     [Parameter(Mandatory)][ValidatePattern('^[0-9a-f]{40}$')][string] $SourceSha,
+    [Parameter(Mandatory)][ValidatePattern('^[0-9a-f]{40}$')][string] $ControlSha,
     [string] $HostedRunId = '',
     [string] $InstallRunId = '',
     [string] $LaunchReceiptPath = '',
     [string] $DiagnosticEvidencePath = '',
-    [string] $ProbeSelectionPath = '',
+    [string] $RequestedProbe = 'none',
     [string] $TargetedEvidencePath = '',
     [Parameter(Mandatory)][string] $OutputPath
 )
@@ -27,7 +28,6 @@ function Read-OptionalJson {
 
 $launch = Read-OptionalJson -Path $LaunchReceiptPath
 $diagnostic = Read-OptionalJson -Path $DiagnosticEvidencePath
-$selection = Read-OptionalJson -Path $ProbeSelectionPath
 $targeted = Read-OptionalJson -Path $TargetedEvidencePath
 
 $launchFailed = $null -ne $launch -and [string]$launch.result -ceq 'FAIL'
@@ -35,17 +35,19 @@ $launchFailureCategory = if ($launchFailed) { [string]$launch.failure_category }
 if ($launchFailed -and $launchFailureCategory -notmatch '^[A-Z0-9_]+$') {
     $launchFailureCategory = 'UNKNOWN'
 }
-$selectedProbe = if ($null -ne $selection) { [string]$selection.selected } else { '' }
-$targetedRequired = $selectedProbe -notin @('', 'none')
-$targetedMissing = $targetedRequired -and $null -eq $targeted
 
 $classification = switch ($Mode) {
     'install_only' { 'INSTALL_ONLY_PASS'; break }
     'probe_only' {
-        if ($null -eq $selection) { 'LAB_PROBE_SELECTION_FAILED' }
-        elseif (-not $targetedRequired) { 'LAB_PROBE_NOT_SELECTED' }
-        elseif ($targetedMissing) { 'LAB_TARGETED_PROBE_COLLECTION_FAILED' }
-        else { 'MANUAL_PROBE_COMPLETED' }
+        if ($RequestedProbe -notin @('runtime_identity', 'loopback_connect')) {
+            'LAB_PROBE_NOT_EXPLICIT'
+        }
+        elseif ($null -eq $targeted) {
+            'LAB_TARGETED_PROBE_COLLECTION_FAILED'
+        }
+        else {
+            'MANUAL_PROBE_COMPLETED'
+        }
         break
     }
     default {
@@ -55,17 +57,8 @@ $classification = switch ($Mode) {
         elseif ($null -eq $diagnostic) {
             'DIAGNOSTIC_COLLECTION_FAILED'
         }
-        elseif ($null -eq $selection) {
-            'LAB_PROBE_SELECTION_FAILED'
-        }
         else {
-            $diagnosticClassification = [string]$diagnostic.classification
-            if ($diagnosticClassification -ceq 'PASS' -and $targetedMissing) {
-                'LAB_TARGETED_PROBE_COLLECTION_FAILED'
-            }
-            else {
-                $diagnosticClassification
-            }
+            [string]$diagnostic.classification
         }
     }
 }
@@ -82,6 +75,7 @@ $cycleResult = switch ($Mode) {
         }
         elseif (
             $null -eq $diagnostic -or
+            $classification -eq 'DIAGNOSTIC_COLLECTION_FAILED' -or
             $classification -like 'LAB_*' -or
             $classification -like 'WINDOWS_*' -or
             $classification -like 'INVALID_*'
@@ -113,6 +107,7 @@ $report = [ordered]@{
     }
     pr_number = $PrNumber
     source_sha = $SourceSha
+    control_sha = $ControlSha
     source_identity_claim = $sourceIdentityClaim
     hosted_run_id = $HostedRunId
     install_run_id = $InstallRunId
@@ -121,8 +116,8 @@ $report = [ordered]@{
     launch = $launch
     diagnostic = $diagnostic
     targeted_probe = [ordered]@{
-        selection = $selection
-        required = $targetedRequired
+        requested = $RequestedProbe
+        automatic = $false
         evidence_present = $null -ne $targeted
         evidence = $targeted
     }
@@ -140,6 +135,7 @@ if ($parent) { [IO.Directory]::CreateDirectory($parent) | Out-Null }
 Write-Host "MISH_DEVICE_CYCLE_RESULT=$cycleResult"
 Write-Host "MISH_DEVICE_CYCLE_CLASSIFICATION=$classification"
 Write-Host "MISH_DEVICE_CYCLE_SOURCE_IDENTITY=$sourceIdentityClaim"
+Write-Host "MISH_DEVICE_CYCLE_CONTROL_SHA=$ControlSha"
 Write-Host "MISH_DEVICE_CYCLE_REPORT=$fullOutputPath"
 
 $report | ConvertTo-Json -Depth 16 -Compress

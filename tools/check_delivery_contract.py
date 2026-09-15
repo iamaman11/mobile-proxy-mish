@@ -48,29 +48,20 @@ def main() -> None:
         "cargo-ndk platform floor must use androidMinSdk",
     )
     forbid_regex(build, r"\bminSdk\s*=\s*(?:23|26)\b", "API 23/26 package compatibility must not return")
-    forbid_regex(
-        build,
-        r'"-P"\s*,\s*"(?:23|26)"',
-        "API 23/26 native compatibility must not return",
-    )
+    forbid_regex(build, r'"-P"\s*,\s*"(?:23|26)"', "API 23/26 native compatibility must not return")
     require(build, "dependsOn(generateUniFfiBindings)", "Kotlin/static work must depend only on generated UniFFi Kotlin")
     require(
         build,
         "dependsOn(buildAndroidUniFfi, materializeSingBoxAndroid)",
         "native producers must attach at the Android native merge boundary",
     )
-    forbid(
-        build,
-        'tasks.named("preBuild")',
-        "global preBuild must not re-couple Kotlin/static work to Android native packaging",
-    )
+    forbid(build, 'tasks.named("preBuild")', "global preBuild must not re-couple Kotlin/static work to Android native packaging")
 
     gradle_properties = read("android/gradle.properties")
     abi_matches = re.findall(r"^mishTargetAbi=(.+)$", gradle_properties, flags=re.MULTILINE)
     if abi_matches != ["armeabi-v7a"]:
         raise SystemExit(
-            "delivery contract: android/gradle.properties must contain exactly one "
-            "mishTargetAbi=armeabi-v7a"
+            "delivery contract: android/gradle.properties must contain exactly one mishTargetAbi=armeabi-v7a"
         )
 
     toolchain_path = "lab/windows/toolchain.json"
@@ -81,16 +72,13 @@ def main() -> None:
     if toolchain.get("android", {}).get("min_sdk") != 30:
         raise SystemExit("delivery contract: LAB Android min_sdk must mirror PRODUCT API 30")
     if toolchain.get("rust", {}).get("target") != "armv7-linux-androideabi":
-        raise SystemExit(
-            "delivery contract: LAB Rust target must mirror armeabi-v7a as armv7-linux-androideabi"
-        )
+        raise SystemExit("delivery contract: LAB Rust target must mirror armeabi-v7a as armv7-linux-androideabi")
     if toolchain.get("android", {}).get("ndk") != "29.0.14206865":
         raise SystemExit("delivery contract: LAB Android NDK pin drifted from the accepted build contract")
     android_packages = toolchain.get("android", {}).get("packages") or []
     if "build-tools;36.0.0" not in android_packages:
         raise SystemExit(
-            "delivery contract: canonical LAB bootstrap must provision build-tools;36.0.0 "
-            "before the physical consumer runs"
+            "delivery contract: canonical LAB bootstrap must provision build-tools;36.0.0 before the physical consumer runs"
         )
 
     ci = ".github/workflows/ci.yml"
@@ -131,37 +119,53 @@ def main() -> None:
         "SIGNING_IDENTITY_MISSING",
         "@('install', '-r', $signedProduct)",
         "signing_state_root = $state",
+        "signed_product_apk_sha256",
+        "lab_signing_certificate_sha256",
     ):
         require(installer, required, "DEVICE-1 installer simplification contract drifted")
-    forbid(
-        installer,
-        "sdkmanager.bat",
-        "physical consumer must not provision Android build-tools during an install",
-    )
+    forbid(installer, "sdkmanager.bat", "physical consumer must not provision Android build-tools during an install")
+
+    verifier = "lab/windows/verify-installed-candidate.ps1"
+    for required in (
+        "mish.device-install-verification/v1",
+        "'shell', 'pm', 'path'",
+        "@('pull', $basePaths[0], $pulledApk)",
+        "Get-FileHash -Algorithm SHA256",
+        "'verify', '--print-certs'",
+        "INSTALLED_APK_DIGEST_MISMATCH",
+        "INSTALLED_APK_CERT_MISMATCH",
+        "exact_bytes_verified = $true",
+    ):
+        require(verifier, required, "post-install exact-byte verification contract drifted")
 
     consumer = ".github/workflows/device-candidate-physical.yml"
     for required in (
         "github.ref == 'refs/heads/main'",
         "github.ref_protected == true",
+        "control_sha:",
+        "Exact protected-main CONTROL SHA",
+        'if [[ "$GITHUB_SHA" != "$CONTROL_SHA" ]]',
         "device candidate PR must target fix/root-policy-reconciliation",
         "device candidate must originate from the canonical repository",
         "no non-expired exact-head device candidate artifact exists",
         "candidate artifact did not originate from Integration Android Preflight",
+        'ref: ${{ needs.resolve.outputs.control_sha }}',
         "shell: powershell",
         "DEVICE-1 API must be 30",
         "DEVICE-1 ABI must be armeabi-v7a",
-        "Verify, stable-sign, and install without rebuilding",
         "merge-multiple: false",
         "needs.resolve.outputs.artifact_name",
         "DOWNLOAD_LAYOUT_MISMATCH",
+        "Install exact signed candidate without rebuilding",
         "-CandidateDirectory $candidateDirectory",
+        "Verify installed APK bytes and signing identity",
+        "verify-installed-candidate.ps1",
+        "mish-device-install-verification-v1.json",
         "Hosted build reused: **YES**",
-        "Local Gradle/Rust/NDK build: **NO**",
-        "Portable PowerShell prerequisite: **NO**",
-        "Target package: `com.mobileproxymish.app.debug`",
-        "Install result:",
+        "Local build: **NO**",
+        "Installed exact bytes/signing verification:",
         "result = 'FAIL'",
-        "category = $category",
+        "installed = $false",
     ):
         require(consumer, required, "protected physical candidate consumer contract drifted")
     for forbidden in (
@@ -172,7 +176,8 @@ def main() -> None:
         "cargo ndk",
         "uniffi-bindgen",
         "assembleDebug",
-        "Installed package:",
+        "pm uninstall",
+        "adb uninstall",
     ):
         forbid(consumer, forbidden, "normal DEVICE-1 consumer must stay deterministic and truthful")
 
@@ -180,8 +185,11 @@ def main() -> None:
     for required in (
         "Android 11 / API 30",
         "Android 23 and Android 26 are not supported PRODUCT compatibility floors",
-        "The self-hosted Windows job is a consumer, not a builder",
-        "A local build remains an explicit engineering fallback",
+        "The Windows LAB is a consumer, not a builder",
+        "never silently substitute bytes from another commit",
+        "adb install -r = Success` is necessary but not sufficient",
+        "PRODUCT_SHA",
+        "CONTROL_SHA",
         "It is not PRODUCT release identity and cannot be promoted",
     ):
         require(pipeline, required, "stable development delivery documentation drifted")
