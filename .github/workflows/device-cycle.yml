@@ -347,7 +347,7 @@ jobs:
           .\lab\windows\start-device-app.ps1 `
             -AdbPath $env:ADB_EXE `
             -PackageName $env:PACKAGE_NAME `
-            -ComponentName "$env:PACKAGE_NAME/.MainActivity" `
+            -ComponentName "$env:PACKAGE_NAME/com.mobileproxymish.app.MainActivity" `
             -ReceiptPath "$env:RUNNER_TEMP\mish-device-start-v1.json"
 
       - name: Collect one canonical diagnostic snapshot
@@ -477,7 +477,7 @@ jobs:
               '- Exact head: `${{ needs.resolve.outputs.source_sha }}`',
               '- Mode: `${{ needs.resolve.outputs.mode }}`',
               "- Result: **$([string]$report.cycle_result)**",
-              "- Classification: `$([string]$report.classification)`",
+              "- Classification: $([string]$report.classification)",
               '- Targeted probe: `${{ steps.select.outputs.selected_probe }}`',
               '- Airplane recovery: **NOT RUN by baseline cycle**'
             ) | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_STEP_SUMMARY
