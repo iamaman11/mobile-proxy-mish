@@ -58,13 +58,16 @@ draft PR
  -> lintDebug
 
 ready PR
- -> fast gate
- -> unit tests
+ -> fast Kotlin/lint gate
+ -> Rust workspace format + clippy + unit tests
+ -> Android/Kotlin unit tests
  -> assembleDebug
  -> assembleDebugAndroidTest
  -> native/package verification
  -> exact-head device candidate artifact
 ```
+
+The Rust quality stage is mandatory for every ready integration candidate. Compiling `mish-runtime`/`mish-android-ffi` for UniFFI is not sufficient evidence for Rust behavioral changes: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` must pass before Android NDK/package work may produce a candidate.
 
 The exact-head artifact is created only after the complete ready-PR gate succeeds. A failed, cancelled, still-building, or superseded build never authorizes physical work. More importantly, a successful build is only evidence that a candidate is ready; it does **not** start DEVICE-1.
 
@@ -235,4 +238,4 @@ master hardening/product plan
   -> Issue #134
 ```
 
-The repository guards must reject drift back to automatic DEVICE-1 starts, a separately dispatched normal physical workflow, local rebuilding, uninstall/reinstall migration in the normal path, automatic repair/probe decisions, floating control checkout, ambiguous LAB/Product diagnostic attribution, or accepting `adb install` without verifying the installed exact bytes.
+The repository guards must reject drift back to automatic DEVICE-1 starts, a separately dispatched normal physical workflow, local rebuilding, uninstall/reinstall migration in the normal path, automatic repair/probe decisions, floating control checkout, ambiguous LAB/Product diagnostic attribution, accepting `adb install` without verifying the installed exact bytes, or publishing a ready integration candidate without passing the Rust workspace quality gate.
