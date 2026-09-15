@@ -27,6 +27,16 @@ if ($LASTEXITCODE -ne 0) {
     Stop-RuntimeIdentity 'PROCESS_SNAPSHOT_FAILED' 'Non-root Android process snapshot failed.'
 }
 $singBoxRows = @($rows | Where-Object { $_ -match '(?i)(?:libsingbox|sing-box)' })
+$visibleProcesses = @(
+    foreach ($row in $singBoxRows) {
+        if ($row -match '^\S+\s+(\d+)\s+(\d+)\s+') {
+            [ordered]@{
+                pid = [int]$Matches[1]
+                ppid = [int]$Matches[2]
+            }
+        }
+    }
+)
 
 $manifest = (@(& $AdbPath shell run-as $PackageName cat "$runtimePath/sing-box-current-generation" 2>$null) -join "`n").Trim()
 $currentGeneration = $null
@@ -41,6 +51,8 @@ if ($LASTEXITCODE -ne 0) {
 
 $pidFiles = @($names | Where-Object { $_ -match '^sing-box-([A-Za-z0-9_-]{24})\.pid$' })
 $recordedPidCount = 0
+$recordedPids = @()
+$currentRecordedPid = $null
 $visibleMatchesAny = $false
 $visibleMatchesCurrent = $false
 $visibleMatchesNonCurrent = $false
@@ -50,7 +62,12 @@ foreach ($pidFile in $pidFiles) {
     $generation = $Matches[1]
     $pidText = (@(& $AdbPath shell run-as $PackageName cat "$runtimePath/$pidFile" 2>$null) -join "`n").Trim()
     if ($LASTEXITCODE -ne 0 -or $pidText -notmatch '^\d+$') { continue }
+    $pid = [int]$pidText
     $recordedPidCount += 1
+    $recordedPids += $pid
+    if ($null -ne $currentGeneration -and $generation -ceq $currentGeneration) {
+        $currentRecordedPid = $pid
+    }
     $escapedPid = [regex]::Escape($pidText)
     $matchesVisible = @($singBoxRows | Where-Object { $_ -match "^\S+\s+$escapedPid\s+" }).Count -eq 1
     if (-not $matchesVisible) { continue }
@@ -61,6 +78,13 @@ foreach ($pidFile in $pidFiles) {
     else {
         $visibleMatchesNonCurrent = $true
     }
+}
+
+$currentRecordedPidIsVisibleParent = $false
+if ($null -ne $currentRecordedPid) {
+    $currentRecordedPidIsVisibleParent = @(
+        $visibleProcesses | Where-Object { [int]$_.ppid -eq [int]$currentRecordedPid }
+    ).Count -gt 0
 }
 
 $manifestPresent = $names -contains 'sing-box-current-generation'
@@ -100,8 +124,12 @@ $evidence = [ordered]@{
     collected_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
     package = $PackageName
     visible_sing_box_process_count = $singBoxRows.Count
+    visible_sing_box_processes = $visibleProcesses
     recorded_generation_pid_count = $recordedPidCount
+    recorded_generation_pids = @($recordedPids)
     current_generation_record_available = $null -ne $currentGeneration
+    current_recorded_pid = $currentRecordedPid
+    current_recorded_pid_is_visible_parent = $currentRecordedPidIsVisibleParent
     visible_process_has_any_recorded_generation = $visibleMatchesAny
     current_generation_process_match = $visibleMatchesCurrent
     visible_process_matches_noncurrent_recorded_generation = $visibleMatchesNonCurrent
@@ -124,9 +152,14 @@ if ($parent) { [IO.Directory]::CreateDirectory($parent) | Out-Null }
     [Text.UTF8Encoding]::new($false)
 )
 
+$visiblePidSummary = (@($visibleProcesses | ForEach-Object { "$($_.pid):$($_.ppid)" }) -join ',')
+$currentRecordedPidText = if ($null -eq $currentRecordedPid) { 'NONE' } else { [string]$currentRecordedPid }
 Write-Host 'MISH_RUNTIME_IDENTITY_COLLECTION=PASS'
 Write-Host "MISH_RUNTIME_IDENTITY_CLASSIFICATION=$classification"
 Write-Host "VISIBLE_SING_BOX_PROCESS_COUNT=$($singBoxRows.Count)"
+Write-Host "VISIBLE_SING_BOX_PID_PPID=$visiblePidSummary"
 Write-Host "RECORDED_GENERATION_PID_COUNT=$recordedPidCount"
+Write-Host "CURRENT_RECORDED_PID=$currentRecordedPidText"
+Write-Host "CURRENT_RECORDED_PID_IS_VISIBLE_PARENT=$currentRecordedPidIsVisibleParent"
 Write-Host "CURRENT_GENERATION_PROCESS_MATCH=$visibleMatchesCurrent"
 Write-Host "MISH_RUNTIME_IDENTITY_EVIDENCE=$fullEvidencePath"
