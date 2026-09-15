@@ -31,15 +31,33 @@ class ProcessCmdlineSnapshotTest {
     }
 
     @Test
-    fun reconcilerMustBindParsedArgvToRootObservedDigestBeforeRustOwnershipDecision() {
+    fun reconcilerMustBindParsedArgvBeforeProjectingObservationToRustOwner() {
         val source = repositoryFile(
             "android/app/src/main/java/com/mobileproxymish/app/ProxyProcessReconciler.kt",
         ).readText()
 
+        val observeStart = source.indexOf("private fun observeCandidates()")
+        val observeEnd = source.indexOf("private fun terminateAuthorized", startIndex = observeStart)
+        assertTrue(observeStart >= 0 && observeEnd > observeStart)
+        val observeBody = source.substring(observeStart, observeEnd)
+
         val integrityCheck = "procCmdlineSnapshotMatchesDigest(argv, digest)"
+        val observationProjection = "observations += RuntimeProcessObservationView("
+        val integrityIndex = observeBody.indexOf(integrityCheck)
+        val projectionIndex = observeBody.indexOf(observationProjection)
+        assertTrue(integrityIndex >= 0)
+        assertTrue(projectionIndex > integrityIndex)
+
+        val cleanupStart = source.indexOf("fun cleanupOwnedProcesses()")
+        val cleanupEnd = source.indexOf("private fun observeCandidates()", startIndex = cleanupStart)
+        assertTrue(cleanupStart >= 0 && cleanupEnd > cleanupStart)
+        val cleanupBody = source.substring(cleanupStart, cleanupEnd)
+        val observationCall = "val observations = observeCandidates() ?: return false"
         val ownerCall = "planRuntimeProcessCleanup(runtimeDir.absolutePath, observations)"
-        assertTrue(source.contains(integrityCheck))
-        assertTrue(source.indexOf(integrityCheck) < source.indexOf(ownerCall))
+        val observationIndex = cleanupBody.indexOf(observationCall)
+        val ownerIndex = cleanupBody.indexOf(ownerCall)
+        assertTrue(observationIndex >= 0)
+        assertTrue(ownerIndex > observationIndex)
     }
 
     private fun repositoryFile(relativePath: String): File {
