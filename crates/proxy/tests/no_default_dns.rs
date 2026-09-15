@@ -6,7 +6,10 @@ fn proxy_serving_source_has_no_default_dns_capability() {
     let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();
     collect_rust_files(&source_root, &mut files);
-    assert!(!files.is_empty(), "proxy source tree must contain Rust files");
+    assert!(
+        !files.is_empty(),
+        "proxy source tree must contain Rust files"
+    );
 
     for file in files {
         let source = fs::read_to_string(&file).expect("proxy source must be readable");
