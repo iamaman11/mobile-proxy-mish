@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +24,11 @@ def require(path: str, needle: str, reason: str) -> None:
 def forbid(path: str, needle: str, reason: str) -> None:
     if needle in read(path):
         raise SystemExit(f"device cycle contract: {reason}: {path} contains {needle!r}")
+
+
+def forbid_regex(path: str, pattern: str, reason: str) -> None:
+    if re.search(pattern, read(path), flags=re.IGNORECASE):
+        raise SystemExit(f"device cycle contract: {reason}: {path} matches /{pattern}/i")
 
 
 def main() -> None:
@@ -87,12 +93,14 @@ def main() -> None:
         "am', 'force-stop'",
         "am', 'start', '-W'",
         "snapshot_v1",
+        "processIdResult",
         "PROCESS_NOT_STABLE",
         "PRODUCT_TERMINAL_FAILURE",
         "readinessState -ceq 'READY'",
     ):
         require(start, required, "deterministic app start/stabilization contract drifted")
     forbid(start, "com.mobileproxymish.app.debug/.MainActivity", "launcher component must use the manifest class namespace")
+    forbid_regex(start, r"\$pid(?![A-Za-z0-9_])", "launcher must not shadow PowerShell's read-only automatic PID variable")
     forbid(start, "su'", "app start stage must stay non-root")
 
     selector = "lab/windows/select-device-cycle-probe.ps1"
@@ -120,6 +128,9 @@ def main() -> None:
     test = "lab/windows/test-device-cycle.ps1"
     for required in (
         "DEVICE_CYCLE_CONTRACT=PASS",
+        "collect-device-diagnostic.ps1",
+        "diagnose-loopback-connect.ps1",
+        "PowerShell automatic variable `$PID",
         "ownership failure wins over transport classification",
         "loopback failure selects raw CONNECT probe",
         "Explicit manual probe override was not preserved",
