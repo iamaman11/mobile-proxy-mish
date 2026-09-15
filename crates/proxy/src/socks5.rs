@@ -151,9 +151,7 @@ pub fn write_socks5_reply<W: Write>(
     stream.write_all(&frame)
 }
 
-fn validate_credentials(
-    credentials: &ProxyCredentialMaterial,
-) -> Result<(), Socks5ProtocolError> {
+fn validate_credentials(credentials: &ProxyCredentialMaterial) -> Result<(), Socks5ProtocolError> {
     if credentials.username().is_empty()
         || credentials.username().len() > MAX_AUTH_FIELD_LEN
         || credentials.password().is_empty()
@@ -176,9 +174,7 @@ fn constant_time_eq(expected: &[u8], supplied: &[u8]) -> bool {
     difference == 0
 }
 
-fn negotiate_username_password<S: Read + Write>(
-    stream: &mut S,
-) -> Result<(), Socks5SessionError> {
+fn negotiate_username_password<S: Read + Write>(stream: &mut S) -> Result<(), Socks5SessionError> {
     let mut header = [0_u8; 2];
     stream.read_exact(&mut header)?;
     if header[0] != SOCKS_VERSION {
@@ -243,11 +239,7 @@ fn read_connect_request<S: Read + Write>(
     let mut header = [0_u8; 4];
     stream.read_exact(&mut header)?;
     if header[0] != SOCKS_VERSION || header[2] != 0 {
-        write_socks5_reply(
-            stream,
-            Socks5Reply::GeneralFailure,
-            unspecified_bind_addr(),
-        )?;
+        write_socks5_reply(stream, Socks5Reply::GeneralFailure, unspecified_bind_addr())?;
         return Err(Socks5ProtocolError::MalformedRequest.into());
     }
 
@@ -305,8 +297,8 @@ fn read_connect_request<S: Read + Write>(
             }
             let mut bytes = vec![0_u8; usize::from(length[0])];
             stream.read_exact(&mut bytes)?;
-            let domain = std::str::from_utf8(&bytes)
-                .map_err(|_| Socks5ProtocolError::InvalidDomain)?;
+            let domain =
+                std::str::from_utf8(&bytes).map_err(|_| Socks5ProtocolError::InvalidDomain)?;
             if domain
                 .bytes()
                 .any(|byte| byte == 0 || byte.is_ascii_control())
@@ -342,11 +334,7 @@ fn read_port<S: Read + Write>(stream: &mut S) -> Result<u16, Socks5SessionError>
     stream.read_exact(&mut port)?;
     let port = u16::from_be_bytes(port);
     if port == 0 {
-        write_socks5_reply(
-            stream,
-            Socks5Reply::GeneralFailure,
-            unspecified_bind_addr(),
-        )?;
+        write_socks5_reply(stream, Socks5Reply::GeneralFailure, unspecified_bind_addr())?;
         return Err(Socks5ProtocolError::InvalidPort.into());
     }
     Ok(port)
@@ -471,9 +459,7 @@ mod tests {
         let error = accept_socks5_connect(&mut io, &credentials()).expect_err("must reject");
         assert!(matches!(
             error,
-            Socks5SessionError::Protocol(
-                Socks5ProtocolError::UnsupportedAuthenticationMethod
-            )
+            Socks5SessionError::Protocol(Socks5ProtocolError::UnsupportedAuthenticationMethod)
         ));
         assert_eq!(io.output, vec![SOCKS_VERSION, NO_ACCEPTABLE_METHODS]);
     }
@@ -527,7 +513,10 @@ mod tests {
             let mut io = TestIo::new(input);
             let error = accept_socks5_connect(&mut io, &credentials()).expect_err("must reject");
             assert!(matches!(error, Socks5SessionError::Protocol(value) if value == expected));
-            assert_eq!(&io.output[4..6], &[SOCKS_VERSION, Socks5Reply::CommandNotSupported.code()]);
+            assert_eq!(
+                &io.output[4..6],
+                &[SOCKS_VERSION, Socks5Reply::CommandNotSupported.code()]
+            );
         }
     }
 
@@ -549,7 +538,9 @@ mod tests {
         let mut zero_port_io = TestIo::new(zero_port);
         assert!(matches!(
             accept_socks5_connect(&mut zero_port_io, &credentials()),
-            Err(Socks5SessionError::Protocol(Socks5ProtocolError::InvalidPort))
+            Err(Socks5SessionError::Protocol(
+                Socks5ProtocolError::InvalidPort
+            ))
         ));
 
         let mut empty_domain = authenticated_prefix();
@@ -563,7 +554,9 @@ mod tests {
         let mut empty_domain_io = TestIo::new(empty_domain);
         assert!(matches!(
             accept_socks5_connect(&mut empty_domain_io, &credentials()),
-            Err(Socks5SessionError::Protocol(Socks5ProtocolError::InvalidDomain))
+            Err(Socks5SessionError::Protocol(
+                Socks5ProtocolError::InvalidDomain
+            ))
         ));
     }
 
