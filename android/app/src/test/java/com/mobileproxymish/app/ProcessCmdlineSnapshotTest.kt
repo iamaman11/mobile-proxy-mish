@@ -1,5 +1,6 @@
 package com.mobileproxymish.app
 
+import java.io.File
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -27,5 +28,26 @@ class ProcessCmdlineSnapshotTest {
         assertTrue(procCmdlineSnapshotMatchesDigest(argv, digest))
         assertFalse(procCmdlineSnapshotMatchesDigest(argv + "unexpected", digest))
         assertFalse(procCmdlineSnapshotMatchesDigest(argv, "not-a-sha256"))
+    }
+
+    @Test
+    fun reconcilerMustBindParsedArgvToRootObservedDigestBeforeRustOwnershipDecision() {
+        val source = repositoryFile(
+            "android/app/src/main/java/com/mobileproxymish/app/ProxyProcessReconciler.kt",
+        ).readText()
+
+        val integrityCheck = "procCmdlineSnapshotMatchesDigest(argv, digest)"
+        val ownerCall = "planRuntimeProcessCleanup(runtimeDir.absolutePath, observations)"
+        assertTrue(source.contains(integrityCheck))
+        assertTrue(source.indexOf(integrityCheck) < source.indexOf(ownerCall))
+    }
+
+    private fun repositoryFile(relativePath: String): File {
+        var cursor = File(System.getProperty("user.dir")).absoluteFile
+        repeat(8) {
+            File(cursor, relativePath).takeIf(File::isFile)?.let { return it }
+            cursor = cursor.parentFile ?: return@repeat
+        }
+        error("repository file not found from ${System.getProperty("user.dir")}: $relativePath")
     }
 }
