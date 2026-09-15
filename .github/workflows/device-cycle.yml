@@ -1,5 +1,4 @@
 name: Device Cycle
-run-name: Device Cycle ${{ github.event.issue.number && format('PR #{0}', github.event.issue.number) || 'contract' }}
 
 on:
   pull_request:
