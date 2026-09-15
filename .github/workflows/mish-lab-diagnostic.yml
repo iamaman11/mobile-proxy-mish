@@ -41,33 +41,54 @@ jobs:
           if ($abi -ne 'armeabi-v7a') { throw "DEVICE-1 ABI must be armeabi-v7a; observed $abi" }
           Write-Host 'DEVICE_1_PREREQUISITES=PASS'
 
-      - name: Verify visible sing-box generation ownership without root
+      - name: Verify visible sing-box against all recorded generations without root
         shell: powershell
         run: |
           $adb = 'C:\mish-lab\tools\android-sdk\platform-tools\adb.exe'
           $package = 'com.mobileproxymish.app.debug'
+          $runtimePath = 'no_backup/proxy-runtime'
+
           $rows = @(& $adb shell ps -A 2>$null)
           if ($LASTEXITCODE -ne 0) { throw 'Non-root Android process snapshot failed.' }
           $singBoxRows = @($rows | Where-Object { $_ -match '(?i)(?:libsingbox|sing-box)' })
           Write-Host "VISIBLE_SING_BOX_PROCESS_COUNT=$($singBoxRows.Count)"
 
-          $manifest = (@(& $adb shell run-as $package cat 'no_backup/proxy-runtime/sing-box-current-generation' 2>$null) -join "`n").Trim()
-          if ($LASTEXITCODE -ne 0 -or $manifest -notmatch '^generation=([A-Za-z0-9_-]{24})$') {
-            Write-Host 'CURRENT_GENERATION_RECORD_AVAILABLE=False'
-            Write-Host 'CURRENT_GENERATION_PROCESS_MATCH=False'
-          } else {
+          $manifest = (@(& $adb shell run-as $package cat "$runtimePath/sing-box-current-generation" 2>$null) -join "`n").Trim()
+          $currentGeneration = $null
+          if ($LASTEXITCODE -eq 0 -and $manifest -match '^generation=([A-Za-z0-9_-]{24})$') {
+            $currentGeneration = $Matches[1]
+          }
+
+          $names = @(& $adb shell run-as $package ls $runtimePath 2>$null)
+          if ($LASTEXITCODE -ne 0) { throw 'App-owned proxy runtime directory is unavailable.' }
+          $pidFiles = @($names | Where-Object { $_ -match '^sing-box-([A-Za-z0-9_-]{24})\.pid$' })
+          $recordedPidCount = 0
+          $visibleMatchesAny = $false
+          $visibleMatchesCurrent = $false
+          $visibleMatchesNonCurrent = $false
+
+          foreach ($pidFile in $pidFiles) {
+            if ($pidFile -notmatch '^sing-box-([A-Za-z0-9_-]{24})\.pid$') { continue }
             $generation = $Matches[1]
-            $pidText = (@(& $adb shell run-as $package cat "no_backup/proxy-runtime/sing-box-$generation.pid" 2>$null) -join "`n").Trim()
-            if ($LASTEXITCODE -ne 0 -or $pidText -notmatch '^\d+$') {
-              Write-Host 'CURRENT_GENERATION_RECORD_AVAILABLE=False'
-              Write-Host 'CURRENT_GENERATION_PROCESS_MATCH=False'
+            $pidText = (@(& $adb shell run-as $package cat "$runtimePath/$pidFile" 2>$null) -join "`n").Trim()
+            if ($LASTEXITCODE -ne 0 -or $pidText -notmatch '^\d+$') { continue }
+            $recordedPidCount += 1
+            $escapedPid = [regex]::Escape($pidText)
+            $matchesVisible = @($singBoxRows | Where-Object { $_ -match "^\S+\s+$escapedPid\s+" }).Count -eq 1
+            if (-not $matchesVisible) { continue }
+            $visibleMatchesAny = $true
+            if ($null -ne $currentGeneration -and $generation -ceq $currentGeneration) {
+              $visibleMatchesCurrent = $true
             } else {
-              $escapedPid = [regex]::Escape($pidText)
-              $matchesCurrent = @($singBoxRows | Where-Object { $_ -match "^\S+\s+$escapedPid\s+" }).Count -eq 1
-              Write-Host 'CURRENT_GENERATION_RECORD_AVAILABLE=True'
-              Write-Host "CURRENT_GENERATION_PROCESS_MATCH=$matchesCurrent"
+              $visibleMatchesNonCurrent = $true
             }
           }
+
+          Write-Host "RECORDED_GENERATION_PID_COUNT=$recordedPidCount"
+          Write-Host "CURRENT_GENERATION_RECORD_AVAILABLE=$($null -ne $currentGeneration)"
+          Write-Host "VISIBLE_PROCESS_HAS_ANY_RECORDED_GENERATION=$visibleMatchesAny"
+          Write-Host "CURRENT_GENERATION_PROCESS_MATCH=$visibleMatchesCurrent"
+          Write-Host "VISIBLE_PROCESS_MATCHES_NONCURRENT_RECORDED_GENERATION=$visibleMatchesNonCurrent"
 
       - name: Collect and print one-shot diagnostic
         shell: powershell
