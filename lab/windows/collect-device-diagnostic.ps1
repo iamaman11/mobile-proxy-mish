@@ -16,6 +16,8 @@ $script:SnapshotMethod = 'snapshot_v1'
 $script:TcpTimeoutMs = 3000
 $script:HttpTimeoutSeconds = 15
 
+Import-Module (Join-Path $PSScriptRoot 'DeviceDiagnosticClassification.psm1') -Force
+
 function Stop-MishDiagnostic {
     param(
         [Parameter(Mandatory)][string] $Category,
@@ -201,38 +203,51 @@ if ($null -ne $meshAddress) {
     $tcp3128 = Test-MishTcp -HostName $meshAddress -Port 3128
 }
 
+# Diagnostics observes PRODUCT state first. A Windows credential lease is a later LAB probe
+# prerequisite, never evidence that the PRODUCT credential itself is absent. Do not even request
+# a lease until the PRODUCT proxy says it is RUNNING and its credential owner says it is active.
 $lease = $null
-$credentialLeaseAvailable = $false
+$credentialLeaseStatus = 'NOT_ATTEMPTED'
 $credentialStorePath = $null
-if ([bool]$android.credential.active) {
-    try {
-        Import-Module (Join-Path $PSScriptRoot 'CredentialProvisioning.psm1') -Force
-        $credentialTempRoot = if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
-            $env:RUNNER_TEMP
-        } else {
-            $env:TEMP
-        }
-        if ([string]::IsNullOrWhiteSpace($credentialTempRoot)) {
-            throw 'A temporary directory is unavailable for the bounded credential lease.'
-        }
+if ([string]$android.proxy.state -ceq 'RUNNING' -and [bool]$android.credential.active) {
+    Import-Module (Join-Path $PSScriptRoot 'CredentialProvisioning.psm1') -Force
+    $credentialTempRoot = if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
+        $env:RUNNER_TEMP
+    } else {
+        $env:TEMP
+    }
+    if ([string]::IsNullOrWhiteSpace($credentialTempRoot)) {
+        $credentialLeaseStatus = 'PROVISIONING_FAILED'
+    } else {
         $credentialStorePath = Join-Path `
             ([IO.Path]::GetFullPath($credentialTempRoot)) `
             ('mish-diagnostic-credential-' + [Guid]::NewGuid().ToString('N') + '.dpapi')
-        [void](Invoke-MishExternalProxyCredentialProvisioning `
-            -AdbPath $AdbPath `
-            -PackageName $PackageName `
-            -StorePath $credentialStorePath)
-        $lease = Open-MishExternalProxyCredentialLease -StorePath $credentialStorePath
-        $credentialLeaseAvailable = $null -ne $lease
-    }
-    catch {
-        $credentialLeaseAvailable = $false
+        try {
+            [void](Invoke-MishExternalProxyCredentialProvisioning `
+                -AdbPath $AdbPath `
+                -PackageName $PackageName `
+                -StorePath $credentialStorePath)
+        }
+        catch {
+            $credentialLeaseStatus = 'PROVISIONING_FAILED'
+        }
+        if ($credentialLeaseStatus -ceq 'NOT_ATTEMPTED') {
+            try {
+                $lease = Open-MishExternalProxyCredentialLease -StorePath $credentialStorePath
+                if ($null -eq $lease) { throw 'Credential lease was not returned.' }
+                $credentialLeaseStatus = 'AVAILABLE'
+            }
+            catch {
+                $credentialLeaseStatus = 'OPEN_FAILED'
+            }
+        }
     }
 }
+$credentialLeaseAvailable = $credentialLeaseStatus -ceq 'AVAILABLE'
 
 $adbForwardPort = $null
-$loopbackProbe = New-MishNotRunProbe -Reason 'CREDENTIAL_OR_FORWARD_UNAVAILABLE'
-$meshProbe = New-MishNotRunProbe -Reason 'CREDENTIAL_OR_MESH_ENDPOINT_UNAVAILABLE'
+$loopbackProbe = New-MishNotRunProbe -Reason 'PRODUCT_NOT_SERVING_OR_CREDENTIAL_UNAVAILABLE'
+$meshProbe = New-MishNotRunProbe -Reason 'PRODUCT_NOT_SERVING_OR_MESH_UNAVAILABLE'
 try {
     if ($credentialLeaseAvailable) {
         $forwardOutput = @(& $AdbPath forward 'tcp:0' 'tcp:3128' 2>$null)
@@ -266,19 +281,23 @@ finally {
 $pidFinal = Invoke-MishAdbText -Arguments @('shell', 'pidof', $PackageName)
 $pidStable = $pidStable -and ($pidFinal -ceq $pidBefore)
 
-$classification = switch ($true) {
-    (-not $pidStable) { 'INVALID_PROCESS_CHANGED_DURING_CAPTURE'; break }
-    (-not [bool]$android.consistent) { 'INVALID_ANDROID_SNAPSHOT_CHANGED_DURING_CAPTURE'; break }
-    (-not $credentialLeaseAvailable) { 'CREDENTIAL_LEASE_UNAVAILABLE'; break }
-    ([string]$loopbackProbe.result -ne 'PASS') { "PRODUCT_LOOPBACK_E2E_$([string]$loopbackProbe.reason)"; break }
-    ([string]$android.readiness.state -ne 'READY') { 'READINESS_INTERNAL_PROBE_MISMATCH'; break }
-    (-not [bool]$android.mesh.ingress_running) { "MESH_INGRESS_$([string]$android.mesh.ingress_failure)"; break }
-    ($meshEndpointCount -ne 1) { 'MESH_ENDPOINT_CARDINALITY_INVALID'; break }
-    (-not $routePresent) { 'WINDOWS_MESH_ROUTE_UNAVAILABLE'; break }
-    (-not $tcp3128) { 'WINDOWS_MESH_TCP_3128_UNREACHABLE'; break }
-    ([string]$meshProbe.result -ne 'PASS') { "WINDOWS_MESH_PROXY_E2E_$([string]$meshProbe.reason)"; break }
-    default { 'PASS' }
-}
+$classification = Get-MishDeviceDiagnosticClassification `
+    -PidStable $pidStable `
+    -AndroidConsistent ([bool]$android.consistent) `
+    -ProxyState ([string]$android.proxy.state) `
+    -ProxyFailure ([string]$android.proxy.failure) `
+    -CredentialActive ([bool]$android.credential.active) `
+    -CredentialLeaseStatus $credentialLeaseStatus `
+    -LoopbackResult ([string]$loopbackProbe.result) `
+    -LoopbackReason ([string]$loopbackProbe.reason) `
+    -ReadinessState ([string]$android.readiness.state) `
+    -MeshIngressRunning ([bool]$android.mesh.ingress_running) `
+    -MeshIngressFailure ([string]$android.mesh.ingress_failure) `
+    -MeshEndpointCount $meshEndpointCount `
+    -RoutePresent $routePresent `
+    -Tcp3128 $tcp3128 `
+    -MeshProbeResult ([string]$meshProbe.result) `
+    -MeshProbeReason ([string]$meshProbe.reason)
 
 $evidence = [ordered]@{
     schema = $script:EvidenceSchema
@@ -296,6 +315,7 @@ $evidence = [ordered]@{
             port_3128 = $tcp3128
         }
         credential_lease_available = $credentialLeaseAvailable
+        credential_lease_status = $credentialLeaseStatus
         credential_source = 'bounded_package_provisioning'
         adb_loopback_proxy_e2e = $loopbackProbe
         mesh_proxy_e2e = $meshProbe
@@ -317,6 +337,7 @@ Write-Host "MISH_DIAGNOSTIC_CLASSIFICATION=$classification"
 Write-Host "MISH_DIAGNOSTIC_PID_STABLE=$pidStable"
 Write-Host "MISH_DIAGNOSTIC_ANDROID_READINESS=$([string]$android.readiness.state)"
 Write-Host "MISH_DIAGNOSTIC_MESH_INGRESS=$([bool]$android.mesh.ingress_running)"
+Write-Host "MISH_DIAGNOSTIC_CREDENTIAL_LEASE=$credentialLeaseStatus"
 Write-Host "MISH_DIAGNOSTIC_LOOPBACK_E2E=$([string]$loopbackProbe.result)"
 Write-Host "MISH_DIAGNOSTIC_MESH_E2E=$([string]$meshProbe.result)"
 Write-Host "MISH_DIAGNOSTIC_EVIDENCE=$fullEvidencePath"
