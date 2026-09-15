@@ -144,7 +144,7 @@ def main() -> None:
         "github.actor == 'iamaman11'",
         "startsWith(github.event.comment.body, '/mish-cycle ')",
         "device-cycle requires an explicit exact 40-hex PRODUCT SHA",
-        "device candidate requires a ready PR",
+        "installing a device candidate requires a ready PR",
         "no completed exact-head device candidate artifact exists; build first, then explicitly request the cycle",
         "candidate artifact did not originate from Integration Android Preflight",
         "candidate build is not a completed successful PR preflight",
