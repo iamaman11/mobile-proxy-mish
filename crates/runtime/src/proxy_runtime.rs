@@ -32,7 +32,9 @@ impl fmt::Display for ProxyServingRuntimeError {
             Self::BindFailed => "native proxy runtime could not bind canonical listeners",
             Self::ThreadUnavailable => "native proxy runtime accept worker could not start",
             Self::StateUnavailable => "native proxy runtime state is unavailable",
-            Self::ShutdownTimedOut => "native proxy sessions did not stop within the bounded timeout",
+            Self::ShutdownTimedOut => {
+                "native proxy sessions did not stop within the bounded timeout"
+            }
         })
     }
 }
@@ -67,7 +69,8 @@ impl ProxyServingRuntime {
         let mut bound = Vec::with_capacity(plan.listeners().len());
         for listener in plan.listeners() {
             let socket = SocketAddr::new(plan.listen_address(), listener.port);
-            let tcp = TcpListener::bind(socket).map_err(|_| ProxyServingRuntimeError::BindFailed)?;
+            let tcp =
+                TcpListener::bind(socket).map_err(|_| ProxyServingRuntimeError::BindFailed)?;
             let address = tcp
                 .local_addr()
                 .map_err(|_| ProxyServingRuntimeError::StateUnavailable)?;
@@ -79,7 +82,10 @@ impl ProxyServingRuntime {
         let active_sessions = Arc::new(AtomicUsize::new(0));
         let clients = Arc::new(Mutex::new(HashMap::new()));
         let session_sequence = Arc::new(AtomicU64::new(1));
-        let wake_addresses = bound.iter().map(|(_, _, address)| *address).collect::<Vec<_>>();
+        let wake_addresses = bound
+            .iter()
+            .map(|(_, _, address)| *address)
+            .collect::<Vec<_>>();
         let mut accept_threads = Vec::with_capacity(bound.len());
 
         for (protocol, listener, _) in bound {
