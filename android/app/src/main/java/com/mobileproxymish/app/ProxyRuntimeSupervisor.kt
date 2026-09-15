@@ -14,8 +14,8 @@ import com.mobileproxymish.ffi.RuntimeProcessState
 import com.mobileproxymish.ffi.proxyListenerPorts
 import com.mobileproxymish.ffi.renderProxyRuntimeConfig
 import java.io.Closeable
-import java.io.FileOutputStream
 import java.io.File
+import java.io.FileOutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.security.SecureRandom
@@ -41,13 +41,7 @@ sealed interface ProxyRuntimeSnapshot {
     ) : ProxyRuntimeSnapshot
 }
 
-/**
- * Non-secret read-only observation of the exact currently owned runtime generation.
- *
- * This is diagnostic evidence only. It carries no credential material, no configuration and no
- * readiness authority; the existing lifecycle, Credentials and Cellular Egress owners remain
- * authoritative.
- */
+/** Non-secret read-only observation of the exact currently owned runtime generation. */
 internal data class ProxyRuntimeDiagnosticObservation(
     val childAlive: Boolean,
     val privateBridgePort: Int?,
@@ -112,15 +106,8 @@ internal fun generationIdentityMayBeDeleted(
 ): Boolean = !ownedChildMayExist || terminationConfirmed
 
 /**
- * Android child-process effect adapter for the Rust Runtime Lifecycle natural owner.
- *
- * canonical loopback sing-box listeners
- *   -> private loopback SOCKS bridge
- *   -> the exact Cellular Egress owner
- *
- * Files/Android PID effects remain here. STARTING/RUNNING/FAILED/STOPPED and failure reason state
- * are owned by `mish-runtime` and exposed through the typed UniFFI seam. All privileged runtime
- * launch/status/stop/cleanup commands reuse the process-wide persistent `SuProcess` session.
+ * Android child-process effect adapter for the Rust Runtime Lifecycle and process reconciliation
+ * natural owners. Android executes files/root/process effects; ownership decisions stay in Rust.
  */
 class ProxyRuntimeSupervisor internal constructor(
     context: Context,
@@ -131,7 +118,7 @@ class ProxyRuntimeSupervisor internal constructor(
     private val appContext = context.applicationContext
     private val runtimeDir = File(appContext.noBackupFilesDir, RUNTIME_DIR)
     private val generationManifestFile = File(runtimeDir, GENERATION_MANIFEST_FILE)
-    private val ownedOrphanCleanupFile = File(runtimeDir, OWNED_ORPHAN_CLEANUP_FILE)
+    private val processReconciler = ProxyProcessReconciler(runtimeDir)
     private var configFile = File(runtimeDir, LEGACY_CONFIG_FILE)
     private var pidFile = File(runtimeDir, LEGACY_PID_FILE)
     private var rootLauncherFile = File(runtimeDir, LEGACY_ROOT_LAUNCHER_FILE)
@@ -190,6 +177,9 @@ class ProxyRuntimeSupervisor internal constructor(
                 failLifecycle(RuntimeProcessFailure.NATIVE_RUNTIME_MISSING)
                 return
             }
+
+            // Process discovery is an Android/root observation. Ownership classification and the
+            // terminate/clean/fail-closed decision are made by mish-runtime through UniFFI.
             if (!loadRecordedGeneration() || !cleanupStaleChild()) {
                 failLifecycle(RuntimeProcessFailure.STALE_PROCESS_IDENTITY_MISMATCH)
                 return
@@ -204,8 +194,6 @@ class ProxyRuntimeSupervisor internal constructor(
                 return
             }
 
-            // Resolve exact durable-owner version + derived material before opening the private
-            // Cellular Egress bridge. Only the version survives as a non-secret serving fact.
             val publicCredential = try {
                 publicCredentials.currentCredential()
             } catch (_: Exception) {
@@ -217,20 +205,14 @@ class ProxyRuntimeSupervisor internal constructor(
                 return
             }
 
-            // A private bridge opened before the asynchronously reconciled Cellular Egress
-            // generation is authorized can fail its listener health check spuriously. This is a
-            // dependency gate, not another readiness state: the cellular adapter's published
-            // OwnerSnapshot remains the sole authority for admission and root-policy success.
             if (!cellularRuntime.awaitAuthorizedAdmission(AUTHORIZED_ADMISSION_TIMEOUT_MS)) {
                 deleteCurrentGenerationFiles(removeManifest = true)
                 failLifecycle(RuntimeProcessFailure.PRIVATE_BRIDGE_UNAVAILABLE)
                 return
             }
 
-            // Private bridge credentials stay intentionally ephemeral and generation-scoped.
             val privateUsername = randomCredential()
             val privatePassword = randomCredential()
-
             val newBridge = try {
                 cellularRuntime.startPrivateBridge(
                     username = privateUsername,
@@ -265,16 +247,12 @@ class ProxyRuntimeSupervisor internal constructor(
                 failLifecycle(RuntimeProcessFailure.CONFIGURATION_REJECTED)
                 return
             }
-            // Validate the exact generated config before root launch. Output is drained and
-            // discarded because it may mention sensitive runtime paths or credentials; only the
-            // bounded exit status influences lifecycle state.
             if (!validatePrivateConfig()) {
                 runCatching { newBridge.stop() }
                 deleteCurrentGenerationFiles(removeManifest = true)
                 failLifecycle(RuntimeProcessFailure.CONFIGURATION_REJECTED)
                 return
             }
-
             if (!writeRootLauncher()) {
                 runCatching { newBridge.stop() }
                 deleteCurrentGenerationFiles(removeManifest = true)
@@ -282,9 +260,6 @@ class ProxyRuntimeSupervisor internal constructor(
                 return
             }
 
-            // From this point the launch script may have forked a root child even if its bounded
-            // receipt later fails. Keep generation identity until exact stop or exact app-owned
-            // orphan cleanup proves the child absent.
             ownedRootChildMayExist = true
             if (!runRootScript(rootLauncherFile)) {
                 val clean = cleanupFailedStart(pid = null, privateBridge = newBridge)
@@ -295,8 +270,6 @@ class ProxyRuntimeSupervisor internal constructor(
                 return
             }
 
-            // The persistent root-shell receipt is not the runtime child identity. The PID file
-            // written by the generation-scoped launch script remains the authoritative receipt.
             val newPid = awaitRecordedPid()
             if (newPid == null) {
                 val clean = cleanupFailedStart(pid = null, privateBridge = newBridge)
@@ -313,11 +286,6 @@ class ProxyRuntimeSupervisor internal constructor(
                 failLifecycle(if (clean) healthFailure else RuntimeProcessFailure.CLEANUP_FAILED)
                 return
             }
-
-            // Keep the 0600 app-private config for the lifetime of the child. DEVICE-1 shows
-            // that removing it immediately after the first accept can leave a live sing-box PID
-            // with its listeners gone. Exact stop/failed-start cleanup removes this generation
-            // file together with its PID/control records.
 
             if (closed.get()) {
                 val clean = cleanupFailedStart(pid = newPid, privateBridge = newBridge)
@@ -397,7 +365,6 @@ class ProxyRuntimeSupervisor internal constructor(
         thread.start()
     }
 
-    /** Returns a sanitized typed failure; config, credentials and process output stay private. */
     private fun waitForHealthy(
         privateBridge: CellularBridgeRuntime,
         expectedPid: Int,
@@ -421,9 +388,6 @@ class ProxyRuntimeSupervisor internal constructor(
                 continue
             }
 
-            // A stale old listener can be reachable in the short interval while the newly forked
-            // child is failing its own bind. Require the exact current PID to remain alive after
-            // that interval before accepting the generation as RUNNING.
             Thread.sleep(START_OWNERSHIP_STABILITY_MS)
             val second = observeStartupHealth(privateBridge, expectedPid, publicPorts)
             if (!second.exactChildAlive) return RuntimeProcessFailure.CHILD_EXITED
@@ -569,88 +533,7 @@ class ProxyRuntimeSupervisor internal constructor(
         false
     }
 
-    private fun writeOwnedOrphanCleanup(): Boolean = try {
-        if (
-            !SAFE_PATH.matches(runtimeDir.absolutePath) ||
-            !isSafeOwnedPath(ownedOrphanCleanupFile)
-        ) return false
-
-        // Startup scans are already bounded to one pass. Avoid both lossy process-name filtering
-        // and one external parser process per PID: the shared root shell has a strict command
-        // deadline. Android's shell `read -d ''` parses the NUL-delimited cmdline directly through
-        // one file descriptor, preserving exact positional argv ownership without subprocess cost.
-        ownedOrphanCleanupFile.writeText(
-            """
-            #!/system/bin/sh
-            set -eu
-            runtime="${runtimeDir.absolutePath}"
-            owned_pid() {
-              pid="${'$'}1"
-              [ -r "/proc/${'$'}pid/cmdline" ] || return 1
-              exec 3< "/proc/${'$'}pid/cmdline" || return 1
-              arg1=''; arg2=''; arg3=''; arg4=''; extra=''
-              IFS= read -r -d '' arg1 <&3 || { exec 3<&-; return 1; }
-              IFS= read -r -d '' arg2 <&3 || { exec 3<&-; return 1; }
-              IFS= read -r -d '' arg3 <&3 || { exec 3<&-; return 1; }
-              IFS= read -r -d '' arg4 <&3 || { exec 3<&-; return 1; }
-              if IFS= read -r -d '' extra <&3; then
-                exec 3<&-
-                return 1
-              fi
-              exec 3<&-
-              case "${'$'}arg1" in */${SING_BOX_LIBRARY}) ;; *) return 1 ;; esac
-              [ "${'$'}arg2" = run ] || return 1
-              [ "${'$'}arg3" = -c ] || return 1
-              case "${'$'}arg4" in
-                "${'$'}runtime"/sing-box-*.json|"${'$'}runtime"/${LEGACY_CONFIG_FILE}) return 0 ;;
-                *) return 1 ;;
-              esac
-            }
-            pids=""
-            for proc in /proc/[0-9]*; do
-              pid="${'$'}{proc#/proc/}"
-              case "${'$'}pid" in ''|*[!0-9]*) exit 64;; esac
-              if owned_pid "${'$'}pid"; then
-                kill -TERM "${'$'}pid" 2>/dev/null || true
-                pids="${'$'}pids ${'$'}pid"
-              fi
-            done
-            [ -z "${'$'}pids" ] && exit 0
-            i=0
-            while [ "${'$'}i" -lt 60 ]; do
-              alive=0
-              for pid in ${'$'}pids; do owned_pid "${'$'}pid" && alive=1; done
-              [ "${'$'}alive" -eq 0 ] && exit 0
-              sleep 0.05
-              i=${'$'}((i + 1))
-            done
-            for pid in ${'$'}pids; do
-              owned_pid "${'$'}pid" && kill -KILL "${'$'}pid" 2>/dev/null || true
-            done
-            i=0
-            while [ "${'$'}i" -lt 40 ]; do
-              alive=0
-              for pid in ${'$'}pids; do owned_pid "${'$'}pid" && alive=1; done
-              [ "${'$'}alive" -eq 0 ] && exit 0
-              sleep 0.05
-              i=${'$'}((i + 1))
-            done
-            exit 5
-            """.trimIndent() + "\n",
-            Charsets.UTF_8,
-        )
-        Os.chmod(ownedOrphanCleanupFile.absolutePath, ROOT_SCRIPT_MODE)
-        true
-    } catch (_: Exception) {
-        false
-    }
-
-    private fun cleanupOwnedOrphanProcesses(): Boolean {
-        if (!writeOwnedOrphanCleanup()) return false
-        val cleaned = runRootScript(ownedOrphanCleanupFile)
-        val scriptDeleted = deleteIfPresent(ownedOrphanCleanupFile)
-        return cleaned && scriptDeleted
-    }
+    private fun cleanupOwnedOrphanProcesses(): Boolean = processReconciler.cleanupOwnedProcesses()
 
     private fun runRootScript(script: File): Boolean {
         if (!script.isFile || !isSafeOwnedPath(script)) return false
@@ -723,24 +606,8 @@ class ProxyRuntimeSupervisor internal constructor(
         return null
     }
 
-    /**
-     * Startup reconciliation first uses any exact recorded PID, then performs one bounded scan for
-     * app-owned orphan command lines. Generation files are deleted only after that scan proves no
-     * such root child remains. This also repairs old orphans whose PID identity was already lost.
-     */
+    /** Rust-owned reconciliation proves all app-owned stale processes absent before identity reset. */
     private fun cleanupStaleChild(): Boolean = runCatching {
-        val recordedPid = if (pidFile.isFile) {
-            pidFile.readText(Charsets.US_ASCII).trim().toIntOrNull()?.takeIf { it > 0 }
-        } else {
-            null
-        }
-        if (
-            recordedPid != null &&
-            isExactRootSingBoxAlive(recordedPid) &&
-            !stopExactRootSingBox(recordedPid)
-        ) {
-            return@runCatching false
-        }
         if (!cleanupOwnedOrphanProcesses()) return@runCatching false
         deleteCurrentGenerationFiles(removeManifest = activeGenerationId != null)
     }.getOrDefault(false)
@@ -785,7 +652,10 @@ class ProxyRuntimeSupervisor internal constructor(
         val terminationConfirmed = if (!ownedRootChildMayExist) {
             true
         } else {
-            (pid != null && stopExactRootSingBox(pid)) || cleanupOwnedOrphanProcesses()
+            // Exact stop is a best-effort fast path only. Rust reconciliation is the authoritative
+            // proof that no app-owned child/sibling remains, so it must never be short-circuited.
+            if (pid != null) runCatching { stopExactRootSingBox(pid) }
+            cleanupOwnedOrphanProcesses()
         }
         if (terminationConfirmed) ownedRootChildMayExist = false
         ownedChildAccepted = false
@@ -811,7 +681,8 @@ class ProxyRuntimeSupervisor internal constructor(
         val terminationConfirmed = if (!ownedRootChildMayExist) {
             true
         } else {
-            (currentPid != null && stopExactRootSingBox(currentPid)) || cleanupOwnedOrphanProcesses()
+            if (currentPid != null) runCatching { stopExactRootSingBox(currentPid) }
+            cleanupOwnedOrphanProcesses()
         }
         if (terminationConfirmed) {
             ownedRootChildMayExist = false
@@ -913,7 +784,6 @@ class ProxyRuntimeSupervisor internal constructor(
         const val LEGACY_ROOT_LAUNCHER_FILE = "sing-box-root-launch.sh"
         const val LEGACY_ROOT_CONTROL_FILE = "sing-box-root-control.sh"
         const val GENERATION_MANIFEST_FILE = "sing-box-current-generation"
-        const val OWNED_ORPHAN_CLEANUP_FILE = "sing-box-owned-cleanup.sh"
         const val GENERATION_ID_LENGTH = 24
         const val SING_BOX_LIBRARY = "libsingbox.so"
         const val MAGISK_SU = "su"
@@ -926,8 +796,6 @@ class ProxyRuntimeSupervisor internal constructor(
         const val HEALTH_RETRY_MS = 100L
         const val HEALTH_POLL_MS = 500L
         const val HEALTH_CONNECT_TIMEOUT_MS = 250
-        // DEVICE-1 Magisk may deliver a cold persistent root-shell command after the child fork.
-        // PID capture remains bounded; normal runtime recovery reuses that one privilege session.
         const val PID_RECORD_TIMEOUT_MS = 5_000L
         const val PID_RECORD_RETRY_MS = 25L
         const val CLOSE_TIMEOUT_SECONDS = 25L
