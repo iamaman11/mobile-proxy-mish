@@ -122,8 +122,12 @@ pub enum MixedConnectError {
 impl fmt::Display for MixedConnectError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::EmptyStream => formatter.write_str("mixed proxy ingress ended before protocol detection"),
-            Self::UnsupportedProtocol => formatter.write_str("mixed proxy ingress protocol is unsupported"),
+            Self::EmptyStream => {
+                formatter.write_str("mixed proxy ingress ended before protocol detection")
+            }
+            Self::UnsupportedProtocol => {
+                formatter.write_str("mixed proxy ingress protocol is unsupported")
+            }
             Self::Io(error) => write!(formatter, "mixed proxy ingress I/O failed: {error}"),
             Self::Http(error) => write!(formatter, "mixed proxy HTTP CONNECT failed: {error}"),
             Self::Socks5(error) => write!(formatter, "mixed proxy SOCKS5 failed: {error}"),
