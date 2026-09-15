@@ -12,10 +12,7 @@ use crate::{
 /// Consumer-owned outbound effect port. Proxy Serving supplies one authenticated unresolved
 /// target; the implementation owns network admission, DNS, socket creation and routing effects.
 pub trait ProxyOutboundConnector: Send + Sync {
-    fn connect(
-        &self,
-        target: &ProxyConnectTarget,
-    ) -> Result<TcpStream, ProxyOutboundConnectError>;
+    fn connect(&self, target: &ProxyConnectTarget) -> Result<TcpStream, ProxyOutboundConnectError>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,7 +169,9 @@ fn write_outbound_failure(
     error: ProxyOutboundConnectError,
 ) -> io::Result<()> {
     match protocol {
-        ProxyProtocol::Socks5 => write_socks5_reply(client, outbound_reply(error), unspecified_bind_addr()),
+        ProxyProtocol::Socks5 => {
+            write_socks5_reply(client, outbound_reply(error), unspecified_bind_addr())
+        }
         ProxyProtocol::Http => client.write_all(match error {
             ProxyOutboundConnectError::Unavailable => {
                 b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n"
@@ -363,7 +362,8 @@ mod tests {
             )
         });
 
-        let mut client = TcpStream::connect_timeout(&session_address, TEST_TIMEOUT).expect("client");
+        let mut client =
+            TcpStream::connect_timeout(&session_address, TEST_TIMEOUT).expect("client");
         configure(&client);
         client
             .write_all(b"CONNECT example.invalid:443 HTTP/1.1\r\nHost: example.invalid:443\r\nProxy-Authorization: Basic dXNlcjpwYXNzd29yZA==\r\n\r\ntunnel-bytes")
@@ -375,7 +375,10 @@ mod tests {
         assert_eq!(&echoed, b"tunnel-bytes");
         client.shutdown(Shutdown::Write).expect("client shutdown");
 
-        let stats = session.join().expect("session thread").expect("session result");
+        let stats = session
+            .join()
+            .expect("session thread")
+            .expect("session result");
         upstream.join().expect("upstream thread");
         assert_eq!(stats.client_to_upstream, 12);
         assert_eq!(stats.upstream_to_client, 12);
