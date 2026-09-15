@@ -67,10 +67,7 @@ pub fn plan_runtime_process_cleanup(
             .argv
             .iter()
             .any(|arg| is_owned_config_path(runtime_dir, arg));
-        let mentions_runtime_binary = observation
-            .argv
-            .iter()
-            .any(|arg| is_runtime_binary(arg));
+        let mentions_runtime_binary = observation.argv.iter().any(|arg| is_runtime_binary(arg));
         let owned = observation.argv.windows(4).any(|window| {
             is_runtime_binary(&window[0])
                 && window[1] == "run"
@@ -124,7 +121,10 @@ fn is_runtime_binary(arg: &str) -> bool {
 }
 
 fn is_owned_config_path(runtime_dir: &str, arg: &str) -> bool {
-    let Some(name) = arg.strip_prefix(runtime_dir).and_then(|tail| tail.strip_prefix('/')) else {
+    let Some(name) = arg
+        .strip_prefix(runtime_dir)
+        .and_then(|tail| tail.strip_prefix('/'))
+    else {
         return false;
     };
     if name == LEGACY_CONFIG_FILE {
@@ -146,8 +146,7 @@ fn is_safe_runtime_dir(path: &str) -> bool {
     path.starts_with('/')
         && !path.ends_with('/')
         && path.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric()
-                || matches!(byte, b'/' | b'_' | b'.' | b'~' | b'=' | b'-')
+            byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'_' | b'.' | b'~' | b'=' | b'-')
         })
 }
 
@@ -247,10 +246,7 @@ mod tests {
     #[test]
     fn duplicate_pid_or_invalid_digest_fails_closed() {
         let config = current_config();
-        let one = observation(
-            101,
-            &["/data/app/lib/libsingbox.so", "run", "-c", &config],
-        );
+        let one = observation(101, &["/data/app/lib/libsingbox.so", "run", "-c", &config]);
         let mut bad = one.clone();
         bad.cmdline_digest = "not-a-digest".to_string();
         assert_eq!(
