@@ -11,14 +11,14 @@ use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 
 const MAX_AUTH_FIELD_LEN: usize = u8::MAX as usize;
 
+pub use mish_proxy::serve_proxy_session as serve_session;
 pub use mish_proxy::{
     ProxyConnectTarget as ConnectTarget, ProxyCredentialMaterial,
     ProxyOutboundConnectError as OutboundConnectError,
-    ProxyOutboundConnector as CellularOutboundConnector, ProxyProtocol, ProxyRelayStats as RelayStats,
-    ProxyServingPlan, ProxySessionError as SessionError, ProxyTargetHost as TargetHost,
-    Socks5ProtocolError as ProtocolError,
+    ProxyOutboundConnector as CellularOutboundConnector, ProxyProtocol,
+    ProxyRelayStats as RelayStats, ProxyServingPlan, ProxySessionError as SessionError,
+    ProxyTargetHost as TargetHost, Socks5ProtocolError as ProtocolError,
 };
-pub use mish_proxy::serve_proxy_session as serve_session;
 
 /// Runtime-generation credentials retained only as a compatibility façade for the
 /// temporary loopback bridge. Authentication semantics are owned by `mish-proxy`.
