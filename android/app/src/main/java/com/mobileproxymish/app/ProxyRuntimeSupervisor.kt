@@ -25,6 +25,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 private const val LOOPBACK_HEALTH_FAILURE_CONFIRMATIONS = 3
+private const val CREDENTIAL_BYTES = 24
+private val SECURE_RANDOM = SecureRandom()
 
 /** Runtime Lifecycle projection only; it does not own proxy protocol or cellular facts. */
 sealed interface ProxyRuntimeSnapshot {
@@ -407,8 +409,6 @@ class ProxyRuntimeSupervisor internal constructor(
         const val HEALTH_POLL_MS = 500L
         const val HEALTH_CONNECT_TIMEOUT_MS = 250
         const val CLOSE_TIMEOUT_SECONDS = 25L
-        const val CREDENTIAL_BYTES = 24
-        val SECURE_RANDOM = SecureRandom()
         val RECOVERABLE_UNEXPECTED_FAILURES = setOf(
             RuntimeProcessFailure.HEALTH_CHECK_FAILED,
             RuntimeProcessFailure.LOOPBACK_LISTENER_UNAVAILABLE,
