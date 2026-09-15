@@ -4,8 +4,10 @@
 //! Mesh endpoint discovery, credential persistence, cellular selection, DNS effects and child
 //! process lifecycle remain outside this capability.
 
+mod http_connect;
 mod target;
 
+pub use http_connect::{HttpConnectError, parse_http_connect_request};
 pub use target::{ProxyConnectTarget, ProxyTargetError, ProxyTargetHost};
 
 use std::{error::Error, fmt, net::IpAddr};

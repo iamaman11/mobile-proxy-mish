@@ -70,7 +70,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt
           rustup override set "$RUST_TOOLCHAIN"
 
       - name: Fast Kotlin compile and lint
@@ -78,6 +78,15 @@ jobs:
           gradle --no-daemon -p android
           :app:compileDebugKotlin
           :app:lintDebug
+
+      - name: Rust workspace quality gate
+        if: ${{ github.event.pull_request.draft == false }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all --check
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo test --workspace --locked
 
       - name: Set up Android Rust toolchain
         if: ${{ github.event.pull_request.draft == false }}
