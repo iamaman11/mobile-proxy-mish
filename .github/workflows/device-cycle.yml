@@ -1,0 +1,559 @@
+name: Device Cycle
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/device-cycle.yml'
+      - '.github/workflows/device-candidate-physical.yml'
+      - 'lab/windows/start-device-app.ps1'
+      - 'lab/windows/select-device-cycle-probe.ps1'
+      - 'lab/windows/collect-runtime-identity.ps1'
+      - 'lab/windows/new-device-cycle-report.ps1'
+      - 'lab/windows/test-device-cycle.ps1'
+      - 'tools/check_device_cycle_contract.py'
+      - 'tools/check_architecture.py'
+      - 'docs/architecture/DEVELOPMENT_PIPELINE.md'
+  workflow_run:
+    workflows: ['Integration Android Preflight']
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Canonical repository PR associated with the device cycle'
+        required: true
+        type: string
+      expected_head_sha:
+        description: 'Optional exact current PR head guard'
+        required: false
+        default: ''
+        type: string
+      mode:
+        description: 'Bounded cycle stage to execute'
+        required: true
+        default: full
+        type: choice
+        options:
+          - full
+          - install_only
+          - diagnose_only
+          - probe_only
+      probe:
+        description: 'Targeted diagnostic probe; auto is valid for full/diagnose_only'
+        required: true
+        default: auto
+        type: choice
+        options:
+          - auto
+          - none
+          - loopback_connect
+          - runtime_identity
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: device-cycle
+  cancel-in-progress: false
+
+env:
+  PACKAGE_NAME: com.mobileproxymish.app.debug
+  ADB_EXE: C:\mish-lab\tools\android-sdk\platform-tools\adb.exe
+
+jobs:
+  contract:
+    name: Device Cycle Contract
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Exercise orchestration contract
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\test-device-cycle.ps1
+          python .\tools\check_device_cycle_contract.py
+
+  resolve:
+    name: Resolve trusted cycle request
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      eligible: ${{ steps.resolve.outputs.eligible }}
+      pr_number: ${{ steps.resolve.outputs.pr_number }}
+      source_sha: ${{ steps.resolve.outputs.source_sha }}
+      mode: ${{ steps.resolve.outputs.mode }}
+      probe: ${{ steps.resolve.outputs.probe }}
+      hosted_run_id: ${{ steps.resolve.outputs.hosted_run_id }}
+      cycle_id: ${{ steps.resolve.outputs.cycle_id }}
+    steps:
+      - name: Resolve PR, exact head, mode and automatic eligibility
+        id: resolve
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          MANUAL_PR: ${{ inputs.pr_number }}
+          MANUAL_SHA: ${{ inputs.expected_head_sha }}
+          MANUAL_MODE: ${{ inputs.mode }}
+          MANUAL_PROBE: ${{ inputs.probe }}
+          WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
+          WORKFLOW_RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          WORKFLOW_RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          WORKFLOW_RUN_PRS: ${{ toJson(github.event.workflow_run.pull_requests) }}
+        run: |
+          set -euo pipefail
+          cycle_id="cycle-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          hosted_run_id=''
+
+          if [[ "$EVENT_NAME" == 'workflow_run' ]]; then
+            if [[ "$WORKFLOW_RUN_CONCLUSION" != 'success' ]]; then
+              echo 'eligible=false' >> "$GITHUB_OUTPUT"
+              echo "cycle_id=$cycle_id" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            mapfile -t prs < <(python3 - <<'PY'
+          import json, os
+          for item in json.loads(os.environ.get('WORKFLOW_RUN_PRS') or '[]'):
+              number = item.get('number')
+              if isinstance(number, int) and number > 0:
+                  print(number)
+          PY
+            )
+            if [[ "${#prs[@]}" -ne 1 ]]; then
+              echo 'eligible=false' >> "$GITHUB_OUTPUT"
+              echo "cycle_id=$cycle_id" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            pr_number="${prs[0]}"
+            source_sha="$WORKFLOW_RUN_HEAD_SHA"
+            mode='full'
+            probe='auto'
+            hosted_run_id="$WORKFLOW_RUN_ID"
+          else
+            pr_number="$MANUAL_PR"
+            source_sha="$MANUAL_SHA"
+            mode="$MANUAL_MODE"
+            probe="$MANUAL_PROBE"
+          fi
+
+          [[ "$pr_number" =~ ^[1-9][0-9]*$ ]]
+          [[ "$mode" =~ ^(full|install_only|diagnose_only|probe_only)$ ]]
+          [[ "$probe" =~ ^(auto|none|loopback_connect|runtime_identity)$ ]]
+          if [[ "$mode" == 'probe_only' && "$probe" =~ ^(auto|none)$ ]]; then
+            echo 'probe_only requires an explicit loopback_connect or runtime_identity probe' >&2
+            exit 64
+          fi
+          if [[ -n "$source_sha" ]]; then
+            [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]
+          fi
+
+          root="$RUNNER_TEMP/device-cycle-resolve"
+          mkdir -p "$root"
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$pr_number" > "$root/pr.json"
+          readarray -t meta < <(python3 - "$root/pr.json" "$GITHUB_REPOSITORY" "$source_sha" "$mode" "$EVENT_NAME" <<'PY'
+          import json, re, sys
+          path, repository, expected, mode, event_name = sys.argv[1:]
+          pr = json.load(open(path, encoding='utf-8'))
+          head = str((pr.get('head') or {}).get('sha') or '')
+          head_repo = str((((pr.get('head') or {}).get('repo') or {}).get('full_name')) or '')
+          base = str((pr.get('base') or {}).get('ref') or '')
+          labels = {str(item.get('name') or '') for item in (pr.get('labels') or [])}
+          if pr.get('state') != 'open':
+              raise SystemExit('device cycle requires an open PR')
+          if head_repo != repository:
+              raise SystemExit('device cycle requires the canonical repository head')
+          if not re.fullmatch(r'[0-9a-f]{40}', head):
+              raise SystemExit('device cycle PR head SHA is invalid')
+          if expected and head != expected:
+              raise SystemExit('device cycle current PR head does not match the expected SHA')
+          if mode in {'full', 'install_only'}:
+              if pr.get('draft') is not False:
+                  raise SystemExit('installing a device candidate requires a ready PR')
+              if base != 'fix/root-policy-reconciliation':
+                  raise SystemExit('installing a device candidate requires the integration base')
+          auto_eligible = event_name != 'workflow_run' or 'device-cycle' in labels
+          print(head)
+          print('true' if auto_eligible else 'false')
+          PY
+          )
+          current_sha="${meta[0]}"
+          eligible="${meta[1]}"
+
+          if [[ "$EVENT_NAME" == 'workflow_run' && "$current_sha" != "$WORKFLOW_RUN_HEAD_SHA" ]]; then
+            echo 'eligible=false' >> "$GITHUB_OUTPUT"
+            echo "cycle_id=$cycle_id" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$eligible" != 'true' ]]; then
+            echo 'eligible=false' >> "$GITHUB_OUTPUT"
+            echo "cycle_id=$cycle_id" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          source_sha="$current_sha"
+          {
+            echo 'eligible=true'
+            echo "pr_number=$pr_number"
+            echo "source_sha=$source_sha"
+            echo "mode=$mode"
+            echo "probe=$probe"
+            echo "hosted_run_id=$hosted_run_id"
+            echo "cycle_id=$cycle_id"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish resolved cycle request
+        if: ${{ steps.resolve.outputs.eligible == 'true' }}
+        shell: bash
+        run: |
+          {
+            echo '### Device cycle request'
+            echo '- PR: `#${{ steps.resolve.outputs.pr_number }}`'
+            echo '- Exact head: `${{ steps.resolve.outputs.source_sha }}`'
+            echo '- Mode: `${{ steps.resolve.outputs.mode }}`'
+            echo '- Probe: `${{ steps.resolve.outputs.probe }}`'
+            echo '- Hosted run: `${{ steps.resolve.outputs.hosted_run_id }}`'
+            echo '- Cycle id: `${{ steps.resolve.outputs.cycle_id }}`'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  install:
+    name: Exact artifact -> canonical replacement install
+    needs: resolve
+    if: ${{ needs.resolve.outputs.eligible == 'true' && (needs.resolve.outputs.mode == 'full' || needs.resolve.outputs.mode == 'install_only') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    outputs:
+      install_run_id: ${{ steps.child.outputs.install_run_id }}
+    steps:
+      - name: Dispatch canonical protected-main physical consumer
+        id: child
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ needs.resolve.outputs.pr_number }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          CYCLE_ID: ${{ needs.resolve.outputs.cycle_id }}
+        run: |
+          set -euo pipefail
+          payload="$(jq -nc \
+            --arg pr "$PR_NUMBER" \
+            --arg sha "$SOURCE_SHA" \
+            --arg cycle "$CYCLE_ID" \
+            '{ref:"main",inputs:{pr_number:$pr,expected_head_sha:$sha,cycle_id:$cycle}}')"
+          curl --proto '=https' --tlsv1.2 --fail-with-body --silent --show-error \
+            --request POST \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/workflows/device-candidate-physical.yml/dispatches" \
+            --data "$payload"
+
+          deadline=$((SECONDS + 120))
+          child_id=''
+          while (( SECONDS < deadline )); do
+            child_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/device-candidate-physical.yml/runs?event=workflow_dispatch&branch=main&per_page=50" \
+              --jq ".workflow_runs[] | select(.display_title == \"Device Candidate Physical $CYCLE_ID\") | .id" | head -n 1)"
+            if [[ -n "$child_id" ]]; then break; fi
+            sleep 2
+          done
+          if [[ -z "$child_id" ]]; then
+            echo 'canonical physical consumer run was not correlated inside the bounded dispatch window' >&2
+            exit 70
+          fi
+          echo "install_run_id=$child_id" >> "$GITHUB_OUTPUT"
+
+          deadline=$((SECONDS + 1200))
+          while (( SECONDS < deadline )); do
+            readarray -t state < <(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$child_id" --jq '.status, (.conclusion // "")')
+            if [[ "${state[0]}" == 'completed' ]]; then
+              if [[ "${state[1]}" != 'success' ]]; then
+                echo "canonical physical consumer failed: run=$child_id conclusion=${state[1]}" >&2
+                exit 1
+              fi
+              echo 'DEVICE_CANDIDATE_INSTALL=PASS'
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "canonical physical consumer timed out: run=$child_id" >&2
+          exit 124
+
+      - name: Publish install handoff
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          {
+            echo '### Exact candidate install'
+            echo '- Canonical child run: `${{ steps.child.outputs.install_run_id }}`'
+            echo '- Install owner: `Device Candidate Physical`'
+            echo '- Replacement install: **YES**'
+            echo '- Local build: **NO**'
+            echo '- Result: `${{ job.status }}`'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  diagnose:
+    name: Launch -> snapshot -> targeted probe
+    needs: [resolve, install]
+    if: >-
+      ${{ always() && needs.resolve.outputs.eligible == 'true' && needs.resolve.outputs.mode != 'install_only' &&
+          (needs.resolve.outputs.mode != 'full' || needs.install.result == 'success') }}
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 12
+    outputs:
+      cycle_result: ${{ steps.report.outputs.cycle_result }}
+      classification: ${{ steps.report.outputs.classification }}
+      selected_probe: ${{ steps.select.outputs.selected_probe }}
+    steps:
+      - name: Checkout accepted main diagnostic consumer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+          clean: true
+
+      - name: Verify physical DEVICE-1 prerequisites
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path -LiteralPath $env:ADB_EXE -PathType Leaf)) {
+            throw 'MISH_DEVICE_CYCLE_FAILURE|ADB_MISSING|Canonical ADB is unavailable.'
+          }
+          $devices = @(& $env:ADB_EXE devices | Where-Object { $_ -match '^\S+\s+device\s*$' })
+          if ($LASTEXITCODE -ne 0 -or $devices.Count -ne 1) {
+            throw 'MISH_DEVICE_CYCLE_FAILURE|DEVICE_UNAVAILABLE|Exactly one authorized DEVICE-1 is required.'
+          }
+          $api = (& $env:ADB_EXE shell getprop ro.build.version.sdk).Trim()
+          $abi = (& $env:ADB_EXE shell getprop ro.product.cpu.abi).Trim()
+          if ($api -ne '30' -or $abi -ne 'armeabi-v7a') {
+            throw "MISH_DEVICE_CYCLE_FAILURE|DEVICE_IDENTITY_MISMATCH|Observed API=$api ABI=$abi"
+          }
+          Write-Host 'DEVICE_CYCLE_PREREQUISITES=PASS'
+
+      - name: Explicitly restart app and wait for bounded stable state
+        id: launch
+        if: ${{ needs.resolve.outputs.mode != 'probe_only' }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\start-device-app.ps1 `
+            -AdbPath $env:ADB_EXE `
+            -PackageName $env:PACKAGE_NAME `
+            -ComponentName "$env:PACKAGE_NAME/.MainActivity" `
+            -ReceiptPath "$env:RUNNER_TEMP\mish-device-start-v1.json"
+
+      - name: Collect one canonical diagnostic snapshot
+        id: diagnostic
+        if: ${{ needs.resolve.outputs.mode != 'probe_only' }}
+        continue-on-error: true
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\collect-device-diagnostic.ps1 `
+            -AdbPath $env:ADB_EXE `
+            -PackageName $env:PACKAGE_NAME `
+            -EvidencePath "$env:RUNNER_TEMP\mish-device-diagnostic-v1.json"
+
+      - name: Select one bounded targeted probe
+        id: select
+        shell: powershell
+        env:
+          MODE: ${{ needs.resolve.outputs.mode }}
+          REQUESTED_PROBE: ${{ needs.resolve.outputs.probe }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $selectionPath = "$env:RUNNER_TEMP\mish-device-cycle-probe-selection-v1.json"
+          if ($env:MODE -ceq 'probe_only') {
+            $selected = $env:REQUESTED_PROBE
+            [ordered]@{
+              schema = 'mish.device-cycle-probe-selection/v1'
+              requested = $selected
+              selected = $selected
+              classification = 'MANUAL_PROBE_ONLY'
+              proxy_failure = ''
+            } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $selectionPath
+          }
+          elseif (Test-Path -LiteralPath "$env:RUNNER_TEMP\mish-device-diagnostic-v1.json" -PathType Leaf) {
+            $selection = .\lab\windows\select-device-cycle-probe.ps1 `
+              -DiagnosticEvidencePath "$env:RUNNER_TEMP\mish-device-diagnostic-v1.json" `
+              -RequestedProbe $env:REQUESTED_PROBE `
+              -OutputPath $selectionPath | ConvertFrom-Json
+            $selected = [string]$selection.selected
+          }
+          else {
+            $selected = 'none'
+            [ordered]@{
+              schema = 'mish.device-cycle-probe-selection/v1'
+              requested = $env:REQUESTED_PROBE
+              selected = 'none'
+              classification = 'DIAGNOSTIC_COLLECTION_FAILED'
+              proxy_failure = ''
+            } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $selectionPath
+          }
+          "selected_probe=$selected" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_OUTPUT
+          Write-Host "DEVICE_CYCLE_TARGETED_PROBE=$selected"
+
+      - name: Targeted probe - runtime identity
+        if: ${{ steps.select.outputs.selected_probe == 'runtime_identity' }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\collect-runtime-identity.ps1 `
+            -AdbPath $env:ADB_EXE `
+            -PackageName $env:PACKAGE_NAME `
+            -EvidencePath "$env:RUNNER_TEMP\mish-targeted-probe-v1.json"
+
+      - name: Targeted probe - loopback CONNECT attribution
+        if: ${{ steps.select.outputs.selected_probe == 'loopback_connect' }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\diagnose-loopback-connect.ps1 `
+            -AdbPath $env:ADB_EXE `
+            -PackageName $env:PACKAGE_NAME `
+            -EvidencePath "$env:RUNNER_TEMP\mish-targeted-probe-v1.json"
+
+      - name: Build one bounded cycle report
+        id: report
+        if: ${{ always() }}
+        shell: powershell
+        env:
+          MODE: ${{ needs.resolve.outputs.mode }}
+          PR_NUMBER: ${{ needs.resolve.outputs.pr_number }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          HOSTED_RUN_ID: ${{ needs.resolve.outputs.hosted_run_id }}
+          INSTALL_RUN_ID: ${{ needs.install.outputs.install_run_id }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $targeted = "$env:RUNNER_TEMP\mish-targeted-probe-v1.json"
+          if (-not (Test-Path -LiteralPath $targeted -PathType Leaf)) { $targeted = '' }
+          .\lab\windows\new-device-cycle-report.ps1 `
+            -Mode $env:MODE `
+            -PrNumber ([int]$env:PR_NUMBER) `
+            -SourceSha $env:SOURCE_SHA `
+            -HostedRunId $env:HOSTED_RUN_ID `
+            -InstallRunId $env:INSTALL_RUN_ID `
+            -LaunchReceiptPath "$env:RUNNER_TEMP\mish-device-start-v1.json" `
+            -DiagnosticEvidencePath "$env:RUNNER_TEMP\mish-device-diagnostic-v1.json" `
+            -ProbeSelectionPath "$env:RUNNER_TEMP\mish-device-cycle-probe-selection-v1.json" `
+            -TargetedEvidencePath $targeted `
+            -OutputPath "$env:RUNNER_TEMP\mish-device-cycle-v1.json" | Out-Host
+          $report = Get-Content -Raw -LiteralPath "$env:RUNNER_TEMP\mish-device-cycle-v1.json" | ConvertFrom-Json
+          "cycle_result=$([string]$report.cycle_result)" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_OUTPUT
+          "classification=$([string]$report.classification)" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_OUTPUT
+
+      - name: Upload one cycle evidence bundle
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mish-device-cycle-${{ needs.resolve.outputs.pr_number }}-${{ needs.resolve.outputs.source_sha }}
+          path: |
+            ${{ runner.temp }}\mish-device-cycle-v1.json
+            ${{ runner.temp }}\mish-device-start-v1.json
+            ${{ runner.temp }}\mish-device-diagnostic-v1.json
+            ${{ runner.temp }}\mish-device-cycle-probe-selection-v1.json
+            ${{ runner.temp }}\mish-targeted-probe-v1.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Publish cycle summary
+        if: ${{ always() }}
+        shell: powershell
+        run: |
+          $reportPath = "$env:RUNNER_TEMP\mish-device-cycle-v1.json"
+          if (Test-Path -LiteralPath $reportPath -PathType Leaf) {
+            $report = Get-Content -Raw -LiteralPath $reportPath | ConvertFrom-Json
+            @(
+              '### DEVICE-1 cycle',
+              '- PR: `#${{ needs.resolve.outputs.pr_number }}`',
+              '- Exact head: `${{ needs.resolve.outputs.source_sha }}`',
+              '- Mode: `${{ needs.resolve.outputs.mode }}`',
+              "- Result: **$([string]$report.cycle_result)**",
+              "- Classification: `$([string]$report.classification)`",
+              '- Targeted probe: `${{ steps.select.outputs.selected_probe }}`',
+              '- Airplane recovery: **NOT RUN by baseline cycle**'
+            ) | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_STEP_SUMMARY
+          }
+
+      - name: Enforce full/diagnostic acceptance result
+        if: ${{ always() && (needs.resolve.outputs.mode == 'full' || needs.resolve.outputs.mode == 'diagnose_only') }}
+        shell: powershell
+        run: |
+          $path = "$env:RUNNER_TEMP\mish-device-cycle-v1.json"
+          if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            throw 'MISH_DEVICE_CYCLE_FAILURE|REPORT_MISSING|Cycle report was not produced.'
+          }
+          $report = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json
+          if ([string]$report.cycle_result -cne 'PASS') {
+            throw "MISH_DEVICE_CYCLE_RESULT|$([string]$report.cycle_result)|$([string]$report.classification)"
+          }
+
+  publish:
+    name: Publish canonical PR checkpoint
+    needs: [resolve, install, diagnose]
+    if: ${{ always() && needs.resolve.outputs.eligible == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Upsert one device-cycle checkpoint comment
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ needs.resolve.outputs.pr_number }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          MODE: ${{ needs.resolve.outputs.mode }}
+          HOSTED_RUN_ID: ${{ needs.resolve.outputs.hosted_run_id }}
+          INSTALL_RESULT: ${{ needs.install.result }}
+          INSTALL_RUN_ID: ${{ needs.install.outputs.install_run_id }}
+          DIAGNOSE_RESULT: ${{ needs.diagnose.result }}
+          CYCLE_RESULT: ${{ needs.diagnose.outputs.cycle_result }}
+          CLASSIFICATION: ${{ needs.diagnose.outputs.classification }}
+          SELECTED_PROBE: ${{ needs.diagnose.outputs.selected_probe }}
+        run: |
+          set -euo pipefail
+          marker='<!-- mish-device-cycle-checkpoint -->'
+          cycle_result="$CYCLE_RESULT"
+          classification="$CLASSIFICATION"
+          if [[ "$MODE" == 'install_only' ]]; then
+            cycle_result="$( [[ "$INSTALL_RESULT" == 'success' ]] && echo PASS || echo DEVICE_FAIL )"
+            classification='INSTALL_ONLY'
+          elif [[ -z "$cycle_result" ]]; then
+            cycle_result='DEVICE_FAIL'
+            classification='CYCLE_STAGE_FAILED_BEFORE_REPORT'
+          fi
+          body="$(cat <<EOF
+          $marker
+          ## DEVICE-1 cycle checkpoint
+
+          \`\`\`text
+          EXACT_HEAD=$SOURCE_SHA
+          MODE=$MODE
+          HOSTED_RUN_ID=$HOSTED_RUN_ID
+          INSTALL_RESULT=$INSTALL_RESULT
+          INSTALL_RUN_ID=$INSTALL_RUN_ID
+          DIAGNOSE_RESULT=$DIAGNOSE_RESULT
+          DEVICE_CYCLE=$cycle_result
+          CLASSIFICATION=$classification
+          TARGETED_PROBE=$SELECTED_PROBE
+          AIRPLANE=NOT_RUN
+          \`\`\`
+
+          Run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+          EOF
+          )"
+          comment_id="$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments?per_page=100" \
+            --jq 'map(select(.body | contains("<!-- mish-device-cycle-checkpoint -->"))) | last | .id // empty')"
+          payload="$(jq -nc --arg body "$body" '{body:$body}')"
+          if [[ -n "$comment_id" ]]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" --input - <<<"$payload" >/dev/null
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" --input - <<<"$payload" >/dev/null
+          fi

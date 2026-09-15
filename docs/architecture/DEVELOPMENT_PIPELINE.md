@@ -118,6 +118,53 @@ If a required hosted artifact, digest, tool, signing prerequisite or device iden
 
 A local build remains an explicit engineering fallback for a separate diagnostic decision; it is never implicit evidence substitution.
 
+## Canonical DEVICE-1 repair cycle
+
+`.github/workflows/device-cycle.yml` is the trusted orchestration layer for the normal diagnose -> fix -> exact install -> explicit app start -> diagnose loop. It does not own APK installation, PRODUCT lifecycle state, credentials, root authority, readiness or Mesh state.
+
+Automatic mode is enabled per integration PR by the `device-cycle` label. After that PR's exact `Integration Android Preflight` run completes successfully, the orchestrator performs:
+
+```text
+successful exact-head hosted gate
+ -> canonical Device Candidate Physical dispatch
+ -> exact artifact provenance check
+ -> adb install -r through the existing installer owner
+ -> explicit force-stop + launcher start
+ -> stable PID + bounded snapshot stabilization
+ -> one canonical mish.diagnostics/v1 collection
+ -> at most one evidence-selected targeted probe
+ -> one mish.device-cycle/v1 evidence bundle
+ -> one upserted PR checkpoint comment
+```
+
+The canonical manual modes are `full / install_only / diagnose_only / probe_only`.
+
+- `full` repeats the complete baseline cycle and still requires the exact successful hosted candidate and canonical physical installer.
+- `install_only` stops immediately after the canonical exact candidate replacement install.
+- `diagnose_only` restarts the currently installed debug package and performs the canonical snapshot plus the selected or automatic targeted probe; its PR SHA is request context and is not an assertion that those exact bytes are installed.
+- `probe_only` does not restart or reinstall the app; it runs only an explicitly selected bounded probe against the current installed state.
+
+Manual modes do not weaken exact-head provenance. Any mode that installs an APK still goes through `device-candidate-physical.yml`, `candidate.json`, exact artifact/run identity, APK SHA-256 verification, persistent LAB signing identity and `adb install -r`. The orchestrator contains no APK build/install implementation of its own and must not perform uninstall.
+
+The first diagnostic action after launch is always the existing aggregate snapshot. Extra diagnosis is adaptive and bounded:
+
+```text
+proxy ownership / cleanup failure
+ -> runtime_identity
+
+PRODUCT_LOOPBACK_E2E_*
+ -> loopback_connect
+
+other classification or PASS
+ -> no extra probe
+```
+
+This table is intentionally small. Add a new probe only after a real blocker demonstrates that the aggregate snapshot cannot identify the next engineering decision.
+
+Automatic mode never runs airplane recovery. A baseline must first reach authenticated loopback PASS and Mesh PASS; recovery/airplane acceptance remains a separately requested later stage so a broken baseline cannot be hidden inside recovery noise.
+
+Each visible workflow stage is independently attributable in GitHub Actions: request resolution, exact install, explicit launch/stabilization, aggregate diagnostic, targeted probe, evidence publication and PR checkpoint. The manual modes are the supported way to rerun or isolate a stage without editing control-branch commits or bypassing accepted checks.
+
 ## Evidence boundary
 
 An exact-head PR debug candidate may be used for development physical diagnostics when Issue #135 explicitly requires a physical fact for the next engineering decision, for example P0 recovery attribution.
@@ -149,6 +196,9 @@ hosted integration candidate production
 protected physical candidate consumption
   -> device-candidate-physical.yml
 
+trusted repair-cycle orchestration
+  -> device-cycle.yml
+
 candidate byte verification / LAB debug signing / install
   -> lab/windows/install-device-candidate.ps1
 
@@ -162,4 +212,4 @@ master hardening/product plan
   -> Issue #134
 ```
 
-The repository architecture guard must reject drift in the API floor, ABI/Rust-target mirror, required path-aware CI contract, and no-local-build DEVICE-1 consumer invariants.
+The repository architecture guard must reject drift in the API floor, ABI/Rust-target mirror, required path-aware CI contract, no-local-build DEVICE-1 consumer invariants, and the trusted device-cycle boundary.
