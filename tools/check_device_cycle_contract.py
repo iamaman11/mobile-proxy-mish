@@ -146,7 +146,7 @@ def main() -> None:
         "Diagnostics never chooses a repair",
         "No automatic targeted probe",
         "CONTROL_SHA",
-        "installed `base.apk` SHA-256",
+        "installed base.apk SHA-256",
         "Automatic mode never runs airplane recovery",
     ):
         require(docs, required, "stable sequential-cycle documentation drifted")
