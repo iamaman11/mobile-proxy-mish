@@ -5,9 +5,13 @@
 //! process lifecycle remain outside this capability.
 
 mod http_connect;
+mod socks5;
 mod target;
 
 pub use http_connect::{HttpConnectError, parse_http_connect_request};
+pub use socks5::{
+    Socks5ProtocolError, Socks5Reply, Socks5SessionError, accept_socks5_connect, write_socks5_reply,
+};
 pub use target::{ProxyConnectTarget, ProxyTargetError, ProxyTargetHost};
 
 use std::{error::Error, fmt, net::IpAddr};
