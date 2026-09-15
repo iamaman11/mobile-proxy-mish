@@ -1,8 +1,8 @@
-use mish_configuration::EXTERNAL_TCP_SESSION_BUDGET;
-use mish_proxy::{
-    ProxyCredentialMaterial, ProxyOutboundConnector, ProxyProtocol, ProxyServingPlan,
-    serve_proxy_session,
+use mish_cellular_egress_bridge::{
+    CellularOutboundConnector as ProxyOutboundConnector, ProxyCredentialMaterial, ProxyProtocol,
+    ProxyServingPlan, serve_session as serve_proxy_session,
 };
+use mish_configuration::EXTERNAL_TCP_SESSION_BUDGET;
 use std::collections::HashMap;
 use std::fmt;
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
@@ -276,16 +276,13 @@ fn accept_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mish_proxy::{ProxyConnectTarget, ProxyOutboundConnectError};
+    use mish_cellular_egress_bridge::{ConnectTarget, OutboundConnectError};
 
     struct RejectingConnector;
 
     impl ProxyOutboundConnector for RejectingConnector {
-        fn connect(
-            &self,
-            _target: &ProxyConnectTarget,
-        ) -> Result<TcpStream, ProxyOutboundConnectError> {
-            Err(ProxyOutboundConnectError::Unavailable)
+        fn connect(&self, _target: &ConnectTarget) -> Result<TcpStream, OutboundConnectError> {
+            Err(OutboundConnectError::Unavailable)
         }
     }
 
