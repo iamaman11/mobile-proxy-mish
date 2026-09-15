@@ -33,6 +33,8 @@ def main() -> None:
     classifier = next((line.strip() for line in text.splitlines() if "tools/check_*.py" in line), "")
     if "lab/*" not in classifier or ".github/workflows/device-cycle.yml" not in classifier:
         raise SystemExit("ci scope contract: diagnostic/control paths are not classified together as infra-only")
+    if ".github/workflows/ci.yml" in classifier:
+        raise SystemExit("ci scope contract: changes to CI gate authority itself must still exercise the full PRODUCT gate")
 
     print("CI_SCOPE_CONTRACT=PASS")
 
