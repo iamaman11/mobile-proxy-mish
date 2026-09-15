@@ -88,6 +88,21 @@ def main() -> None:
     ):
         forbid(workflow, forbidden, "cycle must not auto-start, spawn another physical workflow, rebuild, or auto-decide repairs")
 
+    workflow_text = read(workflow)
+    physical_jobs = workflow_text.split("\n  install:", 1)
+    if len(physical_jobs) != 2:
+        raise SystemExit("device cycle contract: install job boundary is missing")
+    physical_text = physical_jobs[1]
+    pinned_pwsh = r'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -File "{0}"'
+    if pinned_pwsh not in physical_text:
+        raise SystemExit("device cycle contract: DEVICE-1 jobs must execute through pinned portable PowerShell 7.6.6")
+    if "DEVICE_CYCLE_PWSH_VERSION: '7.6.6'" not in workflow_text:
+        raise SystemExit("device cycle contract: pinned PowerShell version fact is missing")
+    if physical_text.count("Verify pinned PowerShell 7 runtime") != 2:
+        raise SystemExit("device cycle contract: both DEVICE-1 jobs must verify the pinned PowerShell runtime")
+    if "shell: powershell" in workflow_text:
+        raise SystemExit("device cycle contract: Windows PowerShell 5.1 must not execute Device Cycle steps")
+
     obsolete_physical = ROOT / ".github/workflows/device-candidate-physical.yml"
     if obsolete_physical.exists():
         raise SystemExit(
