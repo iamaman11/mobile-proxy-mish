@@ -89,9 +89,12 @@ def main() -> None:
         "No Android product inputs changed",
         "github.event_name != 'push'",
         "workflow_dispatch",
-        "lab/*|docs/*|README.md|README.*",
+        "tools/check_*.py",
+        ".github/workflows/device-cycle.yml",
     ):
         require(ci, required, "protected-main path-aware required-gate contract drifted")
+    forbid(ci, "tools/*|", "PRODUCT-affecting tools must not be broadly exempted from the full product gate")
+    forbid(ci, "tools/*.py|", "all Python tools must not be treated as diagnostic-only")
 
     producer = ".github/workflows/integration-android-preflight.yml"
     for required in (
