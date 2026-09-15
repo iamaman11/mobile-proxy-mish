@@ -1,21 +1,17 @@
 package com.mobileproxymish.app
 
 import android.content.Context
-import android.os.Process as AndroidProcess
-import android.system.Os
 import android.util.Base64
 import com.mobileproxymish.app.cellular.CellularRuntimeBridge
-import com.mobileproxymish.app.cellular.SuProcess
 import com.mobileproxymish.ffi.CellularBridgeRuntime
+import com.mobileproxymish.ffi.NativeProxyRuntime
 import com.mobileproxymish.ffi.RuntimeProcessFailure
 import com.mobileproxymish.ffi.RuntimeProcessLifecycleController
 import com.mobileproxymish.ffi.RuntimeProcessSnapshotView
 import com.mobileproxymish.ffi.RuntimeProcessState
 import com.mobileproxymish.ffi.proxyListenerPorts
-import com.mobileproxymish.ffi.renderProxyRuntimeConfig
+import com.mobileproxymish.ffi.startNativeProxyRuntime
 import java.io.Closeable
-import java.io.FileOutputStream
-import java.io.File
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.security.SecureRandom
@@ -42,11 +38,11 @@ sealed interface ProxyRuntimeSnapshot {
 }
 
 /**
- * Non-secret read-only observation of the exact currently owned runtime generation.
+ * Non-secret read-only observation of the current in-process proxy generation.
  *
- * This is diagnostic evidence only. It carries no credential material, no configuration and no
- * readiness authority; the existing lifecycle, Credentials and Cellular Egress owners remain
- * authoritative.
+ * Field names remain stable during the sing-box cutover so readiness/diagnostic consumers do not
+ * gain a second migration contract. `childAlive` now means the native Rust listener runtime is
+ * healthy; `privateBridgeHealthy` remains the temporary L7 Cellular bridge fact removed in L8.
  */
 internal data class ProxyRuntimeDiagnosticObservation(
     val childAlive: Boolean,
@@ -87,30 +83,21 @@ internal fun confirmedLoopbackHealthFailure(consecutiveFailures: Int): Boolean =
     consecutiveFailures >= LOOPBACK_HEALTH_FAILURE_CONFIRMATIONS
 
 /**
- * Android child-process effect adapter for the Rust Runtime Lifecycle natural owner.
+ * Android lifecycle/composition adapter for the in-process Rust Proxy Serving runtime.
  *
- * canonical loopback sing-box listeners
- *   -> private loopback SOCKS bridge
- *   -> the exact Cellular Egress owner
+ * L7 topology:
+ * canonical loopback Rust listeners -> temporary private Cellular bridge -> exact Cellular Egress.
  *
- * ProcessBuilder/files/Android PID effects remain here. STARTING/RUNNING/FAILED/STOPPED and
- * failure reason state are owned by `mish-runtime` and exposed through the typed UniFFI seam.
+ * No proxy process, root launcher, PID file, `/proc` reconciliation, vendor config or Magisk call
+ * exists in this adapter. Protocol/auth/relay are owned by `mish-proxy`; Cellular admission/DNS/
+ * routing remain owned by the existing Cellular runtime. L8 removes the final private bridge hop.
  */
 class ProxyRuntimeSupervisor internal constructor(
-    context: Context,
+    @Suppress("UNUSED_PARAMETER") context: Context,
     private val cellularRuntime: CellularRuntimeBridge,
     private val publicCredentials: ProxyCredentialProvider,
     private val onRecoverableUnexpectedFailure: (RuntimeProcessFailure) -> Unit = {},
 ) : Closeable {
-    private val appContext = context.applicationContext
-    private val runtimeDir = File(appContext.noBackupFilesDir, RUNTIME_DIR)
-    private val generationManifestFile = File(runtimeDir, GENERATION_MANIFEST_FILE)
-    private var configFile = File(runtimeDir, LEGACY_CONFIG_FILE)
-    private var pidFile = File(runtimeDir, LEGACY_PID_FILE)
-    private var rootLauncherFile = File(runtimeDir, LEGACY_ROOT_LAUNCHER_FILE)
-    private var rootControlFile = File(runtimeDir, LEGACY_ROOT_CONTROL_FILE)
-    private var activeGenerationId: String? = null
-    private val binaryFile = File(appContext.applicationInfo.nativeLibraryDir, SING_BOX_LIBRARY)
     private val lifecycle = RuntimeProcessLifecycleController()
     private val mutableSnapshot = MutableStateFlow(projectLifecycle(lifecycle.snapshot()))
     private val closed = AtomicBoolean(false)
@@ -119,8 +106,7 @@ class ProxyRuntimeSupervisor internal constructor(
         Thread(task, "mish-proxy-runtime").apply { isDaemon = true }
     }
 
-    private var child: Process? = null
-    private var childPid: Int? = null
+    private var nativeRuntime: NativeProxyRuntime? = null
     private var bridge: CellularBridgeRuntime? = null
     private var servingCredentialVersion: ULong? = null
     private var monitor: Thread? = null
@@ -130,10 +116,13 @@ class ProxyRuntimeSupervisor internal constructor(
         get() = mutableSnapshot.asStateFlow()
 
     internal fun diagnosticObservation(): ProxyRuntimeDiagnosticObservation = synchronized(lock) {
-        val currentChild = child
+        val currentRuntime = nativeRuntime
         val currentBridge = bridge
+        val runtimeHealthy = currentRuntime?.let {
+            runCatching { it.isHealthy() }.getOrDefault(false)
+        } == true
         ProxyRuntimeDiagnosticObservation(
-            childAlive = currentChild != null && canonicalLoopbackListenersReachable(),
+            childAlive = runtimeHealthy,
             privateBridgePort = runCatching { currentBridge?.port()?.toInt() }.getOrNull(),
             privateBridgeHealthy = currentBridge?.let {
                 runCatching { it.isHealthy() }.getOrDefault(false)
@@ -155,50 +144,24 @@ class ProxyRuntimeSupervisor internal constructor(
     private fun startBlocking() {
         synchronized(lock) {
             if (closed.get()) return
-            if (!runtimeDir.isDirectory && !runtimeDir.mkdirs()) {
-                failLifecycle(RuntimeProcessFailure.CONFIGURATION_REJECTED)
-                return
-            }
-            if (!binaryFile.isFile || !binaryFile.canExecute()) {
-                failLifecycle(RuntimeProcessFailure.NATIVE_RUNTIME_MISSING)
-                return
-            }
-            if (!loadRecordedGeneration() || !cleanupStaleChild()) {
-                failLifecycle(RuntimeProcessFailure.STALE_PROCESS_IDENTITY_MISMATCH)
-                return
-            }
-            if (!createNextGeneration()) {
-                failLifecycle(RuntimeProcessFailure.CONFIGURATION_REJECTED)
-                return
-            }
 
-            // Resolve exact durable-owner version + derived material before opening the private
-            // Cellular Egress bridge. Only the version survives as a non-secret serving fact.
             val publicCredential = try {
                 publicCredentials.currentCredential()
             } catch (_: Exception) {
                 null
             }
             if (publicCredential == null) {
-                deleteCurrentGenerationFiles(removeManifest = true)
                 failLifecycle(RuntimeProcessFailure.EXTERNAL_CREDENTIAL_UNAVAILABLE)
                 return
             }
 
-            // A private bridge opened before the asynchronously reconciled Cellular Egress
-            // generation is authorized can fail its listener health check spuriously. This is a
-            // dependency gate, not another readiness state: the cellular adapter's published
-            // OwnerSnapshot remains the sole authority for admission and root-policy success.
             if (!cellularRuntime.awaitAuthorizedAdmission(AUTHORIZED_ADMISSION_TIMEOUT_MS)) {
-                deleteCurrentGenerationFiles(removeManifest = true)
                 failLifecycle(RuntimeProcessFailure.PRIVATE_BRIDGE_UNAVAILABLE)
                 return
             }
 
-            // Private bridge credentials stay intentionally ephemeral and generation-scoped.
             val privateUsername = randomCredential()
             val privatePassword = randomCredential()
-
             val newBridge = try {
                 cellularRuntime.startPrivateBridge(
                     username = privateUsername,
@@ -206,132 +169,76 @@ class ProxyRuntimeSupervisor internal constructor(
                     operationTimeoutMs = OUTBOUND_TIMEOUT_MS.toULong(),
                 )
             } catch (_: Exception) {
-                deleteCurrentGenerationFiles(removeManifest = true)
                 failLifecycle(RuntimeProcessFailure.PRIVATE_BRIDGE_UNAVAILABLE)
                 return
             }
 
-            val config = try {
-                renderProxyRuntimeConfig(
-                    listenAddress = LOOPBACK,
+            val newRuntime = try {
+                startNativeProxyRuntime(
+                    bridge = newBridge,
                     publicUsername = publicCredential.credentials.username,
                     publicPassword = publicCredential.credentials.password,
-                    bridgePort = newBridge.port(),
-                    bridgeUsername = privateUsername,
-                    bridgePassword = privatePassword,
+                    privateUsername = privateUsername,
+                    privatePassword = privatePassword,
+                    operationTimeoutMs = OUTBOUND_TIMEOUT_MS.toULong(),
                 )
+            } catch (_: LinkageError) {
+                runCatching { newBridge.stop() }
+                failLifecycle(RuntimeProcessFailure.NATIVE_RUNTIME_MISSING)
+                return
             } catch (_: Exception) {
                 runCatching { newBridge.stop() }
-                deleteCurrentGenerationFiles(removeManifest = true)
-                failLifecycle(RuntimeProcessFailure.CONFIGURATION_REJECTED)
+                failLifecycle(RuntimeProcessFailure.LOOPBACK_LISTENER_UNAVAILABLE)
                 return
             }
 
-            if (!writePrivateConfig(config)) {
-                runCatching { newBridge.stop() }
-                deleteCurrentGenerationFiles(removeManifest = true)
-                failLifecycle(RuntimeProcessFailure.CONFIGURATION_REJECTED)
-                return
-            }
-            // Validate the exact generated config before root launch. Output is drained and
-            // discarded because it may mention sensitive runtime paths or credentials; only the
-            // bounded exit status influences lifecycle state.
-            if (!validatePrivateConfig()) {
-                runCatching { newBridge.stop() }
-                deleteCurrentGenerationFiles(removeManifest = true)
-                failLifecycle(RuntimeProcessFailure.CONFIGURATION_REJECTED)
-                return
-            }
-
-            if (!writeRootLauncher()) {
-                runCatching { newBridge.stop() }
-                deleteCurrentGenerationFiles(removeManifest = true)
-                failLifecycle(RuntimeProcessFailure.CHILD_PROCESS_START_FAILED)
-                return
-            }
-            val newChild = try {
-                SuProcess.serializedRootSession {
-                    ProcessBuilder(
-                        MAGISK_SU,
-                        "-c",
-                        rootLauncherFile.absolutePath,
-                    )
-                        .directory(runtimeDir)
-                        .redirectErrorStream(true)
-                        .start()
-                }
-            } catch (_: Exception) {
-                runCatching { newBridge.stop() }
-                deleteCurrentGenerationFiles(removeManifest = true)
-                failLifecycle(RuntimeProcessFailure.CHILD_PROCESS_START_FAILED)
-                return
-            }
-
-            // `su -c` is only the launcher process, not the long-lived sing-box child. Magisk
-            // need not close that parent receipt before the detached child has written its exact
-            // PID record, so the bounded record below is the authoritative launch receipt.
-            val newPid = awaitRecordedPid()
-            if (newPid == null) {
-                terminateProcess(newChild, newPid)
-                runCatching { newBridge.stop() }
-                deleteCurrentGenerationFiles(removeManifest = true)
-                failLifecycle(RuntimeProcessFailure.CHILD_PID_OR_PERSISTENCE_FAILED)
-                return
-            }
-            drainOutput(newChild)
-
-            val healthFailure = waitForHealthy(newBridge)
+            val healthFailure = waitForHealthy(newRuntime, newBridge)
             if (healthFailure != null) {
-                terminateProcess(newChild, newPid)
+                runCatching { newRuntime.stop() }
                 runCatching { newBridge.stop() }
-                deleteCurrentGenerationFiles(removeManifest = true)
                 failLifecycle(healthFailure)
                 return
             }
 
-            // Keep the 0600 app-private config for the lifetime of the child. DEVICE-1 shows
-            // that removing it immediately after the first accept can leave a live sing-box PID
-            // with its listeners gone. Exact stop/failed-start cleanup removes this generation
-            // file together with its PID/control records.
-
             if (closed.get()) {
-                terminateProcess(newChild, newPid)
+                runCatching { newRuntime.stop() }
                 runCatching { newBridge.stop() }
-                deleteCurrentGenerationFiles(removeManifest = true)
                 stopLifecycle()
                 return
             }
 
-            child = newChild
-            childPid = newPid
+            nativeRuntime = newRuntime
             bridge = newBridge
             servingCredentialVersion = publicCredential.version
             stopping = false
             check(lifecycle.markRunning()) { "proxy runtime left STARTING before health publication" }
             publishLifecycle()
-            startMonitor(newChild, newBridge)
+            startMonitor(newRuntime, newBridge)
         }
     }
 
-    private fun startMonitor(expectedChild: Process, expectedBridge: CellularBridgeRuntime) {
+    private fun startMonitor(
+        expectedRuntime: NativeProxyRuntime,
+        expectedBridge: CellularBridgeRuntime,
+    ) {
         val thread = Thread({
             var consecutiveLoopbackFailures = 0
             while (!closed.get()) {
                 val reason = when {
                     !runCatching { expectedBridge.isHealthy() }.getOrDefault(false) ->
                         RuntimeProcessFailure.PRIVATE_BRIDGE_UNHEALTHY
+                    !runCatching { expectedRuntime.isHealthy() }.getOrDefault(false) ->
+                        RuntimeProcessFailure.LOOPBACK_LISTENER_UNAVAILABLE
                     canonicalLoopbackListenersReachable() -> {
                         consecutiveLoopbackFailures = 0
                         null
                     }
                     else -> {
                         consecutiveLoopbackFailures += 1
-                        if (!confirmedLoopbackHealthFailure(consecutiveLoopbackFailures)) {
-                            null
-                        } else if (isExactRootSingBoxAlive(childPid ?: -1)) {
+                        if (confirmedLoopbackHealthFailure(consecutiveLoopbackFailures)) {
                             RuntimeProcessFailure.LOOPBACK_LISTENER_UNAVAILABLE
                         } else {
-                            RuntimeProcessFailure.CHILD_EXITED
+                            null
                         }
                     }
                 }
@@ -339,7 +246,7 @@ class ProxyRuntimeSupervisor internal constructor(
                     try {
                         executor.execute {
                             synchronized(lock) {
-                                if (!stopping && child === expectedChild) {
+                                if (!stopping && nativeRuntime === expectedRuntime) {
                                     val cleanupOk = cleanupCurrentLocked()
                                     val published = if (cleanupOk) reason else RuntimeProcessFailure.CLEANUP_FAILED
                                     failLifecycle(published)
@@ -366,8 +273,10 @@ class ProxyRuntimeSupervisor internal constructor(
         thread.start()
     }
 
-    /** Returns a sanitized typed failure; config, credentials and process output stay private. */
-    private fun waitForHealthy(privateBridge: CellularBridgeRuntime): RuntimeProcessFailure? {
+    private fun waitForHealthy(
+        runtime: NativeProxyRuntime,
+        privateBridge: CellularBridgeRuntime,
+    ): RuntimeProcessFailure? {
         val publicPorts = try {
             proxyListenerPorts().map { it.toInt() }
         } catch (_: LinkageError) {
@@ -379,12 +288,11 @@ class ProxyRuntimeSupervisor internal constructor(
 
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(START_HEALTH_TIMEOUT_SECONDS)
         while (System.nanoTime() < deadline) {
-            val recordedPid = awaitRecordedPid()
-            if (recordedPid == null || !isExactRootSingBoxAlive(recordedPid)) {
-                return RuntimeProcessFailure.CHILD_EXITED
-            }
             if (!runCatching { privateBridge.isHealthy() }.getOrDefault(false)) {
                 return RuntimeProcessFailure.PRIVATE_BRIDGE_UNHEALTHY
+            }
+            if (!runCatching { runtime.isHealthy() }.getOrDefault(false)) {
+                return RuntimeProcessFailure.LOOPBACK_LISTENER_UNAVAILABLE
             }
             if (publicPorts.all(::canConnectLoopback)) return null
             Thread.sleep(HEALTH_RETRY_MS)
@@ -401,241 +309,23 @@ class ProxyRuntimeSupervisor internal constructor(
         false
     }
 
-    private fun writePrivateConfig(config: String): Boolean = try {
-        runtimeDir.mkdirs()
-        configFile.writeText(config, Charsets.UTF_8)
-        Os.chmod(configFile.absolutePath, PRIVATE_FILE_MODE)
-        true
-    } catch (_: Exception) {
-        false
-    }
-
-    private fun validatePrivateConfig(): Boolean = try {
-        val checker = ProcessBuilder(
-            binaryFile.absolutePath,
-            "check",
-            "-c",
-            configFile.absolutePath,
-        )
-            .directory(runtimeDir)
-            .redirectErrorStream(true)
-            .start()
-        drainOutput(checker)
-        if (!checker.waitFor(CONFIG_CHECK_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-            checker.destroyForcibly()
-            return false
-        }
-        checker.exitValue() == 0
-    } catch (_: Exception) {
-        false
-    }
-
     private fun canonicalLoopbackListenersReachable(): Boolean = try {
         proxyListenerPorts().map { it.toInt() }.all(::canConnectLoopback)
     } catch (_: Exception) {
         false
     }
 
-    private fun loadRecordedGeneration(): Boolean = try {
-        if (!generationManifestFile.isFile) {
-            activeGenerationId = null
-            configFile = File(runtimeDir, LEGACY_CONFIG_FILE)
-            pidFile = File(runtimeDir, LEGACY_PID_FILE)
-            rootLauncherFile = File(runtimeDir, LEGACY_ROOT_LAUNCHER_FILE)
-            rootControlFile = File(runtimeDir, LEGACY_ROOT_CONTROL_FILE)
-            return true
-        }
-        val id = generationManifestFile.readText(Charsets.US_ASCII)
-            .lineSequence()
-            .firstOrNull { it.startsWith("generation=") }
-            ?.substringAfter("generation=")
-            ?: return false
-        if (!GENERATION_ID.matches(id)) return false
-        selectGeneration(id)
-        true
-    } catch (_: Exception) {
-        false
-    }
-
-    private fun createNextGeneration(): Boolean = try {
-        val id = randomCredential().take(GENERATION_ID_LENGTH)
-        if (!GENERATION_ID.matches(id)) return false
-        selectGeneration(id)
-        val temporary = File(runtimeDir, "$GENERATION_MANIFEST_FILE.tmp")
-        FileOutputStream(temporary).use { output ->
-            output.write("generation=$id\n".toByteArray(Charsets.US_ASCII))
-            output.fd.sync()
-        }
-        Os.chmod(temporary.absolutePath, PRIVATE_FILE_MODE)
-        if (!temporary.renameTo(generationManifestFile)) return false
-        Os.chmod(generationManifestFile.absolutePath, PRIVATE_FILE_MODE)
-        true
-    } catch (_: Exception) {
-        false
-    }
-
-    private fun selectGeneration(id: String) {
-        activeGenerationId = id
-        configFile = File(runtimeDir, "sing-box-$id.json")
-        pidFile = File(runtimeDir, "sing-box-$id.pid")
-        rootLauncherFile = File(runtimeDir, "sing-box-$id-launch.sh")
-        rootControlFile = File(runtimeDir, "sing-box-$id-control.sh")
-    }
-
-    private fun deleteCurrentGenerationFiles(removeManifest: Boolean): Boolean {
-        var clean = true
-        if (!deleteIfPresent(configFile)) clean = false
-        if (!deleteIfPresent(pidFile)) clean = false
-        if (!deleteIfPresent(rootLauncherFile)) clean = false
-        if (!deleteIfPresent(rootControlFile)) clean = false
-        if (removeManifest && !deleteIfPresent(generationManifestFile)) clean = false
-        if (clean) activeGenerationId = null
-        return clean
-    }
-
-    private fun writeRootLauncher(): Boolean = try {
-        val appUid = AndroidProcess.myUid()
-        if (!isSafeOwnedPath(configFile) || !isSafeOwnedPath(pidFile) || !isSafeNativePath(binaryFile)) {
-            return false
-        }
-        rootLauncherFile.writeText(
-            """
-            #!/system/bin/sh
-            umask 077
-            /system/bin/toybox nohup "${binaryFile.absolutePath}" run -c "${configFile.absolutePath}" </dev/null >/dev/null 2>&1 &
-            child_pid="${'$'}!"
-            case "${'$'}child_pid" in ''|*[!0-9]*) exit 124;; esac
-            printf '%s\n' "${'$'}child_pid" > "${pidFile.absolutePath}" || exit 125
-            chown $appUid:$appUid "${pidFile.absolutePath}" || exit 126
-            chmod 600 "${pidFile.absolutePath}" || exit 127
-            exit 0
-            """.trimIndent() + "\n",
-            Charsets.UTF_8,
-        )
-        Os.chmod(rootLauncherFile.absolutePath, ROOT_SCRIPT_MODE)
-        true
-    } catch (_: Exception) {
-        false
-    }
-
-    private fun writeRootControl(action: String): Boolean = try {
-        if (action !in ROOT_ACTIONS || !isSafeOwnedPath(configFile) || !isSafeOwnedPath(pidFile) ||
-            !isSafeNativePath(binaryFile)
-        ) return false
-        rootControlFile.writeText(
-            """
-            #!/system/bin/sh
-            set -eu
-            pid="${'$'}(cat "${pidFile.absolutePath}")"
-            case "${'$'}pid" in ''|*[!0-9]*) exit 64;; esac
-            [ -r "/proc/${'$'}pid/cmdline" ] || exit 20
-            actual="${'$'}(tr '\000' ' ' < "/proc/${'$'}pid/cmdline")"
-            case "${'$'}actual" in *"/${SING_BOX_LIBRARY} run -c ${configFile.absolutePath}"*) ;; *) exit 21;; esac
-            case "$action" in
-              status) exit 0 ;;
-              stop)
-                kill -TERM "${'$'}pid" 2>/dev/null || exit 3
-                i=0
-                while [ "${'$'}i" -lt 60 ]; do
-                  [ ! -d "/proc/${'$'}pid" ] && exit 0
-                  sleep 0.05
-                  i=${'$'}((i + 1))
-                done
-                kill -KILL "${'$'}pid" 2>/dev/null || exit 4
-                i=0
-                while [ "${'$'}i" -lt 40 ]; do
-                  [ ! -d "/proc/${'$'}pid" ] && exit 0
-                  sleep 0.05
-                  i=${'$'}((i + 1))
-                done
-                exit 5
-                ;;
-            esac
-            """.trimIndent() + "\n",
-            Charsets.UTF_8,
-        )
-        Os.chmod(rootControlFile.absolutePath, ROOT_SCRIPT_MODE)
-        true
-    } catch (_: Exception) {
-        false
-    }
-
-    private fun isSafeOwnedPath(file: File): Boolean = file.absolutePath
-        .let { it.startsWith(runtimeDir.absolutePath + "/") && SAFE_PATH.matches(it) }
-
-    private fun isSafeNativePath(file: File): Boolean = file.absolutePath
-        .let { it.startsWith(appContext.applicationInfo.nativeLibraryDir + "/") && SAFE_PATH.matches(it) }
-
-    private fun awaitRecordedPid(): Int? {
-        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(PID_RECORD_TIMEOUT_MS)
-        while (System.nanoTime() < deadline) {
-            val pid = runCatching { pidFile.readText(Charsets.US_ASCII).trim().toIntOrNull() }.getOrNull()
-            if (pid != null && pid > 0) return pid
-            Thread.sleep(PID_RECORD_RETRY_MS)
-        }
-        return null
-    }
-
-    private fun cleanupStaleChild(): Boolean {
-        if (!pidFile.isFile) return deleteCurrentGenerationFiles(removeManifest = activeGenerationId != null)
-        val pid = pidFile.readText(Charsets.US_ASCII).trim().toIntOrNull() ?: return false
-        if (!isExactRootSingBoxAlive(pid)) return deleteCurrentGenerationFiles(activeGenerationId != null)
-        if (!stopExactRootSingBox(pid)) return false
-        return deleteCurrentGenerationFiles(activeGenerationId != null)
-    }
-
-    private fun isExactRootSingBoxAlive(pid: Int): Boolean = runRootControl("status", pid) == 0
-
-    private fun stopExactRootSingBox(pid: Int): Boolean =
-        runRootControl("stop", pid) in setOf(0, ROOT_CONTROL_PROCESS_ABSENT)
-
-    private fun runRootControl(action: String, pid: Int): Int {
-        if (pid <= 0 || action !in ROOT_ACTIONS) return -1
-        val recorded = runCatching { pidFile.readText(Charsets.US_ASCII).trim().toIntOrNull() }.getOrNull()
-        if (recorded != pid || !writeRootControl(action)) return -1
-        return runCatching {
-            SuProcess().run(listOf(MAGISK_SU, "-c", rootControlFile.absolutePath)).let { result ->
-                if (!result.timedOut && result.outputComplete) result.exitCode else -1
-            }
-        }.getOrDefault(-1)
-    }
-
-    private fun drainOutput(process: Process) {
-        Thread({
-            runCatching {
-                process.inputStream.use { input ->
-                    val buffer = ByteArray(4096)
-                    while (input.read(buffer) >= 0) {
-                        // Vendor output is intentionally discarded. Runtime secrets/config must
-                        // not be projected into ordinary logs or UI.
-                    }
-                }
-            }
-        }, "mish-proxy-runtime-output").apply {
-            isDaemon = true
-            start()
-        }
-    }
-
-    private fun terminateProcess(process: Process, pid: Int?): Boolean {
-        process.destroy()
-        return pid != null && stopExactRootSingBox(pid)
-    }
-
     private fun cleanupCurrentLocked(): Boolean {
         stopping = true
-        val currentChild = child
-        val currentPid = childPid
+        val currentRuntime = nativeRuntime
         val currentBridge = bridge
-        child = null
-        childPid = null
+        nativeRuntime = null
         bridge = null
         servingCredentialVersion = null
 
         var clean = true
-        if (currentChild != null && !terminateProcess(currentChild, currentPid)) clean = false
+        if (currentRuntime != null && runCatching { currentRuntime.stop() }.isFailure) clean = false
         if (currentBridge != null && runCatching { currentBridge.stop() }.isFailure) clean = false
-        if (!deleteCurrentGenerationFiles(removeManifest = activeGenerationId != null)) clean = false
         stopping = false
         return clean
     }
@@ -676,11 +366,9 @@ class ProxyRuntimeSupervisor internal constructor(
             RuntimeProcessState.STARTING -> ProxyRuntimeSnapshot.Starting
             RuntimeProcessState.RUNNING -> ProxyRuntimeSnapshot.Running
             RuntimeProcessState.FAILED -> ProxyRuntimeSnapshot.Failed(
-                checkNotNull(view.failure) { "failed runtime process must carry a typed reason" },
+                checkNotNull(view.failure) { "failed proxy runtime must carry a typed reason" },
             )
         }
-
-    private fun deleteIfPresent(file: File): Boolean = !file.exists() || file.delete() || !file.exists()
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
@@ -711,41 +399,20 @@ class ProxyRuntimeSupervisor internal constructor(
     }
 
     private companion object {
-        const val RUNTIME_DIR = "proxy-runtime"
-        const val LEGACY_CONFIG_FILE = "sing-box.json"
-        const val LEGACY_PID_FILE = "sing-box.pid"
-        const val LEGACY_ROOT_LAUNCHER_FILE = "sing-box-root-launch.sh"
-        const val LEGACY_ROOT_CONTROL_FILE = "sing-box-root-control.sh"
-        const val GENERATION_MANIFEST_FILE = "sing-box-current-generation"
-        const val GENERATION_ID_LENGTH = 24
-        const val SING_BOX_LIBRARY = "libsingbox.so"
-        const val MAGISK_SU = "su"
         const val LOOPBACK = "127.0.0.1"
         const val OUTBOUND_TIMEOUT_MS = 15_000L
         const val AUTHORIZED_ADMISSION_TIMEOUT_MS = 30_000L
-        const val CONFIG_CHECK_TIMEOUT_MS = 5_000L
         const val START_HEALTH_TIMEOUT_SECONDS = 5L
         const val HEALTH_RETRY_MS = 100L
         const val HEALTH_POLL_MS = 500L
         const val HEALTH_CONNECT_TIMEOUT_MS = 250
-        // DEVICE-1 Magisk may deliver a cold app-side `su` receipt after the child was forked.
-        // This remains bounded; it is not a readiness retry or a generic root session.
-        const val PID_RECORD_TIMEOUT_MS = 5_000L
-        const val PID_RECORD_RETRY_MS = 25L
         const val CLOSE_TIMEOUT_SECONDS = 25L
-        const val PRIVATE_FILE_MODE = 384 // 0600
-        const val ROOT_SCRIPT_MODE = 448 // 0700
-        const val ROOT_CONTROL_PROCESS_ABSENT = 20
-        val SAFE_PATH = Regex("""/[A-Za-z0-9_./~=-]+""")
-        val GENERATION_ID = Regex("""[A-Za-z0-9_-]{24}""")
-        val ROOT_ACTIONS = setOf("status", "stop")
+        const val CREDENTIAL_BYTES = 24
+        val SECURE_RANDOM = SecureRandom()
         val RECOVERABLE_UNEXPECTED_FAILURES = setOf(
             RuntimeProcessFailure.HEALTH_CHECK_FAILED,
-            RuntimeProcessFailure.CHILD_EXITED,
+            RuntimeProcessFailure.LOOPBACK_LISTENER_UNAVAILABLE,
             RuntimeProcessFailure.PRIVATE_BRIDGE_UNHEALTHY,
         )
     }
 }
-
-private const val CREDENTIAL_BYTES = 24
-private val SECURE_RANDOM = SecureRandom()
