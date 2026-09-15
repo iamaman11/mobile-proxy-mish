@@ -15,10 +15,10 @@ const USERNAME_PASSWORD_VERSION: u8 = 0x01;
 const CONNECT_COMMAND: u8 = 0x01;
 const IPV4_ADDRESS_TYPE: u8 = 0x01;
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
-// The runtime/Transport capacity is intentionally 16 in M1. This protocol-level fixture proves
-// the supported bounded level, rather than manufacturing hundreds of host threads and treating
-// scheduler timeouts as an Android proxy result.
-const SUPPORTED_PARALLEL_SESSIONS: usize = 16;
+// Keep this hosted compatibility-path stress aligned with the accepted external/Transport
+// capacity contract. L5 delegates bridge session semantics to Proxy Serving, so this also guards
+// against regressing the in-process session owner below the accepted 64-session level.
+const SUPPORTED_PARALLEL_SESSIONS: usize = 64;
 
 #[derive(Debug)]
 struct LoopbackConnector {
