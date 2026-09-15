@@ -90,6 +90,43 @@ jobs:
           Write-Host "CURRENT_GENERATION_PROCESS_MATCH=$visibleMatchesCurrent"
           Write-Host "VISIBLE_PROCESS_MATCHES_NONCURRENT_RECORDED_GENERATION=$visibleMatchesNonCurrent"
 
+      - name: Classify retained runtime identity without root
+        shell: powershell
+        run: |
+          $adb = 'C:\mish-lab\tools\android-sdk\platform-tools\adb.exe'
+          $package = 'com.mobileproxymish.app.debug'
+          $runtimePath = 'no_backup/proxy-runtime'
+
+          $names = @(& $adb shell run-as $package ls $runtimePath 2>$null)
+          if ($LASTEXITCODE -ne 0) { throw 'App-owned proxy runtime directory is unavailable.' }
+          $manifest = (@(& $adb shell run-as $package cat "$runtimePath/sing-box-current-generation" 2>$null) -join "`n").Trim()
+          $currentGeneration = $null
+          if ($LASTEXITCODE -eq 0 -and $manifest -match '^generation=([A-Za-z0-9_-]{24})$') {
+            $currentGeneration = $Matches[1]
+          }
+
+          $manifestPresent = $names -contains 'sing-box-current-generation'
+          $cleanupScriptPresent = $names -contains 'sing-box-owned-cleanup.sh'
+          $currentConfigPresent = $false
+          $currentPidPresent = $false
+          $currentLauncherPresent = $false
+          $currentControlPresent = $false
+          if ($null -ne $currentGeneration) {
+            $currentConfigPresent = $names -contains "sing-box-$currentGeneration.json"
+            $currentPidPresent = $names -contains "sing-box-$currentGeneration.pid"
+            $currentLauncherPresent = $names -contains "sing-box-$currentGeneration-launch.sh"
+            $currentControlPresent = $names -contains "sing-box-$currentGeneration-control.sh"
+          }
+          $generationFileCount = @($names | Where-Object { $_ -match '^sing-box-[A-Za-z0-9_-]{24}(?:\.json|\.pid|-launch\.sh|-control\.sh)$' }).Count
+
+          Write-Host "RUNTIME_MANIFEST_PRESENT=$manifestPresent"
+          Write-Host "CURRENT_CONFIG_PRESENT=$currentConfigPresent"
+          Write-Host "CURRENT_PID_PRESENT=$currentPidPresent"
+          Write-Host "CURRENT_LAUNCHER_PRESENT=$currentLauncherPresent"
+          Write-Host "CURRENT_CONTROL_PRESENT=$currentControlPresent"
+          Write-Host "OWNED_ORPHAN_CLEANUP_SCRIPT_PRESENT=$cleanupScriptPresent"
+          Write-Host "GENERATION_RUNTIME_FILE_COUNT=$generationFileCount"
+
       - name: Collect and print one-shot diagnostic
         shell: powershell
         run: |
