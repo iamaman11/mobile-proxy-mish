@@ -93,9 +93,14 @@ def main() -> None:
     if len(physical_jobs) != 2:
         raise SystemExit("device cycle contract: install job boundary is missing")
     physical_text = physical_jobs[1]
-    pinned_pwsh = r'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -File "{0}"'
+    pinned_pwsh = r"C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive"
+    github_command_shell = "-Command \". ''{0}''\""
     if pinned_pwsh not in physical_text:
         raise SystemExit("device cycle contract: DEVICE-1 jobs must execute through pinned portable PowerShell 7.6.6")
+    if github_command_shell not in physical_text:
+        raise SystemExit("device cycle contract: pinned PowerShell must execute GitHub's extensionless temp script through -Command")
+    if '-File "{0}"' in workflow_text:
+        raise SystemExit("device cycle contract: PowerShell -File must not receive GitHub's extensionless temp script")
     if "DEVICE_CYCLE_PWSH_VERSION: '7.6.6'" not in workflow_text:
         raise SystemExit("device cycle contract: pinned PowerShell version fact is missing")
     if physical_text.count("Verify pinned PowerShell 7 runtime") != 2:

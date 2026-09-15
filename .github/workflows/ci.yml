@@ -47,7 +47,7 @@ jobs:
             else
               for path in "${changed[@]}"; do
                 case "$path" in
-                  lab/*|docs/*|README.md|README.*|.github/workflows/device-candidate-physical.yml|.github/workflows/lab-host-static.yml|.github/workflows/lab-host-preflight.yml)
+                  lab/*|docs/*|README.md|README.*|tools/check_*.py|.github/workflows/device-cycle.yml|.github/workflows/device-candidate-physical.yml|.github/workflows/lab-host-static.yml|.github/workflows/lab-host-preflight.yml)
                     ;;
                   *)
                     full=true
