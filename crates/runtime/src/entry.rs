@@ -6,6 +6,9 @@
 mod lifecycle;
 pub use lifecycle::*;
 
+mod process_reconciliation;
+pub use process_reconciliation::*;
+
 #[path = "lib.rs"]
 mod cellular_connector;
 pub use cellular_connector::*;
