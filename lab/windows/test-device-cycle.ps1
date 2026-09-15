@@ -91,9 +91,10 @@ try {
     if (
         [string]$report.cycle_result -cne 'PASS' -or
         [string]$report.acceptance_scope -cne 'FULL_BASELINE' -or
+        [string]$report.exact_candidate_acceptance -cne 'PASS' -or
         [bool]$report.targeted_probe.automatic -ne $false
     ) {
-        throw 'Full PASS report must be observational and contain no automatic probe decision.'
+        throw 'Full PASS report must accept the exact candidate and contain no automatic probe decision.'
     }
 
     $productDiagnostic = Join-Path $root 'product-diagnostic.json'
@@ -111,9 +112,10 @@ try {
         -OutputPath (Join-Path $root 'product-report.json') | Select-Object -Last 1 | ConvertFrom-Json
     if (
         [string]$productReport.cycle_result -cne 'PRODUCT_FAIL' -or
-        [string]$productReport.classification -cne 'PRODUCT_PROXY_STALE_PROCESS_IDENTITY_MISMATCH'
+        [string]$productReport.classification -cne 'PRODUCT_PROXY_STALE_PROCESS_IDENTITY_MISMATCH' -or
+        [string]$productReport.exact_candidate_acceptance -cne 'FAIL'
     ) {
-        throw 'Primary PRODUCT diagnostic classification was not preserved.'
+        throw 'Primary PRODUCT diagnostic classification and exact candidate rejection were not preserved.'
     }
 
     $launchFailure = Join-Path $root 'launch-failure.json'
@@ -132,9 +134,10 @@ try {
         -OutputPath (Join-Path $root 'launch-report.json') | Select-Object -Last 1 | ConvertFrom-Json
     if (
         [string]$launchFailureReport.cycle_result -cne 'LAB_FAIL' -or
-        [string]$launchFailureReport.classification -cne 'LAB_LAUNCH_PROCESS_NOT_STABLE'
+        [string]$launchFailureReport.classification -cne 'LAB_LAUNCH_PROCESS_NOT_STABLE' -or
+        [string]$launchFailureReport.exact_candidate_acceptance -cne 'NOT_EVALUATED'
     ) {
-        throw 'Typed launcher failure was not preserved as a LAB failure.'
+        throw 'Typed launcher failure must remain a LAB failure and cannot reject the PRODUCT candidate.'
     }
 
     $missingProbe = & $reportScript `
@@ -146,9 +149,10 @@ try {
         -OutputPath (Join-Path $root 'missing-probe-report.json') | Select-Object -Last 1 | ConvertFrom-Json
     if (
         [string]$missingProbe.cycle_result -cne 'LAB_FAIL' -or
-        [string]$missingProbe.classification -cne 'LAB_TARGETED_PROBE_COLLECTION_FAILED'
+        [string]$missingProbe.classification -cne 'LAB_TARGETED_PROBE_COLLECTION_FAILED' -or
+        [string]$missingProbe.exact_candidate_acceptance -cne 'NOT_EVALUATED'
     ) {
-        throw 'Explicit probe without evidence must fail closed.'
+        throw 'Explicit probe without evidence must fail closed without evaluating the PRODUCT candidate.'
     }
 
     $targetedEvidence = Join-Path $root 'targeted-evidence.json'
@@ -167,9 +171,10 @@ try {
     if (
         [string]$probeReport.cycle_result -cne 'PASS' -or
         [string]$probeReport.classification -cne 'MANUAL_PROBE_COMPLETED' -or
+        [string]$probeReport.exact_candidate_acceptance -cne 'NOT_EVALUATED' -or
         [bool]$probeReport.targeted_probe.automatic -ne $false
     ) {
-        throw 'Explicit probe-only evidence must remain manual and attributable.'
+        throw 'Explicit probe-only evidence may pass collection but must never claim exact PRODUCT candidate acceptance.'
     }
 
     Write-Host 'DEVICE_CYCLE_CONTRACT=PASS'
