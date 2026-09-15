@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed guard for the simple sequential DEVICE-1 engineering cycle."""
+"""Fail-closed guard for the explicit, single-run DEVICE-1 engineering cycle."""
 
 from pathlib import Path
 import re
@@ -32,32 +32,50 @@ def forbid_regex(path: str, pattern: str, reason: str) -> None:
 def main() -> None:
     workflow = ".github/workflows/device-cycle.yml"
     for required in (
-        "workflow_run:",
-        "workflows: ['Integration Android Preflight']",
-        'if [[ "$WORKFLOW_RUN_CONCLUSION" != \'success\' ]]',
-        'if [[ "$EVENT_NAME" == \'workflow_run\' && "$current_sha" != "$WORKFLOW_RUN_HEAD_SHA" ]]',
-        "probe='none'",
-        "probe_only requires an explicit read-only probe",
-        "full/install_only/diagnose_only do not choose probes",
+        "issue_comment:",
+        "types: [created]",
+        "github.actor == 'iamaman11'",
+        "startsWith(github.event.comment.body, '/mish-cycle ')",
+        "expected /mish-cycle <mode> <40-hex-sha> [probe]",
+        "device-cycle requires an explicit exact 40-hex PRODUCT SHA",
+        "build first, then explicitly request the cycle",
+        "candidate build is not a completed successful PR preflight",
+        "Integration Android Preflight",
+        "probe_only requires exactly one explicit read-only probe",
+        "full/install_only/diagnose_only do not accept a probe",
         'echo "control_sha=$GITHUB_SHA"',
-        '--arg control "$CONTROL_SHA"',
-        'control_sha:$control',
-        'if [[ "$child_head" != "$CONTROL_SHA" ]]',
-        'ref: ${{ needs.resolve.outputs.control_sha }}',
+        "actions: read",
+        "Exercise orchestration and installer contracts",
+        ".\\lab\\windows\\test-device-candidate.ps1",
         "Install -> verify installed exact bytes",
+        "Download exact completed hosted candidate",
+        "Install exact signed candidate without rebuilding",
+        "Verify installed APK bytes and signing identity",
+        "verify-installed-candidate.ps1",
+        "mish-device-install-verification-v1.json",
+        'ref: ${{ needs.resolve.outputs.control_sha }}',
+        "Launch -> canonical diagnostic -> STOP",
         "Explicitly restart app and wait for bounded stable state",
         "Collect one canonical diagnostic snapshot",
         "Explicit probe only - runtime identity",
         "Explicit probe only - loopback CONNECT",
-        "AUTOMATIC_REPAIR_DECISION=NO",
-        "mish-device-cycle-checkpoint",
+        "Automatic cycle start: **NO**",
+        "Automatic repair/probe decision: **NO**",
+        "STOP_FOR_ANALYSIS",
     ):
-        require(workflow, required, "sequential orchestration contract drifted")
+        require(workflow, required, "explicit single-run orchestration contract drifted")
 
     for forbidden in (
+        "workflow_run:",
+        "workflow_dispatch:",
+        "Dispatch canonical physical installer",
+        "device-candidate-physical.yml/dispatches",
+        "device-candidate-physical.yml/runs",
+        "actions: write",
         "select-device-cycle-probe.ps1",
         "RequestedProbe auto",
         "probe='auto'",
+        "mish-device-cycle-checkpoint",
         "@('install', '-r'",
         "& $env:ADB_EXE install",
         "gradle --no-daemon",
@@ -68,20 +86,14 @@ def main() -> None:
         "adb uninstall",
         '$env:PACKAGE_NAME/.MainActivity',
     ):
-        forbid(workflow, forbidden, "orchestrator must observe, never build/install directly or auto-decide repairs/probes")
+        forbid(workflow, forbidden, "cycle must not auto-start, spawn another physical workflow, rebuild, or auto-decide repairs")
 
-    physical = ".github/workflows/device-candidate-physical.yml"
-    for required in (
-        "control_sha:",
-        "Exact protected-main CONTROL SHA",
-        'if [[ "$GITHUB_SHA" != "$CONTROL_SHA" ]]',
-        'ref: ${{ needs.resolve.outputs.control_sha }}',
-        "Install exact signed candidate without rebuilding",
-        "Verify installed APK bytes and signing identity",
-        "verify-installed-candidate.ps1",
-        "mish-device-install-verification-v1.json",
-    ):
-        require(physical, required, "physical install/verification contract drifted")
+    obsolete_physical = ROOT / ".github/workflows/device-candidate-physical.yml"
+    if obsolete_physical.exists():
+        raise SystemExit(
+            "device cycle contract: separate Device Candidate Physical workflow must not return; "
+            "normal install/verify belongs to Device Cycle"
+        )
 
     verifier = "lab/windows/verify-installed-candidate.ps1"
     for required in (
@@ -142,14 +154,17 @@ def main() -> None:
 
     docs = "docs/architecture/DEVELOPMENT_PIPELINE.md"
     for required in (
-        "diagnostic -> analysis -> decision -> code -> completed build -> install -> verify install -> launch -> diagnostic -> analysis",
+        "diagnostic -> analysis -> decision -> code -> completed build -> explicit cycle request -> install -> verify install -> launch -> diagnostic -> analysis",
         "Diagnostics never chooses a repair",
         "No automatic targeted probe",
+        "No successful build, merge to main, label, or completed workflow starts DEVICE-1",
+        "/mish-cycle full <PRODUCT_SHA>",
+        "one GitHub Actions Device Cycle run",
         "CONTROL_SHA",
         "installed base.apk SHA-256",
-        "Automatic mode never runs airplane recovery",
+        "Automatic airplane recovery is not part of the baseline cycle",
     ):
-        require(docs, required, "stable sequential-cycle documentation drifted")
+        require(docs, required, "stable explicit-cycle documentation drifted")
 
     print("DEVICE_CYCLE_CONTRACT=PASS")
 

@@ -138,17 +138,16 @@ def main() -> None:
     ):
         require(verifier, required, "post-install exact-byte verification contract drifted")
 
-    consumer = ".github/workflows/device-candidate-physical.yml"
+    consumer = ".github/workflows/device-cycle.yml"
     for required in (
-        "github.ref == 'refs/heads/main'",
-        "github.ref_protected == true",
-        "control_sha:",
-        "Exact protected-main CONTROL SHA",
-        'if [[ "$GITHUB_SHA" != "$CONTROL_SHA" ]]',
-        "device candidate PR must target fix/root-policy-reconciliation",
-        "device candidate must originate from the canonical repository",
-        "no non-expired exact-head device candidate artifact exists",
+        "issue_comment:",
+        "github.actor == 'iamaman11'",
+        "startsWith(github.event.comment.body, '/mish-cycle ')",
+        "device-cycle requires an explicit exact 40-hex PRODUCT SHA",
+        "installing a device candidate requires a ready PR",
+        "no completed exact-head device candidate artifact exists; build first, then explicitly request the cycle",
         "candidate artifact did not originate from Integration Android Preflight",
+        "candidate build is not a completed successful PR preflight",
         'ref: ${{ needs.resolve.outputs.control_sha }}',
         "shell: powershell",
         "DEVICE-1 API must be 30",
@@ -161,14 +160,15 @@ def main() -> None:
         "Verify installed APK bytes and signing identity",
         "verify-installed-candidate.ps1",
         "mish-device-install-verification-v1.json",
-        "Hosted build reused: **YES**",
-        "Local build: **NO**",
-        "Installed exact bytes/signing verification:",
-        "result = 'FAIL'",
-        "installed = $false",
+        "Record in-run install identity",
+        "Automatic start after build/main: **NO**",
     ):
-        require(consumer, required, "protected physical candidate consumer contract drifted")
+        require(consumer, required, "single-run explicit DEVICE-1 consumer contract drifted")
     for forbidden in (
+        "workflow_run:",
+        "workflow_dispatch:",
+        "Dispatch canonical physical installer",
+        "device-candidate-physical.yml/dispatches",
         "pwsh.exe",
         '-CandidateDirectory "$env:RUNNER_TEMP\\mish-device-candidate"',
         "gradle --no-daemon",
@@ -179,7 +179,13 @@ def main() -> None:
         "pm uninstall",
         "adb uninstall",
     ):
-        forbid(consumer, forbidden, "normal DEVICE-1 consumer must stay deterministic and truthful")
+        forbid(consumer, forbidden, "normal DEVICE-1 consumer must be explicit, single-run, deterministic and truthful")
+
+    if (ROOT / ".github/workflows/device-candidate-physical.yml").exists():
+        raise SystemExit(
+            "delivery contract: obsolete separate device-candidate-physical workflow must not exist; "
+            "install/verify belongs to device-cycle.yml"
+        )
 
     pipeline = "docs/architecture/DEVELOPMENT_PIPELINE.md"
     for required in (
@@ -190,6 +196,8 @@ def main() -> None:
         "adb install -r = Success` is necessary but not sufficient",
         "PRODUCT_SHA",
         "CONTROL_SHA",
+        "No successful build, merge to main, label, or completed workflow starts DEVICE-1",
+        "one GitHub Actions Device Cycle run",
         "It is not PRODUCT release identity and cannot be promoted",
     ):
         require(pipeline, required, "stable development delivery documentation drifted")

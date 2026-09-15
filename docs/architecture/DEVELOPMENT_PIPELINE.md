@@ -66,7 +66,7 @@ ready PR
  -> exact-head device candidate artifact
 ```
 
-The exact-head artifact is created only after the complete ready-PR gate succeeds. A `workflow_run: completed` event by itself is never install authority: `device-cycle.yml` additionally requires `conclusion == success`, and the successful run SHA must still equal the current PR head. A failed, cancelled, still-building, or superseded build therefore cannot start an install cycle.
+The exact-head artifact is created only after the complete ready-PR gate succeeds. A failed, cancelled, still-building, or superseded build never authorizes physical work. More importantly, a successful build is only evidence that a candidate is ready; it does **not** start DEVICE-1.
 
 The ready-PR artifact name is:
 
@@ -80,21 +80,20 @@ Artifacts are short-lived CI evidence. If an exact-head artifact expires, rerun 
 
 ## DEVICE-1 development candidate installer
 
-`.github/workflows/device-candidate-physical.yml` is the single physical installer for exact hosted development candidates. It owns artifact verification, stable LAB signing, replacement installation, and verification of the bytes actually installed on DEVICE-1. It does not launch the app or diagnose PRODUCT behavior.
+There is no separate normal-path physical workflow. `.github/workflows/device-cycle.yml` owns the complete physical segment for an explicitly requested cycle: exact artifact resolution, stable LAB signing, replacement installation, installed-byte/signature verification, launch, diagnostics, evidence, then STOP.
 
-The caller supplies both identities:
+The cycle carries both identities:
 
 ```text
 PRODUCT_SHA = exact integration PR head whose APK is installed
-CONTROL_SHA = exact protected-main commit whose installer/verifier scripts execute
+CONTROL_SHA = exact protected-main commit whose installer/verifier/diagnostic scripts execute
 ```
 
-The physical workflow fails closed if its own run SHA differs from `CONTROL_SHA`; self-hosted checkout is pinned to that exact SHA.
-
-The normal path is:
+The normal physical path inside the same Device Cycle run is:
 
 ```text
-successful exact-head hosted artifact
+successful exact-head hosted artifact already exists
+ -> explicit cycle request after analysis
  -> verify candidate.json + hosted run identity + artifact digest
  -> create/reuse persistent LAB-only debug signing identity
  -> sign isolated debug APK
@@ -104,6 +103,9 @@ successful exact-head hosted artifact
  -> installed base.apk SHA-256 == signed candidate SHA-256
  -> installed signing certificate == expected LAB certificate
  -> INSTALL_VERIFY=PASS
+ -> launch
+ -> canonical diagnostic
+ -> STOP_FOR_ANALYSIS
 ```
 
 `adb install -r = Success` is necessary but not sufficient. Launch/diagnostics are forbidden until installed exact-byte/signing verification passes.
@@ -117,53 +119,66 @@ If any artifact, digest, signing prerequisite, device identity, install result, 
 The control model is deliberately simple:
 
 ```text
-diagnostic -> analysis -> decision -> code -> completed build -> install -> verify install -> launch -> diagnostic -> analysis
+diagnostic -> analysis -> decision -> code -> completed build -> explicit cycle request -> install -> verify install -> launch -> diagnostic -> analysis
 ```
 
 Diagnostics never chooses a repair. Diagnostics reports facts and classifications only. It never edits PRODUCT code/configuration, changes root policy, rotates credentials, reinstalls, selects a repair, or starts the next code cycle.
 
-`.github/workflows/device-cycle.yml` automates only the mechanical segment after an already-made code decision:
+A completed build is a hard barrier, not a trigger. No successful build, merge to main, label, or completed workflow starts DEVICE-1. The physical cycle starts only after an explicit post-analysis command made against the exact PRODUCT head:
 
 ```text
-completed successful exact-head build
- -> exact artifact resolution
- -> canonical install
- -> exact installed-byte/signing verification
- -> explicit app launch
- -> one canonical diagnostic snapshot
- -> evidence publication
- -> STOP
+/mish-cycle full <PRODUCT_SHA>
+/mish-cycle install_only <PRODUCT_SHA>
+/mish-cycle diagnose_only <PRODUCT_SHA>
+/mish-cycle probe_only <PRODUCT_SHA> runtime_identity
+/mish-cycle probe_only <PRODUCT_SHA> loopback_connect
 ```
 
-There is **No automatic targeted probe** in `full` or `diagnose_only`. If the canonical snapshot is insufficient, analysis happens first; only then may an operator explicitly request `probe_only` with exactly one read-only probe such as `runtime_identity` or `loopback_connect`.
+Operationally this command is the separate engineering action that authorizes DEVICE-1. It is accepted only on an open canonical PR and only from the repository owner identity. `full` and `install_only` additionally require a ready integration PR plus an already completed successful exact-head `Integration Android Preflight` artifact. The cycle never starts itself when that build finishes.
 
-The supported manual modes are:
+One explicit request produces one GitHub Actions Device Cycle run. There is no bot-dispatched `Device Candidate Physical` child workflow in the normal path. Within that one run the mechanical stages remain sequential:
 
-- `full` — completed successful exact build -> install -> verify install -> launch -> canonical diagnostic -> stop;
-- `install_only` — completed successful exact build -> install -> verify install -> stop;
+```text
+RESOLVE_EXPLICIT_REQUEST
+ -> VERIFY_COMPLETED_EXACT_BUILD
+ -> INSTALL
+ -> INSTALL_VERIFY
+ -> LAUNCH
+ -> CANONICAL_DIAGNOSTIC
+ -> EVIDENCE
+ -> STOP_FOR_ANALYSIS
+```
+
+There is **No automatic targeted probe** in `full` or `diagnose_only`. If the canonical snapshot is insufficient, analysis happens first; only then may a separate explicit `probe_only` request run exactly one read-only probe such as `runtime_identity` or `loopback_connect`.
+
+The supported modes are:
+
+- `full` — completed successful exact build must already exist -> install -> verify install -> launch -> canonical diagnostic -> stop;
+- `install_only` — completed successful exact build must already exist -> install -> verify install -> stop;
 - `diagnose_only` — launch current installed debug package -> canonical diagnostic -> stop; no claim that PR bytes are installed;
 - `probe_only` — no install and no restart; run exactly one explicitly named read-only probe after an analysis decision.
 
-`full`, `install_only`, and `diagnose_only` require `probe=none`. `probe_only` rejects `none`. This keeps analysis outside the diagnostic workflow.
+`full`, `install_only`, and `diagnose_only` accept no probe. `probe_only` requires exactly one named probe. This keeps analysis outside the diagnostic workflow.
 
-Every cycle carries separate provenance:
+Every physical cycle carries separate provenance:
 
 ```text
 PRODUCT_SHA
 CONTROL_SHA
 HOSTED_RUN_ID
-INSTALL_RUN_ID
+INSTALL_RUN_ID (= the same Device Cycle run id for the in-run install stage)
 DEVICE_CYCLE_RUN_ID
 ```
 
-If protected `main` moves after the Device Cycle run is created, the running cycle continues with its original exact `CONTROL_SHA`; if the separately dispatched physical workflow starts from another SHA, it fails closed before touching DEVICE-1.
+There is no floating child-workflow control SHA. Install and diagnostics both checkout the exact `CONTROL_SHA` captured by the one Device Cycle run.
 
-Automatic mode is enabled per integration PR by the `device-cycle` label and starts only after the exact `Integration Android Preflight` has completed successfully. Automatic mode never runs airplane recovery. A baseline must first reach authenticated loopback PASS and Mesh PASS; recovery/airplane acceptance remains a separately requested later stage.
+Automatic airplane recovery is not part of the baseline cycle. A baseline must first reach authenticated loopback PASS and Mesh PASS; recovery/airplane acceptance remains a separately requested later stage.
 
 The visible control points are intentionally sequential and independently attributable:
 
 ```text
-BUILD_PASS
+BUILD_PASS          # prerequisite only; does not start the cycle
+EXPLICIT_CYCLE_REQUEST
 ARTIFACT_RESOLVED
 INSTALL_PASS
 INSTALL_VERIFY_PASS
@@ -203,15 +218,11 @@ PRODUCT ABI
 hosted integration candidate production
   -> integration-android-preflight.yml
 
-physical install + installed-byte verification
-  -> device-candidate-physical.yml
+explicit physical cycle orchestration + install + installed-byte verification + diagnostics
+  -> device-cycle.yml
   -> install-device-candidate.ps1
   -> verify-installed-candidate.ps1
-
-sequential launch/diagnostic orchestration
-  -> device-cycle.yml
-
-canonical read-only aggregate diagnostic
+  -> start-device-app.ps1
   -> collect-device-diagnostic.ps1
 
 explicit post-analysis targeted probes
@@ -224,4 +235,4 @@ master hardening/product plan
   -> Issue #134
 ```
 
-The repository guards must reject drift back to local rebuilding, uninstall/reinstall migration in the normal path, automatic repair/probe decisions, floating control checkout, ambiguous LAB/Product diagnostic attribution, or accepting `adb install` without verifying the installed exact bytes.
+The repository guards must reject drift back to automatic DEVICE-1 starts, a separately dispatched normal physical workflow, local rebuilding, uninstall/reinstall migration in the normal path, automatic repair/probe decisions, floating control checkout, ambiguous LAB/Product diagnostic attribution, or accepting `adb install` without verifying the installed exact bytes.
