@@ -6,8 +6,10 @@ New-Item -ItemType Directory -Force -Path $root | Out-Null
 try {
     foreach ($path in @(
         'start-device-app.ps1',
+        'collect-device-diagnostic.ps1',
         'select-device-cycle-probe.ps1',
         'collect-runtime-identity.ps1',
+        'diagnose-loopback-connect.ps1',
         'new-device-cycle-report.ps1'
     )) {
         $tokens = $null
@@ -20,6 +22,9 @@ try {
         if ($errors.Count -ne 0) {
             $errors | ForEach-Object { Write-Error "${path}: $($_.Message)" }
             throw "PowerShell parse failed for $path."
+        }
+        if (@($tokens | Where-Object { $_.Text -ieq '$PID' }).Count -ne 0) {
+            throw "PowerShell automatic variable `$PID must not be reused by device-cycle script $path."
         }
     }
 
