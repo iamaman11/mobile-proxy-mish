@@ -46,11 +46,7 @@ any PRODUCT/build input, CI policy file, unknown path, or classifier uncertainty
   -> full Rust + Android gate
 ```
 
-The no-product-build allowlist is intentionally narrow: LAB-only files, docs/README, and the bounded LAB/device-candidate workflows. The classifier defaults to the full gate rather than guessing that an unfamiliar change is harmless.
-
-`workflow_dispatch` always performs the full Rust + Android gate.
-
-After an accepted merge, `push -> main` performs `Architecture Guards` only; duplicate Rust/Android rebuilds are skipped. The expensive acceptance work belongs to the exact PR head that entered `main`.
+`workflow_dispatch` always performs the full Rust + Android gate. After an accepted merge, `push -> main` performs architecture/delivery smoke only; duplicate Rust/Android rebuilds are skipped.
 
 ### Integration PRs to `fix/root-policy-reconciliation`
 
@@ -70,7 +66,7 @@ ready PR
  -> exact-head device candidate artifact
 ```
 
-Rust, Gradle, cargo-ndk, NDK and build caches are keyed from pinned toolchain versions and relevant exact inputs. Superseded PR runs are cancelled by concurrency.
+The exact-head artifact is created only after the complete ready-PR gate succeeds. A `workflow_run: completed` event by itself is never install authority: `device-cycle.yml` additionally requires `conclusion == success`, and the successful run SHA must still equal the current PR head. A failed, cancelled, still-building, or superseded build therefore cannot start an install cycle.
 
 The ready-PR artifact name is:
 
@@ -84,90 +80,104 @@ Artifacts are short-lived CI evidence. If an exact-head artifact expires, rerun 
 
 ## DEVICE-1 development candidate installer
 
-`.github/workflows/device-candidate-physical.yml` is the protected-main consumer and installer for exact hosted development candidates. It owns artifact verification, stable LAB signing and replacement installation only; post-install launch/diagnostics belong to `device-cycle.yml`.
+`.github/workflows/device-candidate-physical.yml` is the single physical installer for exact hosted development candidates. It owns artifact verification, stable LAB signing, replacement installation, and verification of the bytes actually installed on DEVICE-1. It does not launch the app or diagnose PRODUCT behavior.
 
-Inputs identify the integration PR and optionally pin its expected current head SHA. The workflow must fail closed unless all of these are true:
-
-- the PR is open and ready;
-- the PR targets `fix/root-policy-reconciliation`;
-- the PR originates from the canonical repository;
-- the current head matches `expected_head_sha` when supplied;
-- a non-expired artifact exists for that exact PR/head;
-- the artifact came from a successful completed `Integration Android Preflight` PR run for that same head/branch;
-- artifact metadata includes a valid SHA-256 digest.
-
-The self-hosted Windows job is a consumer, not a builder. Its normal path is:
+The caller supplies both identities:
 
 ```text
-protected main workflow
- -> built-in Windows PowerShell
- -> exactly one authorized DEVICE-1
- -> API 30 + armeabi-v7a check
- -> download exact hosted artifact
- -> verify candidate.json
- -> verify APK SHA-256 values
+PRODUCT_SHA = exact integration PR head whose APK is installed
+CONTROL_SHA = exact protected-main commit whose installer/verifier scripts execute
+```
+
+The physical workflow fails closed if its own run SHA differs from `CONTROL_SHA`; self-hosted checkout is pinned to that exact SHA.
+
+The normal path is:
+
+```text
+successful exact-head hosted artifact
+ -> verify candidate.json + hosted run identity + artifact digest
  -> create/reuse persistent LAB-only debug signing identity
- -> sign isolated debug APKs
- -> adb install -r com.mobileproxymish.app.debug
- -> bounded install receipt / handoff back to Device Cycle
+ -> sign isolated debug APK
+ -> adb install -r
+ -> adb shell pm path <package>
+ -> pull installed base.apk
+ -> installed base.apk SHA-256 == signed candidate SHA-256
+ -> installed signing certificate == expected LAB certificate
+ -> INSTALL_VERIFY=PASS
 ```
 
-The normal DEVICE-1 candidate path must not invoke Gradle, Cargo, cargo-ndk, UniFFI generation, NDK compilation or local APK assembly. Portable PowerShell is not a prerequisite for this path.
+`adb install -r = Success` is necessary but not sufficient. Launch/diagnostics are forbidden until installed exact-byte/signing verification passes.
 
-If a required hosted artifact, digest, tool, signing prerequisite or device identity is wrong or missing, stop with a typed failure. Do not automatically fall back to a local build.
+The Windows LAB is a consumer, not a builder. The normal path must not invoke Gradle, Cargo, cargo-ndk, UniFFI generation, NDK compilation, local APK assembly, uninstall, credential rotation, or PRODUCT policy mutation.
 
-A local build remains an explicit engineering fallback for a separate diagnostic decision; it is never implicit evidence substitution.
+If any artifact, digest, signing prerequisite, device identity, install result, installed byte digest, or installed certificate is wrong or missing, stop with a typed failure. Do not automatically fall back to a local build or another APK.
 
-## Canonical DEVICE-1 repair cycle
+## Canonical DEVICE-1 engineering cycle
 
-`.github/workflows/device-cycle.yml` is the trusted orchestration layer for the normal diagnose -> fix -> exact install -> explicit app start -> diagnose loop. It does not own APK installation, PRODUCT lifecycle state, credentials, root authority, readiness or Mesh state.
-
-Automatic mode is enabled per integration PR by the `device-cycle` label. After that PR's exact `Integration Android Preflight` run completes successfully, the orchestrator performs:
+The control model is deliberately simple:
 
 ```text
-successful exact-head hosted gate
- -> canonical Device Candidate Physical dispatch
- -> exact artifact provenance check
- -> adb install -r through the existing installer owner
- -> explicit force-stop + launcher start
- -> stable PID + bounded snapshot stabilization
- -> one canonical mish.diagnostics/v1 collection
- -> at most one evidence-selected targeted probe
- -> one mish.device-cycle/v1 evidence bundle
- -> one upserted PR checkpoint comment
+diagnostic -> analysis -> decision -> code -> completed build -> install -> verify install -> launch -> diagnostic -> analysis
 ```
 
-The canonical manual modes are `full / install_only / diagnose_only / probe_only`.
+Diagnostics never chooses a repair. Diagnostics reports facts and classifications only. It never edits PRODUCT code/configuration, changes root policy, rotates credentials, reinstalls, selects a repair, or starts the next code cycle.
 
-- `full` repeats the complete baseline cycle and still requires the exact successful hosted candidate and canonical physical installer.
-- `install_only` stops immediately after the canonical exact candidate replacement install.
-- `diagnose_only` restarts the currently installed debug package and performs the canonical snapshot plus the selected or automatic targeted probe; its PR SHA is request context and is not an assertion that those exact bytes are installed.
-- `probe_only` does not restart or reinstall the app; it runs only an explicitly selected bounded probe against the current installed state.
-
-Manual modes do not weaken exact-head provenance. Any mode that installs an APK still goes through `device-candidate-physical.yml`, `candidate.json`, exact artifact/run identity, APK SHA-256 verification, persistent LAB signing identity and `adb install -r`. The orchestrator contains no APK build/install implementation of its own and must not perform uninstall.
-
-Launcher stabilization may read the same read-only `snapshot_v1` projection to observe a stable PID and terminal PRODUCT state. After the launcher stage returns, the first evidence-producing diagnostic action is the canonical aggregate `mish.diagnostics/v1` collection. Extra diagnosis is adaptive and bounded:
+`.github/workflows/device-cycle.yml` automates only the mechanical segment after an already-made code decision:
 
 ```text
-proxy ownership / cleanup failure
- -> runtime_identity
-
-PRODUCT_LOOPBACK_E2E_*
- -> loopback_connect
-
-other classification or PASS
- -> no extra probe
+completed successful exact-head build
+ -> exact artifact resolution
+ -> canonical install
+ -> exact installed-byte/signing verification
+ -> explicit app launch
+ -> one canonical diagnostic snapshot
+ -> evidence publication
+ -> STOP
 ```
 
-This table is intentionally small. Add a new probe only after a real blocker demonstrates that the aggregate snapshot cannot identify the next engineering decision.
+There is **No automatic targeted probe** in `full` or `diagnose_only`. If the canonical snapshot is insufficient, analysis happens first; only then may an operator explicitly request `probe_only` with exactly one read-only probe such as `runtime_identity` or `loopback_connect`.
 
-Automatic mode never runs airplane recovery. A baseline must first reach authenticated loopback PASS and Mesh PASS; recovery/airplane acceptance remains a separately requested later stage so a broken baseline cannot be hidden inside recovery noise.
+The supported manual modes are:
 
-Each visible workflow stage is independently attributable in GitHub Actions: request resolution, exact install, explicit launch/stabilization, aggregate diagnostic, targeted probe, evidence publication and PR checkpoint. The manual modes are the supported way to rerun or isolate a stage without editing control-branch commits or bypassing accepted checks.
+- `full` — completed successful exact build -> install -> verify install -> launch -> canonical diagnostic -> stop;
+- `install_only` — completed successful exact build -> install -> verify install -> stop;
+- `diagnose_only` — launch current installed debug package -> canonical diagnostic -> stop; no claim that PR bytes are installed;
+- `probe_only` — no install and no restart; run exactly one explicitly named read-only probe after an analysis decision.
+
+`full`, `install_only`, and `diagnose_only` require `probe=none`. `probe_only` rejects `none`. This keeps analysis outside the diagnostic workflow.
+
+Every cycle carries separate provenance:
+
+```text
+PRODUCT_SHA
+CONTROL_SHA
+HOSTED_RUN_ID
+INSTALL_RUN_ID
+DEVICE_CYCLE_RUN_ID
+```
+
+If protected `main` moves after the Device Cycle run is created, the running cycle continues with its original exact `CONTROL_SHA`; if the separately dispatched physical workflow starts from another SHA, it fails closed before touching DEVICE-1.
+
+Automatic mode is enabled per integration PR by the `device-cycle` label and starts only after the exact `Integration Android Preflight` has completed successfully. Automatic mode never runs airplane recovery. A baseline must first reach authenticated loopback PASS and Mesh PASS; recovery/airplane acceptance remains a separately requested later stage.
+
+The visible control points are intentionally sequential and independently attributable:
+
+```text
+BUILD_PASS
+ARTIFACT_RESOLVED
+INSTALL_PASS
+INSTALL_VERIFY_PASS
+LAUNCH_PASS / PRODUCT_TERMINAL_FAILURE
+DIAGNOSTIC_CAPTURED
+REPORT_PUBLISHED
+STOP_FOR_ANALYSIS
+```
+
+No workflow stage after `DIAGNOSTIC_CAPTURED` mutates PRODUCT state or decides what code should change next.
 
 ## Evidence boundary
 
-An exact-head PR debug candidate may be used for development physical diagnostics when Issue #135 explicitly requires a physical fact for the next engineering decision, for example P0 recovery attribution.
+An exact-head PR debug candidate may be used for development physical diagnostics when Issue #135 explicitly requires a physical fact for the next engineering decision.
 
 It is not PRODUCT release identity and cannot be promoted to a stable release.
 
@@ -193,17 +203,19 @@ PRODUCT ABI
 hosted integration candidate production
   -> integration-android-preflight.yml
 
-protected physical candidate consumption
+physical install + installed-byte verification
   -> device-candidate-physical.yml
+  -> install-device-candidate.ps1
+  -> verify-installed-candidate.ps1
 
-trusted repair-cycle orchestration
+sequential launch/diagnostic orchestration
   -> device-cycle.yml
 
-candidate byte verification / LAB debug signing / install
-  -> lab/windows/install-device-candidate.ps1
+canonical read-only aggregate diagnostic
+  -> collect-device-diagnostic.ps1
 
-LAB bootstrap toolchain mirror
-  -> lab/windows/toolchain.json
+explicit post-analysis targeted probes
+  -> collect-runtime-identity.ps1 / diagnose-loopback-connect.ps1
 
 live execution pointer
   -> Issue #135
@@ -212,4 +224,4 @@ master hardening/product plan
   -> Issue #134
 ```
 
-The repository architecture guard must reject drift in the API floor, ABI/Rust-target mirror, required path-aware CI contract, no-local-build DEVICE-1 consumer invariants, and the trusted device-cycle boundary.
+The repository guards must reject drift back to local rebuilding, uninstall/reinstall migration in the normal path, automatic repair/probe decisions, floating control checkout, ambiguous LAB/Product diagnostic attribution, or accepting `adb install` without verifying the installed exact bytes.
