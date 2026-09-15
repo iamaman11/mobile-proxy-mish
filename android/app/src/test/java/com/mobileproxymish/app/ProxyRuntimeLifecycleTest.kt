@@ -72,19 +72,28 @@ class ProxyRuntimeLifecycleTest {
     }
 
     @Test
-    fun orphanCleanupChecksEveryProcEntryByExactPositionalArgv() {
+    fun orphanCleanupParsesEveryCmdlineWithBuiltinsAndExactPositionalArgv() {
         val source = repositoryFile(
             "android/app/src/main/java/com/mobileproxymish/app/ProxyRuntimeSupervisor.kt",
         ).readText()
+        val cleanupStart = source.indexOf("private fun writeOwnedOrphanCleanup")
+        val cleanupEnd = source.indexOf("private fun cleanupOwnedOrphanProcesses", cleanupStart)
 
-        assertTrue(source.contains("set -- "))
-        assertTrue(source.contains("[ \"\${'$'}#\" -eq 4 ] || return 1"))
-        assertTrue(source.contains("case \"\${'$'}1\" in */\${SING_BOX_LIBRARY})"))
-        assertTrue(source.contains("[ \"\${'$'}2\" = run ] || return 1"))
-        assertTrue(source.contains("[ \"\${'$'}3\" = -c ] || return 1"))
-        assertTrue(source.contains("\"\${'$'}runtime\"/sing-box-*.json"))
-        assertFalse(source.contains("read -r process_name < \"/proc/"))
-        assertFalse(source.contains("*singbox*|*sing-box*)"))
+        assertTrue(cleanupStart >= 0)
+        assertTrue(cleanupEnd > cleanupStart)
+        val cleanup = source.substring(cleanupStart, cleanupEnd)
+
+        assertTrue(cleanup.contains("exec 3< \"/proc/"))
+        assertTrue(cleanup.contains("IFS= read -r -d '' arg1 <&3"))
+        assertTrue(cleanup.contains("IFS= read -r -d '' arg2 <&3"))
+        assertTrue(cleanup.contains("IFS= read -r -d '' arg3 <&3"))
+        assertTrue(cleanup.contains("IFS= read -r -d '' arg4 <&3"))
+        assertTrue(cleanup.contains("IFS= read -r -d '' extra <&3"))
+        assertTrue(cleanup.contains("[ \"\${'$'}arg2\" = run ] || return 1"))
+        assertTrue(cleanup.contains("[ \"\${'$'}arg3\" = -c ] || return 1"))
+        assertTrue(cleanup.contains("\"\${'$'}runtime\"/sing-box-*.json"))
+        assertFalse(cleanup.contains("tr '\\000'"))
+        assertFalse(cleanup.contains("read -r process_name < \"/proc/"))
         assertFalse(source.contains("pkill"))
     }
 
