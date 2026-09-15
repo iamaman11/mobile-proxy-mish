@@ -72,6 +72,21 @@ class ProxyRuntimeLifecycleTest {
     }
 
     @Test
+    fun orphanCleanupPrefiltersProcScanBeforeExactCmdlineValidation() {
+        val source = repositoryFile(
+            "android/app/src/main/java/com/mobileproxymish/app/ProxyRuntimeSupervisor.kt",
+        ).readText()
+
+        val commPrefilter = source.indexOf("read -r process_name < \"/proc/")
+        val exactOwnedCheck = source.indexOf("if owned_pid")
+
+        assertTrue(commPrefilter >= 0)
+        assertTrue(source.contains("*singbox*|*sing-box*)"))
+        assertTrue(exactOwnedCheck > commPrefilter)
+        assertFalse(source.contains("pkill"))
+    }
+
+    @Test
     fun exactGenerationCleanupClosesMeshThenProxyThenCellularOwner() {
         val effects = mutableListOf<String>()
 
