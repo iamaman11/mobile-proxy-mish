@@ -92,11 +92,14 @@ PRODUCT_SHA = exact integration PR head whose APK is installed
 CONTROL_SHA = exact protected-main commit whose installer/verifier/diagnostic scripts execute
 ```
 
+For `full` and `install_only`, the candidate producer policy is also immutable evidence. Before DEVICE-1 may install anything, the Git blob for `.github/workflows/integration-android-preflight.yml` at `PRODUCT_SHA` must be byte-identical to the producer workflow blob at `CONTROL_SHA`. If those producer blobs differ, the cycle fails closed before artifact download/install. Build-policy changes therefore land through protected `main` review and CI first, then the PRODUCT branch consumes the accepted producer policy.
+
 The normal physical path inside the same Device Cycle run is:
 
 ```text
 successful exact-head hosted artifact already exists
  -> explicit cycle request after analysis
+ -> verify accepted producer workflow blob identity
  -> verify candidate.json + hosted run identity + artifact digest
  -> create/reuse persistent LAB-only debug signing identity
  -> sign isolated debug APK
@@ -115,7 +118,7 @@ successful exact-head hosted artifact already exists
 
 The Windows LAB is a consumer, not a builder. The normal path must not invoke Gradle, Cargo, cargo-ndk, UniFFI generation, NDK compilation, local APK assembly, uninstall, credential rotation, or PRODUCT policy mutation.
 
-If any artifact, digest, signing prerequisite, device identity, install result, installed byte digest, or installed certificate is wrong or missing, stop with a typed failure. Do not automatically fall back to a local build or another APK.
+If any producer policy, artifact, digest, signing prerequisite, device identity, install result, installed byte digest, or installed certificate is wrong or missing, stop with a typed failure. Do not automatically fall back to a local build or another APK.
 
 ## Canonical DEVICE-1 engineering cycle
 
@@ -143,6 +146,7 @@ One explicit request produces one GitHub Actions Device Cycle run. There is no b
 
 ```text
 RESOLVE_EXPLICIT_REQUEST
+ -> VERIFY_ACCEPTED_PRODUCER_POLICY
  -> VERIFY_COMPLETED_EXACT_BUILD
  -> INSTALL
  -> INSTALL_VERIFY
@@ -163,6 +167,19 @@ The supported modes are:
 
 `full`, `install_only`, and `diagnose_only` accept no probe. `probe_only` requires exactly one named probe. This keeps analysis outside the diagnostic workflow.
 
+The cycle report deliberately separates mechanical/evidence execution from PRODUCT acceptance:
+
+```text
+cycle_result
+  -> did this requested cycle/probe execute and collect its expected evidence?
+
+exact_candidate_acceptance
+  -> PASS / FAIL only for `full`, where exact candidate install+verification and canonical PRODUCT baseline were actually exercised
+  -> NOT_EVALUATED for install_only, diagnose_only, probe_only, or LAB/infrastructure failure
+```
+
+Therefore a green `probe_only` run means the requested read-only evidence was collected successfully. It is never a claim that the PRODUCT candidate passed. The targeted probe's own classification remains evidence for the next analysis decision.
+
 Every physical cycle carries separate provenance:
 
 ```text
@@ -182,6 +199,7 @@ The visible control points are intentionally sequential and independently attrib
 ```text
 BUILD_PASS          # prerequisite only; does not start the cycle
 EXPLICIT_CYCLE_REQUEST
+PRODUCER_POLICY_MATCH
 ARTIFACT_RESOLVED
 INSTALL_PASS
 INSTALL_VERIFY_PASS
@@ -238,4 +256,4 @@ master hardening/product plan
   -> Issue #134
 ```
 
-The repository guards must reject drift back to automatic DEVICE-1 starts, a separately dispatched normal physical workflow, local rebuilding, uninstall/reinstall migration in the normal path, automatic repair/probe decisions, floating control checkout, ambiguous LAB/Product diagnostic attribution, accepting `adb install` without verifying the installed exact bytes, or publishing a ready integration candidate without passing the Rust workspace quality gate.
+The repository guards must reject drift back to automatic DEVICE-1 starts, a separately dispatched normal physical workflow, local rebuilding, uninstall/reinstall migration in the normal path, automatic repair/probe decisions, floating control checkout, unaccepted candidate-producer workflow policy, ambiguous LAB/Product diagnostic attribution, a green targeted probe being interpreted as exact PRODUCT acceptance, accepting `adb install` without verifying the installed exact bytes, or publishing a ready integration candidate without passing the Rust workspace quality gate.
