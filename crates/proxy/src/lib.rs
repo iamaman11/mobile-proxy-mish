@@ -1,8 +1,12 @@
 //! Proxy Serving natural-owner capability.
 //!
-//! Owns the vendor-neutral listener and public authentication policy. Vendor JSON,
-//! Mesh endpoint discovery, credential persistence, cellular selection, and child
+//! Owns the vendor-neutral listener, target and public authentication policy. Vendor JSON,
+//! Mesh endpoint discovery, credential persistence, cellular selection, DNS effects and child
 //! process lifecycle remain outside this capability.
+
+mod target;
+
+pub use target::{ProxyConnectTarget, ProxyTargetError, ProxyTargetHost};
 
 use std::{error::Error, fmt, net::IpAddr};
 
