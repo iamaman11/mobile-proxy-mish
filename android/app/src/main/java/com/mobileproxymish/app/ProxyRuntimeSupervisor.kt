@@ -575,10 +575,10 @@ class ProxyRuntimeSupervisor internal constructor(
             !isSafeOwnedPath(ownedOrphanCleanupFile)
         ) return false
 
-        // Startup scans are already bounded to one pass. Avoid a lossy `/proc/<pid>/comm`
-        // prefilter: DEVICE-1 proved that an app-owned sing-box can remain visible while that
-        // prefilter misses it. Exact positional argv plus this app-private runtime config path are
-        // sufficient ownership authority and do not widen termination to unrelated processes.
+        // Startup scans are already bounded to one pass. Avoid both lossy process-name filtering
+        // and one external parser process per PID: the shared root shell has a strict command
+        // deadline. Android's shell `read -d ''` parses the NUL-delimited cmdline directly through
+        // one file descriptor, preserving exact positional argv ownership without subprocess cost.
         ownedOrphanCleanupFile.writeText(
             """
             #!/system/bin/sh
@@ -587,13 +587,21 @@ class ProxyRuntimeSupervisor internal constructor(
             owned_pid() {
               pid="${'$'}1"
               [ -r "/proc/${'$'}pid/cmdline" ] || return 1
-              actual="${'$'}(tr '\000' '\n' < "/proc/${'$'}pid/cmdline" 2>/dev/null || true)"
-              set -- ${'$'}actual
-              [ "${'$'}#" -eq 4 ] || return 1
-              case "${'$'}1" in */${SING_BOX_LIBRARY}) ;; *) return 1 ;; esac
-              [ "${'$'}2" = run ] || return 1
-              [ "${'$'}3" = -c ] || return 1
-              case "${'$'}4" in
+              exec 3< "/proc/${'$'}pid/cmdline" || return 1
+              arg1=''; arg2=''; arg3=''; arg4=''; extra=''
+              IFS= read -r -d '' arg1 <&3 || { exec 3<&-; return 1; }
+              IFS= read -r -d '' arg2 <&3 || { exec 3<&-; return 1; }
+              IFS= read -r -d '' arg3 <&3 || { exec 3<&-; return 1; }
+              IFS= read -r -d '' arg4 <&3 || { exec 3<&-; return 1; }
+              if IFS= read -r -d '' extra <&3; then
+                exec 3<&-
+                return 1
+              fi
+              exec 3<&-
+              case "${'$'}arg1" in */${SING_BOX_LIBRARY}) ;; *) return 1 ;; esac
+              [ "${'$'}arg2" = run ] || return 1
+              [ "${'$'}arg3" = -c ] || return 1
+              case "${'$'}arg4" in
                 "${'$'}runtime"/sing-box-*.json|"${'$'}runtime"/${LEGACY_CONFIG_FILE}) return 0 ;;
                 *) return 1 ;;
               esac
