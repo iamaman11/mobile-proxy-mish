@@ -58,15 +58,21 @@ class ProxyRuntimeLifecycleTest {
     }
 
     @Test
-    fun exactCurrentPidControlStillRequiresCmdlineIdentityNotProcDirectoryExistence() {
-        val source = repositoryFile(
+    fun currentPidComesFromRustOwnerNotLauncherBackgroundPid() {
+        val supervisor = repositoryFile(
             "android/app/src/main/java/com/mobileproxymish/app/ProxyRuntimeSupervisor.kt",
         ).readText()
+        val rustOwner = repositoryFile(
+            "crates/runtime/src/process_reconciliation.rs",
+        ).readText()
 
-        assertTrue(source.contains("exact_pid()"))
-        assertTrue(source.contains("[ -r \"/proc/"))
-        assertFalse(source.contains("[ -d \"/proc/"))
-        assertFalse(source.contains("[ ! -d \"/proc/"))
+        assertTrue(supervisor.contains("processReconciler.resolveCurrentProcess(configFile)"))
+        assertTrue(supervisor.contains("persistCanonicalPid(pid)"))
+        assertFalse(supervisor.contains("child_pid=\"${'$'}!\""))
+        assertFalse(supervisor.contains("exact_pid()"))
+        assertFalse(supervisor.contains("writeRootControl"))
+        assertTrue(rustOwner.contains("pub fn resolve_current_runtime_process"))
+        assertTrue(rustOwner.contains("RuntimeCurrentProcessDecision::Conflict"))
     }
 
     @Test
@@ -83,29 +89,46 @@ class ProxyRuntimeLifecycleTest {
 
         assertTrue(supervisor.contains("ProxyProcessReconciler(runtimeDir)"))
         assertTrue(supervisor.contains("processReconciler.cleanupOwnedProcesses()"))
+        assertTrue(supervisor.contains("processReconciler.resolveCurrentProcess(configFile)"))
         assertFalse(supervisor.contains("private fun writeOwnedOrphanCleanup"))
 
         assertTrue(reconciler.contains("planRuntimeProcessCleanup"))
+        assertTrue(reconciler.contains("resolveCurrentRuntimeProcess"))
         assertTrue(reconciler.contains("sha256sum"))
         assertTrue(reconciler.contains("same_snapshot()"))
         assertTrue(reconciler.contains("RuntimeProcessCleanupDecision.FAIL_CLOSED"))
         assertFalse(reconciler.contains("pkill"))
 
         assertTrue(rustOwner.contains("pub fn plan_runtime_process_cleanup"))
+        assertTrue(rustOwner.contains("pub fn resolve_current_runtime_process"))
         assertTrue(rustOwner.contains("RuntimeProcessCleanupDecision::TerminateOwned"))
         assertTrue(rustOwner.contains("RuntimeProcessCleanupDecision::FailClosed"))
     }
 
     @Test
-    fun terminationFastPathNeverShortCircuitsRustReconciliationProof() {
+    fun cleanupNeverUsesASecondShellIdentityOwner() {
         val source = repositoryFile(
             "android/app/src/main/java/com/mobileproxymish/app/ProxyRuntimeSupervisor.kt",
         ).readText()
 
-        assertFalse(source.contains("stopExactRootSingBox(pid)) || cleanupOwnedOrphanProcesses()"))
-        assertFalse(source.contains("stopExactRootSingBox(currentPid)) || cleanupOwnedOrphanProcesses()"))
-        assertTrue(source.contains("if (pid != null) runCatching { stopExactRootSingBox(pid) }"))
-        assertTrue(source.contains("if (currentPid != null) runCatching { stopExactRootSingBox(currentPid) }"))
+        assertFalse(source.contains("stopExactRootSingBox"))
+        assertFalse(source.contains("runRootControl"))
+        assertFalse(source.contains("writeRootControl"))
+        assertTrue(source.contains("cleanupOwnedOrphanProcesses()"))
+    }
+
+    @Test
+    fun steadyStateOwnershipCheckIsIndependentOfListenerReachability() {
+        val source = repositoryFile(
+            "android/app/src/main/java/com/mobileproxymish/app/ProxyRuntimeSupervisor.kt",
+        ).readText()
+
+        val ownership = source.indexOf("val ownershipFailure = if (now >= nextOwnershipCheck)")
+        val listeners = source.indexOf("canonicalLoopbackListenersReachable()")
+        assertTrue(ownership >= 0)
+        assertTrue(listeners >= 0)
+        assertTrue(ownership < listeners)
+        assertTrue(source.contains("OWNERSHIP_POLL_MS = 3_000L"))
     }
 
     @Test
@@ -132,7 +155,8 @@ class ProxyRuntimeLifecycleTest {
                 error("Mesh cleanup failed")
             },
             closeProxy = {
-                effects += "proxy" },
+                effects += "proxy"
+            },
             closeCellular = { effects += "cellular" },
         )
 
