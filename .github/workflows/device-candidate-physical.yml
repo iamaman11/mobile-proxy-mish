@@ -229,8 +229,11 @@ jobs:
           }
           $api = (& $env:ADB_EXE shell getprop ro.build.version.sdk).Trim()
           $abi = (& $env:ADB_EXE shell getprop ro.product.cpu.abi).Trim()
-          if ($api -ne '30' -or $abi -ne 'armeabi-v7a') {
-            throw "MISH_DEVICE_CANDIDATE_FAILURE|DEVICE_IDENTITY_MISMATCH|Observed API=$api ABI=$abi"
+          if ($api -ne '30') {
+            throw "MISH_DEVICE_CANDIDATE_FAILURE|DEVICE_IDENTITY_MISMATCH|DEVICE-1 API must be 30; observed $api."
+          }
+          if ($abi -ne 'armeabi-v7a') {
+            throw "MISH_DEVICE_CANDIDATE_FAILURE|DEVICE_IDENTITY_MISMATCH|DEVICE-1 ABI must be armeabi-v7a; observed $abi."
           }
 
       - name: Download exact hosted candidate
