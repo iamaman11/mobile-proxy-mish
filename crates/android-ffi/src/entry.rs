@@ -5,6 +5,9 @@ pub use runtime_boundary::*;
 mod credentials_ffi;
 pub use credentials_ffi::*;
 
+mod proxy_serving_ffi;
+pub use proxy_serving_ffi::*;
+
 mod readiness_ffi;
 pub use readiness_ffi::*;
 
