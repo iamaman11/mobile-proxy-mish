@@ -115,10 +115,12 @@ pub fn resolve_current_runtime_process(
             OwnerCurrentProcessDecision::Conflict => RuntimeCurrentProcessDecision::Conflict,
             OwnerCurrentProcessDecision::FailClosed => RuntimeCurrentProcessDecision::FailClosed,
         },
-        current: resolution.current.map(|identity| RuntimeProcessIdentityView {
-            pid: identity.pid,
-            cmdline_digest: identity.cmdline_digest,
-        }),
+        current: resolution
+            .current
+            .map(|identity| RuntimeProcessIdentityView {
+                pid: identity.pid,
+                cmdline_digest: identity.cmdline_digest,
+            }),
     }
 }
 
@@ -145,7 +147,8 @@ mod tests {
     #[test]
     fn ffi_projection_keeps_process_identity_decision_in_runtime_owner() {
         let runtime = "/data/user/0/pkg/no_backup/proxy-runtime".to_string();
-        let plan = plan_runtime_process_cleanup(runtime.clone(), vec![current_observation(&runtime, 42)]);
+        let plan =
+            plan_runtime_process_cleanup(runtime.clone(), vec![current_observation(&runtime, 42)]);
         assert_eq!(plan.decision, RuntimeProcessCleanupDecision::TerminateOwned);
         assert_eq!(plan.terminate.len(), 1);
         assert_eq!(plan.terminate[0].pid, 42);
