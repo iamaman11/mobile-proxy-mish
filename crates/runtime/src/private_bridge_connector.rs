@@ -59,8 +59,14 @@ impl PrivateBridgeOutboundConnector {
         if port == 0 {
             return Err(PrivateBridgeConnectorConfigError::ZeroPort);
         }
-        validate_auth_field(&username, PrivateBridgeConnectorConfigError::InvalidUsername)?;
-        validate_auth_field(&password, PrivateBridgeConnectorConfigError::InvalidPassword)?;
+        validate_auth_field(
+            &username,
+            PrivateBridgeConnectorConfigError::InvalidUsername,
+        )?;
+        validate_auth_field(
+            &password,
+            PrivateBridgeConnectorConfigError::InvalidPassword,
+        )?;
         if operation_timeout.is_zero() {
             return Err(PrivateBridgeConnectorConfigError::ZeroOperationTimeout);
         }
@@ -248,8 +254,14 @@ mod tests {
     fn numeric_targets_are_encoded_without_dns() {
         let ipv4 = ConnectTarget::ipv4(Ipv4Addr::new(203, 0, 113, 10), 443).expect("IPv4");
         let ipv6 = ConnectTarget::ipv6(Ipv6Addr::LOCALHOST, 443).expect("IPv6");
-        assert_eq!(connect_request(&ipv4).expect("IPv4 request")[3], IPV4_ADDRESS_TYPE);
-        assert_eq!(connect_request(&ipv6).expect("IPv6 request")[3], IPV6_ADDRESS_TYPE);
+        assert_eq!(
+            connect_request(&ipv4).expect("IPv4 request")[3],
+            IPV4_ADDRESS_TYPE
+        );
+        assert_eq!(
+            connect_request(&ipv6).expect("IPv6 request")[3],
+            IPV6_ADDRESS_TYPE
+        );
     }
 
     #[test]
