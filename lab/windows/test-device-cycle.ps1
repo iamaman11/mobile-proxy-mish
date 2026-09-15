@@ -7,7 +7,7 @@ try {
     foreach ($path in @(
         'start-device-app.ps1',
         'collect-device-diagnostic.ps1',
-        'select-device-cycle-probe.ps1',
+        'DeviceDiagnosticClassification.psm1',
         'collect-runtime-identity.ps1',
         'diagnose-loopback-connect.ps1',
         'new-device-cycle-report.ps1'
@@ -28,123 +28,108 @@ try {
         }
     }
 
-    $selector = Join-Path $PSScriptRoot 'select-device-cycle-probe.ps1'
-    $cases = @(
-        [pscustomobject]@{
-            Name = 'ownership failure wins over transport classification'
-            Classification = 'PRODUCT_LOOPBACK_E2E_TRANSPORT_FAILED'
-            ProxyFailure = 'STALE_PROCESS_IDENTITY_MISMATCH'
-            Expected = 'runtime_identity'
-        },
-        [pscustomobject]@{
-            Name = 'loopback failure selects raw CONNECT probe'
-            Classification = 'PRODUCT_LOOPBACK_E2E_AUTHENTICATION_FAILED'
-            ProxyFailure = $null
-            Expected = 'loopback_connect'
-        },
-        [pscustomobject]@{
-            Name = 'clean baseline selects no extra probe'
-            Classification = 'PASS'
-            ProxyFailure = $null
-            Expected = 'none'
-        }
-    )
-
-    foreach ($case in $cases) {
-        $evidencePath = Join-Path $root (($case.Name -replace '[^A-Za-z0-9]+', '-') + '.json')
-        $selectionPath = "$evidencePath.selection.json"
-        [ordered]@{
-            classification = $case.Classification
-            android = [ordered]@{
-                proxy = [ordered]@{ failure = $case.ProxyFailure }
-            }
-        } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 -LiteralPath $evidencePath
-        $projection = & $selector `
-            -DiagnosticEvidencePath $evidencePath `
-            -RequestedProbe auto `
-            -OutputPath $selectionPath | ConvertFrom-Json
-        if ([string]$projection.selected -cne [string]$case.Expected) {
-            throw "Probe selection failed for '$($case.Name)': expected $($case.Expected), observed $($projection.selected)."
-        }
+    Import-Module (Join-Path $PSScriptRoot 'DeviceDiagnosticClassification.psm1') -Force
+    $base = @{
+        PidStable = $true
+        AndroidConsistent = $true
+        ProxyState = 'RUNNING'
+        ProxyFailure = ''
+        CredentialActive = $true
+        CredentialLeaseStatus = 'AVAILABLE'
+        LoopbackResult = 'PASS'
+        LoopbackReason = 'NONE'
+        ReadinessState = 'READY'
+        MeshIngressRunning = $true
+        MeshIngressFailure = 'NONE'
+        MeshEndpointCount = 1
+        RoutePresent = $true
+        Tcp3128 = $true
+        MeshProbeResult = 'PASS'
+        MeshProbeReason = 'NONE'
     }
 
-    $manualEvidence = Join-Path $root 'manual.json'
-    [ordered]@{
-        classification = 'PASS'
-        android = [ordered]@{ proxy = [ordered]@{ failure = $null } }
-    } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 -LiteralPath $manualEvidence
-    $manualSelectionPath = Join-Path $root 'manual-selection.json'
-    $manualProjection = & $selector `
-        -DiagnosticEvidencePath $manualEvidence `
-        -RequestedProbe runtime_identity `
-        -OutputPath $manualSelectionPath | ConvertFrom-Json
-    if ([string]$manualProjection.selected -cne 'runtime_identity') {
-        throw 'Explicit manual probe override was not preserved.'
+    $case = $base.Clone()
+    $case.ProxyState = 'FAILED'
+    $case.ProxyFailure = 'STALE_PROCESS_IDENTITY_MISMATCH'
+    $case.CredentialLeaseStatus = 'NOT_ATTEMPTED'
+    $observed = Get-MishDeviceDiagnosticClassification @case
+    if ($observed -cne 'PRODUCT_PROXY_STALE_PROCESS_IDENTITY_MISMATCH') {
+        throw "Primary PRODUCT proxy failure was masked: $observed"
+    }
+
+    $case = $base.Clone()
+    $case.CredentialActive = $false
+    $case.CredentialLeaseStatus = 'NOT_ATTEMPTED'
+    if ((Get-MishDeviceDiagnosticClassification @case) -cne 'PRODUCT_CREDENTIAL_INACTIVE') {
+        throw 'Inactive PRODUCT credential was not distinguished from a LAB lease failure.'
+    }
+
+    $case = $base.Clone()
+    $case.CredentialLeaseStatus = 'PROVISIONING_FAILED'
+    if ((Get-MishDeviceDiagnosticClassification @case) -cne 'LAB_CREDENTIAL_PROVISIONING_FAILED') {
+        throw 'LAB credential provisioning failure was not attributed to LAB.'
+    }
+
+    if ((Get-MishDeviceDiagnosticClassification @base) -cne 'PASS') {
+        throw 'Healthy fact set did not classify PASS.'
     }
 
     $reportScript = Join-Path $PSScriptRoot 'new-device-cycle-report.ps1'
+    $controlSha = '1' * 40
+
     $passDiagnostic = Join-Path $root 'pass-diagnostic.json'
     [ordered]@{ classification = 'PASS'; collection_result = 'PASS' } |
         ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $passDiagnostic
-    $noneSelection = Join-Path $root 'none-selection.json'
-    [ordered]@{
-        schema = 'mish.device-cycle-probe-selection/v1'
-        requested = 'auto'
-        selected = 'none'
-        classification = 'PASS'
-        proxy_failure = ''
-    } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $noneSelection
-    $reportPath = Join-Path $root 'report.json'
     $report = & $reportScript `
         -Mode full `
         -PrNumber 169 `
         -SourceSha ('a' * 40) `
+        -ControlSha $controlSha `
         -DiagnosticEvidencePath $passDiagnostic `
-        -ProbeSelectionPath $noneSelection `
-        -OutputPath $reportPath | Select-Object -Last 1 | ConvertFrom-Json
-    if ([string]$report.cycle_result -cne 'PASS' -or [string]$report.acceptance_scope -cne 'FULL_BASELINE') {
-        throw 'Full PASS report projection is invalid.'
+        -RequestedProbe none `
+        -OutputPath (Join-Path $root 'pass-report.json') | Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$report.cycle_result -cne 'PASS' -or
+        [string]$report.acceptance_scope -cne 'FULL_BASELINE' -or
+        [bool]$report.targeted_probe.automatic -ne $false
+    ) {
+        throw 'Full PASS report must be observational and contain no automatic probe decision.'
     }
 
     $productDiagnostic = Join-Path $root 'product-diagnostic.json'
-    [ordered]@{ classification = 'PRODUCT_LOOPBACK_E2E_TRANSPORT_FAILED'; collection_result = 'PASS' } |
-        ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $productDiagnostic
-    $productSelection = Join-Path $root 'product-selection.json'
     [ordered]@{
-        schema = 'mish.device-cycle-probe-selection/v1'
-        requested = 'auto'
-        selected = 'loopback_connect'
-        classification = 'PRODUCT_LOOPBACK_E2E_TRANSPORT_FAILED'
-        proxy_failure = ''
-    } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $productSelection
+        classification = 'PRODUCT_PROXY_STALE_PROCESS_IDENTITY_MISMATCH'
+        collection_result = 'PASS'
+    } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $productDiagnostic
     $productReport = & $reportScript `
         -Mode full `
         -PrNumber 169 `
         -SourceSha ('b' * 40) `
+        -ControlSha $controlSha `
         -DiagnosticEvidencePath $productDiagnostic `
-        -ProbeSelectionPath $productSelection `
+        -RequestedProbe none `
         -OutputPath (Join-Path $root 'product-report.json') | Select-Object -Last 1 | ConvertFrom-Json
     if (
         [string]$productReport.cycle_result -cne 'PRODUCT_FAIL' -or
-        [string]$productReport.classification -cne 'PRODUCT_LOOPBACK_E2E_TRANSPORT_FAILED'
+        [string]$productReport.classification -cne 'PRODUCT_PROXY_STALE_PROCESS_IDENTITY_MISMATCH'
     ) {
-        throw 'Product failure was not preserved while optional targeted evidence was missing.'
+        throw 'Primary PRODUCT diagnostic classification was not preserved.'
     }
 
     $launchFailure = Join-Path $root 'launch-failure.json'
     [ordered]@{
         schema = 'mish.device-start/v1'
         result = 'FAIL'
-        package = 'com.mobileproxymish.app.debug'
-        component = 'com.mobileproxymish.app.debug/com.mobileproxymish.app.MainActivity'
         failure_category = 'PROCESS_NOT_STABLE'
     } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $launchFailure
     $launchFailureReport = & $reportScript `
         -Mode full `
         -PrNumber 169 `
         -SourceSha ('c' * 40) `
+        -ControlSha $controlSha `
         -LaunchReceiptPath $launchFailure `
-        -OutputPath (Join-Path $root 'launch-failure-report.json') | Select-Object -Last 1 | ConvertFrom-Json
+        -RequestedProbe none `
+        -OutputPath (Join-Path $root 'launch-report.json') | Select-Object -Last 1 | ConvertFrom-Json
     if (
         [string]$launchFailureReport.cycle_result -cne 'LAB_FAIL' -or
         [string]$launchFailureReport.classification -cne 'LAB_LAUNCH_PROCESS_NOT_STABLE'
@@ -152,50 +137,39 @@ try {
         throw 'Typed launcher failure was not preserved as a LAB failure.'
     }
 
-    $missingProbeReport = & $reportScript `
+    $missingProbe = & $reportScript `
         -Mode probe_only `
         -PrNumber 169 `
         -SourceSha ('d' * 40) `
-        -ProbeSelectionPath $manualSelectionPath `
+        -ControlSha $controlSha `
+        -RequestedProbe runtime_identity `
         -OutputPath (Join-Path $root 'missing-probe-report.json') | Select-Object -Last 1 | ConvertFrom-Json
     if (
-        [string]$missingProbeReport.cycle_result -cne 'LAB_FAIL' -or
-        [string]$missingProbeReport.classification -cne 'LAB_TARGETED_PROBE_COLLECTION_FAILED'
+        [string]$missingProbe.cycle_result -cne 'LAB_FAIL' -or
+        [string]$missingProbe.classification -cne 'LAB_TARGETED_PROBE_COLLECTION_FAILED'
     ) {
-        throw 'Missing probe-only evidence must fail closed instead of reporting PASS.'
-    }
-
-    $missingManualProbeReport = & $reportScript `
-        -Mode diagnose_only `
-        -PrNumber 169 `
-        -SourceSha ('e' * 40) `
-        -DiagnosticEvidencePath $passDiagnostic `
-        -ProbeSelectionPath $manualSelectionPath `
-        -OutputPath (Join-Path $root 'missing-manual-probe-report.json') | Select-Object -Last 1 | ConvertFrom-Json
-    if (
-        [string]$missingManualProbeReport.cycle_result -cne 'LAB_FAIL' -or
-        [string]$missingManualProbeReport.classification -cne 'LAB_TARGETED_PROBE_COLLECTION_FAILED'
-    ) {
-        throw 'Missing requested diagnose-only probe evidence must fail closed.'
+        throw 'Explicit probe without evidence must fail closed.'
     }
 
     $targetedEvidence = Join-Path $root 'targeted-evidence.json'
     [ordered]@{
         schema = 'mish.lab.runtime-identity/v1'
-        classification = 'NO_RUNTIME_IDENTITY_CONFLICT'
+        classification = 'VISIBLE_PROCESS_WITHOUT_RECORDED_IDENTITY'
     } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $targetedEvidence
-    $probeOnlyPassReport = & $reportScript `
+    $probeReport = & $reportScript `
         -Mode probe_only `
         -PrNumber 169 `
-        -SourceSha ('f' * 40) `
-        -ProbeSelectionPath $manualSelectionPath `
+        -SourceSha ('e' * 40) `
+        -ControlSha $controlSha `
+        -RequestedProbe runtime_identity `
         -TargetedEvidencePath $targetedEvidence `
-        -OutputPath (Join-Path $root 'probe-only-pass-report.json') | Select-Object -Last 1 | ConvertFrom-Json
+        -OutputPath (Join-Path $root 'probe-report.json') | Select-Object -Last 1 | ConvertFrom-Json
     if (
-        [string]$probeOnlyPassReport.cycle_result -cne 'PASS' -or
-        [string]$probeOnlyPassReport.classification -cne 'MANUAL_PROBE_COMPLETED'
+        [string]$probeReport.cycle_result -cne 'PASS' -or
+        [string]$probeReport.classification -cne 'MANUAL_PROBE_COMPLETED' -or
+        [bool]$probeReport.targeted_probe.automatic -ne $false
     ) {
-        throw 'Probe-only PASS requires actual targeted evidence.'
+        throw 'Explicit probe-only evidence must remain manual and attributable.'
     }
 
     Write-Host 'DEVICE_CYCLE_CONTRACT=PASS'
