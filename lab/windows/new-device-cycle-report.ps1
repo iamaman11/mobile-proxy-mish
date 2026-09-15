@@ -58,6 +58,13 @@ $cycleResult = switch ($Mode) {
     }
 }
 
+$sourceIdentityClaim = if ($Mode -in @('full', 'install_only')) {
+    'EXACT_INSTALLED_CANDIDATE'
+}
+else {
+    'REQUEST_CONTEXT_ONLY'
+}
+
 $report = [ordered]@{
     schema = $schema
     collected_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
@@ -70,6 +77,7 @@ $report = [ordered]@{
     }
     pr_number = $PrNumber
     source_sha = $SourceSha
+    source_identity_claim = $sourceIdentityClaim
     hosted_run_id = $HostedRunId
     install_run_id = $InstallRunId
     cycle_result = $cycleResult
@@ -93,6 +101,7 @@ if ($parent) { [IO.Directory]::CreateDirectory($parent) | Out-Null }
 
 Write-Host "MISH_DEVICE_CYCLE_RESULT=$cycleResult"
 Write-Host "MISH_DEVICE_CYCLE_CLASSIFICATION=$classification"
+Write-Host "MISH_DEVICE_CYCLE_SOURCE_IDENTITY=$sourceIdentityClaim"
 Write-Host "MISH_DEVICE_CYCLE_REPORT=$fullOutputPath"
 
 $report | ConvertTo-Json -Depth 16 -Compress
