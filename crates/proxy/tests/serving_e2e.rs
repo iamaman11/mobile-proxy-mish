@@ -22,10 +22,7 @@ struct LoopbackConnector {
 }
 
 impl ProxyOutboundConnector for LoopbackConnector {
-    fn connect(
-        &self,
-        target: &ProxyConnectTarget,
-    ) -> Result<TcpStream, ProxyOutboundConnectError> {
+    fn connect(&self, target: &ProxyConnectTarget) -> Result<TcpStream, ProxyOutboundConnectError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.targets
             .lock()
@@ -141,9 +138,7 @@ fn run_http_client(address: SocketAddr, client_id: usize, valid_auth: bool) -> b
 
     if !valid_auth {
         stream
-            .write_all(
-                b"CONNECT example.invalid:443 HTTP/1.1\r\nHost: example.invalid:443\r\n\r\n",
-            )
+            .write_all(b"CONNECT example.invalid:443 HTTP/1.1\r\nHost: example.invalid:443\r\n\r\n")
             .expect("unauthenticated HTTP request");
         let response = read_http_header(&mut stream);
         assert!(response.starts_with(b"HTTP/1.1 407 Proxy Authentication Required\r\n"));
@@ -153,7 +148,9 @@ fn run_http_client(address: SocketAddr, client_id: usize, valid_auth: bool) -> b
     let payload = payload(client_id);
     let mut request = b"CONNECT example.invalid:443 HTTP/1.1\r\nHost: example.invalid:443\r\nProxy-Authorization: Basic dXNlcjpwYXNzd29yZA==\r\n\r\n".to_vec();
     request.extend_from_slice(&payload);
-    stream.write_all(&request).expect("HTTP request and payload");
+    stream
+        .write_all(&request)
+        .expect("HTTP request and payload");
     let response = read_http_header(&mut stream);
     assert!(response.starts_with(b"HTTP/1.1 200 Connection Established\r\n"));
     let mut echoed = [0_u8; 32];
@@ -180,7 +177,9 @@ fn run_socks5_client(address: SocketAddr, client_id: usize, valid_auth: bool) ->
     auth.extend_from_slice(password);
     stream.write_all(&auth).expect("SOCKS5 auth");
     let mut auth_reply = [0_u8; 2];
-    stream.read_exact(&mut auth_reply).expect("SOCKS5 auth reply");
+    stream
+        .read_exact(&mut auth_reply)
+        .expect("SOCKS5 auth reply");
     assert_eq!(auth_reply[0], 0x01);
     if !valid_auth {
         assert_ne!(auth_reply[1], 0x00);
@@ -193,18 +192,20 @@ fn run_socks5_client(address: SocketAddr, client_id: usize, valid_auth: bool) ->
     request.extend_from_slice(TARGET_DOMAIN.as_bytes());
     request.extend_from_slice(&TARGET_PORT.to_be_bytes());
     request.extend_from_slice(&payload);
-    stream.write_all(&request).expect("SOCKS5 request and payload");
+    stream
+        .write_all(&request)
+        .expect("SOCKS5 request and payload");
     let mut reply = [0_u8; 10];
     stream.read_exact(&mut reply).expect("SOCKS5 connect reply");
     assert_eq!(reply[0], 0x05);
     assert_eq!(reply[1], 0x00);
     assert_eq!(reply[3], 0x01);
     let mut echoed = [0_u8; 32];
-    stream.read_exact(&mut echoed).expect("SOCKS5 echoed payload");
-    assert_eq!(echoed, payload);
     stream
-        .shutdown(Shutdown::Write)
-        .expect("SOCKS5 half-close");
+        .read_exact(&mut echoed)
+        .expect("SOCKS5 echoed payload");
+    assert_eq!(echoed, payload);
+    stream.shutdown(Shutdown::Write).expect("SOCKS5 half-close");
     true
 }
 
