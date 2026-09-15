@@ -18,11 +18,9 @@ def forbid(text: str, needle: str, label: str) -> None:
 
 def main() -> None:
     manifest = (ROOT / "android/app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
-    provider = (
-        ROOT
-        / "android/app/src/main/java/com/mobileproxymish/app/MishDiagnosticsProvider.kt"
-    ).read_text(encoding="utf-8")
+    provider = (ROOT / "android/app/src/main/java/com/mobileproxymish/app/MishDiagnosticsProvider.kt").read_text(encoding="utf-8")
     collector = (ROOT / "lab/windows/collect-device-diagnostic.ps1").read_text(encoding="utf-8")
+    classifier = (ROOT / "lab/windows/DeviceDiagnosticClassification.psm1").read_text(encoding="utf-8")
     credential_bridge = (ROOT / "lab/windows/CredentialProvisioning.psm1").read_text(encoding="utf-8")
     workflow = (ROOT / ".github/workflows/mish-lab-diagnostic.yml").read_text(encoding="utf-8")
 
@@ -35,28 +33,24 @@ def main() -> None:
     require(provider, 'snapshot_v1', "snapshot method")
     require(provider, 'diagnostics provider is read-only', "mutation rejection")
     require(provider, 'READY_AT_POLICY_AUTHORIZATION', "non-mutating root observation")
-    for forbidden in (
-        "ProcessBuilder(",
-        "settings put",
-        "airplane-mode enable",
-        "airplane-mode disable",
-        "adb install",
-    ):
+    for forbidden in ("ProcessBuilder(", "settings put", "airplane-mode enable", "airplane-mode disable", "adb install"):
         forbid(provider, forbidden, "diagnostic mutation/control surface")
 
     require(collector, 'mish.lab.diagnostic/v1', "LAB V1 schema")
     require(collector, "'shell', 'content', 'call'", "single ADB snapshot bridge")
     require(collector, "forward 'tcp:0' 'tcp:3128'", "independent loopback E2E probe")
     require(collector, 'Open-MishExternalProxyCredentialLease', "existing credential authority")
-    require(collector, '-PackageName $PackageName', "package-scoped credential source")
-    for forbidden in (
-        "adb install",
-        "force-stop",
-        "airplane-mode",
-        "settings put",
-        "cloudflare prove",
-    ):
-        forbid(collector, forbidden, "collector mutation")
+    require(collector, "android.proxy.state -ceq 'RUNNING' -and [bool]$android.credential.active", "late LAB credential lease gate")
+    require(collector, 'credential_lease_status = $credentialLeaseStatus', "typed LAB credential status")
+    require(collector, 'Get-MishDeviceDiagnosticClassification', "deterministic fact classifier")
+    for forbidden in ("adb install", "force-stop", "airplane-mode", "settings put", "cloudflare prove", "CREDENTIAL_LEASE_UNAVAILABLE"):
+        forbid(collector, forbidden, "collector mutation or ambiguous attribution")
+
+    require(classifier, "PRODUCT_PROXY_", "PRODUCT proxy failure priority")
+    require(classifier, "PRODUCT_CREDENTIAL_INACTIVE", "PRODUCT credential distinction")
+    require(classifier, "LAB_CREDENTIAL_PROVISIONING_FAILED", "LAB provisioning distinction")
+    require(classifier, "LAB_CREDENTIAL_LEASE_OPEN_FAILED", "LAB lease-open distinction")
+    forbid(classifier, "repair", "diagnostics must classify facts, never prescribe repair")
 
     require(
         credential_bridge,
@@ -68,11 +62,7 @@ def main() -> None:
         '$provisioningComponent = "$resolvedPackage/$script:ProvisioningReceiverClass"',
         "applicationId/namespace-safe component address",
     )
-    forbid(
-        credential_bridge,
-        '$resolvedPackage/.CredentialProvisioningReceiver',
-        "applicationId-relative receiver class",
-    )
+    forbid(credential_bridge, '$resolvedPackage/.CredentialProvisioningReceiver', "applicationId-relative receiver class")
 
     require(workflow, "github.event.issue.number == 163", "dedicated control issue")
     require(workflow, "github.event.comment.user.login == 'iamaman11'", "owner gate")
