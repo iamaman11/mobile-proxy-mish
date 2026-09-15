@@ -132,7 +132,8 @@ pub fn resolve_current_runtime_process(
     current_config_path: &str,
     observations: &[RuntimeProcessObservation],
 ) -> RuntimeCurrentProcessResolution {
-    if !is_safe_runtime_dir(runtime_dir) || !is_owned_config_path(runtime_dir, current_config_path) {
+    if !is_safe_runtime_dir(runtime_dir) || !is_owned_config_path(runtime_dir, current_config_path)
+    {
         return fail_closed_resolution();
     }
 
@@ -428,14 +429,10 @@ mod tests {
     fn stale_owned_sibling_or_duplicate_current_is_conflict() {
         let current = current_config();
         let stale = format!("{RUNTIME}/sing-box-zyxwvutsrqponmlkjihgfedc.json");
-        let current_observation = observation(
-            505,
-            &["/data/app/lib/libsingbox.so", "run", "-c", &current],
-        );
-        let stale_observation = observation(
-            506,
-            &["/data/app/lib/libsingbox.so", "run", "-c", &stale],
-        );
+        let current_observation =
+            observation(505, &["/data/app/lib/libsingbox.so", "run", "-c", &current]);
+        let stale_observation =
+            observation(506, &["/data/app/lib/libsingbox.so", "run", "-c", &stale]);
         assert_eq!(
             resolve_current_runtime_process(
                 RUNTIME,
