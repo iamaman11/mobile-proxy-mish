@@ -53,8 +53,8 @@ def main() -> None:
         require(workflow, required, "trusted orchestration contract drifted")
 
     for forbidden in (
-        "adb install",
-        "install -r",
+        "@('install', '-r'",
+        "& $env:ADB_EXE install",
         "gradle --no-daemon",
         "cargo build",
         "cargo ndk",
@@ -73,7 +73,7 @@ def main() -> None:
         "run-name: Device Candidate Physical ${{ inputs.cycle_id || '' }}",
         "cycle_id:",
         "Optional opaque correlation id supplied by the trusted device-cycle orchestrator",
-        "adb install -r",
+        "Verify, stable-sign, and install without rebuilding",
     ):
         require(physical, required, "canonical installer correlation contract drifted")
 
