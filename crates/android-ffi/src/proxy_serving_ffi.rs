@@ -1,8 +1,6 @@
 use crate::runtime_boundary::{AndroidRuntimeError, CellularBridgeRuntime};
 use mish_proxy::{ProxyCredentialMaterial, ProxyServingPlan};
-use mish_runtime::{
-    PrivateBridgeOutboundConnector, ProxyServingRuntime, ProxyServingRuntimeError,
-};
+use mish_runtime::{PrivateBridgeOutboundConnector, ProxyServingRuntime, ProxyServingRuntimeError};
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::time::Duration;
@@ -46,11 +44,8 @@ pub fn start_native_proxy_runtime(
     }
     let public_credentials = ProxyCredentialMaterial::new(public_username, public_password)
         .map_err(|_| AndroidRuntimeError::ProxyConfigurationRejected)?;
-    let plan = ProxyServingPlan::canonical(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        public_credentials,
-    )
-    .map_err(|_| AndroidRuntimeError::ProxyConfigurationRejected)?;
+    let plan = ProxyServingPlan::canonical(IpAddr::V4(Ipv4Addr::LOCALHOST), public_credentials)
+        .map_err(|_| AndroidRuntimeError::ProxyConfigurationRejected)?;
     let connector = PrivateBridgeOutboundConnector::new(
         bridge.port(),
         private_username,
@@ -58,8 +53,8 @@ pub fn start_native_proxy_runtime(
         Duration::from_millis(operation_timeout_ms),
     )
     .map_err(|_| AndroidRuntimeError::ProxyConfigurationRejected)?;
-    let inner = ProxyServingRuntime::start(plan, Arc::new(connector))
-        .map_err(map_proxy_runtime_error)?;
+    let inner =
+        ProxyServingRuntime::start(plan, Arc::new(connector)).map_err(map_proxy_runtime_error)?;
     Ok(Arc::new(NativeProxyRuntime { inner }))
 }
 
