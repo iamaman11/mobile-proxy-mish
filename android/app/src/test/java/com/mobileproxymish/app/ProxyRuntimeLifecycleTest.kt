@@ -1,5 +1,6 @@
 package com.mobileproxymish.app
 
+import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -58,6 +59,19 @@ class ProxyRuntimeLifecycleTest {
     }
 
     @Test
+    fun rootCleanupUsesExactCmdlineIdentityNotProcDirectoryExistence() {
+        val source = repositoryFile(
+            "android/app/src/main/java/com/mobileproxymish/app/ProxyRuntimeSupervisor.kt",
+        ).readText()
+
+        assertTrue(source.contains("owned_pid()"))
+        assertTrue(source.contains("exact_pid()"))
+        assertTrue(source.contains("[ -r \"/proc/"))
+        assertFalse(source.contains("[ -d \"/proc/"))
+        assertFalse(source.contains("[ ! -d \"/proc/"))
+    }
+
+    @Test
     fun exactGenerationCleanupClosesMeshThenProxyThenCellularOwner() {
         val effects = mutableListOf<String>()
 
@@ -102,5 +116,14 @@ class ProxyRuntimeLifecycleTest {
         assertEquals("external-password-secret", credentials.password)
         assertFalse(credentials.toString().contains(credentials.username))
         assertFalse(credentials.toString().contains(credentials.password))
+    }
+
+    private fun repositoryFile(relativePath: String): File {
+        var cursor = File(System.getProperty("user.dir")).absoluteFile
+        repeat(8) {
+            File(cursor, relativePath).takeIf(File::isFile)?.let { return it }
+            cursor = cursor.parentFile ?: return@repeat
+        }
+        error("repository file not found from ${System.getProperty("user.dir")}: $relativePath")
     }
 }
