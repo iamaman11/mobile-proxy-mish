@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Fail-closed guard for the trusted DEVICE-1 repair-cycle orchestrator."""
+"""Fail-closed guard for the simple sequential DEVICE-1 engineering cycle."""
 
-from __future__ import annotations
-
-import re
 from pathlib import Path
+import re
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -36,31 +34,30 @@ def main() -> None:
     for required in (
         "workflow_run:",
         "workflows: ['Integration Android Preflight']",
-        "workflow_dispatch:",
-        "device-cycle",
-        "full",
-        "install_only",
-        "diagnose_only",
-        "probe_only",
-        "device-candidate-physical.yml/dispatches",
-        "{ref:\"main\"",
-        "expected_head_sha",
-        "cycle_id",
+        'if [[ "$WORKFLOW_RUN_CONCLUSION" != \'success\' ]]',
+        'if [[ "$EVENT_NAME" == \'workflow_run\' && "$current_sha" != "$WORKFLOW_RUN_HEAD_SHA" ]]',
+        "probe='none'",
+        "probe_only requires an explicit read-only probe",
+        "full/install_only/diagnose_only do not choose probes",
+        'echo "control_sha=$GITHUB_SHA"',
+        '--arg control "$CONTROL_SHA"',
+        'control_sha:$control',
+        'if [[ "$child_head" != "$CONTROL_SHA" ]]',
+        'ref: ${{ needs.resolve.outputs.control_sha }}',
+        "Install -> verify installed exact bytes",
         "Explicitly restart app and wait for bounded stable state",
-        "start-device-app.ps1",
-        '-ComponentName "$env:PACKAGE_NAME/com.mobileproxymish.app.MainActivity"',
-        '"- Classification: $([string]$report.classification)"',
-        "collect-device-diagnostic.ps1",
-        "select-device-cycle-probe.ps1",
-        "collect-runtime-identity.ps1",
-        "diagnose-loopback-connect.ps1",
-        "mish-device-cycle-v1.json",
-        "AIRPLANE=NOT_RUN",
+        "Collect one canonical diagnostic snapshot",
+        "Explicit probe only - runtime identity",
+        "Explicit probe only - loopback CONNECT",
+        "AUTOMATIC_REPAIR_DECISION=NO",
         "mish-device-cycle-checkpoint",
     ):
-        require(workflow, required, "trusted orchestration contract drifted")
+        require(workflow, required, "sequential orchestration contract drifted")
 
     for forbidden in (
+        "select-device-cycle-probe.ps1",
+        "RequestedProbe auto",
+        "probe='auto'",
         "@('install', '-r'",
         "& $env:ADB_EXE install",
         "gradle --no-daemon",
@@ -70,22 +67,34 @@ def main() -> None:
         "pm uninstall",
         "adb uninstall",
         '$env:PACKAGE_NAME/.MainActivity',
-        '"- Classification: `$([string]$report.classification)`"',
     ):
-        forbid(
-            workflow,
-            forbidden,
-            "orchestrator must delegate installation and preserve parse-safe exact launch/summary contracts",
-        )
+        forbid(workflow, forbidden, "orchestrator must observe, never build/install directly or auto-decide repairs/probes")
 
     physical = ".github/workflows/device-candidate-physical.yml"
     for required in (
-        "run-name: Device Candidate Physical ${{ inputs.cycle_id || '' }}",
-        "cycle_id:",
-        "Optional opaque correlation id supplied by the trusted device-cycle orchestrator",
-        "Verify, stable-sign, and install without rebuilding",
+        "control_sha:",
+        "Exact protected-main CONTROL SHA",
+        'if [[ "$GITHUB_SHA" != "$CONTROL_SHA" ]]',
+        'ref: ${{ needs.resolve.outputs.control_sha }}',
+        "Install exact signed candidate without rebuilding",
+        "Verify installed APK bytes and signing identity",
+        "verify-installed-candidate.ps1",
+        "mish-device-install-verification-v1.json",
     ):
-        require(physical, required, "canonical installer correlation contract drifted")
+        require(physical, required, "physical install/verification contract drifted")
+
+    verifier = "lab/windows/verify-installed-candidate.ps1"
+    for required in (
+        "mish.device-install-verification/v1",
+        "'shell', 'pm', 'path'",
+        "@('pull', $basePaths[0], $pulledApk)",
+        "Get-FileHash -Algorithm SHA256",
+        "'verify', '--print-certs'",
+        "INSTALLED_APK_DIGEST_MISMATCH",
+        "INSTALLED_APK_CERT_MISMATCH",
+        "exact_bytes_verified = $true",
+    ):
+        require(verifier, required, "installed exact-byte verification drifted")
 
     start = "lab/windows/start-device-app.ps1"
     for required in (
@@ -95,78 +104,52 @@ def main() -> None:
         "snapshot_v1",
         "processIdResult",
         "Write-MishDeviceStartFailureReceipt",
-        "failure_category",
-        "PROCESS_NOT_STABLE",
         "PRODUCT_TERMINAL_FAILURE",
-        "readinessState -ceq 'READY'",
     ):
-        require(start, required, "deterministic app start/stabilization contract drifted")
-    forbid(start, "com.mobileproxymish.app.debug/.MainActivity", "launcher component must use the manifest class namespace")
-    forbid_regex(start, r"\$pid(?![A-Za-z0-9_])", "launcher must not shadow PowerShell's read-only automatic PID variable")
-    forbid(start, "su'", "app start stage must stay non-root")
+        require(start, required, "deterministic launch contract drifted")
+    forbid_regex(start, r"\$pid(?![A-Za-z0-9_])", "launcher must not shadow PowerShell automatic PID")
+    forbid(start, "su'", "launch stage must stay non-root")
 
-    selector = "lab/windows/select-device-cycle-probe.ps1"
+    diagnostic = "lab/windows/collect-device-diagnostic.ps1"
     for required in (
-        "STALE_PROCESS_IDENTITY_MISMATCH",
-        "CHILD_EXITED",
-        "CLEANUP_FAILED",
-        "PRODUCT_LOOPBACK_E2E_*",
-        "runtime_identity",
-        "loopback_connect",
+        "DeviceDiagnosticClassification.psm1",
+        "android.proxy.state -ceq 'RUNNING' -and [bool]$android.credential.active",
+        "credential_lease_status = $credentialLeaseStatus",
+        "Get-MishDeviceDiagnosticClassification",
     ):
-        require(selector, required, "adaptive one-probe decision table drifted")
-
-    runtime_identity = "lab/windows/collect-runtime-identity.ps1"
-    for required in (
-        "shell ps -A",
-        "run-as",
-        "VISIBLE_PROCESS_WITHOUT_RECORDED_IDENTITY",
-        "RECORDED_IDENTITY_WITHOUT_VISIBLE_PROCESS",
-        "mish.lab.runtime-identity/v1",
-    ):
-        require(runtime_identity, required, "runtime identity probe contract drifted")
-    forbid(runtime_identity, " su ", "runtime identity probe must stay read-only/non-root")
+        require(diagnostic, required, "diagnostic attribution must remain fact-first")
+    forbid(diagnostic, "CREDENTIAL_LEASE_UNAVAILABLE", "ambiguous LAB/Product credential classification must not return")
 
     report = "lab/windows/new-device-cycle-report.ps1"
     for required in (
-        "LAB_LAUNCH_",
-        "LAB_PROBE_SELECTION_FAILED",
-        "LAB_TARGETED_PROBE_COLLECTION_FAILED",
-        "targetedRequired",
-        "evidence_present",
+        "ControlSha",
+        "RequestedProbe",
+        "automatic = $false",
         "MANUAL_PROBE_COMPLETED",
+        "LAB_TARGETED_PROBE_COLLECTION_FAILED",
     ):
-        require(report, required, "cycle report must preserve LAB attribution and reject missing requested evidence")
+        require(report, required, "cycle report must remain observational")
 
     test = "lab/windows/test-device-cycle.ps1"
     for required in (
         "DEVICE_CYCLE_CONTRACT=PASS",
-        "collect-device-diagnostic.ps1",
-        "diagnose-loopback-connect.ps1",
-        "PowerShell automatic variable `$PID",
-        "ownership failure wins over transport classification",
-        "loopback failure selects raw CONNECT probe",
-        "Explicit manual probe override was not preserved",
-        "Product failure was not preserved while optional targeted evidence was missing.",
-        "Typed launcher failure was not preserved as a LAB failure.",
-        "Missing probe-only evidence must fail closed instead of reporting PASS.",
-        "Missing requested diagnose-only probe evidence must fail closed.",
-        "Probe-only PASS requires actual targeted evidence.",
+        "Primary PRODUCT proxy failure was masked",
+        "Inactive PRODUCT credential was not distinguished from a LAB lease failure",
+        "Full PASS report must be observational and contain no automatic probe decision",
+        "Explicit probe-only evidence must remain manual and attributable",
     ):
-        require(test, required, "device-cycle executable regression coverage drifted")
+        require(test, required, "executable regression coverage drifted")
 
     docs = "docs/architecture/DEVELOPMENT_PIPELINE.md"
     for required in (
-        "## DEVICE-1 development candidate installer",
-        "post-install launch/diagnostics belong to `device-cycle.yml`",
-        "bounded install receipt / handoff back to Device Cycle",
-        "## Canonical DEVICE-1 repair cycle",
-        "full / install_only / diagnose_only / probe_only",
+        "diagnostic -> analysis -> decision -> code -> completed build -> install -> verify install -> launch -> diagnostic -> analysis",
+        "Diagnostics never chooses a repair",
+        "No automatic targeted probe",
+        "CONTROL_SHA",
+        "installed `base.apk` SHA-256",
         "Automatic mode never runs airplane recovery",
-        "Manual modes do not weaken exact-head provenance",
-        "first evidence-producing diagnostic action is the canonical aggregate",
     ):
-        require(docs, required, "stable device-cycle documentation drifted")
+        require(docs, required, "stable sequential-cycle documentation drifted")
 
     print("DEVICE_CYCLE_CONTRACT=PASS")
 
