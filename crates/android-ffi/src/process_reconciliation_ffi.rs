@@ -83,17 +83,13 @@ mod tests {
                     "-c".into(),
                     format!("{runtime}/sing-box-abcdefghijklmnopqrstuvwx.json"),
                 ],
-                cmdline_digest:
-                    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-                        .into(),
+                cmdline_digest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                    .into(),
                 truncated: false,
                 unsafe_argv: false,
             }],
         );
-        assert_eq!(
-            plan.decision,
-            RuntimeProcessCleanupDecision::TerminateOwned
-        );
+        assert_eq!(plan.decision, RuntimeProcessCleanupDecision::TerminateOwned);
         assert_eq!(plan.terminate.len(), 1);
         assert_eq!(plan.terminate[0].pid, 42);
     }
