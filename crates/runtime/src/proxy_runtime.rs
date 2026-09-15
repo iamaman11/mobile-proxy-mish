@@ -16,6 +16,11 @@ const MAX_NATIVE_PROXY_SESSIONS: usize = EXTERNAL_TCP_SESSION_BUDGET + CONTROL_S
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
 const WAKE_TIMEOUT: Duration = Duration::from_millis(200);
 
+const _: () = {
+    assert!(MAX_NATIVE_PROXY_SESSIONS >= 64);
+    assert!(MAX_NATIVE_PROXY_SESSIONS > EXTERNAL_TCP_SESSION_BUDGET);
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProxyServingRuntimeError {
     NonLoopbackListen,
@@ -303,11 +308,5 @@ mod tests {
             ProxyServingRuntime::start(plan, Arc::new(RejectingConnector)),
             Err(ProxyServingRuntimeError::NonLoopbackListen)
         ));
-    }
-
-    #[test]
-    fn native_runtime_internal_capacity_preserves_64_session_product_floor() {
-        assert!(MAX_NATIVE_PROXY_SESSIONS >= 64);
-        assert!(MAX_NATIVE_PROXY_SESSIONS > EXTERNAL_TCP_SESSION_BUDGET);
     }
 }
