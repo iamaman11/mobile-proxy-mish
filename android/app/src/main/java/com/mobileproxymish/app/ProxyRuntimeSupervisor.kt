@@ -583,35 +583,40 @@ class ProxyRuntimeSupervisor internal constructor(
             #!/system/bin/sh
             set -eu
             runtime="${runtimeDir.absolutePath}"
+            owned_pid() {
+              pid="${'$'}1"
+              [ -r "/proc/${'$'}pid/cmdline" ] || return 1
+              actual="${'$'}(tr '\000' ' ' < "/proc/${'$'}pid/cmdline" 2>/dev/null || true)"
+              case "${'$'}actual" in
+                *"/${SING_BOX_LIBRARY} run -c ${'$'}runtime/sing-box-"*.json\ |*"/${SING_BOX_LIBRARY} run -c ${'$'}runtime/${LEGACY_CONFIG_FILE} ") return 0 ;;
+                *) return 1 ;;
+              esac
+            }
             pids=""
             for proc in /proc/[0-9]*; do
-              [ -r "${'$'}proc/cmdline" ] || continue
-              actual="${'$'}(tr '\000' ' ' < "${'$'}proc/cmdline" 2>/dev/null || true)"
-              case "${'$'}actual" in
-                *"/${SING_BOX_LIBRARY} run -c ${'$'}runtime/sing-box-"*.json\ |*"/${SING_BOX_LIBRARY} run -c ${'$'}runtime/${LEGACY_CONFIG_FILE} ")
-                  pid="${'$'}{proc#/proc/}"
-                  case "${'$'}pid" in ''|*[!0-9]*) exit 64;; esac
-                  kill -TERM "${'$'}pid" 2>/dev/null || true
-                  pids="${'$'}pids ${'$'}pid"
-                  ;;
-              esac
+              pid="${'$'}{proc#/proc/}"
+              case "${'$'}pid" in ''|*[!0-9]*) exit 64;; esac
+              if owned_pid "${'$'}pid"; then
+                kill -TERM "${'$'}pid" 2>/dev/null || true
+                pids="${'$'}pids ${'$'}pid"
+              fi
             done
             [ -z "${'$'}pids" ] && exit 0
             i=0
             while [ "${'$'}i" -lt 60 ]; do
               alive=0
-              for pid in ${'$'}pids; do [ -d "/proc/${'$'}pid" ] && alive=1; done
+              for pid in ${'$'}pids; do owned_pid "${'$'}pid" && alive=1; done
               [ "${'$'}alive" -eq 0 ] && exit 0
               sleep 0.05
               i=${'$'}((i + 1))
             done
             for pid in ${'$'}pids; do
-              [ -d "/proc/${'$'}pid" ] && kill -KILL "${'$'}pid" 2>/dev/null || true
+              owned_pid "${'$'}pid" && kill -KILL "${'$'}pid" 2>/dev/null || true
             done
             i=0
             while [ "${'$'}i" -lt 40 ]; do
               alive=0
-              for pid in ${'$'}pids; do [ -d "/proc/${'$'}pid" ] && alive=1; done
+              for pid in ${'$'}pids; do owned_pid "${'$'}pid" && alive=1; done
               [ "${'$'}alive" -eq 0 ] && exit 0
               sleep 0.05
               i=${'$'}((i + 1))
@@ -652,23 +657,27 @@ class ProxyRuntimeSupervisor internal constructor(
             set -eu
             pid="${'$'}(cat "${pidFile.absolutePath}")"
             case "${'$'}pid" in ''|*[!0-9]*) exit 64;; esac
-            [ -r "/proc/${'$'}pid/cmdline" ] || exit 20
-            actual="${'$'}(tr '\000' ' ' < "/proc/${'$'}pid/cmdline")"
-            case "${'$'}actual" in *"/${SING_BOX_LIBRARY} run -c ${configFile.absolutePath}"*) ;; *) exit 21;; esac
+            exact_pid() {
+              [ -r "/proc/${'$'}pid/cmdline" ] || return 1
+              actual="${'$'}(tr '\000' ' ' < "/proc/${'$'}pid/cmdline" 2>/dev/null || true)"
+              case "${'$'}actual" in *"/${SING_BOX_LIBRARY} run -c ${configFile.absolutePath}"*) return 0;; *) return 1;; esac
+            }
+            exact_pid || exit 20
             case "$action" in
               status) exit 0 ;;
               stop)
                 kill -TERM "${'$'}pid" 2>/dev/null || exit 3
                 i=0
                 while [ "${'$'}i" -lt 60 ]; do
-                  [ ! -d "/proc/${'$'}pid" ] && exit 0
+                  exact_pid || exit 0
                   sleep 0.05
                   i=${'$'}((i + 1))
                 done
+                exact_pid || exit 0
                 kill -KILL "${'$'}pid" 2>/dev/null || exit 4
                 i=0
                 while [ "${'$'}i" -lt 40 ]; do
-                  [ ! -d "/proc/${'$'}pid" ] && exit 0
+                  exact_pid || exit 0
                   sleep 0.05
                   i=${'$'}((i + 1))
                 done
