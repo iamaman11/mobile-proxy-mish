@@ -7,9 +7,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Android-side tests cover only effect ordering/redaction and small lifecycle adapter invariants.
- * Lifecycle state transitions are owned and directly tested in `crates/runtime`; Kotlin deliberately
- * has no parallel lifecycle machine.
+ * Android-side tests cover only effect ordering/redaction and adapter-boundary invariants.
+ * Lifecycle and process-ownership decisions are owned and directly tested in `crates/runtime`.
  */
 class ProxyRuntimeLifecycleTest {
     @Test
@@ -59,12 +58,11 @@ class ProxyRuntimeLifecycleTest {
     }
 
     @Test
-    fun rootCleanupUsesExactCmdlineIdentityNotProcDirectoryExistence() {
+    fun exactCurrentPidControlStillRequiresCmdlineIdentityNotProcDirectoryExistence() {
         val source = repositoryFile(
             "android/app/src/main/java/com/mobileproxymish/app/ProxyRuntimeSupervisor.kt",
         ).readText()
 
-        assertTrue(source.contains("owned_pid()"))
         assertTrue(source.contains("exact_pid()"))
         assertTrue(source.contains("[ -r \"/proc/"))
         assertFalse(source.contains("[ -d \"/proc/"))
@@ -72,29 +70,42 @@ class ProxyRuntimeLifecycleTest {
     }
 
     @Test
-    fun orphanCleanupParsesEveryCmdlineWithBuiltinsAndExactPositionalArgv() {
+    fun staleProcessOwnershipDecisionLivesInRustAndAndroidOnlyExecutesObservedTargets() {
+        val supervisor = repositoryFile(
+            "android/app/src/main/java/com/mobileproxymish/app/ProxyRuntimeSupervisor.kt",
+        ).readText()
+        val reconciler = repositoryFile(
+            "android/app/src/main/java/com/mobileproxymish/app/ProxyProcessReconciler.kt",
+        ).readText()
+        val rustOwner = repositoryFile(
+            "crates/runtime/src/process_reconciliation.rs",
+        ).readText()
+
+        assertTrue(supervisor.contains("ProxyProcessReconciler(runtimeDir)"))
+        assertTrue(supervisor.contains("processReconciler.cleanupOwnedProcesses()"))
+        assertFalse(supervisor.contains("private fun writeOwnedOrphanCleanup"))
+
+        assertTrue(reconciler.contains("planRuntimeProcessCleanup"))
+        assertTrue(reconciler.contains("sha256sum"))
+        assertTrue(reconciler.contains("same_snapshot()"))
+        assertTrue(reconciler.contains("RuntimeProcessCleanupDecision.FAIL_CLOSED"))
+        assertFalse(reconciler.contains("pkill"))
+
+        assertTrue(rustOwner.contains("pub fn plan_runtime_process_cleanup"))
+        assertTrue(rustOwner.contains("RuntimeProcessCleanupDecision::TerminateOwned"))
+        assertTrue(rustOwner.contains("RuntimeProcessCleanupDecision::FailClosed"))
+    }
+
+    @Test
+    fun terminationFastPathNeverShortCircuitsRustReconciliationProof() {
         val source = repositoryFile(
             "android/app/src/main/java/com/mobileproxymish/app/ProxyRuntimeSupervisor.kt",
         ).readText()
-        val cleanupStart = source.indexOf("private fun writeOwnedOrphanCleanup")
-        val cleanupEnd = source.indexOf("private fun cleanupOwnedOrphanProcesses", cleanupStart)
 
-        assertTrue(cleanupStart >= 0)
-        assertTrue(cleanupEnd > cleanupStart)
-        val cleanup = source.substring(cleanupStart, cleanupEnd)
-
-        assertTrue(cleanup.contains("exec 3< \"/proc/"))
-        assertTrue(cleanup.contains("IFS= read -r -d '' arg1 <&3"))
-        assertTrue(cleanup.contains("IFS= read -r -d '' arg2 <&3"))
-        assertTrue(cleanup.contains("IFS= read -r -d '' arg3 <&3"))
-        assertTrue(cleanup.contains("IFS= read -r -d '' arg4 <&3"))
-        assertTrue(cleanup.contains("IFS= read -r -d '' extra <&3"))
-        assertTrue(cleanup.contains("[ \"\${'$'}arg2\" = run ] || return 1"))
-        assertTrue(cleanup.contains("[ \"\${'$'}arg3\" = -c ] || return 1"))
-        assertTrue(cleanup.contains("\"\${'$'}runtime\"/sing-box-*.json"))
-        assertFalse(cleanup.contains("tr '\\000'"))
-        assertFalse(cleanup.contains("read -r process_name < \"/proc/"))
-        assertFalse(source.contains("pkill"))
+        assertFalse(source.contains("stopExactRootSingBox(pid)) || cleanupOwnedOrphanProcesses()"))
+        assertFalse(source.contains("stopExactRootSingBox(currentPid)) || cleanupOwnedOrphanProcesses()"))
+        assertTrue(source.contains("if (pid != null) runCatching { stopExactRootSingBox(pid) }"))
+        assertTrue(source.contains("if (currentPid != null) runCatching { stopExactRootSingBox(currentPid) }"))
     }
 
     @Test
@@ -121,9 +132,7 @@ class ProxyRuntimeLifecycleTest {
                 error("Mesh cleanup failed")
             },
             closeProxy = {
-                effects += "proxy"
-                error("proxy cleanup failed")
-            },
+                effects += "proxy" },
             closeCellular = { effects += "cellular" },
         )
 
