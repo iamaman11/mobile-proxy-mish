@@ -62,6 +62,12 @@ def main() -> None:
         "Automatic cycle start: **NO**",
         "Automatic repair/probe decision: **NO**",
         "STOP_FOR_ANALYSIS",
+        "PRODUCER_PATH='.github/workflows/integration-android-preflight.yml'",
+        "PRODUCT_PRODUCER_SHA",
+        "CONTROL_PRODUCER_SHA",
+        "candidate producer workflow differs from accepted protected-main producer",
+        "Accepted producer policy",
+        "Exact candidate acceptance",
     ):
         require(workflow, required, "explicit single-run orchestration contract drifted")
 
@@ -162,16 +168,19 @@ def main() -> None:
         "automatic = $false",
         "MANUAL_PROBE_COMPLETED",
         "LAB_TARGETED_PROBE_COLLECTION_FAILED",
+        "exact_candidate_acceptance",
+        "NOT_EVALUATED",
+        "MISH_DEVICE_CYCLE_EXACT_CANDIDATE_ACCEPTANCE",
     ):
-        require(report, required, "cycle report must remain observational")
+        require(report, required, "cycle report must distinguish evidence collection from exact PRODUCT acceptance")
 
     test = "lab/windows/test-device-cycle.ps1"
     for required in (
         "DEVICE_CYCLE_CONTRACT=PASS",
         "Primary PRODUCT proxy failure was masked",
         "Inactive PRODUCT credential was not distinguished from a LAB lease failure",
-        "Full PASS report must be observational and contain no automatic probe decision",
-        "Explicit probe-only evidence must remain manual and attributable",
+        "Full PASS report must accept the exact candidate and contain no automatic probe decision",
+        "Explicit probe-only evidence may pass collection but must never claim exact PRODUCT candidate acceptance",
     ):
         require(test, required, "executable regression coverage drifted")
 
@@ -186,6 +195,8 @@ def main() -> None:
         "CONTROL_SHA",
         "installed base.apk SHA-256",
         "Automatic airplane recovery is not part of the baseline cycle",
+        "producer workflow blob",
+        "exact_candidate_acceptance",
     ):
         require(docs, required, "stable explicit-cycle documentation drifted")
 

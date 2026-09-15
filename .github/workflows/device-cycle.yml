@@ -67,6 +67,7 @@ jobs:
       pr_number: ${{ steps.resolve.outputs.pr_number }}
       source_sha: ${{ steps.resolve.outputs.source_sha }}
       control_sha: ${{ steps.resolve.outputs.control_sha }}
+      producer_blob_sha: ${{ steps.resolve.outputs.producer_blob_sha }}
       mode: ${{ steps.resolve.outputs.mode }}
       probe: ${{ steps.resolve.outputs.probe }}
       artifact_id: ${{ steps.resolve.outputs.artifact_id }}
@@ -148,8 +149,22 @@ jobs:
           ARTIFACT_NAME=''
           ARTIFACT_DIGEST=''
           HOSTED_RUN_ID=''
+          PRODUCER_BLOB_SHA='NOT_REQUIRED'
 
           if [[ "$MODE" == 'full' || "$MODE" == 'install_only' ]]; then
+            PRODUCER_PATH='.github/workflows/integration-android-preflight.yml'
+            PRODUCT_PRODUCER_SHA="$(gh api "repos/$GITHUB_REPOSITORY/contents/$PRODUCER_PATH?ref=$SOURCE_SHA" --jq '.sha // empty' 2>/dev/null || true)"
+            CONTROL_PRODUCER_SHA="$(gh api "repos/$GITHUB_REPOSITORY/contents/$PRODUCER_PATH?ref=$GITHUB_SHA" --jq '.sha // empty' 2>/dev/null || true)"
+            if ! [[ "$PRODUCT_PRODUCER_SHA" =~ ^[0-9a-f]{40}$ && "$CONTROL_PRODUCER_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+              echo 'candidate producer workflow identity could not be resolved at PRODUCT_SHA and CONTROL_SHA' >&2
+              exit 1
+            fi
+            if [[ "$PRODUCT_PRODUCER_SHA" != "$CONTROL_PRODUCER_SHA" ]]; then
+              echo 'candidate producer workflow differs from accepted protected-main producer' >&2
+              exit 1
+            fi
+            PRODUCER_BLOB_SHA="$CONTROL_PRODUCER_SHA"
+
             ARTIFACT_NAME="device-candidate-pr-$PR_NUMBER-$SOURCE_SHA"
             gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=$ARTIFACT_NAME&per_page=100" > "$root/artifacts.json"
             mapfile -t artifact < <(python3 - "$root/artifacts.json" "$ARTIFACT_NAME" "$SOURCE_SHA" "$HEAD_BRANCH" <<'PY'
@@ -205,6 +220,7 @@ jobs:
             echo "pr_number=$PR_NUMBER"
             echo "source_sha=$SOURCE_SHA"
             echo "control_sha=$GITHUB_SHA"
+            echo "producer_blob_sha=$PRODUCER_BLOB_SHA"
             echo "mode=$MODE"
             echo "probe=$PROBE"
             echo "artifact_id=$ARTIFACT_ID"
@@ -222,6 +238,7 @@ jobs:
             echo '- PR: `#${{ steps.resolve.outputs.pr_number }}`'
             echo '- PRODUCT SHA: `${{ steps.resolve.outputs.source_sha }}`'
             echo '- CONTROL SHA: `${{ steps.resolve.outputs.control_sha }}`'
+            echo '- Accepted producer policy: `${{ steps.resolve.outputs.producer_blob_sha }}`'
             echo '- Mode: `${{ steps.resolve.outputs.mode }}`'
             echo '- Explicit probe: `${{ steps.resolve.outputs.probe }}`'
             echo '- Completed hosted build: `${{ steps.resolve.outputs.hosted_run_id }}`'
@@ -352,6 +369,7 @@ jobs:
     outputs:
       cycle_result: ${{ steps.report.outputs.cycle_result }}
       classification: ${{ steps.report.outputs.classification }}
+      exact_candidate_acceptance: ${{ steps.report.outputs.exact_candidate_acceptance }}
     steps:
       - name: Checkout exact control implementation
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -462,6 +480,7 @@ jobs:
           $report = Get-Content -Raw -LiteralPath "$env:RUNNER_TEMP\mish-device-cycle-v1.json" | ConvertFrom-Json
           "cycle_result=$([string]$report.cycle_result)" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_OUTPUT
           "classification=$([string]$report.classification)" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_OUTPUT
+          "exact_candidate_acceptance=$([string]$report.exact_candidate_acceptance)" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_OUTPUT
 
       - name: Upload one cycle evidence bundle
         if: ${{ always() }}
@@ -490,8 +509,9 @@ jobs:
               '- PRODUCT SHA: `${{ needs.resolve.outputs.source_sha }}`',
               '- CONTROL SHA: `${{ needs.resolve.outputs.control_sha }}`',
               '- Mode: `${{ needs.resolve.outputs.mode }}`',
-              "- Result: **$([string]$report.cycle_result)**",
+              "- Execution/evidence result: **$([string]$report.cycle_result)**",
               "- Classification: $([string]$report.classification)",
+              "- Exact candidate acceptance: **$([string]$report.exact_candidate_acceptance)**",
               '- Explicit probe: `${{ needs.resolve.outputs.probe }}`',
               '- Automatic cycle start: **NO**',
               '- Automatic repair/probe decision: **NO**',
