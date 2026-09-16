@@ -413,7 +413,9 @@ mod tests {
 
         drop(client);
         backend_thread.join().expect("backend thread");
-        wait_until(Instant::now() + TEST_TIMEOUT, || sessions.active_sessions() == 0);
+        wait_until(Instant::now() + TEST_TIMEOUT, || {
+            sessions.active_sessions() == 0
+        });
         execution.stop(Some(&runtime)).expect("clean Mesh stop");
     }
 
@@ -478,7 +480,9 @@ mod tests {
             clients.push(client);
         }
         assert_eq!(
-            accepted_rx.recv_timeout(TEST_TIMEOUT).expect("backend count"),
+            accepted_rx
+                .recv_timeout(TEST_TIMEOUT)
+                .expect("backend count"),
             MAX_MESH_SESSIONS
         );
         wait_until(Instant::now() + TEST_TIMEOUT, || {
@@ -515,7 +519,9 @@ mod tests {
 
         drop(overflow);
         drop(clients);
-        wait_until(Instant::now() + TEST_TIMEOUT, || sessions.active_sessions() == 0);
+        wait_until(Instant::now() + TEST_TIMEOUT, || {
+            sessions.active_sessions() == 0
+        });
         execution.stop(Some(&runtime)).expect("clean Mesh stop");
         assert!(!execution.is_running());
     }
@@ -537,7 +543,9 @@ mod tests {
             )
             .expect("start Mesh execution");
         let _client = StdClient::connect((Ipv4Addr::LOCALHOST, ingress_port)).expect("client");
-        wait_until(Instant::now() + TEST_TIMEOUT, || sessions.active_sessions() == 0);
+        wait_until(Instant::now() + TEST_TIMEOUT, || {
+            sessions.active_sessions() == 0
+        });
         execution.stop(Some(&runtime)).expect("stop");
     }
 
@@ -567,8 +575,12 @@ mod tests {
             )
             .expect("first generation");
         let client = StdClient::connect((Ipv4Addr::LOCALHOST, ingress_port)).expect("client");
-        accepted_rx.recv_timeout(TEST_TIMEOUT).expect("backend accepted");
-        wait_until(Instant::now() + TEST_TIMEOUT, || sessions.active_sessions() == 1);
+        accepted_rx
+            .recv_timeout(TEST_TIMEOUT)
+            .expect("backend accepted");
+        wait_until(Instant::now() + TEST_TIMEOUT, || {
+            sessions.active_sessions() == 1
+        });
 
         execution.stop(Some(&runtime)).expect("cancel generation");
         assert_eq!(sessions.active_sessions(), 0);
