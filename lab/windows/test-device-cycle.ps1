@@ -32,22 +32,22 @@ try {
         "'ss', '-H', '-tanp'",
         "'/proc/net/tcp'",
         "'/proc/net/tcp6'",
-        "'pidof', 'sing-box'",
         'listener_state = $listenerState',
-        'MISH_LOOPBACK_DIAGNOSTIC_SING_BOX_PID'
+        'MISH_LOOPBACK_DIAGNOSTIC_TARGET_SOCKET_ROWS'
     )) {
         if (-not $loopbackProbeSource.Contains($required)) {
             throw "Manual loopback probe lost bounded listener-state evidence: $required"
         }
     }
     foreach ($forbidden in @(
+        'sing-box',
         "'shell', 'su'",
         "'shell', 'kill'",
         "'shell', 'pkill'",
         "'shell', 'am', 'force-stop'"
     )) {
         if ($loopbackProbeSource.Contains($forbidden)) {
-            throw "Manual loopback probe must remain read-only and non-root: $forbidden"
+            throw "Manual loopback probe must remain product-agnostic, read-only and non-root: $forbidden"
         }
     }
 
