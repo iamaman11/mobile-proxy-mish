@@ -1,269 +1,239 @@
 # Development CI and DEVICE-1 candidate contract
 
-This document is the stable versioned authority for development CI, hosted Android candidate production, and DEVICE-1 development diagnostics. Live stage/checkpoint state belongs to Issue #135. The canonical PRODUCT/architecture plan is `docs/architecture/PRODUCT_ROADMAP.md`; Issue #134 is historical research/rationale only.
+This document is the stable development-delivery contract. Live stage/checkpoint state belongs to Issue #135. Ordered PRODUCT direction belongs to `PRODUCT_ROADMAP.md`. Executable workflows are the mechanical authority if prose and YAML disagree.
 
-It does not replace the immutable RC/release contract in `docs/architecture/RELEASE.md` for formal release promotion.
+It does not replace `RELEASE.md` for formal RC/release promotion.
 
-## Supported Android product floor
-
-The supported appliance target is Android 11 / API 30.
-
-Canonical build authority:
+## Supported PRODUCT floor
 
 ```text
-android/app/build.gradle.kts
-  androidMinSdk = 30
-  -> Android defaultConfig.minSdk
-  -> cargo-ndk -P
+Android 11 / API 30
+armeabi-v7a
 ```
 
-The Windows LAB manifest mirrors that product fact:
+Canonical build authority remains the Android/Rust build graph. Do not add lower-API compatibility shims unless a new accepted PRODUCT requirement explicitly reopens support below API 30.
+
+## Integration Android Preflight
+
+`.github/workflows/integration-android-preflight.yml` is the exact-head hosted candidate producer for PRs targeting the current integration line.
+
+Current contract:
 
 ```text
-lab/windows/toolchain.json
-  android.min_sdk = 30
-  rust.target = armv7-linux-androideabi
+PR opened / synchronized / reopened / ready-for-review
+ -> checkout exact PR head
+ -> Kotlin compile + lint
+ -> when PR is ready/non-draft:
+      Rust fmt
+      Rust clippy -D warnings
+      Rust workspace tests --locked
+      Android Rust/NDK setup
+      Android/Kotlin unit tests
+      assembleDebug
+      assembleDebugAndroidTest
+      exact PRODUCT candidate verification
+      publish exact-head device candidate artifact
 ```
 
-`android/gradle.properties` owns the PRODUCT ABI selection and currently fixes `mishTargetAbi=armeabi-v7a`.
+The candidate artifact is produced only after the complete configured gate succeeds.
 
-Android 23 and Android 26 are not supported PRODUCT compatibility floors. Do not add API-23/API-26 compatibility shims unless a new accepted product requirement explicitly reopens support below API 30.
+A successful hosted build is a prerequisite only. It never starts DEVICE-1.
 
-## CI contract
+## Exact candidate identity
 
-### Pull requests to protected `main`
-
-`Rust Workspace` and `Android Compose Shell` remain required status contexts for branch protection.
-
-The CI classifier is deliberately fail-safe:
+Ready candidate artifact naming:
 
 ```text
-all changed files belong to the explicit no-product-build allowlist
-  -> required contexts run as fast PASS jobs
-  -> PRODUCT Rust/Android build steps are skipped
-
-any PRODUCT/build input, CI policy file, unknown path, or classifier uncertainty
-  -> full Rust + Android gate
+device-candidate-pr-<PR>-<40-hex PRODUCT_SHA>
 ```
 
-`workflow_dispatch` always performs the full Rust + Android gate. After an accepted merge, `push -> main` performs architecture/delivery smoke only; duplicate Rust/Android rebuilds are skipped.
+The artifact contains the debug PRODUCT APK, AndroidTest APK and `candidate.json` with exact source/base identity, application id, target ABI and APK digests.
 
-### Integration PRs to `fix/root-policy-reconciliation`
+Expired/superseded/mismatched artifacts are never silently substituted.
 
-`.github/workflows/integration-android-preflight.yml` owns the hosted Android development gate.
+## Protected-main Device Cycle
 
-```text
-draft PR
- -> compileDebugKotlin
- -> lintDebug
+`.github/workflows/device-cycle.yml` owns development physical execution.
 
-ready PR
- -> fast Kotlin/lint gate
- -> Rust workspace format + clippy + unit tests
- -> Android/Kotlin unit tests
- -> assembleDebug
- -> assembleDebugAndroidTest
- -> native/package verification
- -> exact-head device candidate artifact
-```
+One explicit request produces one bounded Device Cycle. There is no automatic start from build completion, PR merge, main merge, label or artifact publication.
 
-The Rust quality stage is mandatory for every ready integration candidate. Compiling `mish-runtime`/`mish-android-ffi` for UniFFI is not sufficient evidence for Rust behavioral changes: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` must pass before Android NDK/package work may produce a candidate.
-
-The exact-head artifact is created only after the complete ready-PR gate succeeds. A failed, cancelled, still-building, or superseded build never authorizes physical work. More importantly, a successful build is only evidence that a candidate is ready; it does **not** start DEVICE-1.
-
-The ready-PR artifact name is:
-
-```text
-device-candidate-pr-<PR>-<40-hex source SHA>
-```
-
-It contains the isolated debug APK, AndroidTest APK, and `candidate.json` with exact source/base identity, target ABI, application id and SHA-256 digests.
-
-Artifacts are short-lived CI evidence. If an exact-head artifact expires, rerun the hosted gate for that same exact head or produce a new exact head; never silently substitute bytes from another commit.
-
-## DEVICE-1 development candidate installer
-
-There is no separate normal-path physical workflow. `.github/workflows/device-cycle.yml` owns the complete physical segment for an explicitly requested cycle: exact artifact resolution, stable LAB signing, replacement installation, installed-byte/signature verification, launch, diagnostics, evidence, then STOP.
-
-The cycle carries both identities:
-
-```text
-PRODUCT_SHA = exact integration PR head whose APK is installed
-CONTROL_SHA = exact protected-main commit whose installer/verifier/diagnostic scripts execute
-```
-
-A PRODUCT PR may still be open, or it may already be merged into the current integration lineage. A merged candidate is eligible only when its exact `PRODUCT_SHA` is still an ancestor of current `fix/root-policy-reconciliation`; a closed-unmerged PR is never eligible.
-
-For `full` and `install_only`, the candidate producer policy is also immutable evidence. Before DEVICE-1 may install anything, the Git blob for `.github/workflows/integration-android-preflight.yml` at `PRODUCT_SHA` must be byte-identical to the producer workflow blob at `CONTROL_SHA`. If those producer blobs differ, the cycle fails closed before artifact download/install. Build-policy changes therefore land through protected `main` review and CI first, then the PRODUCT branch consumes the accepted producer policy.
-
-The normal physical path inside the same Device Cycle run is:
-
-```text
-successful exact-head hosted artifact already exists
- -> explicit cycle request after analysis
- -> verify open/merged integration lineage identity
- -> verify accepted producer workflow blob identity
- -> verify candidate.json + hosted run identity + artifact digest
- -> create/reuse persistent LAB-only debug signing identity
- -> sign isolated debug APK
- -> adb install -r
- -> adb shell pm path <package>
- -> pull installed base.apk
- -> installed base.apk SHA-256 == signed candidate SHA-256
- -> installed signing certificate == expected LAB certificate
- -> INSTALL_VERIFY=PASS
- -> launch
- -> generation-fenced diagnostics v2
- -> STOP_FOR_ANALYSIS
-```
-
-`adb install -r = Success` is necessary but not sufficient. Launch/diagnostics are forbidden until installed exact-byte/signing verification passes.
-
-The Windows LAB is a consumer, not a builder. The normal path must not invoke Gradle, Cargo, cargo-ndk, UniFFI generation, NDK compilation, local APK assembly, uninstall, credential rotation, or PRODUCT policy mutation.
-
-If any producer policy, artifact, digest, signing prerequisite, device identity, install result, installed byte digest, or installed certificate is wrong or missing, stop with a typed failure. Do not automatically fall back to a local build or another APK.
-
-## Canonical DEVICE-1 engineering cycle
-
-The control model is deliberately simple:
-
-```text
-diagnostic -> analysis -> decision -> code -> completed build -> explicit cycle request -> install -> verify install -> launch -> diagnostic -> analysis
-```
-
-Diagnostics never chooses a repair. Diagnostics reports facts and classifications only. It never edits PRODUCT code/configuration, changes root policy, rotates credentials, reinstalls, selects a repair, or starts the next code cycle.
-
-A completed build is a hard barrier, not a trigger. No successful build, merge to main, label, or completed workflow starts DEVICE-1. The physical cycle starts only after an explicit post-analysis command made against the exact PRODUCT head:
+Current accepted command forms are defined by the workflow. At this policy revision they are:
 
 ```text
 /mish-cycle full <PRODUCT_SHA>
 /mish-cycle install_only <PRODUCT_SHA>
 /mish-cycle diagnose_only <PRODUCT_SHA>
-/mish-cycle probe_only <PRODUCT_SHA> runtime_identity
 /mish-cycle probe_only <PRODUCT_SHA> loopback_connect
 ```
 
-Operationally this command is the separate engineering action that authorizes DEVICE-1 and is accepted only from the repository owner identity. It may target an open canonical integration PR or an already-merged accepted integration PR whose exact source remains in the current integration lineage. `full` and `install_only` additionally require an already completed successful exact-head `Integration Android Preflight` artifact; an open PR must also be ready/non-draft. The cycle never starts itself when that build or merge finishes.
+`probe_only` supports only the current-function `loopback_connect` probe unless the executable workflow is deliberately changed and this document is updated with it.
 
-One explicit request produces one GitHub Actions Device Cycle run. There is no bot-dispatched `Device Candidate Physical` child workflow in the normal path. Within that one run the mechanical stages remain sequential:
+`full`, `install_only` and `diagnose_only` accept no probe argument.
+
+## PRODUCT_SHA and CONTROL_SHA
+
+Every physical run separates:
 
 ```text
-RESOLVE_EXPLICIT_REQUEST
- -> VERIFY_INTEGRATION_LINEAGE
- -> VERIFY_ACCEPTED_PRODUCER_POLICY
- -> VERIFY_COMPLETED_EXACT_BUILD
- -> INSTALL
- -> INSTALL_VERIFY
- -> LAUNCH
- -> CANONICAL_DIAGNOSTIC_V2
- -> EVIDENCE
+PRODUCT_SHA = exact integration PR source/build being reasoned about
+CONTROL_SHA = exact protected-main workflow/scripts executing the physical cycle
+```
+
+The physical result must never be interpreted without both identities.
+
+For `full` / `install_only`, the accepted candidate-producer workflow blob at PRODUCT_SHA must match the protected-main producer blob required by the Device Cycle resolver. A producer-policy mismatch fails closed before install.
+
+## Physical runner contract
+
+The Windows LAB is a consumer, not a builder.
+
+Normal path:
+
+```text
+successful exact hosted artifact already exists
+ -> explicit /mish-cycle request after analysis
+ -> verify PR/integration lineage identity
+ -> verify accepted producer policy
+ -> verify hosted run/artifact/digest provenance
+ -> checkout exact CONTROL_SHA
+ -> verify pinned PowerShell/runtime + DEVICE-1 prerequisites
+ -> consume exact candidate
+ -> stable LAB-only debug signing where configured
+ -> adb install -r when mode requests installation
+ -> read back installed APK
+ -> verify installed exact bytes + signing identity
+ -> launch when mode requests it
+ -> collect generation-consistent current-L8 diagnostics
+ -> optional explicitly requested current-function probe
+ -> produce typed evidence/report
  -> STOP_FOR_ANALYSIS
 ```
 
-The canonical L8 diagnostic is `mish.diagnostics/v2` via `snapshot_v2`. It is read-only and generation-fenced. It observes current runtime, Cellular admission, root authority/root-policy authorization, native Proxy Serving, credential, Mesh and readiness facts. It must not resurrect pre-L8 sing-box/private-bridge ownership assumptions or execute a root mutation.
+The runner must not silently run Gradle, Cargo, cargo-ndk, NDK compilation, UniFFI generation, local APK assembly or clean uninstall to rescue a failed candidate path.
 
-There is **No automatic targeted probe** in `full` or `diagnose_only`. If the canonical snapshot is insufficient, analysis happens first; only then may a separate explicit `probe_only` request run exactly one read-only probe such as `runtime_identity` or `loopback_connect`.
+Pinned PowerShell/tool requirements are real physical-run prerequisites and are enforced by the executable workflow/scripts.
 
-The supported modes are:
+## Modes
 
-- `full` — completed successful exact build must already exist -> install -> verify install -> launch -> canonical diagnostic -> stop;
-- `install_only` — completed successful exact build must already exist -> install -> verify install -> stop;
-- `diagnose_only` — launch current installed debug package -> canonical diagnostic -> stop; no claim that PR bytes are installed;
-- `probe_only` — no install and no restart; run exactly one explicitly named read-only probe after an analysis decision.
+### `full`
 
-`full`, `install_only`, and `diagnose_only` accept no probe. `probe_only` requires exactly one named probe. This keeps analysis outside the diagnostic workflow.
+Requires an already successful exact-head hosted candidate.
 
-The cycle report deliberately separates mechanical/evidence execution from PRODUCT acceptance:
+```text
+resolve provenance
+ -> install exact candidate
+ -> verify installed bytes/signing identity
+ -> launch/restart app as defined by workflow
+ -> canonical diagnostics
+ -> exact-candidate acceptance classification
+ -> STOP
+```
+
+### `install_only`
+
+Requires an already successful exact-head hosted candidate.
+
+```text
+resolve provenance
+ -> install
+ -> verify installed bytes/signing identity
+ -> STOP
+```
+
+### `diagnose_only`
+
+No candidate installation claim.
+
+```text
+use currently installed debug package
+ -> explicit app launch/restart as defined by workflow
+ -> canonical diagnostics
+ -> STOP
+```
+
+The result cannot be promoted into exact candidate acceptance because installation identity was not established in that cycle.
+
+### `probe_only`
+
+No install and no app restart.
+
+```text
+run exactly one explicitly named read-only current-function probe
+ -> evidence
+ -> STOP
+```
+
+A successful probe means the probe executed/collected evidence; it is not exact PRODUCT acceptance.
+
+## Canonical diagnostics
+
+Current APK diagnostics use `mish.diagnostics/v2` / `snapshot_v2` and observe current native facts only:
+
+- runtime running/generation consistency;
+- Cellular admission/boundary state;
+- root authority/root-policy authorization;
+- native Proxy Serving state/health/typed failure;
+- credential state;
+- Mesh admission/ingress;
+- Readiness.
+
+Diagnostics do not own or execute repairs, root mutations, network toggles, credential rotation, install, runtime lifecycle decisions or legacy process management.
+
+Historical Android sing-box/runtime identity is not a current PRODUCT diagnostic fact.
+
+## Engineering cycle
+
+Canonical loop:
+
+```text
+diagnostic/evidence
+ -> analysis
+ -> decision
+ -> smallest owner-aligned code change if required
+ -> hosted exact-head gate
+ -> explicit Device Cycle only when the next required fact is physical
+ -> evidence
+ -> STOP_FOR_ANALYSIS
+```
+
+No automatic repair/probe loop exists.
+
+## Acceptance fields
+
+Physical reporting separates mechanical execution from PRODUCT acceptance.
 
 ```text
 cycle_result
-  -> did this requested cycle/probe execute and collect its expected evidence?
+  did the requested cycle/probe execute and collect its required evidence?
 
 exact_candidate_acceptance
-  -> PASS / FAIL only for `full`, where exact candidate install+verification and canonical PRODUCT baseline were actually exercised
-  -> NOT_EVALUATED for install_only, diagnose_only, probe_only, or LAB/infrastructure failure
+  evaluated only when the exact installed candidate and required baseline were exercised
 ```
 
-Therefore a green `probe_only` run means the requested read-only evidence was collected successfully. It is never a claim that the PRODUCT candidate passed. The targeted probe's own classification remains evidence for the next analysis decision.
+A green `probe_only` or `diagnose_only` must never be interpreted as exact candidate acceptance.
 
-Every physical cycle carries separate provenance:
+## Formal release boundary
 
-```text
-PRODUCT_SHA
-CONTROL_SHA
-HOSTED_RUN_ID
-INSTALL_RUN_ID (= the same Device Cycle run id for the in-run install stage)
-DEVICE_CYCLE_RUN_ID
-```
+Development debug candidates are not RC/release identity.
 
-There is no floating child-workflow control SHA. Install and diagnostics both checkout the exact `CONTROL_SHA` captured by the one Device Cycle run.
-
-Automatic airplane recovery is not part of the baseline cycle. A baseline must first reach authenticated loopback PASS and Mesh PASS; recovery/airplane acceptance remains a separately requested later stage.
-
-The visible control points are intentionally sequential and independently attributable:
-
-```text
-BUILD_PASS          # prerequisite only; does not start the cycle
-EXPLICIT_CYCLE_REQUEST
-INTEGRATION_LINEAGE_VERIFIED
-PRODUCER_POLICY_MATCH
-ARTIFACT_RESOLVED
-INSTALL_PASS
-INSTALL_VERIFY_PASS
-LAUNCH_PASS / PRODUCT_TERMINAL_FAILURE
-DIAGNOSTIC_CAPTURED
-REPORT_PUBLISHED
-STOP_FOR_ANALYSIS
-```
-
-No workflow stage after `DIAGNOSTIC_CAPTURED` mutates PRODUCT state or decides what code should change next.
-
-## Evidence boundary
-
-An exact-head PR debug candidate may be used for development physical diagnostics when Issue #135 explicitly requires a physical fact for the next engineering decision. This remains true after that exact PR is merged into the accepted integration lineage; merging does not invalidate already-proven exact candidate bytes.
-
-It is not PRODUCT release identity and cannot be promoted to a stable release.
-
-Formal E3/release acceptance that authorizes promotion continues to use the immutable RC/release path:
+Formal promotion remains:
 
 ```text
 PIN -> BUILD ONCE -> HASH -> SIGN -> ATTEST -> TEST EXACT BYTES -> PROMOTE EXACT BYTES
 ```
 
-No debug candidate may be relabeled as an RC/release or satisfy a release-signing claim.
+under `RELEASE.md`.
 
-## Reproducibility and ownership
-
-The intended authorities are:
+## Stable authorities
 
 ```text
-PRODUCT Android floor / package-native build graph
-  -> android/app/build.gradle.kts
-
-PRODUCT ABI
-  -> android/gradle.properties
-
-hosted integration candidate production
-  -> integration-android-preflight.yml
-
-explicit physical cycle orchestration + install + installed-byte verification + diagnostics
-  -> device-cycle.yml
-  -> install-device-candidate.ps1
-  -> verify-installed-candidate.ps1
-  -> start-device-app.ps1
-  -> collect-device-diagnostic.ps1
-
-explicit post-analysis targeted probes
-  -> collect-runtime-identity.ps1 / diagnose-loopback-connect.ps1
-
-live execution pointer
-  -> Issue #135
-
-canonical ordered product plan
-  -> docs/architecture/PRODUCT_ROADMAP.md
-
-historical research/rationale
-  -> Issue #134
+live execution pointer                -> Issue #135
+ordered PRODUCT plan                  -> PRODUCT_ROADMAP.md
+reconstruction/authority map          -> SOURCE_OF_TRUTH.md
+hosted candidate producer             -> integration-android-preflight.yml
+physical development executor         -> device-cycle.yml + lab/windows scripts
+architecture                           -> SYSTEM.md / DEPENDENCIES.md / OWNERSHIP.md
+formal release                        -> RELEASE.md
 ```
 
-The repository guards must reject drift back to automatic DEVICE-1 starts, a separately dispatched normal physical workflow, local rebuilding, uninstall/reinstall migration in the normal path, automatic repair/probe decisions, floating control checkout, unaccepted candidate-producer workflow policy, ambiguous LAB/Product diagnostic attribution, a green targeted probe being interpreted as exact PRODUCT acceptance, accepting `adb install` without verifying the installed exact bytes, or publishing a ready integration candidate without passing the Rust workspace quality gate.
+Repository guards should reject drift back to automatic phone starts, local rebuilding in the normal physical path, stale/floating control identity, automatic repair/probe decisions, legacy Android proxy assumptions, accepting `adb install` without installed-byte/signature verification, or treating a read-only probe as exact PRODUCT acceptance.

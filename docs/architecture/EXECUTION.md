@@ -1,136 +1,145 @@
 # Development execution and integration policy
 
-This document defines stable execution policy. Live stage/checkpoint state belongs to Issue #135. The master PRODUCT/architecture plan belongs to Issue #134. The concrete CI/device-candidate contract is `docs/architecture/DEVELOPMENT_PIPELINE.md`.
+This document defines stable execution policy. Live stage status belongs only to Issue #135. Ordered product direction belongs only to `PRODUCT_ROADMAP.md`.
 
-## Core model
+## Authority model
 
 ```text
-accepted main
- -> current integration lineage from #135
- -> one bounded slice
- -> hosted evidence at the cheapest valid level
- -> integration update
- -> physical diagnostic only when the next fact genuinely requires it
- -> milestone merge to main only at an accepted boundary
+protected main
+  -> stable process/control/canonical docs boundary
+
+Issue #135
+  -> CURRENT_STAGE
+  -> WORKING_LINEAGE
+  -> ACCEPTED_INTEGRATION_HEAD
+  -> OPEN_IMPLEMENTATION_PR
+  -> immutable evidence ids
+
+working lineage / current slice PR
+  -> current PRODUCT implementation while the stage is active
 ```
 
-A commit batch, a review slice, a physical diagnostic and a main merge are different units. Do not turn `main` into a progress ledger.
+`main` may intentionally lag the current PRODUCT implementation during an active stage. Do not infer PRODUCT composition from `main` when #135 points to a newer accepted integration head.
 
-## Bounded slice
+## Single-pass roadmap rule
 
-Default slice budget:
+Development proceeds linearly through the current `PRODUCT_ROADMAP.md` stage order. Exactly one roadmap stage is current.
+
+Within a stage:
+
+```text
+fresh exact baseline
+ -> complete independent hosted/code work
+ -> exact-head hosted gate when configured/required
+ -> physical fact only when source/hosted evidence cannot establish it
+ -> record immutable evidence in #135
+ -> fix only surfaced defects on the same stage
+ -> advance #135 only when stage exit criteria are complete
+```
+
+A failed gate does not create a new roadmap stage.
+
+## Work units
+
+Keep these distinct:
+
+```text
+commit batch != slice PR != milestone/main boundary
+```
+
+A slice branch starts from the exact current working/integration head in #135.
+
+Default slice shape:
 
 - one natural owner;
 - at most one necessary platform/vendor/composition adapter;
-- direct tests for those semantics.
+- direct tests for that owner/adapter boundary.
 
-A slice that crosses more than two semantic owners should be split unless the coupling is technically inseparable and documented.
+Open a slice PR when the change is coherent enough to review. Its base is the current integration branch from #135 unless #135 explicitly records another boundary.
 
-The active working set is intentionally small:
+After review, merge the slice into the integration lineage. Updating the integration lineage does not automatically justify a `main` merge, physical run or release build.
 
-```text
-#135 current checkpoint
-+ current slice PR/head
-+ relevant #134 finding when needed
-+ one natural-owner contract
-+ one adapter boundary when required
-+ direct tests/evidence
-```
+## Protected-main boundary
 
-## Hosted CI
+`main` is not a progress ledger. Merge PRODUCT implementation to `main` only at a coherent milestone/evidence boundary defined by the active process.
 
-### Integration Android gate
+A docs/control-only PR may update protected `main` earlier when its purpose is to keep source-of-truth, workflow or evidence mechanics accurate. Such a merge must not claim that newer PRODUCT code on the working lineage has already landed on `main`.
 
-For Android/Rust/build work targeting `fix/root-policy-reconciliation`:
+## CI law
 
-```text
-draft PR
- -> compileDebugKotlin
- -> lintDebug
+Executable workflow configuration is the mechanical authority. Prose must follow YAML, never the reverse.
 
-ready PR
- -> fast gate
- -> unit tests
- -> assembleDebug
- -> assembleDebugAndroidTest
- -> native/package verification
- -> exact-head device-candidate artifact
-```
+For the current Android/Rust development line, `Integration Android Preflight` is the exact-head hosted candidate producer. Read `.github/workflows/integration-android-preflight.yml` for exact trigger conditions and steps.
 
-The gate uses pinned toolchains and deterministic input-aware caches. Superseded runs are cancelled.
-
-### Protected main gate
-
-PRs to `main` must satisfy the branch-protection contexts `Rust Workspace` and `Android Compose Shell`.
-
-The path classifier is fail-safe:
+General law:
 
 ```text
-explicit non-product allowlist only
- -> fast required-context PASS
- -> no PRODUCT rebuild
-
-anything else / unknown / CI policy / PRODUCT input
- -> full Rust + Android validation
+coherent exact PRODUCT head
+ -> configured complete hosted gate
+ -> first failing gate is current hosted diagnosis
+ -> smallest owner-aligned correction
+ -> new exact SHA
+ -> full required evidence re-established for that SHA
 ```
 
-`workflow_dispatch` always performs the full gate.
+Do not carry a PASS across a changed SHA.
 
-After merge, `push -> main` performs the architecture smoke/invariants only; it does not repeat the expensive Rust/Android acceptance already established on the accepted PR head.
+## Physical development loop
 
-## Android product floor
+A successful build is never a phone-mutation trigger.
 
-The PRODUCT appliance target is Android 11 / API 30. `android/app/build.gradle.kts` owns one `androidMinSdk=30` value used by both Android `minSdk` and cargo-ndk `-P`.
-
-The PRODUCT ABI is selected by `android/gradle.properties` and is currently `armeabi-v7a`. The LAB bootstrap mirror must use Rust target `armv7-linux-androideabi`.
-
-Android 23/26 compatibility is not an accepted PRODUCT requirement. Do not add compatibility shims below API 30 without a new explicit product decision.
-
-## Development physical diagnostic
-
-Development physical work no longer requires a local Android rebuild or a merge to `main` solely to obtain test bytes.
-
-When #135 states that the next engineering decision requires DEVICE-1 evidence:
+When #135 requires a physical fact:
 
 ```text
-successful ready integration PR exact head
- -> exact-head hosted device candidate
- -> protected-main Device Candidate Physical consumer
- -> exact artifact/run/digest verification
- -> self-hosted Windows LAB
- -> built-in Windows PowerShell
- -> API 30 / armeabi-v7a DEVICE-1 check
- -> LAB-only stable debug signing
- -> adb install -r com.mobileproxymish.app.debug
- -> bounded sanitized physical evidence
+exact hosted candidate already exists
+ -> analysis decides one explicit Device Cycle action
+ -> /mish-cycle command against exact PRODUCT SHA
+ -> protected-main CONTROL_SHA resolves/verifies provenance
+ -> physical runner consumes exact artifact; no local rebuild
+ -> bounded install/launch/diagnostic/probe as requested
+ -> immutable typed evidence
+ -> STOP_FOR_ANALYSIS
 ```
 
-The physical consumer is fail-closed and does not automatically build locally when the hosted candidate is unavailable or invalid.
+The current supported modes/probes are defined by `.github/workflows/device-cycle.yml` and `DEVELOPMENT_PIPELINE.md`.
 
-A local build remains a separate explicit diagnostic fallback, not the normal path and not evidence substitution.
+No workflow automatically chooses a repair, starts a follow-up probe, rotates credentials, changes PRODUCT policy or starts a second cycle.
 
-## Release/acceptance distinction
+## PRODUCT / CONTROL / DEVICE provenance
 
-An exact-head PR debug candidate is allowed for development diagnostics and evidence needed to choose the next implementation step. It is not release identity and cannot be promoted.
-
-Formal release acceptance continues to use exact immutable RC/release bytes under `docs/architecture/RELEASE.md` and the supply-chain law:
+Every physical conclusion must keep separate:
 
 ```text
-PIN -> BUILD ONCE -> HASH -> SIGN -> ATTEST -> TEST EXACT BYTES -> PROMOTE EXACT BYTES
+PRODUCT_SHA
+CONTROL_SHA
+HOSTED_RUN_ID when an artifact is consumed
+DEVICE_CYCLE_RUN_ID or equivalent immutable physical evidence id
 ```
 
-## Physical correction loop
+Do not mix a stale APK, different control scripts, prior device state or local rebuild into one acceptance claim.
+
+## Diagnostic/local-agent escalation
+
+Use a local agent only when the exact physical fact cannot be established correctly from source, hosted CI or current Device Cycle capabilities.
 
 ```text
-typed physical finding
- -> smallest bounded correction slice
- -> exact hosted validation
- -> new exact-head candidate when physical re-proof is required
- -> DEVICE-1 re-proof
+material ambiguity
+ -> exact missing fact
+ -> smallest bounded read-only diagnostic by default
+ -> sanitized evidence
+ -> implementation decision
 ```
 
-Do not merge each attempted correction to `main` simply to get an APK. Do not guess a physical fact to avoid DEVICE-1 evidence.
+The local agent does not own architecture or current product state. Record relevant conclusions back to #135 or a natural-owner/evidence contract.
 
-## Stop conditions
+## Evidence boundary
 
-Stop a slice when its required deterministic evidence passes and the next missing fact belongs to another owner or requires physical reality. Prefer NO CHANGE when measurement shows the suspected subsystem is not materially responsible.
+Development exact-head debug candidates may establish stage-specific physical facts when #135 records them with exact provenance. They are not formal release identity.
+
+Formal RC/release acceptance and promotion continue to follow `RELEASE.md` and build-once/hash/sign/attest/test/promote semantics.
+
+## Stop rule
+
+If the accepted requirement is already met, NO CHANGE is preferred.
+
+Do not add retries, larger timeouts, compatibility code, a new framework, second owner, root daemon/helper, status DB or fallback path until exact evidence demonstrates a product requirement for it.
