@@ -1,7 +1,9 @@
 use crate::runtime_boundary::{AndroidRuntimeError, CellularController};
 use crate::runtime_lifecycle_ffi::{ProxyServingFailure, map_proxy_failure_out};
 use mish_proxy::{ProxyCredentialMaterial, ProxyServingPlan};
-use mish_runtime::{ProxyServingFailure as OwnerProxyServingFailure, ProxyServingRuntime, ProxyServingRuntimeError};
+use mish_runtime::{
+    ProxyServingFailure as OwnerProxyServingFailure, ProxyServingRuntime, ProxyServingRuntimeError,
+};
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::time::Duration;
@@ -72,7 +74,9 @@ pub fn start_native_proxy_runtime(
     operation_timeout_ms: u64,
 ) -> Arc<NativeProxyStartAttempt> {
     if operation_timeout_ms == 0 || operation_timeout_ms > MAX_OUTBOUND_OPERATION_TIMEOUT_MS {
-        return NativeProxyStartAttempt::failed(OwnerProxyServingFailure::ProxyConfigurationRejected);
+        return NativeProxyStartAttempt::failed(
+            OwnerProxyServingFailure::ProxyConfigurationRejected,
+        );
     }
 
     let public_credentials = match ProxyCredentialMaterial::new(public_username, public_password) {
@@ -83,15 +87,15 @@ pub fn start_native_proxy_runtime(
             );
         }
     };
-    let plan = match ProxyServingPlan::canonical(IpAddr::V4(Ipv4Addr::LOCALHOST), public_credentials)
-    {
-        Ok(plan) => plan,
-        Err(_) => {
-            return NativeProxyStartAttempt::failed(
-                OwnerProxyServingFailure::ProxyConfigurationRejected,
-            );
-        }
-    };
+    let plan =
+        match ProxyServingPlan::canonical(IpAddr::V4(Ipv4Addr::LOCALHOST), public_credentials) {
+            Ok(plan) => plan,
+            Err(_) => {
+                return NativeProxyStartAttempt::failed(
+                    OwnerProxyServingFailure::ProxyConfigurationRejected,
+                );
+            }
+        };
     let connector = match cellular
         .runtime_handle()
         .outbound_connector(Duration::from_millis(operation_timeout_ms))
@@ -124,7 +128,9 @@ fn map_proxy_stop_error(error: ProxyServingRuntimeError) -> AndroidRuntimeError 
         ProxyServingRuntimeError::StateUnavailable => AndroidRuntimeError::RuntimeStateUnavailable,
         ProxyServingRuntimeError::NonLoopbackListen
         | ProxyServingRuntimeError::ListenerUnavailable(_)
-        | ProxyServingRuntimeError::ThreadUnavailable => AndroidRuntimeError::RuntimeStateUnavailable,
+        | ProxyServingRuntimeError::ThreadUnavailable => {
+            AndroidRuntimeError::RuntimeStateUnavailable
+        }
     }
 }
 
