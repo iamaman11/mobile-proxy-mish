@@ -62,11 +62,9 @@ internal fun interface ProxyCredentialProvider {
 /**
  * Thin Android lifecycle/composition adapter for the Rust Proxy Serving runtime.
  *
- * Canonical loopback Rust listeners connect directly through the root-policy-gated Cellular
- * Egress connector. Android owns no proxy executor, accept/session thread, health socket, private
- * bridge, private credential, PID, root launcher, process migration or process reconciliation.
- * Protocol/auth/relay are owned by Rust; Cellular admission/DNS/routing remain owned by the
- * existing Cellular runtime.
+ * Rust returns expected startup failures as typed PRODUCT data, owns recovery classification and
+ * owns protocol/auth/relay execution. Android only supplies platform composition inputs, executes
+ * start/stop calls, monitors the returned runtime handle and publishes the Rust lifecycle view.
  */
 class ProxyRuntimeSupervisor internal constructor(
     private val cellularRuntime: CellularRuntimeBridge,
@@ -117,7 +115,7 @@ class ProxyRuntimeSupervisor internal constructor(
                 return
             }
 
-            val newRuntime = try {
+            val attempt = try {
                 startNativeProxyRuntime(
                     cellular = cellularRuntime.nativeController(),
                     publicUsername = publicCredential.credentials.username,
@@ -128,13 +126,26 @@ class ProxyRuntimeSupervisor internal constructor(
                 failLifecycle(ProxyServingFailure.NATIVE_RUNTIME_MISSING)
                 return
             } catch (_: Exception) {
-                failLifecycle(ProxyServingFailure.LISTENER_UNAVAILABLE)
+                // Expected start failures are returned by Rust as data. Reaching this branch means
+                // the FFI boundary itself failed, not that a listener happened to be unavailable.
+                failLifecycle(ProxyServingFailure.RUNTIME_STATE_UNAVAILABLE)
+                return
+            }
+
+            val startFailure = attempt.failure()
+            if (startFailure != null) {
+                failLifecycle(startFailure)
+                return
+            }
+            val newRuntime = attempt.runtime()
+            if (newRuntime == null) {
+                failLifecycle(ProxyServingFailure.RUNTIME_STATE_UNAVAILABLE)
                 return
             }
 
             if (!runCatching { newRuntime.isHealthy() }.getOrDefault(false)) {
                 runCatching { newRuntime.stop() }
-                failLifecycle(ProxyServingFailure.LISTENER_UNAVAILABLE)
+                failLifecycle(ProxyServingFailure.SERVING_UNHEALTHY)
                 return
             }
             if (closed.get()) {
