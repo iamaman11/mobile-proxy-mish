@@ -29,10 +29,7 @@ fn failed_multi_listener_bind_never_publishes_partial_mesh_generation() {
 
     let blocked =
         StdTcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("reserve blocked Mesh port");
-    let blocked_port = blocked
-        .local_addr()
-        .expect("blocked Mesh address")
-        .port();
+    let blocked_port = blocked.local_addr().expect("blocked Mesh address").port();
 
     let result = execution.start(
         &runtime,
