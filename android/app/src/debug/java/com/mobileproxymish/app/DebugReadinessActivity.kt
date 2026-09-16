@@ -37,7 +37,6 @@ class DebugReadinessActivity : Activity() {
             Log.i(TAG, "cellular_admitted=${diagnostic.cellularAdmitted}")
             Log.i(TAG, "root_policy=${diagnostic.rootPolicyVerified}")
             Log.i(TAG, "app_root_authority=$rootAuthority")
-            Log.i(TAG, "private_bridge=${diagnostic.privateBridgeHealthy}")
             Log.i(TAG, "proxy_healthy=${diagnostic.proxyHealthy}")
             Log.i(TAG, "proxy_lifecycle=${proxySnapshot.javaClass.simpleName}")
             Log.i(TAG, "proxy_failure=$proxyFailureCode")
