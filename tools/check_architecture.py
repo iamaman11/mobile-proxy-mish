@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed architecture guards for the native MISH product topology.
-
-These checks cover ownership/dependency regressions that ordinary unit tests cannot see. They are
-not a substitute for physical Android/Cloudflare/cellular acceptance.
-"""
+"""Fail-closed architecture guards for the native MISH product topology."""
 
 from __future__ import annotations
 
@@ -58,14 +54,19 @@ def main() -> None:
         "Kotlin must not reintroduce a parallel foreground lifecycle state machine",
     )
     forbid(
-        "android/app/src/main/java/com/mobileproxymish/app/ProxyRuntimeSupervisor.kt",
-        "class ProxyRuntimeLifecycle",
-        "Kotlin must not reintroduce a parallel proxy lifecycle owner",
-    )
-    forbid(
         "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt",
         "RuntimeCleanupDisposition(",
         "cleanup disposition policy belongs to crates/runtime",
+    )
+    require(
+        "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt",
+        "proxyServingFailureRecoverable(reason)",
+        "proxy recovery policy must remain delegated to the Rust runtime owner",
+    )
+    require(
+        "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt",
+        "proxyRecoveryDelayMs(attempt)",
+        "proxy recovery backoff must remain delegated to the Rust runtime owner",
     )
 
     # Proxy-target DNS/public egress has exactly one Cellular Egress path and no default fallback.
@@ -122,6 +123,23 @@ def main() -> None:
         "long-lived native proxy sessions must not be detached Tokio tasks",
     )
 
+    lifecycle = "crates/runtime/src/lifecycle.rs"
+    for required in (
+        "pub enum ProxyServingState",
+        "pub enum ProxyServingFailure",
+        "pub struct ProxyServingLifecycle",
+    ):
+        require(lifecycle, required, "runtime must expose native Proxy Serving lifecycle semantics")
+    for obsolete in (
+        "RuntimeProcessLifecycle",
+        "RuntimeProcessFailure",
+        "ChildLaunchFailed",
+        "ChildExited",
+        "PrivateBridgeUnavailable",
+        "PrivateBridgeUnhealthy",
+    ):
+        forbid(lifecycle, obsolete, "external-child/private-bridge lifecycle semantics are obsolete")
+
     # Readiness is one pure Rust terminal projection. Android only executes the concrete probe.
     readiness = "crates/readiness/src/lib.rs"
     require(readiness, "pub enum Readiness", "Readiness must expose one terminal projection type")
@@ -130,6 +148,11 @@ def main() -> None:
         readiness,
         "pub struct EgressProbeObservation",
         "Readiness must consume one typed generation-bound probe observation",
+    )
+    forbid(
+        readiness,
+        "private_bridge",
+        "Readiness must not retain a deleted private-bridge fact",
     )
     forbid(
         "crates/readiness/Cargo.toml",
@@ -164,6 +187,7 @@ def main() -> None:
         "ProductReadinessController",
         "Android readiness must delegate freshness/projection decisions to Rust",
     )
+    forbid(readiness_ffi, "private_bridge", "readiness FFI must expose native facts only")
     require(
         "crates/android-ffi/src/entry.rs",
         "mod readiness_ffi;",
@@ -176,18 +200,23 @@ def main() -> None:
         "controller.beginProbe(binding)",
         "controller.completeProbe(ticket, outcome, elapsedMs)",
         "controller.project(facts, observation)",
-        "InetSocketAddress(LOOPBACK, proxyHttpConnectPort().toInt())",
         "readinessProbeTarget()",
         "egressProbeBudgetMs()",
-        "Proxy-Authorization: Basic",
-        "it.startHandshake()",
-        "HttpsURLConnection.getDefaultHostnameVerifier().verify(target.hostname, it.session)",
+        "AuthenticatedEgressProbe",
     ):
         require(
             readiness_android,
             required,
-            "Android readiness must remain one bounded Rust-directed loopback proxy/TLS effect",
+            "Android readiness adapter must remain Rust-directed and effect-only",
         )
+    probe_effect = "android/app/src/main/java/com/mobileproxymish/app/AuthenticatedEgressProbe.kt"
+    for required in (
+        "InetSocketAddress(LOOPBACK, proxyHttpConnectPort().toInt())",
+        "Proxy-Authorization: Basic",
+        "it.startHandshake()",
+        "HttpsURLConnection.getDefaultHostnameVerifier().verify(target.hostname, it.session)",
+    ):
+        require(probe_effect, required, "bounded Android readiness effect contract must stay explicit")
     for forbidden in (
         "InetSocketAddress(target.hostname",
         "Socket(target.hostname",
@@ -195,7 +224,7 @@ def main() -> None:
         "java.net.URL",
     ):
         forbid(
-            readiness_android,
+            probe_effect,
             forbidden,
             "Android readiness must not resolve/connect the public hostname outside PRODUCT proxy",
         )
@@ -209,6 +238,13 @@ def main() -> None:
         "bridge_accept_loop",
     ):
         forbid(ffi, symbol, "android-ffi must remain a typed adapter rather than a runtime owner")
+    lifecycle_ffi = "crates/android-ffi/src/runtime_lifecycle_ffi.rs"
+    require(
+        lifecycle_ffi,
+        "ProxyServingLifecycleController",
+        "UniFFI must project native Proxy Serving lifecycle",
+    )
+    forbid(lifecycle_ffi, "RuntimeProcessLifecycle", "child-process lifecycle must not return to FFI")
 
     mesh_ffi = "crates/android-ffi/src/transport_ffi.rs"
     require(
@@ -245,7 +281,26 @@ def main() -> None:
         "readiness probe HTTP port must project Proxy Serving desired state",
     )
 
-    # L8 native cutover is one-way: obsolete sing-box bytes/build adapters may not return.
+    proxy_android = "android/app/src/main/java/com/mobileproxymish/app/ProxyRuntimeSupervisor.kt"
+    for obsolete in ("privateBridge", "childAlive", "RuntimeProcess"):
+        forbid(proxy_android, obsolete, "Android proxy supervisor must describe native serving only")
+
+    # Diagnostics v2 must describe native product facts without a fake bridge projection.
+    diagnostics = "android/app/src/main/java/com/mobileproxymish/app/MishDiagnosticsProvider.kt"
+    require(diagnostics, 'MISH_DIAGNOSTICS_SCHEMA_V2 = "mish.diagnostics/v2"', "diagnostics must be versioned v2")
+    require(diagnostics, 'MISH_DIAGNOSTICS_METHOD_SNAPSHOT_V2 = "snapshot_v2"', "diagnostics method must be v2")
+    for obsolete in ("MISH_DIAGNOSTICS_SCHEMA_V1", "snapshot_v1", 'put("bridge"', "private_healthy", "privateBridge"):
+        forbid(diagnostics, obsolete, "diagnostics must not retain deleted private-bridge semantics")
+
+    # Root authority proof and root-shell transport are separate responsibilities.
+    authority = "android/app/src/main/java/com/mobileproxymish/app/cellular/MagiskRootAuthority.kt"
+    transport_path = "android/app/src/main/java/com/mobileproxymish/app/cellular/RootCommandTransport.kt"
+    require(authority, "class MagiskRootAuthority", "Magisk authority proof must remain explicit")
+    forbid(authority, "ProcessBuilder", "Magisk authority must not own root-shell process transport")
+    require(transport_path, 'ProcessBuilder("su")', "one persistent su transport must remain explicit")
+    require(transport_path, "sharedSession", "root transport must remain process-wide and generation-aware")
+
+    # L8 native cutover is one-way: obsolete Android sing-box bytes/build adapters may not return.
     forbid("Cargo.toml", "sing-box-adapter", "workspace must not contain the obsolete proxy adapter")
     android_build = "android/app/build.gradle.kts"
     for obsolete in (
