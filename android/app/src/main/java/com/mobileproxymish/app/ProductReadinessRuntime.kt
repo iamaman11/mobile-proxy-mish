@@ -12,6 +12,7 @@ import com.mobileproxymish.ffi.ProductReadinessController
 import com.mobileproxymish.ffi.ProductReadinessFactsView
 import com.mobileproxymish.ffi.ProductReadinessState
 import com.mobileproxymish.ffi.egressProbeBudgetMs
+import com.mobileproxymish.ffi.readinessProbeBindingIfEligible
 import com.mobileproxymish.ffi.readinessProbeTarget
 import java.io.Closeable
 import java.util.concurrent.Executors
@@ -73,7 +74,7 @@ internal class ProductReadinessRuntime(
             proxyHealthy = facts.proxyHealthy,
             credentialActive = facts.credentialActive,
             meshAdmitted = facts.meshAdmitted,
-            bindingEligible = candidateBinding(facts) != null,
+            bindingEligible = eligibleBinding(facts) != null,
         )
     }
 
@@ -104,7 +105,7 @@ internal class ProductReadinessRuntime(
         probeEffect.cancel()
 
         mutableState.value = projectOrUnknown(facts, null)
-        val binding = candidateBinding(facts) ?: return
+        val binding = eligibleBinding(facts) ?: return
         val ticket = try {
             controller.beginProbe(binding)
         } catch (_: Exception) {
@@ -207,31 +208,10 @@ internal class ProductReadinessRuntime(
         )
     }
 
-    private fun candidateBinding(facts: ProductReadinessFactsView): ProbeBindingView? {
-        val cellularGeneration = facts.cellularOwnerGeneration ?: return null
-        val proxyGeneration = facts.proxyServingGeneration ?: return null
-        val proxyCredential = facts.proxyCredentialVersion ?: return null
-        val credentialVersion = facts.credentialVersion ?: return null
-        val meshEpoch = facts.meshAdmissionEpoch ?: return null
-        if (!facts.cellularAdmitted ||
-            !facts.rootPolicyVerified ||
-            !facts.proxyHealthy ||
-            !facts.credentialActive ||
-            !facts.meshAdmitted ||
-            facts.runtimeGeneration != runtimeGeneration ||
-            facts.proxyRuntimeGeneration != runtimeGeneration ||
-            facts.meshRuntimeGeneration != runtimeGeneration ||
-            proxyCredential != credentialVersion
-        ) {
-            return null
-        }
-        return ProbeBindingView(
-            cellularOwnerGeneration = cellularGeneration,
-            runtimeGeneration = runtimeGeneration,
-            proxyServingGeneration = proxyGeneration,
-            meshAdmissionEpoch = meshEpoch,
-            credentialVersion = credentialVersion,
-        )
+    private fun eligibleBinding(facts: ProductReadinessFactsView): ProbeBindingView? = try {
+        readinessProbeBindingIfEligible(facts)
+    } catch (_: Exception) {
+        null
     }
 
     private fun projectOrUnknown(
