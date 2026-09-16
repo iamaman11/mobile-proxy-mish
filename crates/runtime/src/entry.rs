@@ -15,6 +15,9 @@ pub use cellular_runtime::*;
 mod mesh_serving;
 pub use mesh_serving::*;
 
+#[cfg(test)]
+mod mesh_serving_atomicity_test;
+
 mod proxy_recovery;
 pub use proxy_recovery::*;
 
