@@ -32,7 +32,6 @@ def forbid_regex(path: str, pattern: str, reason: str) -> None:
 def main() -> None:
     workflow = ".github/workflows/device-cycle.yml"
 
-    # One explicit manual request. Full/install acceptance is pre-merge on a ready PR to main.
     for required in (
         "issue_comment:",
         "types: [created]",
@@ -47,7 +46,9 @@ def main() -> None:
         "candidate build is not a completed successful PR preflight",
         "Integration Android Preflight",
         "probe_only supports only the current-function loopback_connect probe",
-        "full/install_only/diagnose_only do not accept a probe",
+        "full accepts only the explicit optional capacity_resources probe",
+        "install_only/diagnose_only do not accept a probe",
+        "capacity_resources",
         'echo "control_sha=$GITHUB_SHA"',
         "actions: read",
         "Exercise orchestration and installer contracts",
@@ -64,6 +65,9 @@ def main() -> None:
         "Collect one canonical current-L8 diagnostic snapshot",
         "mish-device-diagnostic-v2.json",
         "Explicit current-function probe only - loopback CONNECT",
+        "Explicit U2 capacity/resources - external Mesh",
+        "diagnose-capacity-resources.ps1",
+        "steps.baseline.outcome == 'success'",
         "Automatic cycle start: **NO**",
         "Automatic repair/probe decision: **NO**",
         "STOP_FOR_ANALYSIS",
@@ -73,6 +77,7 @@ def main() -> None:
         "candidate producer workflow differs from accepted protected-main producer",
         "Accepted producer policy",
         "Exact candidate acceptance",
+        "Targeted acceptance",
     ):
         require(workflow, required, "explicit single-run orchestration contract drifted")
 
@@ -120,10 +125,7 @@ def main() -> None:
     if "shell: powershell" in workflow_text:
         raise SystemExit("device cycle contract: Windows PowerShell 5.1 must not execute Device Cycle")
 
-    for obsolete_path in (
-        ".github/workflows/device-candidate-physical.yml",
-        "lab/windows/collect-runtime-identity.ps1",
-    ):
+    for obsolete_path in (".github/workflows/device-candidate-physical.yml", "lab/windows/collect-runtime-identity.ps1"):
         if (ROOT / obsolete_path).exists():
             raise SystemExit(f"device cycle contract: obsolete path must not exist: {obsolete_path}")
 
@@ -187,14 +189,39 @@ def main() -> None:
         "MISH_LOOPBACK_DIAGNOSTIC_PROTOCOL_MATRIX_PASS",
     ):
         require(protocol_probe, required, "U2 physical protocol/auth/relay evidence drifted")
+    for forbidden in ("sing-box", "'shell', 'su'", "'shell', 'kill'", "'shell', 'pkill'", "'shell', 'am', 'force-stop'"):
+        forbid(protocol_probe, forbidden, "U2 protocol probe must remain read-only, non-root and current-PRODUCT-only")
+
+    capacity_probe = "lab/windows/diagnose-capacity-resources.ps1"
+    for required in (
+        "mish.diagnostics/v2",
+        "$snapshot.mesh.active_sessions",
+        "$snapshot.proxy.active_sessions",
+        "[bool]$last.consistent",
+        "Find-NetRoute -RemoteIPAddress $meshAddress",
+        "ConnectAsync($ProxyHost, 3128)",
+        "foreach ($target in @(10, 32, 64))",
+        "Test-MishOverflowRejected",
+        "Wait-MishOwnerCounts -ExpectedMesh 64 -ExpectedProxy 64",
+        "Wait-MishOwnerCounts -ExpectedMesh 0 -ExpectedProxy 0",
+        "'shell', 'run-as', $PackageName, 'cat'",
+        "'shell', 'dumpsys', 'meminfo', '-s'",
+        "mish.lab.capacity-resources/v1",
+        "acceptance_result = $acceptanceResult",
+        "U2_CAPACITY_AND_RESOURCE_MEASUREMENTS_PASS",
+        "post_cleanup_delta_from_idle",
+    ):
+        require(capacity_probe, required, "U2 external-Mesh capacity/resource evidence drifted")
     for forbidden in (
-        "sing-box",
+        "'forward'",
         "'shell', 'su'",
         "'shell', 'kill'",
         "'shell', 'pkill'",
-        "'shell', 'am', 'force-stop'",
+        "airplane-mode",
+        "settings put",
+        "sing-box",
     ):
-        forbid(protocol_probe, forbidden, "U2 protocol probe must remain read-only, non-root and current-PRODUCT-only")
+        forbid(capacity_probe, forbidden, "capacity/resource probe must remain external-Mesh, read-only and non-root")
 
     probe_module = "lab/windows/DiagnosticConnectProbe.psm1"
     for required in (
@@ -232,10 +259,15 @@ def main() -> None:
         "ControlSha",
         "RequestedProbe",
         "loopback_connect",
+        "capacity_resources",
+        "Get-MishTargetedAcceptance",
+        "protocol_matrix_pass",
+        "acceptance_result",
+        "FULL_BASELINE_PLUS_CAPACITY_RESOURCES",
         "automatic = $false",
-        "MANUAL_PROBE_COMPLETED",
         "exact_candidate_acceptance",
         "NOT_EVALUATED",
+        "Baseline facts outrank targeted-probe absence/failure",
     ):
         require(report, required, "cycle report evidence semantics drifted")
 
@@ -245,10 +277,12 @@ def main() -> None:
         "PRODUCT_PROXY_MIXED_LISTENER_UNAVAILABLE",
         "Healthy current L8 fact set did not classify PASS",
         "Full PASS report must accept the exact current candidate and contain no automatic probe decision",
-        "Explicit current-function probe may pass collection but cannot claim exact PRODUCT acceptance",
+        "A collected but failing loopback matrix must not be promoted to a green probe",
+        "A real capacity failure must reject the exact PRODUCT candidate",
+        "Baseline PRODUCT failure must outrank absent capacity evidence",
+        "diagnose-capacity-resources.ps1",
+        "U2_CAPACITY_AND_RESOURCE_MEASUREMENTS_PASS",
         "test-diagnostic-connect-probe.ps1",
-        "U2_PROXY_PROTOCOL_MATRIX_PASS",
-        "MISH_LOOPBACK_DIAGNOSTIC_PROTOCOL_MATRIX_PASS",
     ):
         require(test, required, "current L8 executable regression coverage drifted")
 
@@ -259,6 +293,9 @@ def main() -> None:
         "No automatic targeted probe",
         "No successful build, merge to main, label, or completed workflow starts DEVICE-1",
         "/mish-cycle full <PRODUCT_SHA>",
+        "/mish-cycle full <PRODUCT_SHA> capacity_resources",
+        "external Mesh endpoint",
+        "owner-backed",
         "one GitHub Actions Device Cycle run",
         "CONTROL_SHA",
         "installed base.apk SHA-256",
