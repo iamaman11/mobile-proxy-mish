@@ -74,12 +74,19 @@ def main() -> None:
     if "build-tools;36.0.0" not in (toolchain.get("android", {}).get("packages") or []):
         raise SystemExit("delivery contract: canonical LAB bootstrap must provision build-tools;36.0.0")
 
-    # Protected-main PR CI is native-only and must never carry old vendor runtime checks.
+    # Protected-main PR CI always runs cheap authority guards; heavy PRODUCT jobs run only for PRODUCT/build input changes.
     ci = ".github/workflows/ci.yml"
     for required in (
         "branches: [main]",
-        "Architecture Guards",
+        "workflow_dispatch:",
+        "Architecture + Delivery Guards",
         "python3 tools/check_architecture.py",
+        "python3 tools/check_delivery_contract.py",
+        "PRODUCT Change Classification",
+        "product_changed=true",
+        "android/*|crates/*|config/*|contracts/*|Cargo.toml|Cargo.lock|rust-toolchain.toml)",
+        "needs: [architecture, changes]",
+        "needs.changes.outputs.product_changed == 'true'",
         "Rust Workspace",
         "cargo fmt --all --check",
         "cargo clippy --workspace --all-targets --locked -- -D warnings",
@@ -90,6 +97,7 @@ def main() -> None:
         "obsolete sing-box binary leaked into native PRODUCT APK",
     ):
         require(ci, required, "protected-main native CI contract drifted")
+    forbid_regex(ci, r"^\s{2}push:\s*$", "accepted protected main must not automatically rebuild an already accepted PRODUCT")
     for obsolete in (
         "materialize_sing_box_android.py",
         "vendor/sing-box/release.toml",
