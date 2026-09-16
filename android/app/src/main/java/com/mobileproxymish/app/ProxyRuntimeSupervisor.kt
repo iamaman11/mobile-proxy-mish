@@ -1,6 +1,5 @@
 package com.mobileproxymish.app
 
-import android.content.Context
 import com.mobileproxymish.app.cellular.CellularRuntimeBridge
 import com.mobileproxymish.ffi.NativeProxyRuntime
 import com.mobileproxymish.ffi.ProxyServingFailure
@@ -65,12 +64,11 @@ internal fun interface ProxyCredentialProvider {
  *
  * Canonical loopback Rust listeners connect directly through the root-policy-gated Cellular
  * Egress connector. Android owns no proxy executor, accept/session thread, health socket, private
- * bridge, private credential, PID, root launcher or steady-state process reconciliation loop.
+ * bridge, private credential, PID, root launcher, process migration or process reconciliation.
  * Protocol/auth/relay are owned by Rust; Cellular admission/DNS/routing remain owned by the
  * existing Cellular runtime.
  */
 class ProxyRuntimeSupervisor internal constructor(
-    context: Context,
     private val cellularRuntime: CellularRuntimeBridge,
     private val publicCredentials: ProxyCredentialProvider,
     private val onUnexpectedFailure: (ProxyServingFailure) -> Unit = {},
@@ -79,7 +77,6 @@ class ProxyRuntimeSupervisor internal constructor(
     private val mutableSnapshot = MutableStateFlow(projectLifecycle(lifecycle.snapshot()))
     private val closed = AtomicBoolean(false)
     private val lock = Any()
-    private val migration = LegacySingBoxUpgradeMigration(context.applicationContext)
     private val monitorScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private var nativeRuntime: NativeProxyRuntime? = null
@@ -117,11 +114,6 @@ class ProxyRuntimeSupervisor internal constructor(
             }
             if (publicCredential == null) {
                 failLifecycle(ProxyServingFailure.EXTERNAL_CREDENTIAL_UNAVAILABLE)
-                return
-            }
-
-            if (!migration.runOnce()) {
-                failLifecycle(ProxyServingFailure.LEGACY_MIGRATION_BLOCKED)
                 return
             }
 
