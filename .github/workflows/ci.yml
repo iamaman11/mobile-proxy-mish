@@ -15,9 +15,6 @@ concurrency:
 
 env:
   RUST_TOOLCHAIN: '1.98.1'
-  CARGO_NDK_VERSION: '4.1.2'
-  ANDROID_NDK_VERSION: '29.0.14206865'
-  GRADLE_VERSION: '9.6.0'
 
 jobs:
   architecture:
@@ -75,7 +72,7 @@ jobs:
           product_changed=false
           while IFS= read -r path; do
             case "$path" in
-              android/*|crates/*|config/*|contracts/*|Cargo.toml|Cargo.lock|rust-toolchain.toml)
+              android/*|crates/*|config/*|contracts/*|Cargo.toml|Cargo.lock|rust-toolchain.toml|.github/workflows/ci.yml|.github/workflows/integration-android-preflight.yml|tools/verify_android_candidate.py)
                 product_changed=true
                 break
                 ;;
@@ -119,117 +116,6 @@ jobs:
           GENERATED="target/uniffi-kotlin/com/mobileproxymish/ffi/mish_android_ffi.kt"
           test -f "$GENERATED"
           grep -q '^package com.mobileproxymish.ffi$' "$GENERATED"
-          for symbol in \
-            CellularController \
-            MeshTransportController \
-            RuntimeLifecycleController \
-            NativeProxyRuntime \
-            NativeProxyRuntimeObserver \
-            startNativeProxyRuntime \
-            proxyServingFailureRecoverable \
-            proxyListenerPorts; do
-            grep -Fq "$symbol" "$GENERATED"
-          done
-          for forbidden in \
-            CellularNetworkLease \
-            admittedNetworkLease \
-            bindSocket \
-            resolveHost \
-            RuntimeProcessLifecycleController \
-            ProxyServingLifecycleController \
-            PrivateBridge; do
-            if grep -Fq "$forbidden" "$GENERATED"; then
-              echo "obsolete or uncontrolled API leaked into UniFFI surface: $forbidden" >&2
-              exit 1
-            fi
-          done
-
-  android:
-    name: Android Compose Shell
-    needs: [architecture, changes]
-    if: ${{ needs.architecture.result == 'success' && needs.changes.outputs.product_changed == 'true' }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Set up pinned Gradle
-        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
-        with:
-          gradle-version: ${{ env.GRADLE_VERSION }}
-
-      - name: Install pinned Rust Android tooling for target ABI
-        run: |
-          set -euo pipefail
-          TARGET_ABI="$(sed -n 's/^mishTargetAbi=//p' android/gradle.properties)"
-          case "$TARGET_ABI" in
-            armeabi-v7a) RUST_TARGET='armv7-linux-androideabi' ;;
-            arm64-v8a) RUST_TARGET='aarch64-linux-android' ;;
-            *) echo "Unsupported mishTargetAbi: $TARGET_ABI" >&2; exit 1 ;;
-          esac
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-          rustup override set "$RUST_TOOLCHAIN"
-          rustup target add "$RUST_TARGET"
-          cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
-          echo "MISH_TARGET_ABI=$TARGET_ABI" >> "$GITHUB_ENV"
-
-      - name: Install pinned Android NDK
-        run: |
-          set -euo pipefail
-          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:?Android SDK root is not configured}}"
-          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-          NDK_PATH="$SDK_ROOT/ndk/$ANDROID_NDK_VERSION"
-          test -x "$SDKMANAGER"
-          if [[ ! -d "$NDK_PATH" ]]; then
-            "$SDKMANAGER" "ndk;$ANDROID_NDK_VERSION"
-          fi
-          test -d "$NDK_PATH"
-          echo "ANDROID_NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
-          echo "ANDROID_NDK_ROOT=$NDK_PATH" >> "$GITHUB_ENV"
-          echo "ANDROID_NDK=$NDK_PATH" >> "$GITHUB_ENV"
-
-      - name: Lint, unit test and assemble Android shell + physical test APK
-        run: |
-          gradle --no-daemon -p android \
-            :app:lintDebug \
-            :app:testDebugUnitTest \
-            :app:assembleDebug \
-            :app:assembleDebugAndroidTest
-
-      - name: Verify packaged native runtime and narrow UniFFI surface
-        run: |
-          set -euo pipefail
-          APK="android/app/build/outputs/apk/debug/app-debug.apk"
-          TEST_APK="android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"
-          NATIVE="android/app/build/generated/rust-jni/$MISH_TARGET_ABI/libmish_android_ffi.so"
-          GENERATED="android/app/build/generated/uniffi/kotlin/com/mobileproxymish/ffi/mish_android_ffi.kt"
-          test -f "$APK"
-          test -f "$TEST_APK"
-          test -f "$NATIVE"
-          test -f "$GENERATED"
-          unzip -l "$APK" | grep -q "lib/$MISH_TARGET_ABI/libmish_android_ffi.so"
-          unzip -l "$APK" | grep -q "lib/$MISH_TARGET_ABI/libjnidispatch.so"
-          if unzip -l "$APK" | grep -Fq 'libsingbox.so'; then
-            echo 'obsolete sing-box binary leaked into native PRODUCT APK' >&2
-            exit 1
-          fi
-
-          SYMBOLS="$RUNNER_TEMP/mish-android-ffi.symbols"
-          readelf -Ws "$NATIVE" > "$SYMBOLS"
-          grep -Fq 'android_getaddrinfofornetwork' "$SYMBOLS"
-          if grep -Fq 'android_setsocknetwork' "$SYMBOLS"; then
-            echo 'superseded android_setsocknetwork leaked into PRODUCT FFI library' >&2
-            exit 1
-          fi
-
           for symbol in \
             CellularController \
             MeshTransportController \
