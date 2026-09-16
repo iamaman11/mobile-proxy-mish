@@ -5,7 +5,11 @@ use crate::ProxyServingFailure;
 pub const fn proxy_serving_failure_recoverable(failure: ProxyServingFailure) -> bool {
     matches!(
         failure,
-        ProxyServingFailure::ListenerUnavailable | ProxyServingFailure::ServingUnhealthy
+        ProxyServingFailure::MixedListenerUnavailable
+            | ProxyServingFailure::Socks5ListenerUnavailable
+            | ProxyServingFailure::HttpConnectListenerUnavailable
+            | ProxyServingFailure::ExecutorUnavailable
+            | ProxyServingFailure::ServingUnhealthy
     )
 }
 
@@ -26,15 +30,21 @@ mod tests {
 
     #[test]
     fn only_transient_native_serving_failures_auto_recover() {
-        assert!(proxy_serving_failure_recoverable(
-            ProxyServingFailure::ListenerUnavailable
-        ));
-        assert!(proxy_serving_failure_recoverable(
-            ProxyServingFailure::ServingUnhealthy
-        ));
+        for recoverable in [
+            ProxyServingFailure::MixedListenerUnavailable,
+            ProxyServingFailure::Socks5ListenerUnavailable,
+            ProxyServingFailure::HttpConnectListenerUnavailable,
+            ProxyServingFailure::ExecutorUnavailable,
+            ProxyServingFailure::ServingUnhealthy,
+        ] {
+            assert!(proxy_serving_failure_recoverable(recoverable));
+        }
         for terminal in [
             ProxyServingFailure::NativeRuntimeMissing,
             ProxyServingFailure::ExternalCredentialUnavailable,
+            ProxyServingFailure::CellularConnectorUnavailable,
+            ProxyServingFailure::ProxyConfigurationRejected,
+            ProxyServingFailure::RuntimeStateUnavailable,
             ProxyServingFailure::ShutdownFailed,
         ] {
             assert!(!proxy_serving_failure_recoverable(terminal));
