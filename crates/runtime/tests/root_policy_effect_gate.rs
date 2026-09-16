@@ -1,7 +1,7 @@
 use mish_cellular::{
     CellularNetworkAuthority, NetworkHandle, NetworkObservation, ObservationSequence,
 };
-use mish_proxy::{ProxyConnectTarget, ProxyOutboundConnectError, ProxyOutboundConnector};
+use mish_proxy::{ProxyConnectTarget, ProxyOutboundConnectError};
 use mish_runtime::{CellularDnsResolver, CellularRuntimeCoordinator};
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -35,10 +35,10 @@ fn direct_proxy_connector_cannot_escape_before_root_authorization_or_after_cellu
     let target = ProxyConnectTarget::domain("gate.example.invalid", 443).expect("target");
 
     // No cellular authority exists yet. The direct PRODUCT path fails before DNS.
-    assert_eq!(
+    assert!(matches!(
         connector.connect(&target),
         Err(ProxyOutboundConnectError::Unavailable)
-    );
+    ));
     assert_eq!(resolver_calls.load(Ordering::SeqCst), 0);
 
     let admitted = runtime
@@ -55,10 +55,10 @@ fn direct_proxy_connector_cannot_escape_before_root_authorization_or_after_cellu
 
     // Semantic cellular admission alone is insufficient: exact root-policy authorization is the
     // sole gate that permits the blocking setup seam to reach exact-network DNS.
-    assert_eq!(
+    assert!(matches!(
         connector.connect(&target),
         Err(ProxyOutboundConnectError::Unavailable)
-    );
+    ));
     assert_eq!(resolver_calls.load(Ordering::SeqCst), 0);
 
     assert!(
@@ -66,10 +66,10 @@ fn direct_proxy_connector_cannot_escape_before_root_authorization_or_after_cellu
             .authorize_root_policy(sequence(1), handle(42))
             .expect("authorize exact root policy")
     );
-    assert_eq!(
+    assert!(matches!(
         connector.connect(&target),
         Err(ProxyOutboundConnectError::Failed)
-    );
+    ));
     assert_eq!(resolver_calls.load(Ordering::SeqCst), 1);
 
     runtime
@@ -78,9 +78,9 @@ fn direct_proxy_connector_cannot_escape_before_root_authorization_or_after_cellu
 
     // Loss closes the same gate synchronously. A stale connector cannot reach DNS and therefore
     // cannot escape through default/Wi-Fi/VPN routing.
-    assert_eq!(
+    assert!(matches!(
         connector.connect(&target),
         Err(ProxyOutboundConnectError::Unavailable)
-    );
+    ));
     assert_eq!(resolver_calls.load(Ordering::SeqCst), 1);
 }
