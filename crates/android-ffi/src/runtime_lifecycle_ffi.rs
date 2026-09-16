@@ -293,9 +293,7 @@ pub(crate) const fn map_proxy_failure_out(
     }
 }
 
-pub(crate) const fn map_proxy_failure_in(
-    failure: ProxyServingFailure,
-) -> OwnerProxyServingFailure {
+pub(crate) const fn map_proxy_failure_in(failure: ProxyServingFailure) -> OwnerProxyServingFailure {
     match failure {
         ProxyServingFailure::NativeRuntimeMissing => OwnerProxyServingFailure::NativeRuntimeMissing,
         ProxyServingFailure::ExternalCredentialUnavailable => {
