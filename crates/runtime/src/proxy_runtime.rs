@@ -66,14 +66,20 @@ impl fmt::Display for ProxyServingRuntimeError {
                 formatter.write_str("native proxy runtime must bind loopback only")
             }
             Self::ListenerUnavailable(protocol) => {
-                write!(formatter, "native proxy listener is unavailable: {protocol:?}")
+                write!(
+                    formatter,
+                    "native proxy listener is unavailable: {protocol:?}"
+                )
             }
             Self::ThreadUnavailable => {
                 formatter.write_str("native proxy runtime executor could not start")
             }
-            Self::StateUnavailable => formatter.write_str("native proxy runtime state is unavailable"),
-            Self::ShutdownTimedOut => formatter
-                .write_str("native proxy sessions did not stop within the bounded timeout"),
+            Self::StateUnavailable => {
+                formatter.write_str("native proxy runtime state is unavailable")
+            }
+            Self::ShutdownTimedOut => {
+                formatter.write_str("native proxy sessions did not stop within the bounded timeout")
+            }
         }
     }
 }
@@ -414,8 +420,7 @@ mod tests {
     #[test]
     fn runtime_error_mapping_is_exact_and_owner_owned() {
         assert_eq!(
-            ProxyServingRuntimeError::ListenerUnavailable(ProxyProtocol::Mixed)
-                .lifecycle_failure(),
+            ProxyServingRuntimeError::ListenerUnavailable(ProxyProtocol::Mixed).lifecycle_failure(),
             ProxyServingFailure::MixedListenerUnavailable
         );
         assert_eq!(
