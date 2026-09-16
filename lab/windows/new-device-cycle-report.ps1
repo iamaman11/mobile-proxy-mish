@@ -26,9 +26,66 @@ function Read-OptionalJson {
     return (Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json)
 }
 
+function Get-MishTargetedAcceptance {
+    param($Evidence)
+    if ($null -eq $Evidence) { return 'MISSING' }
+
+    if ($Evidence.PSObject.Properties.Name -contains 'acceptance_result') {
+        $value = [string]$Evidence.acceptance_result
+        if ($value -in @('PASS', 'FAIL')) { return $value }
+        return 'INVALID'
+    }
+
+    # Compatibility with the already accepted loopback protocol evidence schema. A collected JSON
+    # file is not success by itself: every functional field that made #207 acceptable must agree.
+    if (
+        [string]$Evidence.schema -ceq 'mish.lab.loopback-connect-diagnostic/v1' -and
+        $Evidence.PSObject.Properties.Name -contains 'protocol_matrix_pass' -and
+        $Evidence.PSObject.Properties.Name -contains 'pid_stable' -and
+        $null -ne $Evidence.connect_probe
+    ) {
+        if (
+            [bool]$Evidence.pid_stable -and
+            [bool]$Evidence.protocol_matrix_pass -and
+            [string]$Evidence.connect_probe.result -ceq 'PASS' -and
+            [string]$Evidence.classification -ceq 'U2_PROXY_PROTOCOL_MATRIX_PASS'
+        ) {
+            return 'PASS'
+        }
+        return 'FAIL'
+    }
+
+    return 'INVALID'
+}
+
+function Get-MishTargetedClassification {
+    param($Evidence)
+    if ($null -eq $Evidence) { return 'LAB_TARGETED_PROBE_COLLECTION_FAILED' }
+    if ($Evidence.PSObject.Properties.Name -contains 'classification') {
+        $value = [string]$Evidence.classification
+        if ($value -match '^[A-Z0-9_]+$') { return $value }
+    }
+    return 'LAB_TARGETED_PROBE_SCHEMA_INVALID'
+}
+
+function Get-MishCycleFailureKind {
+    param([Parameter(Mandatory)][string] $Classification)
+    if (
+        $Classification -like 'LAB_*' -or
+        $Classification -like 'WINDOWS_*' -or
+        $Classification -like 'INVALID_*' -or
+        $Classification -eq 'DIAGNOSTIC_COLLECTION_FAILED'
+    ) {
+        return 'LAB_FAIL'
+    }
+    return 'PRODUCT_FAIL'
+}
+
 $launch = Read-OptionalJson -Path $LaunchReceiptPath
 $diagnostic = Read-OptionalJson -Path $DiagnosticEvidencePath
 $targeted = Read-OptionalJson -Path $TargetedEvidencePath
+$targetedAcceptance = Get-MishTargetedAcceptance -Evidence $targeted
+$targetedClassification = Get-MishTargetedClassification -Evidence $targeted
 
 $launchFailed = $null -ne $launch -and [string]$launch.result -ceq 'FAIL'
 $launchFailureCategory = if ($launchFailed) { [string]$launch.failure_category } else { '' }
@@ -42,11 +99,41 @@ $classification = switch ($Mode) {
         if ($RequestedProbe -cne 'loopback_connect') {
             'LAB_PROBE_NOT_EXPLICIT'
         }
-        elseif ($null -eq $targeted) {
+        elseif ($targetedAcceptance -eq 'MISSING') {
             'LAB_TARGETED_PROBE_COLLECTION_FAILED'
         }
+        elseif ($targetedAcceptance -eq 'INVALID') {
+            'LAB_TARGETED_PROBE_SCHEMA_INVALID'
+        }
         else {
-            'MANUAL_PROBE_COMPLETED'
+            $targetedClassification
+        }
+        break
+    }
+    'full' {
+        if ($launchFailed) {
+            "LAB_LAUNCH_$launchFailureCategory"
+        }
+        elseif ($null -eq $diagnostic) {
+            'DIAGNOSTIC_COLLECTION_FAILED'
+        }
+        elseif ([string]$diagnostic.classification -cne 'PASS') {
+            [string]$diagnostic.classification
+        }
+        elseif ($RequestedProbe -ceq 'none') {
+            'PASS'
+        }
+        elseif ($RequestedProbe -cne 'capacity_resources') {
+            'LAB_PROBE_NOT_EXPLICIT'
+        }
+        elseif ($targetedAcceptance -eq 'MISSING') {
+            'LAB_TARGETED_PROBE_COLLECTION_FAILED'
+        }
+        elseif ($targetedAcceptance -eq 'INVALID') {
+            'LAB_TARGETED_PROBE_SCHEMA_INVALID'
+        }
+        else {
+            $targetedClassification
         }
         break
     }
@@ -66,32 +153,53 @@ $classification = switch ($Mode) {
 $cycleResult = switch ($Mode) {
     'install_only' { 'PASS'; break }
     'probe_only' {
-        if ($classification -ceq 'MANUAL_PROBE_COMPLETED') { 'PASS' } else { 'LAB_FAIL' }
+        if ($classification -eq 'LAB_PROBE_NOT_EXPLICIT' -or $targetedAcceptance -in @('MISSING', 'INVALID')) {
+            'LAB_FAIL'
+        }
+        elseif ($targetedAcceptance -ceq 'PASS') {
+            'PASS'
+        }
+        else {
+            Get-MishCycleFailureKind -Classification $classification
+        }
+        break
+    }
+    'full' {
+        if ($classification -ceq 'PASS') {
+            'PASS'
+        }
+        elseif (
+            $null -eq $diagnostic -or
+            $classification -eq 'LAB_PROBE_NOT_EXPLICIT' -or
+            $targetedAcceptance -in @('MISSING', 'INVALID') -and $RequestedProbe -cne 'none'
+        ) {
+            'LAB_FAIL'
+        }
+        elseif (
+            [string]$diagnostic.classification -ceq 'PASS' -and
+            $RequestedProbe -ceq 'capacity_resources' -and
+            $targetedAcceptance -ceq 'PASS'
+        ) {
+            'PASS'
+        }
+        else {
+            Get-MishCycleFailureKind -Classification $classification
+        }
         break
     }
     default {
         if ($classification -ceq 'PASS') {
             'PASS'
         }
-        elseif (
-            $null -eq $diagnostic -or
-            $classification -eq 'DIAGNOSTIC_COLLECTION_FAILED' -or
-            $classification -like 'LAB_*' -or
-            $classification -like 'WINDOWS_*' -or
-            $classification -like 'INVALID_*'
-        ) {
-            'LAB_FAIL'
-        }
         else {
-            'PRODUCT_FAIL'
+            Get-MishCycleFailureKind -Classification $classification
         }
     }
 }
 
-# This field answers a different question from cycle_result. `cycle_result=PASS` can mean that a
-# targeted read-only current-function probe was collected successfully. Only `full`
-# installs/verifies the exact candidate and then exercises the canonical PRODUCT baseline, so only
-# that mode can accept/reject the exact PRODUCT candidate. LAB failure leaves acceptance unevaluated.
+# `cycle_result` reports the executed scope. Only full mode installs/verifies the exact candidate and
+# then executes the canonical baseline; an explicitly requested capacity probe becomes part of that
+# same exact-candidate acceptance. LAB/control failure leaves PRODUCT acceptance unevaluated.
 $exactCandidateAcceptance = if ($Mode -cne 'full') {
     'NOT_EVALUATED'
 }
@@ -117,7 +225,7 @@ $report = [ordered]@{
     collected_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
     mode = $Mode
     acceptance_scope = switch ($Mode) {
-        'full' { 'FULL_BASELINE' }
+        'full' { if ($RequestedProbe -ceq 'capacity_resources') { 'FULL_BASELINE_PLUS_CAPACITY_RESOURCES' } else { 'FULL_BASELINE' } }
         'install_only' { 'INSTALL_ONLY' }
         'diagnose_only' { 'DIAGNOSE_ONLY' }
         'probe_only' { 'PROBE_ONLY' }
@@ -135,6 +243,7 @@ $report = [ordered]@{
         requested = $RequestedProbe
         automatic = $false
         evidence_present = $null -ne $targeted
+        acceptance_result = $targetedAcceptance
         evidence = $targeted
     }
 }
