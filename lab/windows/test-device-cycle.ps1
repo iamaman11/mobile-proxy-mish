@@ -65,7 +65,7 @@ try {
     $case = $base.Clone()
     $case.ProxyState = 'FAILED'
     $case.ProxyHealthy = $false
-    $case.ProxyFailure = 'LISTENER_UNAVAILABLE'
+    $case.ProxyFailure = 'MIXED_LISTENER_UNAVAILABLE'
     $case.CellularState = 'BOUNDARY_UNAVAILABLE'
     $case.CellularAdmitted = $false
     $case.RootAuthorityObservation = 'NOT_OBSERVED'
@@ -80,7 +80,7 @@ try {
     $case.ReadinessBindingEligible = $false
     $case.ReadinessProbeState = 'BLOCKED'
     $observed = Get-MishDeviceDiagnosticClassification @case
-    if ($observed -cne 'PRODUCT_PROXY_LISTENER_UNAVAILABLE') {
+    if ($observed -cne 'PRODUCT_PROXY_MIXED_LISTENER_UNAVAILABLE') {
         throw "Terminal current Proxy Serving failure was masked by downstream non-observation: $observed"
     }
 
@@ -207,7 +207,7 @@ try {
     $productDiagnostic = Join-Path $root 'product-diagnostic.json'
     [ordered]@{
         schema = 'mish.lab.diagnostic/v2'
-        classification = 'PRODUCT_PROXY_LISTENER_UNAVAILABLE'
+        classification = 'PRODUCT_PROXY_MIXED_LISTENER_UNAVAILABLE'
         collection_result = 'PASS'
     } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $productDiagnostic
     $productReport = & $reportScript `
@@ -220,7 +220,7 @@ try {
         -OutputPath (Join-Path $root 'product-report.json') | Select-Object -Last 1 | ConvertFrom-Json
     if (
         [string]$productReport.cycle_result -cne 'PRODUCT_FAIL' -or
-        [string]$productReport.classification -cne 'PRODUCT_PROXY_LISTENER_UNAVAILABLE' -or
+        [string]$productReport.classification -cne 'PRODUCT_PROXY_MIXED_LISTENER_UNAVAILABLE' -or
         [string]$productReport.exact_candidate_acceptance -cne 'FAIL'
     ) {
         throw 'Current native PRODUCT diagnostic classification and exact candidate rejection were not preserved.'
