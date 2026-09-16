@@ -173,6 +173,42 @@ def main() -> None:
     for obsolete in ("snapshot_v1", "privateBridge", "RuntimeProcessLifecycle", "LEGACY_MIGRATION", "runtime_identity"):
         forbid(diagnostic, obsolete, "pre-L8 diagnostic semantics must not return")
 
+    protocol_probe = "lab/windows/diagnose-loopback-connect.ps1"
+    for required in (
+        "canonical_ports = @(1080, 1081, 3128)",
+        "$forwardPorts[1080]",
+        "$forwardPorts[1081]",
+        "$forwardPorts[3128]",
+        "Invoke-MishDiagnosticHttpRelayProbe",
+        "Invoke-MishDiagnosticSocks5RelayProbe",
+        "-ExpectAuthRejection",
+        "protocol_matrix = $protocolMatrix",
+        "U2_PROXY_PROTOCOL_MATRIX_PASS",
+        "MISH_LOOPBACK_DIAGNOSTIC_PROTOCOL_MATRIX_PASS",
+    ):
+        require(protocol_probe, required, "U2 physical protocol/auth/relay evidence drifted")
+    for forbidden in (
+        "sing-box",
+        "'shell', 'su'",
+        "'shell', 'kill'",
+        "'shell', 'pkill'",
+        "'shell', 'am', 'force-stop'",
+    ):
+        forbid(protocol_probe, forbidden, "U2 protocol probe must remain read-only, non-root and current-PRODUCT-only")
+
+    probe_module = "lab/windows/DiagnosticConnectProbe.psm1"
+    for required in (
+        "Invoke-MishDiagnosticHttpRelayProbe",
+        "Invoke-MishDiagnosticSocks5RelayProbe",
+        "INVALID_AUTH_NOT_REJECTED",
+        "AUTH_REJECTED",
+        "RELAY_CONFIRMED",
+        "GET / HTTP/1.1",
+    ):
+        require(probe_module, required, "bounded protocol client semantics drifted")
+    for forbidden in ("ProcessBuilder", "su -c", "pkill", "kill -9"):
+        forbid(probe_module, forbidden, "protocol probe must not become a privileged control path")
+
     classification = "lab/windows/DeviceDiagnosticClassification.psm1"
     for required in (
         "PRODUCT_RUNTIME_NOT_RUNNING",
@@ -210,6 +246,9 @@ def main() -> None:
         "Healthy current L8 fact set did not classify PASS",
         "Full PASS report must accept the exact current candidate and contain no automatic probe decision",
         "Explicit current-function probe may pass collection but cannot claim exact PRODUCT acceptance",
+        "test-diagnostic-connect-probe.ps1",
+        "U2_PROXY_PROTOCOL_MATRIX_PASS",
+        "MISH_LOOPBACK_DIAGNOSTIC_PROTOCOL_MATRIX_PASS",
     ):
         require(test, required, "current L8 executable regression coverage drifted")
 
