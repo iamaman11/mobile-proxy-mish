@@ -11,14 +11,11 @@ import java.io.Closeable
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /** Runtime Lifecycle projection only; it does not own proxy protocol or cellular facts. */
@@ -62,9 +59,9 @@ internal fun interface ProxyCredentialProvider {
 /**
  * Thin Android lifecycle/composition adapter for the Rust Proxy Serving runtime.
  *
- * Rust returns expected startup failures as typed PRODUCT data, owns recovery classification and
- * owns protocol/auth/relay execution. Android only supplies platform composition inputs, executes
- * start/stop calls, monitors the returned runtime handle and publishes the Rust lifecycle view.
+ * Rust owns protocol/auth/relay execution and terminal health/failure detection. Android supplies
+ * platform composition inputs, executes start/stop, blocks on the typed Rust terminal event and
+ * projects that owner fact into StateFlow. It never polls health to decide PRODUCT lifecycle.
  */
 class ProxyRuntimeSupervisor internal constructor(
     private val cellularRuntime: CellularRuntimeBridge,
@@ -75,11 +72,10 @@ class ProxyRuntimeSupervisor internal constructor(
     private val mutableSnapshot = MutableStateFlow(projectLifecycle(lifecycle.snapshot()))
     private val closed = AtomicBoolean(false)
     private val lock = Any()
-    private val monitorScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val observationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private var nativeRuntime: NativeProxyRuntime? = null
     private var servingCredentialVersion: ULong? = null
-    private var monitorJob: Job? = null
     private var stopping = false
 
     val snapshot: StateFlow<ProxyRuntimeSnapshot>
@@ -142,12 +138,6 @@ class ProxyRuntimeSupervisor internal constructor(
                 failLifecycle(ProxyServingFailure.RUNTIME_STATE_UNAVAILABLE)
                 return
             }
-
-            if (!runCatching { newRuntime.isHealthy() }.getOrDefault(false)) {
-                runCatching { newRuntime.stop() }
-                failLifecycle(ProxyServingFailure.SERVING_UNHEALTHY)
-                return
-            }
             if (closed.get()) {
                 runCatching { newRuntime.stop() }
                 stopLifecycle()
@@ -159,40 +149,33 @@ class ProxyRuntimeSupervisor internal constructor(
             stopping = false
             check(lifecycle.markRunning()) { "proxy serving left STARTING before health publication" }
             publishLifecycle()
-            startMonitor(newRuntime)
+            observeTerminalFailure(newRuntime)
         }
     }
 
-    private fun startMonitor(expectedRuntime: NativeProxyRuntime) {
-        monitorJob?.cancel()
-        monitorJob = monitorScope.launch {
-            while (isActive && !closed.get()) {
-                delay(HEALTH_POLL_MS)
-                if (runCatching { expectedRuntime.isHealthy() }.getOrDefault(false)) continue
+    private fun observeTerminalFailure(expectedRuntime: NativeProxyRuntime) {
+        observationScope.launch {
+            val ownerFailure = try {
+                expectedRuntime.waitForTerminalFailure()
+            } catch (_: LinkageError) {
+                ProxyServingFailure.NATIVE_RUNTIME_MISSING
+            } catch (_: Exception) {
+                ProxyServingFailure.RUNTIME_STATE_UNAVAILABLE
+            } ?: return@launch
 
-                synchronized(lock) {
-                    if (!stopping && nativeRuntime === expectedRuntime) {
-                        val clean = cleanupCurrentLocked(cancelMonitor = false)
-                        failLifecycle(
-                            if (clean) {
-                                ProxyServingFailure.SERVING_UNHEALTHY
-                            } else {
-                                ProxyServingFailure.SHUTDOWN_FAILED
-                            },
-                        )
-                    }
+            synchronized(lock) {
+                if (!stopping && nativeRuntime === expectedRuntime) {
+                    val clean = cleanupCurrentLocked()
+                    failLifecycle(
+                        if (clean) ownerFailure else ProxyServingFailure.SHUTDOWN_FAILED,
+                    )
                 }
-                return@launch
             }
         }
     }
 
-    private fun cleanupCurrentLocked(cancelMonitor: Boolean = true): Boolean {
+    private fun cleanupCurrentLocked(): Boolean {
         stopping = true
-        if (cancelMonitor) {
-            monitorJob?.cancel()
-        }
-        monitorJob = null
         val currentRuntime = nativeRuntime
         nativeRuntime = null
         servingCredentialVersion = null
@@ -241,7 +224,7 @@ class ProxyRuntimeSupervisor internal constructor(
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         val clean = synchronized(lock) { cleanupCurrentLocked() }
-        monitorScope.cancel()
+        observationScope.cancel()
         if (clean) {
             stopLifecycle()
         } else {
@@ -252,6 +235,5 @@ class ProxyRuntimeSupervisor internal constructor(
 
     private companion object {
         const val OUTBOUND_TIMEOUT_MS = 15_000L
-        const val HEALTH_POLL_MS = 500L
     }
 }
