@@ -72,6 +72,18 @@ internal class MeshIngressRuntimeBridge(
 
     internal fun diagnosticIngressFailure(): MeshIngressDiagnosticFailure = lastIngressFailure
 
+    /** Read the live session count from the Rust Transport owner; Android keeps no parallel counter. */
+    internal fun diagnosticActiveSessions(): ULong? {
+        val activeController = controller ?: return null
+        return try {
+            activeController.admissionSnapshot().activeSessions
+        } catch (_: LinkageError) {
+            null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     fun start() {
         check(!closed.get()) { "Mesh ingress runtime is closed" }
         check(controller != null) { "Mesh transport owner is unavailable" }

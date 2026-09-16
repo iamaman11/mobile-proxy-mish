@@ -19,6 +19,10 @@ def forbid(text: str, needle: str, label: str) -> None:
 def main() -> None:
     manifest = (ROOT / "android/app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
     provider = (ROOT / "android/app/src/main/java/com/mobileproxymish/app/MishDiagnosticsProvider.kt").read_text(encoding="utf-8")
+    proxy_adapter = (ROOT / "android/app/src/main/java/com/mobileproxymish/app/ProxyRuntimeSupervisor.kt").read_text(encoding="utf-8")
+    mesh_adapter = (ROOT / "android/app/src/main/java/com/mobileproxymish/app/MeshIngressRuntimeBridge.kt").read_text(encoding="utf-8")
+    proxy_ffi = (ROOT / "crates/android-ffi/src/proxy_serving_ffi.rs").read_text(encoding="utf-8")
+    transport_ffi = (ROOT / "crates/android-ffi/src/transport_ffi.rs").read_text(encoding="utf-8")
     collector = (ROOT / "lab/windows/collect-device-diagnostic.ps1").read_text(encoding="utf-8")
     classifier = (ROOT / "lab/windows/DeviceDiagnosticClassification.psm1").read_text(encoding="utf-8")
     credential_bridge = (ROOT / "lab/windows/CredentialProvisioning.psm1").read_text(encoding="utf-8")
@@ -36,6 +40,26 @@ def main() -> None:
     require(provider, 'READY_AT_POLICY_AUTHORIZATION', "non-mutating root observation")
     for forbidden in ("ProcessBuilder(", "settings put", "airplane-mode enable", "airplane-mode disable", "adb install"):
         forbid(provider, forbidden, "diagnostic mutation/control surface")
+
+    # Capacity is an owner fact, not an Android/LAB inference. The canonical snapshot projects the
+    # two existing Rust owner counters directly and introduces no parallel Android accounting.
+    require(proxy_ffi, "pub fn active_sessions(&self) -> u32", "Proxy owner active-session boundary")
+    require(proxy_ffi, "self.inner.active_sessions()", "Proxy owner active-session source")
+    require(transport_ffi, "pub active_sessions: u64", "Mesh owner active-session boundary")
+    require(transport_ffi, "active_sessions: snapshot.active_sessions() as u64", "Mesh owner active-session source")
+    require(proxy_adapter, "runCatching { it.activeSessions() }", "Proxy owner session observation")
+    require(mesh_adapter, "activeController.admissionSnapshot().activeSessions", "fresh Mesh owner session observation")
+    require(provider, "proxyActiveSessions = proxyDiagnostic.activeSessions", "Proxy session projection")
+    require(provider, "meshActiveSessions = meshGeneration.diagnosticActiveSessions()", "Mesh session projection")
+    if provider.count('put("active_sessions"') != 2:
+        raise SystemExit("diagnostics contract must publish exactly proxy + Mesh active_sessions")
+    for source, label in (
+        (proxy_adapter, "proxy adapter"),
+        (mesh_adapter, "Mesh adapter"),
+        (provider, "diagnostics provider"),
+    ):
+        forbid(source, "Semaphore(", f"parallel capacity semaphore in {label}")
+        forbid(source, "AtomicInteger(", f"parallel active-session counter in {label}")
 
     # Current U2 control is explicitly bound to the generation-fenced L8 candidate contract.
     require(collector, 'mish.lab.diagnostic/v2', "LAB V2 schema")

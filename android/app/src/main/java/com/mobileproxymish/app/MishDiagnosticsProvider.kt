@@ -36,12 +36,14 @@ internal data class MishDiagnosticFactsV2(
     val proxyState: String,
     val proxyHealthy: Boolean,
     val proxyFailure: String?,
+    val proxyActiveSessions: UInt?,
     val credentialActive: Boolean,
     val meshState: String,
     val meshAdmitted: Boolean,
     val meshEpochPresent: Boolean,
     val meshIngressRunning: Boolean,
     val meshIngressFailure: String,
+    val meshActiveSessions: ULong?,
     val readinessState: String,
     val readinessBindingEligible: Boolean,
     val readinessProbeState: String,
@@ -71,6 +73,7 @@ internal fun renderMishDiagnosticSnapshotV2(facts: MishDiagnosticFactsV2): Strin
             put("state", facts.proxyState)
             put("healthy", facts.proxyHealthy)
             putNullable("failure", facts.proxyFailure)
+            put("active_sessions", facts.proxyActiveSessions?.toLong() ?: JSONObject.NULL)
         })
         put("credential", JSONObject().apply {
             put("active", facts.credentialActive)
@@ -81,6 +84,7 @@ internal fun renderMishDiagnosticSnapshotV2(facts: MishDiagnosticFactsV2): Strin
             put("epoch_present", facts.meshEpochPresent)
             put("ingress_running", facts.meshIngressRunning)
             put("ingress_failure", facts.meshIngressFailure)
+            put("active_sessions", facts.meshActiveSessions?.toLong() ?: JSONObject.NULL)
         })
         put("readiness", JSONObject().apply {
             put("state", facts.readinessState)
@@ -143,7 +147,9 @@ class MishDiagnosticsProvider : ContentProvider() {
         val meshBefore = runtime.meshSnapshot.value
 
         val readinessDiagnostic = readinessGeneration.diagnosticObservation()
+        val proxyDiagnostic = proxyGeneration.diagnosticObservation()
         val meshIngressFailure = meshGeneration.diagnosticIngressFailure().name
+        val meshActiveSessions = meshGeneration.diagnosticActiveSessions()
 
         val cellularAfter = runtime.cellularSnapshot.value
         val proxyAfter = runtime.proxySnapshot.value
@@ -203,12 +209,14 @@ class MishDiagnosticsProvider : ContentProvider() {
                 proxyState = proxyState,
                 proxyHealthy = readinessDiagnostic.proxyHealthy,
                 proxyFailure = proxyFailure,
+                proxyActiveSessions = proxyDiagnostic.activeSessions,
                 credentialActive = readinessDiagnostic.credentialActive,
                 meshState = meshState,
                 meshAdmitted = readinessDiagnostic.meshAdmitted,
                 meshEpochPresent = meshAfter?.admissionEpoch != null,
                 meshIngressRunning = meshAfter?.ingressRunning == true,
                 meshIngressFailure = meshIngressFailure,
+                meshActiveSessions = meshActiveSessions,
                 readinessState = readinessAfter.name,
                 readinessBindingEligible = readinessDiagnostic.bindingEligible,
                 readinessProbeState = readinessProbeState,
