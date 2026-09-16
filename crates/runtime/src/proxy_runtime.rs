@@ -218,7 +218,7 @@ async fn accept_loop(
     credentials: Arc<ProxyCredentialMaterial>,
     connector: Arc<dyn ProxyOutboundConnector>,
     session_budget: Arc<Semaphore>,
-    mut shutdown: watch::Receiver<bool>,
+    shutdown: watch::Receiver<bool>,
     shutdown_tx: watch::Sender<bool>,
     fatal: Arc<AtomicBool>,
     live_acceptors: Arc<AtomicUsize>,
@@ -233,16 +233,7 @@ async fn accept_loop(
             break;
         }
 
-        let accepted = tokio::select! {
-            changed = shutdown.changed() => {
-                if changed.is_err() || *shutdown.borrow() {
-                    break;
-                }
-                continue;
-            }
-            accepted = timeout(ACCEPT_POLL_TIMEOUT, listener.accept()) => accepted,
-        };
-        let accepted = match accepted {
+        let accepted = match timeout(ACCEPT_POLL_TIMEOUT, listener.accept()).await {
             Ok(accepted) => accepted,
             Err(_) => continue,
         };
