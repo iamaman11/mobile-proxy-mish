@@ -23,10 +23,11 @@ internal data class ExternalProxyCredentialReadinessSnapshot(
 /**
  * Thin Android facade for the Rust Credentials / Secrets natural owner.
  *
- * `CredentialMetadataStore` owns durable non-secret schema/migration, `AndroidKeystoreRoot` owns
- * the non-exportable physical secret root and HMAC effect, and `CredentialMaterializer` derives
- * bounded in-memory proxy material. This facade serializes those effects with Rust owner
- * transitions; it owns no duplicate credential lifecycle state machine.
+ * `CredentialMetadataStore` owns the canonical `state_pb_b64_v1` durable protobuf schema and
+ * bounded legacy migration. `AndroidKeystoreRoot` owns the non-exportable physical secret root and
+ * HMAC effect, and `CredentialMaterializer` derives bounded in-memory proxy material. This facade
+ * serializes those effects with Rust owner transitions; it owns no duplicate credential lifecycle
+ * state machine.
  */
 internal class ExternalProxyCredentialStore(
     context: Context,
