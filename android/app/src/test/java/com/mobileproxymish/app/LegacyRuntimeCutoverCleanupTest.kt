@@ -6,6 +6,7 @@ import java.io.File
 import java.nio.file.Files
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -28,11 +29,16 @@ class LegacyRuntimeCutoverCleanupTest {
             RootProcessResult(exitCode = 0, stdout = ""),
             RootProcessResult(exitCode = 0, stdout = ""),
         )
+        val cleanup = LegacyRuntimeCutoverCleanup(runtime, marker, process)
 
-        val clean = LegacyRuntimeCutoverCleanup(runtime, marker, process).ensureLegacyRuntimeAbsent()
+        val clean = cleanup.ensureLegacyRuntimeAbsent()
+        val observation = cleanup.diagnosticObservation()
 
         assertTrue(clean)
         assertTrue(marker.readText(Charsets.US_ASCII).trim() == "native-proxy-v1")
+        assertEquals(LegacyRuntimeCutoverState.READY, observation.state)
+        assertNull(observation.failure)
+        assertEquals(2, observation.ownedCandidateCount)
         assertEquals(4, process.commands.size)
         assertTrue(process.commands[1].contains("kill -TERM"))
         assertTrue(process.commands[1].contains("kill -KILL"))
@@ -54,11 +60,15 @@ class LegacyRuntimeCutoverCleanupTest {
                 stdout = "303\t/data/local/tmp/libsingbox.so\trun\t-c\t/data/local/tmp/foreign.json\t\n",
             ),
         )
+        val cleanup = LegacyRuntimeCutoverCleanup(runtime, marker, process)
 
-        val clean = LegacyRuntimeCutoverCleanup(runtime, marker, process).ensureLegacyRuntimeAbsent()
+        val clean = cleanup.ensureLegacyRuntimeAbsent()
+        val observation = cleanup.diagnosticObservation()
 
         assertTrue(clean)
         assertTrue(marker.isFile)
+        assertEquals(LegacyRuntimeCutoverState.READY, observation.state)
+        assertEquals(0, observation.ownedCandidateCount)
         assertEquals(2, process.commands.size)
         assertFalse(process.commands.any { it.contains("kill -TERM") || it.contains("kill -KILL") })
     }
@@ -75,16 +85,20 @@ class LegacyRuntimeCutoverCleanupTest {
                 stdout = "404\t/system/bin/sh\t-c\t$config\t/data/app/lib/libsingbox.so\t\n",
             ),
         )
+        val cleanup = LegacyRuntimeCutoverCleanup(runtime, marker, process)
 
-        val clean = LegacyRuntimeCutoverCleanup(runtime, marker, process).ensureLegacyRuntimeAbsent()
+        val clean = cleanup.ensureLegacyRuntimeAbsent()
+        val observation = cleanup.diagnosticObservation()
 
         assertFalse(clean)
         assertFalse(marker.exists())
+        assertEquals(LegacyRuntimeCutoverState.BLOCKED, observation.state)
+        assertEquals(LegacyRuntimeCutoverFailure.INITIAL_SCAN_AMBIGUOUS_OWNERSHIP, observation.failure)
         assertEquals(1, process.commands.size)
     }
 
     @Test
-    fun incompleteRootObservationFailsClosedAndDoesNotPublishMarker() {
+    fun incompleteRootObservationFailsClosedAndPublishesTypedCause() {
         val root = Files.createTempDirectory("mish-legacy-root-failure").toFile()
         val runtime = root.resolve("proxy-runtime")
         val marker = root.resolve("proxy-native-migration-v1")
@@ -96,10 +110,41 @@ class LegacyRuntimeCutoverCleanupTest {
                 outputComplete = false,
             ),
         )
+        val cleanup = LegacyRuntimeCutoverCleanup(runtime, marker, process)
 
-        val clean = LegacyRuntimeCutoverCleanup(runtime, marker, process).ensureLegacyRuntimeAbsent()
+        val clean = cleanup.ensureLegacyRuntimeAbsent()
+        val observation = cleanup.diagnosticObservation()
 
         assertFalse(clean)
+        assertFalse(marker.exists())
+        assertEquals(LegacyRuntimeCutoverState.BLOCKED, observation.state)
+        assertEquals(LegacyRuntimeCutoverFailure.INITIAL_SCAN_ROOT_TIMEOUT, observation.failure)
+        assertEquals(-1, observation.rootExitCode)
+    }
+
+    @Test
+    fun rootStopFailurePublishesTypedCauseAndExitCode() {
+        val root = Files.createTempDirectory("mish-legacy-stop-failure").toFile()
+        val runtime = root.resolve("proxy-runtime")
+        val marker = root.resolve("proxy-native-migration-v1")
+        val config = runtime.resolve("sing-box-abcdefghijklmnopqrstuvwx.json").absolutePath
+        val process = FakeRootProcess(
+            RootProcessResult(
+                exitCode = 0,
+                stdout = "505\t/data/app/lib/libsingbox.so\trun\t-c\t$config\t\n",
+            ),
+            RootProcessResult(exitCode = 23, stdout = ""),
+        )
+        val cleanup = LegacyRuntimeCutoverCleanup(runtime, marker, process)
+
+        val clean = cleanup.ensureLegacyRuntimeAbsent()
+        val observation = cleanup.diagnosticObservation()
+
+        assertFalse(clean)
+        assertEquals(LegacyRuntimeCutoverState.BLOCKED, observation.state)
+        assertEquals(LegacyRuntimeCutoverFailure.STOP_ROOT_COMMAND_FAILED, observation.failure)
+        assertEquals(1, observation.ownedCandidateCount)
+        assertEquals(23, observation.rootExitCode)
         assertFalse(marker.exists())
     }
 
@@ -145,7 +190,7 @@ class LegacyRuntimeCutoverCleanupTest {
     }
 
     @Test
-    fun diagnosticsCannotExecuteLegacyCutoverOrRootRepair() {
+    fun diagnosticsCanObserveTypedCutoverFactButCannotExecuteCleanupOrRootRepair() {
         val diagnostics = repositoryFile(
             "android/app/src/main/java/com/mobileproxymish/app/MishDiagnosticsProvider.kt",
         ).readText()
@@ -163,6 +208,9 @@ class LegacyRuntimeCutoverCleanupTest {
         }
         assertTrue(diagnostics.contains("This provider is strictly read-only"))
         assertTrue(diagnostics.contains("snapshot_v2"))
+        assertTrue(diagnostics.contains("cutover_state"))
+        assertTrue(diagnostics.contains("cutover_failure"))
+        assertTrue(diagnostics.contains("cutover_root_exit_code"))
         assertFalse(diagnostics.contains("snapshot_v1"))
         assertFalse(diagnostics.contains("privateBridge"))
     }
