@@ -72,6 +72,34 @@ class L8OneWayArchitectureTest {
     }
 
     @Test
+    fun androidProxySupervisorObservesRustTerminalFailureWithoutHealthPolling() {
+        val supervisor = repositoryFile(
+            "android/app/src/main/java/com/mobileproxymish/app/ProxyRuntimeSupervisor.kt",
+        ).readText()
+        val runtime = repositoryFile("crates/runtime/src/proxy_runtime.rs").readText()
+        val ffi = repositoryFile("crates/android-ffi/src/proxy_serving_ffi.rs").readText()
+
+        assertTrue(
+            "Rust runtime must expose one blocking terminal-failure observation",
+            runtime.contains("pub fn wait_terminal_failure("),
+        )
+        assertTrue(
+            "UniFFI must project the Rust terminal-failure observation without reclassifying health",
+            ffi.contains("pub fn wait_for_terminal_failure("),
+        )
+        assertTrue(
+            "Android must wait on the typed Rust terminal event",
+            supervisor.contains("expectedRuntime.waitForTerminalFailure()"),
+        )
+        for (forbidden in listOf("HEALTH_POLL_MS", "delay(", "while (isActive")) {
+            assertFalse(
+                "Android proxy supervisor must not actively poll serving health: $forbidden",
+                supervisor.contains(forbidden),
+            )
+        }
+    }
+
+    @Test
     fun obsoleteProxyMigrationSourceFileDoesNotExist() {
         val obsolete = repositoryFile(
             "android/app/src/main/java/com/mobileproxymish/app/LegacySingBoxUpgradeMigration.kt",
