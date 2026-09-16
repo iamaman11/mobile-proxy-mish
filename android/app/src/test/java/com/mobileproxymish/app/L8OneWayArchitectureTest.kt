@@ -39,11 +39,16 @@ class L8OneWayArchitectureTest {
     }
 
     @Test
-    fun androidProxyAdapterCannotOwnNativeHealthSupervision() {
+    fun androidProxyAdapterCannotOwnNativeHealthOrLifecycleSupervision() {
         val supervisor = repositoryFile(
             "android/app/src/main/java/com/mobileproxymish/app/ProxyRuntimeSupervisor.kt",
         ).readText()
         val forbidden = listOf(
+            "ProxyServingLifecycleController",
+            ".requestStart()",
+            ".markRunning()",
+            ".markFailed(",
+            ".markStopped()",
             "startMonitor(",
             "HEALTH_POLL_MS",
             "monitorScope",
@@ -55,13 +60,45 @@ class L8OneWayArchitectureTest {
         val offenders = forbidden.filter(supervisor::contains)
 
         assertTrue(
-            "Android ProxyRuntimeSupervisor must not own native health supervision: $offenders",
+            "Android ProxyRuntimeSupervisor must not own native lifecycle/health supervision: $offenders",
             offenders.isEmpty(),
+        )
+        assertTrue(
+            "Android must project the immutable Rust runtime snapshot",
+            supervisor.contains("newRuntime.snapshot()") &&
+                supervisor.contains("projectOwnerSnapshot("),
         )
         assertTrue(
             "Android must subscribe to the typed Rust terminal observation path",
             supervisor.contains("NativeProxyRuntimeObserver") &&
                 supervisor.contains("observeTerminalFailure("),
+        )
+    }
+
+    @Test
+    fun rustProxyRuntimeOwnsLifecycleSnapshotAndTerminalFailure() {
+        val runtime = repositoryFile("crates/runtime/src/proxy_runtime.rs").readText()
+        val ffi = repositoryFile("crates/android-ffi/src/proxy_serving_ffi.rs").readText()
+        val lifecycleFfi = repositoryFile(
+            "crates/android-ffi/src/runtime_lifecycle_ffi.rs",
+        ).readText()
+
+        assertTrue(
+            "ProxyServingRuntime must own the semantic lifecycle state",
+            runtime.contains("ProxyServingLifecycle") &&
+                runtime.contains("pub fn snapshot(&self) -> ProxyServingSnapshot") &&
+                runtime.contains("owner_state.mark_running()") &&
+                runtime.contains("owner_state.mark_stopped()") &&
+                runtime.contains("publish_failure(ProxyServingFailure::ServingUnhealthy)"),
+        )
+        assertTrue(
+            "UniFFI must expose only the runtime-owned immutable snapshot",
+            ffi.contains("pub fn snapshot(&self) -> ProxyServingSnapshotView") &&
+                ffi.contains("map_proxy_snapshot(self.inner.snapshot())"),
+        )
+        assertFalse(
+            "a second standalone Proxy Serving lifecycle controller must not cross UniFFI",
+            lifecycleFfi.contains("ProxyServingLifecycleController"),
         )
     }
 

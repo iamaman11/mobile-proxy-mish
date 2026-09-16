@@ -1,4 +1,6 @@
-use crate::ProxyServingFailure;
+use crate::{
+    ProxyServingFailure, ProxyServingLifecycle, ProxyServingSnapshot, ProxyServingState,
+};
 use mish_configuration::EXTERNAL_TCP_SESSION_BUDGET;
 use mish_proxy::{
     ProxyCredentialMaterial, ProxyOutboundConnector, ProxyProtocol, ProxyServingPlan,
@@ -90,23 +92,29 @@ impl std::error::Error for ProxyServingRuntimeError {}
 /// One-way terminal event emitted by the Rust runtime owner after startup publication.
 pub type ProxyServingTerminalObserver = Arc<dyn Fn(ProxyServingFailure) + Send + Sync + 'static>;
 
-#[derive(Default)]
-struct TerminalStateInner {
-    failure: Option<ProxyServingFailure>,
+struct ProxyServingOwnerStateInner {
+    lifecycle: ProxyServingLifecycle,
     observer: Option<ProxyServingTerminalObserver>,
     notified: bool,
 }
 
-struct TerminalState {
+struct ProxyServingOwnerState {
     shutdown: watch::Sender<bool>,
-    inner: Mutex<TerminalStateInner>,
+    inner: Mutex<ProxyServingOwnerStateInner>,
 }
 
-impl TerminalState {
+impl ProxyServingOwnerState {
     fn new(shutdown: watch::Sender<bool>) -> Self {
+        let mut lifecycle = ProxyServingLifecycle::new();
+        let started = lifecycle.request_start();
+        debug_assert!(started);
         Self {
             shutdown,
-            inner: Mutex::new(TerminalStateInner::default()),
+            inner: Mutex::new(ProxyServingOwnerStateInner {
+                lifecycle,
+                observer: None,
+                notified: false,
+            }),
         }
     }
 
@@ -119,7 +127,8 @@ impl TerminalState {
             state.observer = Some(observer);
             if state.notified {
                 None
-            } else if let (Some(failure), Some(observer)) = (state.failure, state.observer.clone())
+            } else if let (Some(failure), Some(observer)) =
+                (state.lifecycle.snapshot().failure(), state.observer.clone())
             {
                 state.notified = true;
                 Some((observer, failure))
@@ -130,18 +139,35 @@ impl TerminalState {
         notify_terminal_observer(notification);
     }
 
-    fn publish(&self, failure: ProxyServingFailure) {
+    fn mark_running(&self) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lifecycle
+            .mark_running()
+    }
+
+    fn mark_stopped(&self) {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lifecycle
+            .mark_stopped();
+    }
+
+    fn publish_failure(&self, failure: ProxyServingFailure) {
         let notification = {
             let mut state = self
                 .inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if state.failure.is_none() {
-                state.failure = Some(failure);
+            if state.lifecycle.snapshot().failure().is_none() {
+                state.lifecycle.mark_failed(failure);
             }
             if state.notified {
                 None
-            } else if let (Some(failure), Some(observer)) = (state.failure, state.observer.clone())
+            } else if let (Some(failure), Some(observer)) =
+                (state.lifecycle.snapshot().failure(), state.observer.clone())
             {
                 state.notified = true;
                 Some((observer, failure))
@@ -154,15 +180,20 @@ impl TerminalState {
         notify_terminal_observer(notification);
     }
 
-    fn failure(&self) -> Option<ProxyServingFailure> {
+    fn snapshot(&self) -> ProxyServingSnapshot {
         self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .failure
+            .lifecycle
+            .snapshot()
+    }
+
+    fn failure(&self) -> Option<ProxyServingFailure> {
+        self.snapshot().failure()
     }
 
     fn is_failed(&self) -> bool {
-        self.failure().is_some()
+        self.snapshot().state() == ProxyServingState::Failed
     }
 }
 
@@ -183,15 +214,15 @@ fn notify_terminal_observer(
 /// Every accept task is retained by this owner. Every accepted session is retained by the
 /// corresponding accept task's `JoinSet`. Shutdown therefore has one explicit ownership tree:
 /// signal -> stop admission -> abort/drain sessions -> join acceptors -> destroy Tokio runtime.
-/// Unexpected acceptor loss is terminal owner state: Rust records the failure, closes admission,
-/// drains session trees and emits one typed observation to the platform boundary.
+/// ProxyServingRuntime also owns the one semantic lifecycle snapshot. Android may observe that
+/// snapshot and terminal events, but it cannot drive runtime state transitions.
 pub struct ProxyServingRuntime {
     listener_count: usize,
     shutdown: watch::Sender<bool>,
     runtime: Mutex<Option<Runtime>>,
     accept_tasks: Mutex<Vec<JoinHandle<()>>>,
     stopping: Arc<AtomicBool>,
-    terminal: Arc<TerminalState>,
+    owner_state: Arc<ProxyServingOwnerState>,
     live_acceptors: Arc<AtomicUsize>,
     active_sessions: Arc<AtomicUsize>,
 }
@@ -225,7 +256,7 @@ impl ProxyServingRuntime {
             .build()
             .map_err(|_| ProxyServingRuntimeError::ThreadUnavailable)?;
         let (shutdown, shutdown_rx) = watch::channel(false);
-        let terminal = Arc::new(TerminalState::new(shutdown.clone()));
+        let owner_state = Arc::new(ProxyServingOwnerState::new(shutdown.clone()));
         let stopping = Arc::new(AtomicBool::new(false));
         let live_acceptors = Arc::new(AtomicUsize::new(0));
         let active_sessions = Arc::new(AtomicUsize::new(0));
@@ -246,7 +277,7 @@ impl ProxyServingRuntime {
                     Arc::clone(&connector),
                     Arc::clone(&session_budget),
                     shutdown_rx.clone(),
-                    Arc::clone(&terminal),
+                    Arc::clone(&owner_state),
                     Arc::clone(&stopping),
                     Arc::clone(&live_acceptors),
                     Arc::clone(&active_sessions),
@@ -260,35 +291,43 @@ impl ProxyServingRuntime {
             runtime: Mutex::new(Some(runtime)),
             accept_tasks: Mutex::new(accept_tasks),
             stopping,
-            terminal,
+            owner_state,
             live_acceptors,
             active_sessions,
         });
         let deadline = Instant::now() + START_TIMEOUT;
         while !owner.is_healthy() && Instant::now() < deadline {
-            if owner.terminal.is_failed() {
+            if owner.owner_state.is_failed() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(5));
         }
         if !owner.is_healthy() {
-            let _ = owner.stop();
+            let _ = owner.stop_internal();
             return Err(ProxyServingRuntimeError::ThreadUnavailable);
+        }
+        if !owner.owner_state.mark_running() {
+            let _ = owner.stop_internal();
+            return Err(ProxyServingRuntimeError::StateUnavailable);
         }
         Ok(owner)
     }
 
     pub fn set_terminal_observer(&self, observer: ProxyServingTerminalObserver) {
-        self.terminal.set_observer(observer);
+        self.owner_state.set_observer(observer);
+    }
+
+    pub fn snapshot(&self) -> ProxyServingSnapshot {
+        self.owner_state.snapshot()
     }
 
     pub fn terminal_failure(&self) -> Option<ProxyServingFailure> {
-        self.terminal.failure()
+        self.owner_state.failure()
     }
 
     pub fn is_healthy(&self) -> bool {
         !self.stopping.load(Ordering::Acquire)
-            && !self.terminal.is_failed()
+            && !self.owner_state.is_failed()
             && self.live_acceptors.load(Ordering::Acquire) == self.listener_count
     }
 
@@ -304,17 +343,22 @@ impl ProxyServingRuntime {
         self.stopping.store(true, Ordering::Release);
         let _ = self.shutdown.send(true);
 
-        let accept_tasks = self
-            .accept_tasks
-            .lock()
-            .map_err(|_| ProxyServingRuntimeError::StateUnavailable)?
-            .drain(..)
-            .collect::<Vec<_>>();
-        let runtime = self
-            .runtime
-            .lock()
-            .map_err(|_| ProxyServingRuntimeError::StateUnavailable)?
-            .take();
+        let accept_tasks = match self.accept_tasks.lock() {
+            Ok(mut tasks) => tasks.drain(..).collect::<Vec<_>>(),
+            Err(_) => {
+                self.owner_state
+                    .publish_failure(ProxyServingFailure::RuntimeStateUnavailable);
+                return Err(ProxyServingRuntimeError::StateUnavailable);
+            }
+        };
+        let runtime = match self.runtime.lock() {
+            Ok(mut runtime) => runtime.take(),
+            Err(_) => {
+                self.owner_state
+                    .publish_failure(ProxyServingFailure::RuntimeStateUnavailable);
+                return Err(ProxyServingRuntimeError::StateUnavailable);
+            }
+        };
 
         let mut joined_cleanly = true;
         if let Some(runtime) = runtime {
@@ -331,8 +375,11 @@ impl ProxyServingRuntime {
         }
 
         if !joined_cleanly || self.active_sessions.load(Ordering::Acquire) != 0 {
+            self.owner_state
+                .publish_failure(ProxyServingFailure::ShutdownFailed);
             return Err(ProxyServingRuntimeError::ShutdownTimedOut);
         }
+        self.owner_state.mark_stopped();
         Ok(())
     }
 }
@@ -351,7 +398,7 @@ async fn accept_loop(
     connector: Arc<dyn ProxyOutboundConnector>,
     session_budget: Arc<Semaphore>,
     shutdown: watch::Receiver<bool>,
-    terminal: Arc<TerminalState>,
+    owner_state: Arc<ProxyServingOwnerState>,
     stopping: Arc<AtomicBool>,
     live_acceptors: Arc<AtomicUsize>,
     active_sessions: Arc<AtomicUsize>,
@@ -359,7 +406,7 @@ async fn accept_loop(
     let _acceptor = AcceptorGuard::new(
         Arc::clone(&live_acceptors),
         Arc::clone(&stopping),
-        Arc::clone(&terminal),
+        Arc::clone(&owner_state),
     );
     let mut sessions = JoinSet::new();
 
@@ -377,7 +424,9 @@ async fn accept_loop(
             Ok(pair) => pair,
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => {
-                terminal.publish(ProxyServingFailure::ServingUnhealthy);
+                if !stopping.load(Ordering::Acquire) {
+                    owner_state.publish_failure(ProxyServingFailure::ServingUnhealthy);
+                }
                 break;
             }
         };
@@ -464,20 +513,20 @@ fn prepare_blocking_session(
 struct AcceptorGuard {
     live_acceptors: Arc<AtomicUsize>,
     stopping: Arc<AtomicBool>,
-    terminal: Arc<TerminalState>,
+    owner_state: Arc<ProxyServingOwnerState>,
 }
 
 impl AcceptorGuard {
     fn new(
         live_acceptors: Arc<AtomicUsize>,
         stopping: Arc<AtomicBool>,
-        terminal: Arc<TerminalState>,
+        owner_state: Arc<ProxyServingOwnerState>,
     ) -> Self {
         live_acceptors.fetch_add(1, Ordering::AcqRel);
         Self {
             live_acceptors,
             stopping,
-            terminal,
+            owner_state,
         }
     }
 }
@@ -485,8 +534,9 @@ impl AcceptorGuard {
 impl Drop for AcceptorGuard {
     fn drop(&mut self) {
         self.live_acceptors.fetch_sub(1, Ordering::AcqRel);
-        if !self.stopping.load(Ordering::Acquire) && !self.terminal.is_failed() {
-            self.terminal.publish(ProxyServingFailure::ServingUnhealthy);
+        if !self.stopping.load(Ordering::Acquire) && !self.owner_state.is_failed() {
+            self.owner_state
+                .publish_failure(ProxyServingFailure::ServingUnhealthy);
         }
     }
 }
@@ -569,12 +619,13 @@ mod tests {
     #[test]
     fn unexpected_acceptor_exit_is_owned_and_notified_by_rust_once() {
         let (shutdown, _) = watch::channel(false);
-        let terminal = Arc::new(TerminalState::new(shutdown));
+        let owner_state = Arc::new(ProxyServingOwnerState::new(shutdown));
+        assert!(owner_state.mark_running());
         let stopping = Arc::new(AtomicBool::new(false));
         let live_acceptors = Arc::new(AtomicUsize::new(0));
         let observations = Arc::new(Mutex::new(Vec::new()));
         let observations_for_callback = Arc::clone(&observations);
-        terminal.set_observer(Arc::new(move |failure| {
+        owner_state.set_observer(Arc::new(move |failure| {
             observations_for_callback
                 .lock()
                 .expect("observations")
@@ -585,13 +636,14 @@ mod tests {
             let _guard = AcceptorGuard::new(
                 Arc::clone(&live_acceptors),
                 Arc::clone(&stopping),
-                Arc::clone(&terminal),
+                Arc::clone(&owner_state),
             );
             assert_eq!(live_acceptors.load(Ordering::Acquire), 1);
         }
 
+        assert_eq!(owner_state.snapshot().state(), ProxyServingState::Failed);
         assert_eq!(
-            terminal.failure(),
+            owner_state.failure(),
             Some(ProxyServingFailure::ServingUnhealthy)
         );
         assert_eq!(live_acceptors.load(Ordering::Acquire), 0);
@@ -599,28 +651,30 @@ mod tests {
             observations.lock().expect("observations").as_slice(),
             &[ProxyServingFailure::ServingUnhealthy]
         );
-        terminal.publish(ProxyServingFailure::ServingUnhealthy);
+        owner_state.publish_failure(ProxyServingFailure::ServingUnhealthy);
         assert_eq!(observations.lock().expect("observations").len(), 1);
     }
 
     #[test]
     fn explicit_stop_does_not_publish_terminal_failure() {
         let (shutdown, _) = watch::channel(false);
-        let terminal = Arc::new(TerminalState::new(shutdown));
+        let owner_state = Arc::new(ProxyServingOwnerState::new(shutdown));
+        assert!(owner_state.mark_running());
         let stopping = Arc::new(AtomicBool::new(true));
         let live_acceptors = Arc::new(AtomicUsize::new(0));
         {
             let _guard = AcceptorGuard::new(
                 Arc::clone(&live_acceptors),
                 Arc::clone(&stopping),
-                Arc::clone(&terminal),
+                Arc::clone(&owner_state),
             );
         }
-        assert_eq!(terminal.failure(), None);
+        assert_eq!(owner_state.failure(), None);
+        assert_eq!(owner_state.snapshot().state(), ProxyServingState::Running);
     }
 
     #[test]
-    fn start_owns_all_canonical_loopback_listeners_in_one_runtime() {
+    fn start_owns_all_canonical_loopback_listeners_and_lifecycle() {
         let credentials =
             ProxyCredentialMaterial::new("runtime-user", "runtime-password").expect("credentials");
         let plan = ProxyServingPlan::canonical(Ipv4Addr::LOCALHOST.into(), credentials)
@@ -628,8 +682,12 @@ mod tests {
         let runtime =
             ProxyServingRuntime::start(plan, Arc::new(RejectingConnector)).expect("runtime");
         assert!(runtime.is_healthy());
+        assert_eq!(runtime.snapshot().state(), ProxyServingState::Running);
+        assert_eq!(runtime.snapshot().failure(), None);
         runtime.stop().expect("stop");
         assert!(!runtime.is_healthy());
+        assert_eq!(runtime.snapshot().state(), ProxyServingState::Stopped);
+        assert_eq!(runtime.snapshot().failure(), None);
         assert_eq!(runtime.active_sessions(), 0);
     }
 }

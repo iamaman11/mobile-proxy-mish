@@ -4,7 +4,6 @@ import com.mobileproxymish.app.cellular.CellularRuntimeBridge
 import com.mobileproxymish.ffi.NativeProxyRuntime
 import com.mobileproxymish.ffi.NativeProxyRuntimeObserver
 import com.mobileproxymish.ffi.ProxyServingFailure
-import com.mobileproxymish.ffi.ProxyServingLifecycleController
 import com.mobileproxymish.ffi.ProxyServingSnapshotView
 import com.mobileproxymish.ffi.ProxyServingState
 import com.mobileproxymish.ffi.startNativeProxyRuntime
@@ -55,18 +54,17 @@ internal fun interface ProxyCredentialProvider {
 /**
  * Thin Android lifecycle/composition adapter for the Rust Proxy Serving runtime.
  *
- * Rust owns listener/session execution, health/fatal detection, terminal failure publication,
- * cancellation and bounded shutdown. Android supplies composition inputs, executes explicit
- * start/stop effects and projects typed Rust owner facts to StateFlow. There is no Android health
- * polling or runtime supervision loop.
+ * Rust owns listener/session execution, lifecycle state, health/fatal detection, terminal failure
+ * publication, cancellation and bounded shutdown. Android supplies composition inputs, executes
+ * explicit start/stop effects and projects typed Rust owner facts to StateFlow. There is no Android
+ * health decision, lifecycle state machine or runtime supervision loop.
  */
 class ProxyRuntimeSupervisor internal constructor(
     private val cellularRuntime: CellularRuntimeBridge,
     private val publicCredentials: ProxyCredentialProvider,
     private val onFailureObserved: (ProxyServingFailure) -> Unit = {},
 ) : Closeable {
-    private val lifecycle = ProxyServingLifecycleController()
-    private val mutableSnapshot = MutableStateFlow(projectLifecycle(lifecycle.snapshot()))
+    private val mutableSnapshot = MutableStateFlow<ProxyRuntimeSnapshot>(ProxyRuntimeSnapshot.Stopped)
     private val closed = AtomicBoolean(false)
     private val lock = Any()
 
@@ -89,16 +87,26 @@ class ProxyRuntimeSupervisor internal constructor(
     }
 
     fun start() {
-        if (closed.get()) return
-        if (synchronized(lock) { nativeRuntime != null }) return
-        if (!lifecycle.requestStart()) return
-        publishLifecycle()
+        val shouldStart = synchronized(lock) {
+            if (closed.get() || nativeRuntime != null || mutableSnapshot.value == ProxyRuntimeSnapshot.Starting) {
+                false
+            } else {
+                // Presentation-only projection while the synchronous Rust start effect is in flight.
+                mutableSnapshot.value = ProxyRuntimeSnapshot.Starting
+                true
+            }
+        }
+        if (!shouldStart) return
         startBlocking()
     }
 
     private fun startBlocking() {
         val registration = synchronized(lock) {
-            if (closed.get()) return
+            if (closed.get()) {
+                mutableSnapshot.value = ProxyRuntimeSnapshot.Stopped
+                return
+            }
+            if (nativeRuntime != null) return
 
             val publicCredential = try {
                 publicCredentials.currentCredential()
@@ -106,7 +114,7 @@ class ProxyRuntimeSupervisor internal constructor(
                 null
             }
             if (publicCredential == null) {
-                failLifecycle(ProxyServingFailure.EXTERNAL_CREDENTIAL_UNAVAILABLE)
+                publishFailure(ProxyServingFailure.EXTERNAL_CREDENTIAL_UNAVAILABLE)
                 return
             }
 
@@ -118,32 +126,40 @@ class ProxyRuntimeSupervisor internal constructor(
                     operationTimeoutMs = OUTBOUND_TIMEOUT_MS.toULong(),
                 )
             } catch (_: LinkageError) {
-                failLifecycle(ProxyServingFailure.NATIVE_RUNTIME_MISSING)
+                publishFailure(ProxyServingFailure.NATIVE_RUNTIME_MISSING)
                 return
             } catch (_: Exception) {
                 // Expected PRODUCT failures are typed Rust data. This branch is FFI failure only.
-                failLifecycle(ProxyServingFailure.RUNTIME_STATE_UNAVAILABLE)
+                publishFailure(ProxyServingFailure.RUNTIME_STATE_UNAVAILABLE)
                 return
             }
 
             val startFailure = attempt.failure()
             if (startFailure != null) {
-                failLifecycle(startFailure)
+                publishFailure(startFailure)
                 return
             }
             val newRuntime = attempt.runtime()
             if (newRuntime == null) {
-                failLifecycle(ProxyServingFailure.RUNTIME_STATE_UNAVAILABLE)
+                publishFailure(ProxyServingFailure.RUNTIME_STATE_UNAVAILABLE)
                 return
             }
 
             if (closed.get()) {
                 val stopFailure = stopFailure(newRuntime)
                 if (stopFailure == null) {
-                    stopLifecycle()
+                    mutableSnapshot.value = ProxyRuntimeSnapshot.Stopped
                 } else {
-                    failLifecycle(stopFailure)
+                    publishFailure(stopFailure)
                 }
+                return
+            }
+
+            val ownerSnapshot = try {
+                newRuntime.snapshot()
+            } catch (_: Exception) {
+                val failure = stopFailure(newRuntime) ?: ProxyServingFailure.RUNTIME_STATE_UNAVAILABLE
+                publishFailure(failure)
                 return
             }
 
@@ -151,8 +167,7 @@ class ProxyRuntimeSupervisor internal constructor(
             nativeRuntime = newRuntime
             activeRuntimeToken = runtimeToken
             servingCredentialVersion = publicCredential.version
-            check(lifecycle.markRunning()) { "proxy serving left STARTING before Rust publication" }
-            publishLifecycle()
+            mutableSnapshot.value = projectOwnerSnapshot(ownerSnapshot)
             RuntimeObserverRegistration(newRuntime, runtimeToken)
         }
 
@@ -168,7 +183,7 @@ class ProxyRuntimeSupervisor internal constructor(
                             if (closed.get()) return
                             if (activeRuntimeToken != registration.token) return
                             if (nativeRuntime !== registration.runtime) return
-                            failLifecycle(failure)
+                            publishFailure(failure)
                         }
                     }
                 },
@@ -179,7 +194,7 @@ class ProxyRuntimeSupervisor internal constructor(
                 if (nativeRuntime !== registration.runtime) return
                 cleanupCurrentLocked() ?: ProxyServingFailure.RUNTIME_STATE_UNAVAILABLE
             }
-            failLifecycle(failure)
+            publishFailure(failure)
         }
     }
 
@@ -201,29 +216,19 @@ class ProxyRuntimeSupervisor internal constructor(
         if (closed.get()) return
         val failure = synchronized(lock) { cleanupCurrentLocked() }
         if (failure == null) {
-            stopLifecycle()
+            mutableSnapshot.value = ProxyRuntimeSnapshot.Stopped
         } else {
-            failLifecycle(failure)
+            publishFailure(failure)
         }
     }
 
-    private fun publishLifecycle() {
-        mutableSnapshot.value = projectLifecycle(lifecycle.snapshot())
-    }
-
-    /** Publish one typed owner fact; outer runtime decides recovery through Rust policy only. */
-    private fun failLifecycle(reason: ProxyServingFailure) {
-        lifecycle.markFailed(reason)
-        publishLifecycle()
+    /** Project one typed owner fact; outer runtime decides recovery through Rust policy only. */
+    private fun publishFailure(reason: ProxyServingFailure) {
+        mutableSnapshot.value = ProxyRuntimeSnapshot.Failed(reason)
         onFailureObserved(reason)
     }
 
-    private fun stopLifecycle() {
-        lifecycle.markStopped()
-        publishLifecycle()
-    }
-
-    private fun projectLifecycle(view: ProxyServingSnapshotView): ProxyRuntimeSnapshot =
+    private fun projectOwnerSnapshot(view: ProxyServingSnapshotView): ProxyRuntimeSnapshot =
         when (view.state) {
             ProxyServingState.STOPPED -> ProxyRuntimeSnapshot.Stopped
             ProxyServingState.STARTING -> ProxyRuntimeSnapshot.Starting
@@ -237,9 +242,9 @@ class ProxyRuntimeSupervisor internal constructor(
         if (!closed.compareAndSet(false, true)) return
         val failure = synchronized(lock) { cleanupCurrentLocked() }
         if (failure == null) {
-            stopLifecycle()
+            mutableSnapshot.value = ProxyRuntimeSnapshot.Stopped
         } else {
-            failLifecycle(failure)
+            publishFailure(failure)
             throw IllegalStateException("native proxy runtime cleanup failed: $failure")
         }
     }

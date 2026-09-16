@@ -1,5 +1,7 @@
 use crate::runtime_boundary::CellularController;
-use crate::runtime_lifecycle_ffi::{ProxyServingFailure, map_proxy_failure_out};
+use crate::runtime_lifecycle_ffi::{
+    ProxyServingFailure, ProxyServingSnapshotView, map_proxy_failure_out, map_proxy_snapshot,
+};
 use mish_proxy::{ProxyCredentialMaterial, ProxyServingPlan};
 use mish_runtime::{
     ProxyServingFailure as OwnerProxyServingFailure, ProxyServingRuntime,
@@ -23,6 +25,12 @@ pub struct NativeProxyRuntime {
 
 #[uniffi::export]
 impl NativeProxyRuntime {
+    /// Immutable owner snapshot. Android projects this value; it never drives transitions.
+    pub fn snapshot(&self) -> ProxyServingSnapshotView {
+        map_proxy_snapshot(self.inner.snapshot())
+    }
+
+    /// Read-only diagnostic observation. PRODUCT lifecycle decisions do not poll this method.
     pub fn is_healthy(&self) -> bool {
         self.inner.is_healthy()
     }

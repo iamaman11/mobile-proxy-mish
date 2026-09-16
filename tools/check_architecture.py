@@ -135,7 +135,7 @@ def main() -> None:
                     f"network fallback: {relative} contains {fallback!r}"
                 )
 
-    # Native Proxy Serving owns one explicit Tokio task tree.
+    # Native Proxy Serving owns one explicit Tokio task tree and one lifecycle snapshot.
     proxy_runtime = "crates/runtime/src/proxy_runtime.rs"
     for required in (
         "JoinSet",
@@ -147,6 +147,14 @@ def main() -> None:
         "copy_bidirectional",
     ):
         require(proxy_runtime, required, "native Proxy Serving must keep deterministic task ownership")
+    for required in (
+        "ProxyServingLifecycle",
+        "pub fn snapshot(&self) -> ProxyServingSnapshot",
+        "owner_state.mark_running()",
+        "owner_state.mark_stopped()",
+        "publish_failure(ProxyServingFailure::ServingUnhealthy)",
+    ):
+        require(proxy_runtime, required, "ProxyServingRuntime must own semantic lifecycle state")
     forbid(
         proxy_runtime,
         "drop(tokio::spawn(",
@@ -293,8 +301,13 @@ def main() -> None:
     lifecycle_ffi = "crates/android-ffi/src/runtime_lifecycle_ffi.rs"
     require(
         lifecycle_ffi,
+        "pub struct ProxyServingSnapshotView",
+        "UniFFI must expose the immutable native Proxy Serving snapshot type",
+    )
+    forbid(
+        lifecycle_ffi,
         "ProxyServingLifecycleController",
-        "UniFFI must project native Proxy Serving lifecycle",
+        "UniFFI must not expose a second mutable Proxy Serving lifecycle controller",
     )
     forbid(lifecycle_ffi, "RuntimeProcessLifecycle", "child-process lifecycle must not return to FFI")
     proxy_serving_ffi = "crates/android-ffi/src/proxy_serving_ffi.rs"
@@ -302,6 +315,11 @@ def main() -> None:
         proxy_serving_ffi,
         "NativeProxyStartAttempt",
         "expected native proxy startup failures must cross FFI as typed data",
+    )
+    require(
+        proxy_serving_ffi,
+        "pub fn snapshot(&self) -> ProxyServingSnapshotView",
+        "UniFFI must project the runtime-owned Proxy Serving snapshot read-only",
     )
     require(
         proxy_serving_ffi,
@@ -352,10 +370,23 @@ def main() -> None:
     proxy_android = "android/app/src/main/java/com/mobileproxymish/app/ProxyRuntimeSupervisor.kt"
     for obsolete in ("privateBridge", "childAlive", "RuntimeProcess"):
         forbid(proxy_android, obsolete, "Android proxy supervisor must describe native serving only")
+    for second_owner in (
+        "ProxyServingLifecycleController",
+        ".requestStart()",
+        ".markRunning()",
+        ".markFailed(",
+        ".markStopped()",
+    ):
+        forbid(proxy_android, second_owner, "Android proxy adapter must not drive Proxy Serving lifecycle state")
     require(
         proxy_android,
         "val startFailure = attempt.failure()",
         "Android proxy adapter must publish Rust-owned typed startup failures",
+    )
+    require(
+        proxy_android,
+        "newRuntime.snapshot()",
+        "Android proxy adapter must project the immutable Rust-owned runtime snapshot",
     )
     require(
         proxy_android,
