@@ -55,6 +55,14 @@ Expired, superseded or mismatched artifacts fail closed; never silently substitu
 
 `.github/workflows/device-cycle.yml` owns development physical execution.
 
+The canonical engineering loop is intentionally explicit:
+
+```text
+diagnostic -> analysis -> decision -> code -> completed build -> explicit cycle request -> install -> verify install -> launch -> diagnostic -> analysis
+```
+
+Diagnostics never chooses a repair. No automatic targeted probe is allowed. Analysis chooses any follow-up action after the previous run has stopped.
+
 One explicit request produces one GitHub Actions Device Cycle run. There is no automatic start from build completion, PR merge, main merge, label or artifact publication.
 
 Current accepted command forms are defined by the workflow. At this policy revision they are:
@@ -81,7 +89,7 @@ CONTROL_SHA = exact protected-main workflow/scripts executing the physical cycle
 
 The physical result must never be interpreted without both identities.
 
-For `full` / `install_only`, the accepted candidate-producer workflow blob at PRODUCT_SHA must match the protected-main producer blob required by the Device Cycle resolver. A producer-policy mismatch fails closed before install.
+For `full` / `install_only`, the accepted candidate producer workflow blob at PRODUCT_SHA must match the protected-main producer workflow blob required by the Device Cycle resolver. A producer-policy mismatch fails closed before install.
 
 ## Physical runner contract
 
@@ -100,8 +108,9 @@ successful exact hosted artifact already exists
  -> consume exact candidate
  -> stable LAB-only debug signing where configured
  -> adb install -r when mode requests installation
- -> read back installed APK
- -> verify installed exact bytes + signing identity
+ -> read back installed base.apk
+ -> installed base.apk SHA-256 == exact signed candidate SHA-256
+ -> verify installed signing identity
  -> launch when mode requests it
  -> collect generation-consistent current-L8 diagnostics
  -> optional explicitly requested current-function probe
@@ -183,22 +192,9 @@ Diagnostics do not own or execute repairs, root mutations, network toggles, cred
 
 Historical Android sing-box/runtime identity is not a current PRODUCT diagnostic fact.
 
-## Engineering cycle
+## Recovery sequencing
 
-Canonical loop:
-
-```text
-diagnostic/evidence
- -> analysis
- -> decision
- -> smallest owner-aligned code change if required
- -> hosted exact-head gate
- -> explicit Device Cycle only when the next required fact is physical
- -> evidence
- -> STOP_FOR_ANALYSIS
-```
-
-No automatic repair/probe loop exists.
+Automatic airplane recovery is not part of the baseline cycle. Baseline functionality is established first. Cellular-loss/airplane/recovery acceptance is run only as a separately authorized stage when the roadmap requires that physical fact.
 
 ## Acceptance fields
 
