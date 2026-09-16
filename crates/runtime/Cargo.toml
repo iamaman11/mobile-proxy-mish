@@ -12,7 +12,6 @@ path = "src/entry.rs"
 
 [dependencies]
 mish-cellular = { path = "../cellular" }
-mish-cellular-egress-bridge = { path = "../cellular-egress-bridge" }
 mish-configuration = { path = "../configuration" }
 mish-proxy = { path = "../proxy" }
 tokio.workspace = true
