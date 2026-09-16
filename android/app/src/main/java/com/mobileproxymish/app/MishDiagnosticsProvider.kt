@@ -36,6 +36,10 @@ internal data class MishDiagnosticFactsV2(
     val proxyState: String,
     val proxyHealthy: Boolean,
     val proxyFailure: String?,
+    val proxyCutoverState: String,
+    val proxyCutoverFailure: String?,
+    val proxyCutoverOwnedCandidateCount: Int?,
+    val proxyCutoverRootExitCode: Int?,
     val credentialActive: Boolean,
     val meshState: String,
     val meshAdmitted: Boolean,
@@ -71,6 +75,10 @@ internal fun renderMishDiagnosticSnapshotV2(facts: MishDiagnosticFactsV2): Strin
             put("state", facts.proxyState)
             put("healthy", facts.proxyHealthy)
             putNullable("failure", facts.proxyFailure)
+            put("cutover_state", facts.proxyCutoverState)
+            putNullable("cutover_failure", facts.proxyCutoverFailure)
+            putNullableInt("cutover_owned_candidate_count", facts.proxyCutoverOwnedCandidateCount)
+            putNullableInt("cutover_root_exit_code", facts.proxyCutoverRootExitCode)
         })
         put("credential", JSONObject().apply {
             put("active", facts.credentialActive)
@@ -93,6 +101,10 @@ internal fun renderMishDiagnosticSnapshotV2(facts: MishDiagnosticFactsV2): Strin
     }.toString()
 
 private fun JSONObject.putNullable(name: String, value: String?) {
+    put(name, value ?: JSONObject.NULL)
+}
+
+private fun JSONObject.putNullableInt(name: String, value: Int?) {
     put(name, value ?: JSONObject.NULL)
 }
 
@@ -142,6 +154,7 @@ class MishDiagnosticsProvider : ContentProvider() {
         val readinessBefore = runtime.readinessSnapshot.value
         val meshBefore = runtime.meshSnapshot.value
 
+        val proxyDiagnostic = proxyGeneration.diagnosticObservation()
         val readinessDiagnostic = readinessGeneration.diagnosticObservation()
         val meshIngressFailure = meshGeneration.diagnosticIngressFailure().name
 
@@ -201,8 +214,12 @@ class MishDiagnosticsProvider : ContentProvider() {
                 rootAuthorityObservation = rootAuthorityObservation,
                 rootPolicyAuthorized = readinessDiagnostic.rootPolicyVerified,
                 proxyState = proxyState,
-                proxyHealthy = readinessDiagnostic.proxyHealthy,
+                proxyHealthy = proxyDiagnostic.healthy,
                 proxyFailure = proxyFailure,
+                proxyCutoverState = proxyDiagnostic.cutover.state.name,
+                proxyCutoverFailure = proxyDiagnostic.cutover.failure?.name,
+                proxyCutoverOwnedCandidateCount = proxyDiagnostic.cutover.ownedCandidateCount,
+                proxyCutoverRootExitCode = proxyDiagnostic.cutover.rootExitCode,
                 credentialActive = readinessDiagnostic.credentialActive,
                 meshState = meshState,
                 meshAdmitted = readinessDiagnostic.meshAdmitted,
