@@ -1,7 +1,3 @@
-import java.io.File
-import java.io.InputStream
-import java.security.MessageDigest
-import java.util.zip.ZipFile
 import org.gradle.api.tasks.Exec
 
 plugins {
@@ -20,16 +16,6 @@ val generatedUniFfiPath = layout.buildDirectory
 val generatedUniFfiFile = "$generatedUniFfiPath/com/mobileproxymish/ffi/mish_android_ffi.kt"
 val generatedJniLibsPath = layout.buildDirectory
     .dir("generated/rust-jni")
-    .get()
-    .asFile
-    .absolutePath
-val generatedSingBoxJniPath = layout.buildDirectory
-    .dir("generated/sing-box-jni")
-    .get()
-    .asFile
-    .absolutePath
-val singBoxCachePath = layout.buildDirectory
-    .dir("vendor-cache/sing-box")
     .get()
     .asFile
     .absolutePath
@@ -78,8 +64,6 @@ val hostLibraryName = when {
     else -> "libmish_android_ffi.so"
 }
 val hostLibraryPath = "$repoRootPath/target/debug/$hostLibraryName"
-val buildPython = providers.environmentVariable("MISH_BUILD_PYTHON").orNull
-    ?: if (System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) "python" else "python3"
 val rustWorkspaceInputs = files(
     "$repoRootPath/Cargo.toml",
     "$repoRootPath/Cargo.lock",
@@ -149,28 +133,6 @@ val buildAndroidUniFfi = tasks.register<Exec>("buildAndroidUniFfi") {
     )
 }
 
-val materializeSingBoxAndroid = tasks.register<Exec>("materializeSingBoxAndroid") {
-    val manifest = "$repoRootPath/vendor/sing-box/release.toml"
-    val materializer = "$repoRootPath/tools/materialize_sing_box_android.py"
-    inputs.file(manifest)
-    inputs.file(materializer)
-    inputs.property("mishTargetAbi", targetAbi)
-    outputs.file("$generatedSingBoxJniPath/$targetAbi/libsingbox.so")
-    workingDir(repoRootPath)
-    commandLine(
-        buildPython,
-        materializer,
-        "--manifest",
-        manifest,
-        "--abi",
-        targetAbi,
-        "--output-dir",
-        generatedSingBoxJniPath,
-        "--cache-dir",
-        singBoxCachePath,
-    )
-}
-
 android {
     namespace = "com.mobileproxymish.app"
     compileSdk = 37
@@ -225,21 +187,9 @@ android {
         buildConfig = true
     }
 
-    packaging {
-        jniLibs {
-            // The pinned sing-box executable is packaged as a native-library asset so Android
-            // extracts it into the executable nativeLibraryDir rather than app data (noexec).
-            useLegacyPackaging = true
-            // sing-box is a pinned executable artifact, not a build output. AGP must not strip
-            // or otherwise rewrite it: the APK verifier below requires byte-for-byte identity.
-            keepDebugSymbols += "**/libsingbox.so"
-        }
-    }
-
     sourceSets.getByName("main") {
         kotlin.directories += generatedUniFfiPath
         jniLibs.directories += generatedJniLibsPath
-        jniLibs.directories += generatedSingBoxJniPath
     }
 
     compileOptions {
@@ -250,85 +200,20 @@ android {
 
 // Static Android work needs only the generated Kotlin FFI contract. Android native artifacts are
 // package inputs, not compile/lint prerequisites. Keep the two paths independent so cheap failures
-// surface without cargo-ndk, the Android NDK, or sing-box materialization.
+// surface without cargo-ndk or the Android NDK.
 tasks.matching {
     (it.name.startsWith("compile") && it.name.endsWith("Kotlin")) || it.name.startsWith("lint")
 }.configureEach {
     dependsOn(generateUniFfiBindings)
 }
 
-// AGP consumes generated JNI directories in its native merge tasks. Attach the producers at that
-// exact boundary instead of globally to preBuild, so every APK still contains the exact native
-// runtime while Kotlin/static work remains native-free.
+// AGP consumes the generated JNI directory in its native merge tasks. Attach the Rust producer at
+// that exact boundary instead of globally to preBuild, so Kotlin/static work remains native-free.
 tasks.matching {
     it.name.startsWith("merge") &&
         (it.name.endsWith("NativeLibs") || it.name.endsWith("JniLibFolders"))
 }.configureEach {
-    dependsOn(buildAndroidUniFfi, materializeSingBoxAndroid)
-}
-
-fun registerSingBoxPackagingVerifier(
-    taskName: String,
-    apkPath: String,
-) = tasks.register(taskName) {
-    dependsOn(materializeSingBoxAndroid)
-    val abi = targetAbi
-    val expectedPath = "$generatedSingBoxJniPath/$abi/libsingbox.so"
-    inputs.file(expectedPath)
-    inputs.file(apkPath)
-    inputs.property("mishTargetAbi", abi)
-
-    doLast {
-        fun digestSha256(input: InputStream): String {
-            val digest = MessageDigest.getInstance("SHA-256")
-            val buffer = ByteArray(64 * 1024)
-            while (true) {
-                val count = input.read(buffer)
-                if (count < 0) break
-                if (count > 0) digest.update(buffer, 0, count)
-            }
-            return digest.digest().joinToString("") { byte -> "%02x".format(byte) }
-        }
-
-        val expectedFile = File(expectedPath)
-        val apkFile = File(apkPath)
-        if (!expectedFile.isFile) {
-            throw GradleException("Pinned sing-box materialization is missing: $expectedPath")
-        }
-        if (!apkFile.isFile) {
-            throw GradleException("APK packaging output is missing: $apkPath")
-        }
-
-        val expectedSha = expectedFile.inputStream().buffered().use(::digestSha256)
-        val entryName = "lib/$abi/libsingbox.so"
-        val packagedSha = ZipFile(apkFile).use { zip ->
-            val entry = zip.getEntry(entryName)
-                ?: throw GradleException("APK is missing pinned sing-box entry: $entryName")
-            zip.getInputStream(entry).buffered().use(::digestSha256)
-        }
-        if (packagedSha != expectedSha) {
-            throw GradleException(
-                "APK sing-box bytes differ from pinned materialization: expected=$expectedSha actual=$packagedSha",
-            )
-        }
-    }
-}
-
-val verifyDebugSingBoxPackaging = registerSingBoxPackagingVerifier(
-    taskName = "verifyDebugSingBoxPackaging",
-    apkPath = layout.buildDirectory.file("outputs/apk/debug/app-debug.apk").get().asFile.absolutePath,
-)
-val verifyReleaseSingBoxPackaging = registerSingBoxPackagingVerifier(
-    taskName = "verifyReleaseSingBoxPackaging",
-    apkPath = layout.buildDirectory.file("outputs/apk/release/app-release.apk").get().asFile.absolutePath,
-)
-
-tasks.matching { it.name == "assembleDebug" }.configureEach {
-    finalizedBy(verifyDebugSingBoxPackaging)
-}
-
-tasks.matching { it.name == "assembleRelease" }.configureEach {
-    finalizedBy(verifyReleaseSingBoxPackaging)
+    dependsOn(buildAndroidUniFfi)
 }
 
 dependencies {

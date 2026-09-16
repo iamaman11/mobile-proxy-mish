@@ -1,20 +1,27 @@
-use mish_cellular_egress_bridge::{
-    CellularOutboundConnector as ProxyOutboundConnector, ProxyCredentialMaterial, ProxyProtocol,
-    ProxyServingPlan, serve_session as serve_proxy_session,
-};
 use mish_configuration::EXTERNAL_TCP_SESSION_BUDGET;
-use std::collections::HashMap;
+use mish_proxy::{
+    ProxyCredentialMaterial, ProxyOutboundConnector, ProxyProtocol, ProxyServingPlan,
+    prepare_proxy_session,
+};
 use std::fmt;
-use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::net::{SocketAddr, TcpListener as StdTcpListener, TcpStream as StdTcpStream};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+use tokio::io::copy_bidirectional;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::runtime::{Builder, Runtime};
+use tokio::sync::{Semaphore, watch};
+use tokio::task::{JoinHandle, JoinSet};
+use tokio::time::timeout;
 
 const CONTROL_SESSION_RESERVE: usize = 1;
 const MAX_NATIVE_PROXY_SESSIONS: usize = EXTERNAL_TCP_SESSION_BUDGET + CONTROL_SESSION_RESERVE;
+const IO_WORKER_THREADS: usize = 2;
+const ACCEPT_POLL_TIMEOUT: Duration = Duration::from_millis(200);
+const SESSION_SETUP_TIMEOUT: Duration = Duration::from_secs(15);
+const START_TIMEOUT: Duration = Duration::from_secs(2);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
-const WAKE_TIMEOUT: Duration = Duration::from_millis(200);
 
 const _: () = {
     assert!(MAX_NATIVE_PROXY_SESSIONS >= 64);
@@ -35,7 +42,7 @@ impl fmt::Display for ProxyServingRuntimeError {
         formatter.write_str(match self {
             Self::NonLoopbackListen => "native proxy runtime must bind loopback only",
             Self::BindFailed => "native proxy runtime could not bind canonical listeners",
-            Self::ThreadUnavailable => "native proxy runtime accept worker could not start",
+            Self::ThreadUnavailable => "native proxy runtime executor could not start",
             Self::StateUnavailable => "native proxy runtime state is unavailable",
             Self::ShutdownTimedOut => {
                 "native proxy sessions did not stop within the bounded timeout"
@@ -46,19 +53,24 @@ impl fmt::Display for ProxyServingRuntimeError {
 
 impl std::error::Error for ProxyServingRuntimeError {}
 
-/// In-process listener/runtime effect for the vendor-neutral Proxy Serving owner.
+/// Single in-process execution owner for all canonical proxy listeners and long-lived relays.
 ///
-/// This object owns only concrete listener/session execution. Protocol/auth/target semantics remain
-/// in `mish-proxy`; DNS, cellular admission and socket routing remain behind the injected outbound
-/// connector. The listener address is deliberately restricted to loopback because public Mesh
-/// ingress remains the sole external exposure owner.
+/// `mish-proxy` remains the owner of protocol/authentication/target semantics. The injected
+/// connector remains the owner of Cellular admission/currentness, exact-network DNS and outbound
+/// socket effects. Tokio is deliberately confined to this runtime layer.
+///
+/// Every accept task is retained by this owner. Every accepted session is retained by the
+/// corresponding accept task's `JoinSet`. Shutdown therefore has one explicit ownership tree:
+/// signal -> stop admission -> abort/drain sessions -> join acceptors -> destroy Tokio runtime.
 pub struct ProxyServingRuntime {
-    wake_addresses: Vec<SocketAddr>,
-    stop_requested: Arc<AtomicBool>,
+    listener_count: usize,
+    shutdown: watch::Sender<bool>,
+    runtime: Mutex<Option<Runtime>>,
+    accept_tasks: Mutex<Vec<JoinHandle<()>>>,
+    stopping: AtomicBool,
+    fatal: Arc<AtomicBool>,
     live_acceptors: Arc<AtomicUsize>,
     active_sessions: Arc<AtomicUsize>,
-    clients: Arc<Mutex<HashMap<u64, TcpStream>>>,
-    accept_threads: Mutex<Vec<JoinHandle<()>>>,
 }
 
 impl ProxyServingRuntime {
@@ -70,82 +82,82 @@ impl ProxyServingRuntime {
             return Err(ProxyServingRuntimeError::NonLoopbackListen);
         }
 
-        let credentials = Arc::new(plan.credentials().clone());
+        // Bind every canonical coordinate before any executor task is published. A partial bind
+        // therefore never becomes an observable runtime generation.
         let mut bound = Vec::with_capacity(plan.listeners().len());
         for listener in plan.listeners() {
             let socket = SocketAddr::new(plan.listen_address(), listener.port);
             let tcp =
-                TcpListener::bind(socket).map_err(|_| ProxyServingRuntimeError::BindFailed)?;
-            let address = tcp
-                .local_addr()
-                .map_err(|_| ProxyServingRuntimeError::StateUnavailable)?;
-            bound.push((listener.protocol, tcp, address));
+                StdTcpListener::bind(socket).map_err(|_| ProxyServingRuntimeError::BindFailed)?;
+            tcp.set_nonblocking(true)
+                .map_err(|_| ProxyServingRuntimeError::BindFailed)?;
+            bound.push((listener.protocol, tcp));
         }
 
-        let stop_requested = Arc::new(AtomicBool::new(false));
-        let live_acceptors = Arc::new(AtomicUsize::new(bound.len()));
+        let runtime = Builder::new_multi_thread()
+            .worker_threads(IO_WORKER_THREADS)
+            .thread_name("mish-proxy-io")
+            .enable_io()
+            .enable_time()
+            .build()
+            .map_err(|_| ProxyServingRuntimeError::ThreadUnavailable)?;
+        let (shutdown, shutdown_rx) = watch::channel(false);
+        let fatal = Arc::new(AtomicBool::new(false));
+        let live_acceptors = Arc::new(AtomicUsize::new(0));
         let active_sessions = Arc::new(AtomicUsize::new(0));
-        let clients = Arc::new(Mutex::new(HashMap::new()));
-        let session_sequence = Arc::new(AtomicU64::new(1));
-        let wake_addresses = bound
-            .iter()
-            .map(|(_, _, address)| *address)
-            .collect::<Vec<_>>();
-        let mut accept_threads = Vec::with_capacity(bound.len());
+        let session_budget = Arc::new(Semaphore::new(MAX_NATIVE_PROXY_SESSIONS));
+        let credentials = Arc::new(plan.credentials().clone());
+        let listener_count = bound.len();
+        let mut accept_tasks = Vec::with_capacity(listener_count);
 
-        for (protocol, listener, _) in bound {
-            let accept_stop = Arc::clone(&stop_requested);
-            let accept_live = Arc::clone(&live_acceptors);
-            let accept_active = Arc::clone(&active_sessions);
-            let accept_clients = Arc::clone(&clients);
-            let accept_sequence = Arc::clone(&session_sequence);
-            let accept_credentials = Arc::clone(&credentials);
-            let accept_connector = Arc::clone(&connector);
-            let name = match protocol {
-                ProxyProtocol::Mixed => "mish-proxy-mixed-accept",
-                ProxyProtocol::Socks5 => "mish-proxy-socks5-accept",
-                ProxyProtocol::Http => "mish-proxy-http-accept",
-            };
-            match thread::Builder::new().name(name.to_owned()).spawn(move || {
-                accept_loop(
+        {
+            let _enter = runtime.enter();
+            for (protocol, listener) in bound {
+                let listener = TcpListener::from_std(listener)
+                    .map_err(|_| ProxyServingRuntimeError::BindFailed)?;
+                accept_tasks.push(runtime.spawn(accept_loop(
                     protocol,
                     listener,
-                    accept_credentials,
-                    accept_connector,
-                    accept_stop,
-                    accept_live,
-                    accept_active,
-                    accept_clients,
-                    accept_sequence,
-                )
-            }) {
-                Ok(handle) => accept_threads.push(handle),
-                Err(_) => {
-                    stop_requested.store(true, Ordering::Release);
-                    for address in &wake_addresses {
-                        let _ = TcpStream::connect_timeout(address, WAKE_TIMEOUT);
-                    }
-                    for handle in accept_threads {
-                        let _ = handle.join();
-                    }
-                    return Err(ProxyServingRuntimeError::ThreadUnavailable);
-                }
+                    Arc::clone(&credentials),
+                    Arc::clone(&connector),
+                    Arc::clone(&session_budget),
+                    shutdown_rx.clone(),
+                    shutdown.clone(),
+                    Arc::clone(&fatal),
+                    Arc::clone(&live_acceptors),
+                    Arc::clone(&active_sessions),
+                )));
             }
         }
 
-        Ok(Arc::new(Self {
-            wake_addresses,
-            stop_requested,
+        let owner = Arc::new(Self {
+            listener_count,
+            shutdown,
+            runtime: Mutex::new(Some(runtime)),
+            accept_tasks: Mutex::new(accept_tasks),
+            stopping: AtomicBool::new(false),
+            fatal,
             live_acceptors,
             active_sessions,
-            clients,
-            accept_threads: Mutex::new(accept_threads),
-        }))
+        });
+        let deadline = Instant::now() + START_TIMEOUT;
+        while !owner.is_healthy() && Instant::now() < deadline {
+            if owner.fatal.load(Ordering::Acquire) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if !owner.is_healthy() {
+            let _ = owner.stop();
+            return Err(ProxyServingRuntimeError::ThreadUnavailable);
+        }
+        Ok(owner)
     }
 
     pub fn is_healthy(&self) -> bool {
-        !self.stop_requested.load(Ordering::Acquire)
-            && self.live_acceptors.load(Ordering::Acquire) == self.wake_addresses.len()
+        !self.stopping.load(Ordering::Acquire)
+            && !self.fatal.load(Ordering::Acquire)
+            && self.live_acceptors.load(Ordering::Acquire) == self.listener_count
     }
 
     pub fn active_sessions(&self) -> usize {
@@ -157,43 +169,38 @@ impl ProxyServingRuntime {
     }
 
     fn stop_internal(&self) -> Result<(), ProxyServingRuntimeError> {
-        self.stop_requested.store(true, Ordering::Release);
-        for address in &self.wake_addresses {
-            let _ = TcpStream::connect_timeout(address, WAKE_TIMEOUT);
-        }
+        self.stopping.store(true, Ordering::Release);
+        let _ = self.shutdown.send(true);
 
-        if let Ok(clients) = self.clients.lock() {
-            for stream in clients.values() {
-                let _ = stream.shutdown(Shutdown::Both);
-            }
-        } else {
-            return Err(ProxyServingRuntimeError::StateUnavailable);
-        }
-
-        let handles = self
-            .accept_threads
+        let accept_tasks = self
+            .accept_tasks
             .lock()
             .map_err(|_| ProxyServingRuntimeError::StateUnavailable)?
             .drain(..)
             .collect::<Vec<_>>();
-        for handle in handles {
-            handle
-                .join()
-                .map_err(|_| ProxyServingRuntimeError::StateUnavailable)?;
-        }
-
-        let deadline = Instant::now() + SHUTDOWN_TIMEOUT;
-        while self.active_sessions.load(Ordering::Acquire) != 0 && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(10));
-        }
-        if self.active_sessions.load(Ordering::Acquire) != 0 {
-            return Err(ProxyServingRuntimeError::ShutdownTimedOut);
-        }
-
-        self.clients
+        let runtime = self
+            .runtime
             .lock()
             .map_err(|_| ProxyServingRuntimeError::StateUnavailable)?
-            .clear();
+            .take();
+
+        let mut joined_cleanly = true;
+        if let Some(runtime) = runtime {
+            joined_cleanly = runtime.block_on(async move {
+                timeout(SHUTDOWN_TIMEOUT, async move {
+                    for task in accept_tasks {
+                        let _ = task.await;
+                    }
+                })
+                .await
+                .is_ok()
+            });
+            runtime.shutdown_timeout(SHUTDOWN_TIMEOUT);
+        }
+
+        if !joined_cleanly || self.active_sessions.load(Ordering::Acquire) != 0 {
+            return Err(ProxyServingRuntimeError::ShutdownTimedOut);
+        }
         Ok(())
     }
 }
@@ -205,95 +212,162 @@ impl Drop for ProxyServingRuntime {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn accept_loop(
+async fn accept_loop(
     protocol: ProxyProtocol,
     listener: TcpListener,
     credentials: Arc<ProxyCredentialMaterial>,
     connector: Arc<dyn ProxyOutboundConnector>,
-    stop_requested: Arc<AtomicBool>,
+    session_budget: Arc<Semaphore>,
+    shutdown: watch::Receiver<bool>,
+    shutdown_tx: watch::Sender<bool>,
+    fatal: Arc<AtomicBool>,
     live_acceptors: Arc<AtomicUsize>,
     active_sessions: Arc<AtomicUsize>,
-    clients: Arc<Mutex<HashMap<u64, TcpStream>>>,
-    session_sequence: Arc<AtomicU64>,
 ) {
-    while !stop_requested.load(Ordering::Acquire) {
-        let (client, _) = match listener.accept() {
-            Ok(pair) => pair,
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(_) => break,
-        };
-        if stop_requested.load(Ordering::Acquire) {
-            let _ = client.shutdown(Shutdown::Both);
+    let _acceptor = AcceptorGuard::new(Arc::clone(&live_acceptors));
+    let mut sessions = JoinSet::new();
+
+    loop {
+        while sessions.try_join_next().is_some() {}
+        if *shutdown.borrow() {
             break;
         }
 
-        if active_sessions
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                (current < MAX_NATIVE_PROXY_SESSIONS).then_some(current + 1)
-            })
-            .is_err()
-        {
-            let _ = client.shutdown(Shutdown::Both);
-            continue;
-        }
-
-        let tracked = match client.try_clone() {
-            Ok(stream) => stream,
+        let accepted = match timeout(ACCEPT_POLL_TIMEOUT, listener.accept()).await {
+            Ok(accepted) => accepted,
+            Err(_) => continue,
+        };
+        let (client, _) = match accepted {
+            Ok(pair) => pair,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => {
-                active_sessions.fetch_sub(1, Ordering::AcqRel);
-                let _ = client.shutdown(Shutdown::Both);
+                fatal.store(true, Ordering::Release);
+                let _ = shutdown_tx.send(true);
+                break;
+            }
+        };
+
+        let permit = match Arc::clone(&session_budget).try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                drop(client);
                 continue;
             }
         };
-        let session_id = session_sequence.fetch_add(1, Ordering::AcqRel);
-        if let Ok(mut tracked_clients) = clients.lock() {
-            tracked_clients.insert(session_id, tracked);
-        } else {
-            active_sessions.fetch_sub(1, Ordering::AcqRel);
-            let _ = client.shutdown(Shutdown::Both);
-            break;
-        }
 
-        let session_credentials = Arc::clone(&credentials);
-        let session_connector = Arc::clone(&connector);
-        let session_clients = Arc::clone(&clients);
+        active_sessions.fetch_add(1, Ordering::AcqRel);
+        let credentials = Arc::clone(&credentials);
+        let connector = Arc::clone(&connector);
         let session_active = Arc::clone(&active_sessions);
-        let spawn = thread::Builder::new()
-            .name(format!("mish-proxy-session-{session_id}"))
-            .spawn(move || {
-                let _ = serve_proxy_session(
-                    protocol,
-                    client,
-                    session_credentials.as_ref(),
-                    session_connector.as_ref(),
-                );
-                if let Ok(mut tracked_clients) = session_clients.lock() {
-                    tracked_clients.remove(&session_id);
-                }
-                session_active.fetch_sub(1, Ordering::AcqRel);
-            });
-        if spawn.is_err() {
-            if let Ok(mut tracked_clients) = clients.lock()
-                && let Some(stream) = tracked_clients.remove(&session_id)
-            {
-                let _ = stream.shutdown(Shutdown::Both);
-            }
-            active_sessions.fetch_sub(1, Ordering::AcqRel);
-        }
+        sessions.spawn(async move {
+            let _permit = permit;
+            let _count = SessionCountGuard(session_active);
+            serve_session(protocol, client, credentials, connector).await;
+        });
     }
-    live_acceptors.fetch_sub(1, Ordering::AcqRel);
+
+    // Session tasks are children of this acceptor. A runtime generation stop is not graceful
+    // application traffic draining: it is an exact fail-closed generation boundary. Abort active
+    // relays, then await every task so permits/counters/streams are deterministically released.
+    sessions.abort_all();
+    while sessions.join_next().await.is_some() {}
+}
+
+async fn serve_session(
+    protocol: ProxyProtocol,
+    client: TcpStream,
+    credentials: Arc<ProxyCredentialMaterial>,
+    connector: Arc<dyn ProxyOutboundConnector>,
+) {
+    let client = match client.into_std() {
+        Ok(client) => client,
+        Err(_) => return,
+    };
+    let prepared = tokio::task::spawn_blocking(move || {
+        prepare_blocking_session(protocol, client, credentials.as_ref(), connector.as_ref())
+    })
+    .await;
+    let (client, upstream) = match prepared {
+        Ok(Ok(streams)) => streams,
+        Ok(Err(())) | Err(_) => return,
+    };
+
+    let mut client = match TcpStream::from_std(client) {
+        Ok(stream) => stream,
+        Err(_) => return,
+    };
+    let mut upstream = match TcpStream::from_std(upstream) {
+        Ok(stream) => stream,
+        Err(_) => return,
+    };
+    let _ = copy_bidirectional(&mut client, &mut upstream).await;
+}
+
+fn prepare_blocking_session(
+    protocol: ProxyProtocol,
+    client: StdTcpStream,
+    credentials: &ProxyCredentialMaterial,
+    connector: &dyn ProxyOutboundConnector,
+) -> Result<(StdTcpStream, StdTcpStream), ()> {
+    client.set_nonblocking(false).map_err(|_| ())?;
+    client
+        .set_read_timeout(Some(SESSION_SETUP_TIMEOUT))
+        .map_err(|_| ())?;
+    client
+        .set_write_timeout(Some(SESSION_SETUP_TIMEOUT))
+        .map_err(|_| ())?;
+
+    let prepared =
+        prepare_proxy_session(protocol, client, credentials, connector).map_err(|_| ())?;
+    let (client, upstream) = prepared.into_streams();
+    client.set_read_timeout(None).map_err(|_| ())?;
+    client.set_write_timeout(None).map_err(|_| ())?;
+    upstream.set_read_timeout(None).map_err(|_| ())?;
+    upstream.set_write_timeout(None).map_err(|_| ())?;
+    client.set_nonblocking(true).map_err(|_| ())?;
+    upstream.set_nonblocking(true).map_err(|_| ())?;
+    Ok((client, upstream))
+}
+
+struct AcceptorGuard {
+    live_acceptors: Arc<AtomicUsize>,
+}
+
+impl AcceptorGuard {
+    fn new(live_acceptors: Arc<AtomicUsize>) -> Self {
+        live_acceptors.fetch_add(1, Ordering::AcqRel);
+        Self { live_acceptors }
+    }
+}
+
+impl Drop for AcceptorGuard {
+    fn drop(&mut self) {
+        self.live_acceptors.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+struct SessionCountGuard(Arc<AtomicUsize>);
+
+impl Drop for SessionCountGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mish_cellular_egress_bridge::{ConnectTarget, OutboundConnectError};
+    use mish_proxy::{ProxyConnectTarget, ProxyOutboundConnectError};
+    use std::net::Ipv4Addr;
 
     struct RejectingConnector;
 
     impl ProxyOutboundConnector for RejectingConnector {
-        fn connect(&self, _target: &ConnectTarget) -> Result<TcpStream, OutboundConnectError> {
-            Err(OutboundConnectError::Unavailable)
+        fn connect(
+            &self,
+            _target: &ProxyConnectTarget,
+        ) -> Result<StdTcpStream, ProxyOutboundConnectError> {
+            Err(ProxyOutboundConnectError::Unavailable)
         }
     }
 
@@ -308,5 +382,19 @@ mod tests {
             ProxyServingRuntime::start(plan, Arc::new(RejectingConnector)),
             Err(ProxyServingRuntimeError::NonLoopbackListen)
         ));
+    }
+
+    #[test]
+    fn start_owns_all_canonical_loopback_listeners_in_one_runtime() {
+        let credentials =
+            ProxyCredentialMaterial::new("runtime-user", "runtime-password").expect("credentials");
+        let plan = ProxyServingPlan::canonical(Ipv4Addr::LOCALHOST.into(), credentials)
+            .expect("canonical plan");
+        let runtime =
+            ProxyServingRuntime::start(plan, Arc::new(RejectingConnector)).expect("runtime");
+        assert!(runtime.is_healthy());
+        runtime.stop().expect("stop");
+        assert!(!runtime.is_healthy());
+        assert_eq!(runtime.active_sessions(), 0);
     }
 }

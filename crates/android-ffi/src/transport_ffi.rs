@@ -64,15 +64,6 @@ impl fmt::Display for MeshTransportBoundaryError {
 
 impl std::error::Error for MeshTransportBoundaryError {}
 
-/// Typed projection of the single Proxy Serving listener contract for platform health checks.
-#[uniffi::export]
-pub fn proxy_listener_ports() -> Vec<u16> {
-    canonical_listeners()
-        .iter()
-        .map(|listener| listener.port)
-        .collect()
-}
-
 fn proxy_transport_mappings() -> Vec<MeshPortForward> {
     canonical_listeners()
         .iter()
@@ -234,12 +225,11 @@ mod tests {
     }
 
     #[test]
-    fn proxy_listener_projection_is_exactly_owner_backed() {
+    fn proxy_transport_mapping_is_exactly_owner_backed() {
         let expected = canonical_listeners()
             .iter()
             .map(|listener| listener.port)
             .collect::<Vec<_>>();
-        assert_eq!(proxy_listener_ports(), expected);
         let mappings = proxy_transport_mappings();
         assert_eq!(mappings.len(), expected.len());
         for (mapping, port) in mappings.iter().zip(expected) {

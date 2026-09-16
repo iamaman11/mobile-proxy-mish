@@ -43,7 +43,6 @@ class RuntimeReadinessInstrumentedTest {
         println("MISH_RESTART_CELLULAR_REASON=${readinessDiagnostic.cellularReason}")
         println("MISH_RESTART_CELLULAR_ADMITTED=${readinessDiagnostic.cellularAdmitted}")
         println("MISH_RESTART_ROOT_POLICY=${readinessDiagnostic.rootPolicyVerified}")
-        println("MISH_RESTART_PRIVATE_BRIDGE=${readinessDiagnostic.privateBridgeHealthy}")
         println("MISH_RESTART_PROXY_HEALTHY=${readinessDiagnostic.proxyHealthy}")
         println("MISH_RESTART_CREDENTIAL_ACTIVE=${readinessDiagnostic.credentialActive}")
         println("MISH_RESTART_BINDING_ELIGIBLE=${readinessDiagnostic.bindingEligible}")

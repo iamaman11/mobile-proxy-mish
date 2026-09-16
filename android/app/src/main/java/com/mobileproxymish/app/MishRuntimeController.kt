@@ -5,11 +5,13 @@ import com.mobileproxymish.app.cellular.CellularRuntimeBridge
 import com.mobileproxymish.app.cellular.CellularRuntimeSnapshot
 import com.mobileproxymish.ffi.MeshAdmissionView
 import com.mobileproxymish.ffi.ProductReadinessState
+import com.mobileproxymish.ffi.ProxyServingFailure
 import com.mobileproxymish.ffi.RuntimeLifecycleController
 import com.mobileproxymish.ffi.RuntimeLifecycleState
-import com.mobileproxymish.ffi.RuntimeProcessFailure
 import com.mobileproxymish.ffi.RuntimeStartAction
 import com.mobileproxymish.ffi.RuntimeStopAction
+import com.mobileproxymish.ffi.proxyRecoveryDelayMs
+import com.mobileproxymish.ffi.proxyServingFailureRecoverable
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
@@ -42,9 +44,9 @@ internal fun closeRuntimeGenerationExact(
 /**
  * Android effect/composition adapter for the Rust Runtime Lifecycle natural owner.
  *
- * The Rust owner owns start/stop/restart/generation-replacement decisions. This class only
- * serializes Android/process effects, stores platform callback closures, and publishes owner
- * projections from the currently installed runtime generation.
+ * Rust owns start/stop/restart/generation-replacement and proxy recovery policy. This class only
+ * serializes Android effects, executes the runtime-requested delay, stores platform callback
+ * closures, and publishes owner projections from the currently installed runtime generation.
  */
 class MishRuntimeController internal constructor(
     context: Context,
@@ -56,7 +58,7 @@ class MishRuntimeController internal constructor(
         Thread(task, "mish-runtime-lifecycle").apply { isDaemon = true }
     }
     private val recoveryScheduler: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor { task ->
-        Thread(task, "mish-runtime-recovery").apply { isDaemon = true }
+        Thread(task, "mish-runtime-recovery-effect").apply { isDaemon = true }
     }
     private val observationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val externalCredentialStore = ExternalProxyCredentialStore(appContext)
@@ -121,10 +123,6 @@ class MishRuntimeController internal constructor(
     val isRunning: Boolean
         get() = synchronized(lock) { lifecycle.state() != RuntimeLifecycleState.STOPPED }
 
-    /**
-     * Requests one serialized start through the Rust owner. Duplicate starts are idempotent and a
-     * start racing with STOPPING is remembered by the owner, not by a parallel Kotlin state machine.
-     */
     fun start(): Boolean {
         val action = synchronized(lock) { lifecycle.requestStart() }
         when (action) {
@@ -140,11 +138,6 @@ class MishRuntimeController internal constructor(
         return false
     }
 
-    /**
-     * Requests exact stop without blocking the Android main thread. Completion is published only
-     * after readiness probe -> Mesh ingress -> proxy -> Cellular Egress/root-policy cleanup has
-     * completed or failed.
-     */
     fun stop(onComplete: (Boolean) -> Unit = {}) {
         var completeImmediately = false
         val action = synchronized(lock) {
@@ -165,20 +158,15 @@ class MishRuntimeController internal constructor(
         if (submit(::stopBlocking)) return
 
         val callbacks = synchronized(lock) {
-            // Cleanup never ran. The Rust owner intentionally keeps STOPPING terminal/fail-closed.
             lifecycle.stopSubmissionFailed()
             stopCallbacks.toList().also { stopCallbacks.clear() }
         }
         callbacks.forEach { callback -> runCatching { callback(false) } }
     }
 
-    /**
-     * Explicit rotation is accepted only from an exactly stopped, clean owner generation.
-     */
     internal fun rotateExternalCredentialWhileStopped(): Boolean =
         mutateExternalCredentialWhileStopped(externalCredentialStore::rotateWhileStopped)
 
-    /** Revocation uses the same stopped-only cutover rule and never auto-restarts the runtime. */
     internal fun revokeExternalCredentialWhileStopped(): Boolean =
         mutateExternalCredentialWhileStopped(externalCredentialStore::revokeWhileStopped)
 
@@ -194,8 +182,6 @@ class MishRuntimeController internal constructor(
                 lifecycle.markStoppedGenerationDirty()
                 return false
             }
-            // Credential cutover changes the effect generation. Rust must advance the exact owner
-            // key before Android may install the new composition objects.
             if (!lifecycle.advanceStoppedGeneration()) {
                 lifecycle.markStoppedGenerationDirty()
                 return false
@@ -211,8 +197,6 @@ class MishRuntimeController internal constructor(
                 null
             } else {
                 if (replacementRequired) {
-                    // Replacement was authorized and its generation key advanced atomically in
-                    // Rust before the fresh Android effects become visible.
                     generation.value = newGeneration()
                 }
                 generation.value
@@ -231,8 +215,6 @@ class MishRuntimeController internal constructor(
         val started = try {
             current.cellularRuntime.start()
             current.proxyRuntime.start()
-            // The Mesh adapter observes proxy lifecycle and realizes ingress only after the proxy
-            // reaches its Rust-owned RUNNING state.
             current.meshRuntime.start()
             true
         } catch (_: Exception) {
@@ -272,10 +254,11 @@ class MishRuntimeController internal constructor(
         if (restart) start()
     }
 
-    private fun scheduleUnexpectedProxyRecovery(reason: RuntimeProcessFailure) {
-        if (reason !in RECOVERABLE_PROXY_FAILURES) return
+    private fun scheduleUnexpectedProxyRecovery(reason: ProxyServingFailure) {
+        if (!proxyServingFailureRecoverable(reason)) return
         if (!isRunning || !automaticRecoveryPending.compareAndSet(false, true)) return
-        val delay = recoveryDelayMs(automaticRecoveryAttempts.getAndIncrement())
+        val attempt = automaticRecoveryAttempts.getAndIncrement().coerceAtLeast(0).toUInt()
+        val delayMs = proxyRecoveryDelayMs(attempt).toLong()
         recoveryScheduler.schedule({
             if (!isRunning || proxySnapshot.value !is ProxyRuntimeSnapshot.Failed) {
                 automaticRecoveryPending.set(false)
@@ -285,7 +268,7 @@ class MishRuntimeController internal constructor(
                 automaticRecoveryPending.set(false)
                 if (clean) start()
             }
-        }, delay, TimeUnit.MILLISECONDS)
+        }, delayMs, TimeUnit.MILLISECONDS)
     }
 
     private fun submit(block: () -> Unit): Boolean = try {
@@ -302,7 +285,7 @@ class MishRuntimeController internal constructor(
             context = appContext,
             cellularRuntime = cellularRuntime,
             publicCredentials = externalCredentialStore,
-            onRecoverableUnexpectedFailure = ::scheduleUnexpectedProxyRecovery,
+            onUnexpectedFailure = ::scheduleUnexpectedProxyRecovery,
         )
         val meshRuntime = MeshIngressRuntimeBridge(
             context = appContext,
@@ -315,9 +298,6 @@ class MishRuntimeController internal constructor(
             meshRuntime = meshRuntime,
             credentialStore = externalCredentialStore,
         )
-        // Private egress readiness is proved through the loopback proxy before any public Mesh
-        // listener may serve. This closes the restart window where a listener existed before the
-        // cellular policy, scoped DNS and TLS probe had been verified.
         meshRuntime.requireEgressReadiness(readinessRuntime.state)
         return RuntimeGeneration(
             cellularRuntime = cellularRuntime,
@@ -341,22 +321,6 @@ class MishRuntimeController internal constructor(
                 closeCellular = cellularRuntime::close,
             ) && clean
             return clean
-        }
-    }
-
-    private companion object {
-        val RECOVERABLE_PROXY_FAILURES = setOf(
-            RuntimeProcessFailure.HEALTH_CHECK_FAILED,
-            RuntimeProcessFailure.LOOPBACK_LISTENER_UNAVAILABLE,
-            RuntimeProcessFailure.CHILD_EXITED,
-            RuntimeProcessFailure.PRIVATE_BRIDGE_UNHEALTHY,
-        )
-        fun recoveryDelayMs(attempt: Int): Long = when (attempt.coerceAtMost(4)) {
-            0 -> 1_000L
-            1 -> 5_000L
-            2 -> 15_000L
-            3 -> 30_000L
-            else -> 60_000L
         }
     }
 }

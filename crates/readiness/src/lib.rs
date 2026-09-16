@@ -46,7 +46,6 @@ pub enum ProbeOutcome {
     Timeout,
 }
 
-/// Exact non-secret owner keys captured for one authenticated egress probe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProbeBinding {
     pub cellular_owner_generation: CellularOwnerGeneration,
@@ -56,8 +55,6 @@ pub struct ProbeBinding {
     pub credential_version: CredentialVersion,
 }
 
-/// One immutable DNS+TLS+authentication effect observation. Successful DNS is represented only
-/// here rather than as a separately cached readiness fact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EgressProbeObservation {
     pub outcome: ProbeOutcome,
@@ -72,10 +69,11 @@ pub struct CellularReadinessFact {
     pub root_policy_verified: bool,
 }
 
+/// Exact foreground runtime generation only. Native Proxy Serving health is owned by the proxy
+/// fact; no transitional private-bridge liveness fact exists after L8.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeReadinessFact {
     pub generation: RuntimeGeneration,
-    pub private_bridge_healthy: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,7 +98,6 @@ pub struct MeshReadinessFact {
     pub ingress_running: bool,
 }
 
-/// Ephemeral projection input assembled from natural-owner observations. No value is stored here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProductReadinessInput {
     pub cellular: Option<CellularReadinessFact>,
@@ -112,8 +109,18 @@ pub struct ProductReadinessInput {
     pub probe: Option<EgressProbeObservation>,
 }
 
-/// Pure terminal projection. No listener/process liveness fact can independently produce READY.
-pub fn project(input: ProductReadinessInput) -> Readiness {
+/// Structural eligibility for issuing one generation-bound authenticated egress probe.
+///
+/// This is the single owner of the coherence predicate used both by probe scheduling and the
+/// terminal readiness projection, so Android never duplicates cross-owner eligibility policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeEligibility {
+    Eligible(ProbeBinding),
+    NotReady,
+    Unknown,
+}
+
+pub fn probe_eligibility(input: ProductReadinessInput) -> ProbeEligibility {
     let (Some(cellular), Some(runtime), Some(proxy), Some(credential), Some(mesh)) = (
         input.cellular,
         input.runtime,
@@ -121,26 +128,22 @@ pub fn project(input: ProductReadinessInput) -> Readiness {
         input.credential,
         input.mesh,
     ) else {
-        return Readiness::Unknown;
+        return ProbeEligibility::Unknown;
     };
 
-    // Explicit current leaf failure wins before serving-only keys are required. A stopped proxy or
-    // non-admitted Mesh endpoint is therefore NOT_READY rather than malformed/UNKNOWN merely
-    // because no serving credential version/admission epoch exists yet.
     if !cellular.admitted
         || !cellular.root_policy_verified
-        || !runtime.private_bridge_healthy
         || !proxy.healthy
         || !credential.active
         || !mesh.admitted
     {
-        return Readiness::NotReady;
+        return ProbeEligibility::NotReady;
     }
 
     if proxy.runtime_generation != runtime.generation
         || mesh.runtime_generation != runtime.generation
     {
-        return Readiness::Unknown;
+        return ProbeEligibility::Unknown;
     }
 
     let (
@@ -153,24 +156,35 @@ pub fn project(input: ProductReadinessInput) -> Readiness {
         mesh.admission_epoch,
     )
     else {
-        return Readiness::Unknown;
+        return ProbeEligibility::Unknown;
     };
+
     if proxy_credential_version != credential.version {
-        return Readiness::Unknown;
+        return ProbeEligibility::Unknown;
     }
+
+    ProbeEligibility::Eligible(ProbeBinding {
+        cellular_owner_generation: cellular.owner_generation,
+        runtime_generation: runtime.generation,
+        proxy_serving_generation,
+        mesh_admission_epoch,
+        credential_version: credential.version,
+    })
+}
+
+/// Pure terminal projection. No listener/process liveness fact can independently produce READY.
+pub fn project(input: ProductReadinessInput) -> Readiness {
+    let current_binding = match probe_eligibility(input) {
+        ProbeEligibility::Eligible(binding) => binding,
+        ProbeEligibility::NotReady => return Readiness::NotReady,
+        ProbeEligibility::Unknown => return Readiness::Unknown,
+    };
 
     let Some(expected_freshness) = input.expected_freshness else {
         return Readiness::Unknown;
     };
     let Some(probe) = input.probe else {
         return Readiness::Unknown;
-    };
-    let current_binding = ProbeBinding {
-        cellular_owner_generation: cellular.owner_generation,
-        runtime_generation: runtime.generation,
-        proxy_serving_generation,
-        mesh_admission_epoch,
-        credential_version: credential.version,
     };
     if probe.binding != current_binding || probe.freshness != expected_freshness {
         return Readiness::Unknown;
@@ -230,7 +244,6 @@ mod tests {
             }),
             runtime: Some(RuntimeReadinessFact {
                 generation: binding.runtime_generation,
-                private_bridge_healthy: true,
             }),
             proxy: Some(ProxyReadinessFact {
                 runtime_generation: binding.runtime_generation,
@@ -258,6 +271,16 @@ mod tests {
     }
 
     #[test]
+    fn coherent_facts_produce_the_exact_probe_binding() {
+        let input = ready_input();
+        let expected = input.probe.expect("probe").binding;
+        assert_eq!(
+            probe_eligibility(input),
+            ProbeEligibility::Eligible(expected)
+        );
+    }
+
+    #[test]
     fn coherent_success_is_ready() {
         assert_eq!(project(ready_input()), Readiness::Ready);
     }
@@ -266,14 +289,23 @@ mod tests {
     fn missing_leaf_probe_or_freshness_is_unknown() {
         let mut missing_leaf = ready_input();
         missing_leaf.mesh = None;
+        assert_eq!(probe_eligibility(missing_leaf), ProbeEligibility::Unknown);
         assert_eq!(project(missing_leaf), Readiness::Unknown);
 
         let mut missing_probe = ready_input();
         missing_probe.probe = None;
+        assert!(matches!(
+            probe_eligibility(missing_probe),
+            ProbeEligibility::Eligible(_)
+        ));
         assert_eq!(project(missing_probe), Readiness::Unknown);
 
         let mut missing_freshness = ready_input();
         missing_freshness.expected_freshness = None;
+        assert!(matches!(
+            probe_eligibility(missing_freshness),
+            ProbeEligibility::Eligible(_)
+        ));
         assert_eq!(project(missing_freshness), Readiness::Unknown);
     }
 
@@ -285,6 +317,7 @@ mod tests {
             .as_mut()
             .expect("cellular")
             .root_policy_verified = false;
+        assert_eq!(probe_eligibility(input), ProbeEligibility::NotReady);
         assert_eq!(project(input), Readiness::NotReady);
 
         let mut input = ready_input();
@@ -292,6 +325,7 @@ mod tests {
         mesh.admitted = false;
         mesh.ingress_running = false;
         mesh.admission_epoch = None;
+        assert_eq!(probe_eligibility(input), ProbeEligibility::NotReady);
         assert_eq!(project(input), Readiness::NotReady);
 
         let mut input = ready_input();
@@ -299,10 +333,12 @@ mod tests {
         proxy.healthy = false;
         proxy.serving_generation = None;
         proxy.credential_version = None;
+        assert_eq!(probe_eligibility(input), ProbeEligibility::NotReady);
         assert_eq!(project(input), Readiness::NotReady);
 
         let mut input = ready_input();
         input.credential.as_mut().expect("credential").active = false;
+        assert_eq!(probe_eligibility(input), ProbeEligibility::NotReady);
         assert_eq!(project(input), Readiness::NotReady);
     }
 
@@ -310,6 +346,7 @@ mod tests {
     fn healthy_proxy_missing_serving_key_is_unknown() {
         let mut input = ready_input();
         input.proxy.as_mut().expect("proxy").credential_version = None;
+        assert_eq!(probe_eligibility(input), ProbeEligibility::Unknown);
         assert_eq!(project(input), Readiness::Unknown);
     }
 
@@ -324,10 +361,12 @@ mod tests {
     fn generation_or_version_mismatch_never_becomes_ready() {
         let mut input = ready_input();
         input.proxy.as_mut().expect("proxy").runtime_generation = runtime_generation(22);
+        assert_eq!(probe_eligibility(input), ProbeEligibility::Unknown);
         assert_eq!(project(input), Readiness::Unknown);
 
         let mut input = ready_input();
         input.proxy.as_mut().expect("proxy").credential_version = Some(credential_version(52));
+        assert_eq!(probe_eligibility(input), ProbeEligibility::Unknown);
         assert_eq!(project(input), Readiness::Unknown);
 
         let mut input = ready_input();
@@ -337,6 +376,10 @@ mod tests {
             .expect("probe")
             .binding
             .mesh_admission_epoch = mesh_epoch(42);
+        assert!(matches!(
+            probe_eligibility(input),
+            ProbeEligibility::Eligible(_)
+        ));
         assert_eq!(project(input), Readiness::Unknown);
     }
 
