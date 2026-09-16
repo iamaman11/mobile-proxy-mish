@@ -28,6 +28,7 @@ sealed interface ProxyRuntimeSnapshot {
 internal data class ProxyRuntimeDiagnosticObservation(
     val healthy: Boolean,
     val credentialVersion: ULong?,
+    val activeSessions: UInt?,
 )
 
 /** In-memory only external proxy credential material. */
@@ -77,12 +78,17 @@ class ProxyRuntimeSupervisor internal constructor(
         get() = mutableSnapshot.asStateFlow()
 
     internal fun diagnosticObservation(): ProxyRuntimeDiagnosticObservation = synchronized(lock) {
-        val runtimeHealthy = nativeRuntime?.let {
+        val currentRuntime = nativeRuntime
+        val runtimeHealthy = currentRuntime?.let {
             runCatching { it.isHealthy() }.getOrDefault(false)
         } == true
+        val activeSessions = currentRuntime?.let {
+            runCatching { it.activeSessions() }.getOrNull()
+        }
         ProxyRuntimeDiagnosticObservation(
             healthy = runtimeHealthy,
             credentialVersion = servingCredentialVersion,
+            activeSessions = activeSessions,
         )
     }
 
