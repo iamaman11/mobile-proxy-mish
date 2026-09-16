@@ -174,8 +174,12 @@ internal class MeshIngressRuntimeBridge(
                     admissionEpochPresent = epoch != null,
                 )
             ) {
-                if (!view.ingressRunning || !activeController.ingressHealthy()) {
-                    if (!activeController.startIngress(requireNotNull(epoch))) {
+                val processRuntime = proxyRuntime.currentNativeRuntimeHandle()
+                if (processRuntime == null) {
+                    lastIngressFailure = MeshIngressDiagnosticFailure.UNAVAILABLE
+                    activeController.stopIngress()
+                } else if (!view.ingressRunning || !activeController.ingressHealthy()) {
+                    if (!activeController.startIngress(requireNotNull(epoch), processRuntime)) {
                         lastIngressFailure = MeshIngressDiagnosticFailure.START_REJECTED
                         activeController.stopIngress()
                     } else {
