@@ -282,7 +282,6 @@ class MishRuntimeController internal constructor(
         val runtimeGeneration = lifecycle.generation()
         val cellularRuntime = CellularRuntimeBridge(appContext)
         val proxyRuntime = ProxyRuntimeSupervisor(
-            context = appContext,
             cellularRuntime = cellularRuntime,
             publicCredentials = externalCredentialStore,
             onUnexpectedFailure = ::scheduleUnexpectedProxyRecovery,
