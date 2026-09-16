@@ -55,7 +55,7 @@ class MeshIngressRuntimeBridgeTest {
                 proxyRunning = true,
                 readiness = ProductReadinessState.NOT_READY,
                 meshAdmitted = true,
-                admissionEpoch = 7u,
+                admissionEpochPresent = true,
             ),
         )
         assertFalse(
@@ -63,7 +63,7 @@ class MeshIngressRuntimeBridgeTest {
                 proxyRunning = true,
                 readiness = ProductReadinessState.DEGRADED,
                 meshAdmitted = true,
-                admissionEpoch = 7u,
+                admissionEpochPresent = true,
             ),
         )
         assertFalse(
@@ -71,7 +71,7 @@ class MeshIngressRuntimeBridgeTest {
                 proxyRunning = false,
                 readiness = ProductReadinessState.READY,
                 meshAdmitted = true,
-                admissionEpoch = 7u,
+                admissionEpochPresent = true,
             ),
         )
         assertTrue(
@@ -79,7 +79,15 @@ class MeshIngressRuntimeBridgeTest {
                 proxyRunning = true,
                 readiness = ProductReadinessState.READY,
                 meshAdmitted = true,
-                admissionEpoch = 7u,
+                admissionEpochPresent = true,
+            ),
+        )
+        assertFalse(
+            meshIngressServingAllowed(
+                proxyRunning = true,
+                readiness = ProductReadinessState.READY,
+                meshAdmitted = true,
+                admissionEpochPresent = false,
             ),
         )
     }
