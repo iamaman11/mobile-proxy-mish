@@ -1,8 +1,9 @@
+use crate::proxy_serving_ffi::NativeProxyRuntime;
 use mish_configuration::MeshAcceptedCidr;
 use mish_proxy::canonical_listeners;
 use mish_transport::{
     MeshAdmissionReason as OwnerAdmissionReason, MeshAdmissionState as OwnerAdmissionState,
-    MeshIngressError, MeshOwnerError, MeshPortForward, MeshTransportCoordinator,
+    MeshIngressError, MeshIngressExecutor, MeshOwnerError, MeshPortForward, MeshTransportCoordinator,
     MeshTransportError as OwnerTransportError, MeshTransportSnapshot as OwnerTransportSnapshot,
     MeshVpnObservation as OwnerVpnObservation,
 };
@@ -143,12 +144,17 @@ impl MeshTransportController {
             .map_err(map_transport_error)
     }
 
-    /// Starts the exact-address ingress only for the caller's still-current admission epoch.
-    /// Proxy listener ports are projected from the Proxy Serving owner at this composition seam.
-    pub fn start_ingress(&self, admission_epoch: u64) -> Result<bool, MeshTransportBoundaryError> {
+    /// Starts exact-address Mesh ingress only for the caller's still-current admission epoch and
+    /// executes it on the already-live process runtime supplied as an opaque composition handle.
+    pub fn start_ingress(
+        &self,
+        admission_epoch: u64,
+        process_runtime: Arc<NativeProxyRuntime>,
+    ) -> Result<bool, MeshTransportBoundaryError> {
         let mappings = proxy_transport_mappings();
+        let executor: Arc<dyn MeshIngressExecutor> = process_runtime.runtime_handle();
         self.runtime
-            .start_ingress(admission_epoch, &mappings)
+            .start_ingress(admission_epoch, &mappings, executor)
             .map_err(map_transport_error)
     }
 
@@ -200,7 +206,7 @@ fn map_ingress_error(error: MeshIngressError) -> MeshTransportBoundaryError {
         MeshIngressError::InvalidEndpoint
         | MeshIngressError::InvalidPortMapping
         | MeshIngressError::ListenerConfigurationFailed
-        | MeshIngressError::ThreadUnavailable => MeshTransportBoundaryError::IngressUnavailable,
+        | MeshIngressError::ExecutorUnavailable => MeshTransportBoundaryError::IngressUnavailable,
     }
 }
 
