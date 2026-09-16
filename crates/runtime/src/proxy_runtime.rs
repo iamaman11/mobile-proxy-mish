@@ -1,11 +1,15 @@
+use crate::mesh_serving::MeshExecutionOwner;
 use crate::{ProxyServingFailure, ProxyServingLifecycle, ProxyServingSnapshot, ProxyServingState};
 use mish_configuration::EXTERNAL_TCP_SESSION_BUDGET;
 use mish_proxy::{
     ProxyCredentialMaterial, ProxyOutboundConnector, ProxyProtocol, ProxyServingPlan,
     prepare_proxy_session,
 };
+use mish_transport::{
+    MeshIngressError, MeshIngressExecutor, MeshPortForward, MeshSessionOwner,
+};
 use std::fmt;
-use std::net::{SocketAddr, TcpListener as StdTcpListener, TcpStream as StdTcpStream};
+use std::net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener, TcpStream as StdTcpStream};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -203,22 +207,23 @@ fn notify_terminal_observer(
     }
 }
 
-/// Single in-process execution owner for all canonical proxy listeners and long-lived relays.
+/// Single in-process execution owner for canonical Proxy Serving and admitted Mesh work.
 ///
-/// `mish-proxy` remains the owner of protocol/authentication/target semantics. The injected
-/// connector remains the owner of Cellular admission/currentness, exact-network DNS and outbound
-/// socket effects. Tokio is deliberately confined to this runtime layer.
+/// `mish-proxy` remains the owner of protocol/authentication/target semantics. `mish-transport`
+/// remains the owner of Mesh endpoint/epoch/capacity/active-session facts. The injected connector
+/// remains the owner of Cellular admission/currentness, exact-network DNS and outbound sockets.
+/// Tokio is deliberately confined to this runtime layer.
 ///
-/// Every accept task is retained by this owner. Every accepted session is retained by the
-/// corresponding accept task's `JoinSet`. Shutdown therefore has one explicit ownership tree:
-/// signal -> stop admission -> abort/drain sessions -> join acceptors -> destroy Tokio runtime.
-/// ProxyServingRuntime also owns the one semantic lifecycle snapshot. Android may observe that
-/// snapshot and terminal events, but it cannot drive runtime state transitions.
+/// Every Proxy accept/session task and every Mesh listener/session task is retained under this
+/// runtime generation. Shutdown therefore has one explicit ownership tree: stop Mesh admission and
+/// drain its tasks -> signal Proxy admission stop -> drain Proxy tasks -> destroy the one Tokio
+/// runtime. Android observes owner facts and executes composition effects only.
 pub struct ProxyServingRuntime {
     listener_count: usize,
     shutdown: watch::Sender<bool>,
     runtime: Mutex<Option<Runtime>>,
     accept_tasks: Mutex<Vec<JoinHandle<()>>>,
+    mesh_execution: MeshExecutionOwner,
     stopping: Arc<AtomicBool>,
     owner_state: Arc<ProxyServingOwnerState>,
     live_acceptors: Arc<AtomicUsize>,
@@ -248,7 +253,7 @@ impl ProxyServingRuntime {
 
         let runtime = Builder::new_multi_thread()
             .worker_threads(IO_WORKER_THREADS)
-            .thread_name("mish-proxy-io")
+            .thread_name("mish-runtime-io")
             .enable_io()
             .enable_time()
             .build()
@@ -288,6 +293,7 @@ impl ProxyServingRuntime {
             shutdown,
             runtime: Mutex::new(Some(runtime)),
             accept_tasks: Mutex::new(accept_tasks),
+            mesh_execution: MeshExecutionOwner::new(),
             stopping,
             owner_state,
             live_acceptors,
@@ -339,6 +345,7 @@ impl ProxyServingRuntime {
 
     fn stop_internal(&self) -> Result<(), ProxyServingRuntimeError> {
         self.stopping.store(true, Ordering::Release);
+        let mesh_clean = self.stop_ingress().is_ok();
         let _ = self.shutdown.send(true);
 
         let accept_tasks = match self.accept_tasks.lock() {
@@ -372,13 +379,50 @@ impl ProxyServingRuntime {
             runtime.shutdown_timeout(SHUTDOWN_TIMEOUT);
         }
 
-        if !joined_cleanly || self.active_sessions.load(Ordering::Acquire) != 0 {
+        if !mesh_clean || !joined_cleanly || self.active_sessions.load(Ordering::Acquire) != 0 {
             self.owner_state
                 .publish_failure(ProxyServingFailure::ShutdownFailed);
             return Err(ProxyServingRuntimeError::ShutdownTimedOut);
         }
         self.owner_state.mark_stopped();
         Ok(())
+    }
+}
+
+impl MeshIngressExecutor for ProxyServingRuntime {
+    fn start_ingress(
+        &self,
+        endpoint: Ipv4Addr,
+        mappings: &[MeshPortForward],
+        sessions: Arc<MeshSessionOwner>,
+    ) -> Result<(), MeshIngressError> {
+        if !self.is_healthy() {
+            return Err(MeshIngressError::ExecutorUnavailable);
+        }
+        let runtime = self
+            .runtime
+            .lock()
+            .map_err(|_| MeshIngressError::ExecutorUnavailable)?;
+        let runtime = runtime
+            .as_ref()
+            .ok_or(MeshIngressError::ExecutorUnavailable)?;
+        self.mesh_execution
+            .start(runtime, endpoint, mappings, sessions)
+    }
+
+    fn stop_ingress(&self) -> Result<(), MeshIngressError> {
+        if !self.mesh_execution.is_running() {
+            return Ok(());
+        }
+        let runtime = self
+            .runtime
+            .lock()
+            .map_err(|_| MeshIngressError::ExecutorUnavailable)?;
+        self.mesh_execution.stop(runtime.as_ref())
+    }
+
+    fn ingress_healthy(&self) -> bool {
+        self.is_healthy() && self.mesh_execution.is_healthy()
     }
 }
 
@@ -551,7 +595,6 @@ impl Drop for SessionCountGuard {
 mod tests {
     use super::*;
     use mish_proxy::{ProxyConnectTarget, ProxyOutboundConnectError};
-    use std::net::Ipv4Addr;
 
     struct RejectingConnector;
 
