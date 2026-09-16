@@ -37,7 +37,7 @@ PR opened / synchronized / reopened / ready-for-review
 
 The candidate artifact is produced only after the complete configured gate succeeds.
 
-A successful hosted build is a prerequisite only. It never starts DEVICE-1.
+A successful hosted build is a prerequisite only. No successful build, merge to main, label, or completed workflow starts DEVICE-1.
 
 ## Exact candidate identity
 
@@ -49,13 +49,13 @@ device-candidate-pr-<PR>-<40-hex PRODUCT_SHA>
 
 The artifact contains the debug PRODUCT APK, AndroidTest APK and `candidate.json` with exact source/base identity, application id, target ABI and APK digests.
 
-Expired/superseded/mismatched artifacts are never silently substituted.
+Expired, superseded or mismatched artifacts fail closed; never silently substitute bytes from another commit.
 
 ## Protected-main Device Cycle
 
 `.github/workflows/device-cycle.yml` owns development physical execution.
 
-One explicit request produces one bounded Device Cycle. There is no automatic start from build completion, PR merge, main merge, label or artifact publication.
+One explicit request produces one GitHub Actions Device Cycle run. There is no automatic start from build completion, PR merge, main merge, label or artifact publication.
 
 Current accepted command forms are defined by the workflow. At this policy revision they are:
 
@@ -108,6 +108,8 @@ successful exact hosted artifact already exists
  -> produce typed evidence/report
  -> STOP_FOR_ANALYSIS
 ```
+
+`adb install -r = Success` is necessary but not sufficient. When installation is part of the cycle, launch/acceptance is blocked until the installed APK bytes and signing identity are verified against the exact candidate.
 
 The runner must not silently run Gradle, Cargo, cargo-ndk, NDK compilation, UniFFI generation, local APK assembly or clean uninstall to rescue a failed candidate path.
 
@@ -214,7 +216,7 @@ A green `probe_only` or `diagnose_only` must never be interpreted as exact candi
 
 ## Formal release boundary
 
-Development debug candidates are not RC/release identity.
+Development debug candidates are stage/development evidence only. It is not PRODUCT release identity and cannot be promoted.
 
 Formal promotion remains:
 
