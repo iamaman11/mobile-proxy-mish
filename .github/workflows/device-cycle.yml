@@ -127,7 +127,7 @@ jobs:
           state = str(pr.get('state') or '')
           merged = bool(pr.get('merged'))
           if state not in {'open', 'closed'} or (state == 'closed' and not merged):
-              raise SystemExit('device cycle requires an open PR or a merged PR for observation-only diagnostics')
+              raise SystemExit('device cycle requires an open or merged PR')
           if str(pr.get('number')) != requested_pr:
               raise SystemExit('device cycle PR identity mismatch')
           if head_repo != repository:
@@ -137,12 +137,13 @@ jobs:
           if not branch:
               raise SystemExit('device cycle PR head branch is missing')
           if mode in {'full', 'install_only'}:
-              if state != 'open':
-                  raise SystemExit('installing a device candidate requires an open PR to main')
               if base != 'main':
                   raise SystemExit('installing a device candidate requires base main')
-              if pr.get('draft') is not False:
-                  raise SystemExit('installing a device candidate requires a ready PR')
+              if state == 'open':
+                  if pr.get('draft') is not False:
+                      raise SystemExit('installing a device candidate requires a ready PR')
+              elif not merged:
+                  raise SystemExit('installing a device candidate requires an open PR to main unless a merged PR is proven PRODUCT-identical to current protected main')
           print(head)
           print(branch)
           print('merged' if merged else 'open')
@@ -151,6 +152,48 @@ jobs:
           SOURCE_SHA="${prmeta[0]}"
           HEAD_BRANCH="${prmeta[1]}"
           PR_LIFECYCLE="${prmeta[2]}"
+
+          if [[ "$PR_LIFECYCLE" == 'merged' && ( "$MODE" == 'full' || "$MODE" == 'install_only' ) ]]; then
+            ACCEPTED_MAIN_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha // empty')"
+            if ! [[ "$ACCEPTED_MAIN_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+              echo 'current protected-main SHA could not be resolved' >&2
+              exit 1
+            fi
+            if [[ "$ACCEPTED_MAIN_SHA" != "$GITHUB_SHA" ]]; then
+              echo 'device cycle control is not the current protected-main SHA; request a fresh cycle' >&2
+              exit 1
+            fi
+
+            SOURCE_TREE_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$SOURCE_SHA" --jq '.tree.sha // empty')"
+            MAIN_TREE_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$ACCEPTED_MAIN_SHA" --jq '.tree.sha // empty')"
+            if ! [[ "$SOURCE_TREE_SHA" =~ ^[0-9a-f]{40}$ && "$MAIN_TREE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+              echo 'PRODUCT source-tree identity could not be resolved' >&2
+              exit 1
+            fi
+            gh api "repos/$GITHUB_REPOSITORY/git/trees/$SOURCE_TREE_SHA" > "$root/source-tree.json"
+            gh api "repos/$GITHUB_REPOSITORY/git/trees/$MAIN_TREE_SHA" > "$root/main-tree.json"
+            python3 - "$root/source-tree.json" "$root/main-tree.json" <<'PY'
+          import json, sys
+          source_path, main_path = sys.argv[1:]
+          source = json.load(open(source_path, encoding='utf-8'))
+          main = json.load(open(main_path, encoding='utf-8'))
+          required = ('android', 'crates', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'config', 'contracts')
+          def identity(tree):
+              return {
+                  item['path']: (item.get('mode'), item.get('type'), item.get('sha'))
+                  for item in tree.get('tree', [])
+                  if item.get('path') in required
+              }
+          source_id = identity(source)
+          main_id = identity(main)
+          if set(source_id) != set(required) or set(main_id) != set(required):
+              raise SystemExit('merged PR install cannot prove the complete PRODUCT input identity')
+          mismatches = [name for name in required if source_id[name] != main_id[name]]
+          if mismatches:
+              raise SystemExit('merged PR install requires current protected-main PRODUCT identity; mismatched paths: ' + ','.join(mismatches))
+          print('POST_MERGE_PRODUCT_IDENTITY=EXACT_MATCH')
+          PY
+          fi
 
           ARTIFACT_ID=''
           ARTIFACT_NAME=''
