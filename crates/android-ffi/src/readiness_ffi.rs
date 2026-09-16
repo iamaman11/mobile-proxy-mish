@@ -67,7 +67,6 @@ pub struct ProductReadinessFactsView {
     pub cellular_admitted: bool,
     pub root_policy_verified: bool,
     pub runtime_generation: Option<u64>,
-    pub private_bridge_healthy: bool,
     pub proxy_runtime_generation: Option<u64>,
     pub proxy_serving_generation: Option<u64>,
     pub proxy_credential_version: Option<u64>,
@@ -99,14 +98,11 @@ impl fmt::Display for ReadinessBoundaryError {
 
 impl std::error::Error for ReadinessBoundaryError {}
 
-/// One application-owned absolute operation budget. Android must apply this same budget to its
-/// concrete local-proxy CONNECT + TLS effect; elapsed time is reclassified by Rust on completion.
 #[uniffi::export]
 pub fn egress_probe_budget_ms() -> u64 {
     DEFAULT_EGRESS_PROBE_BUDGET.as_millis() as u64
 }
 
-/// Desired Configuration owns the runtime probe hostname/port. Android must not duplicate them.
 #[uniffi::export]
 pub fn readiness_probe_target() -> Result<ReadinessProbeTargetView, ReadinessBoundaryError> {
     let target = ReadinessProbeTarget::deployment()
@@ -117,14 +113,11 @@ pub fn readiness_probe_target() -> Result<ReadinessProbeTargetView, ReadinessBou
     })
 }
 
-/// Proxy Serving owns the HTTP CONNECT listener coordinate used by the authenticated probe.
 #[uniffi::export]
 pub fn proxy_http_connect_port() -> u16 {
     HTTP_CONNECT_PORT
 }
 
-/// Thin boundary over the application-owned probe freshness coordinator plus the stateless
-/// readiness projection. It stores no leaf facts and no READY/NOT_READY value.
 #[derive(uniffi::Object)]
 pub struct ProductReadinessController {
     probe: Mutex<EgressProbeCoordinator>,
@@ -222,7 +215,6 @@ fn map_input(
         .map(|raw| {
             Ok(RuntimeReadinessFact {
                 generation: runtime_generation(raw)?,
-                private_bridge_healthy: facts.private_bridge_healthy,
             })
         })
         .transpose()?;
@@ -403,7 +395,6 @@ mod tests {
             cellular_admitted: true,
             root_policy_verified: true,
             runtime_generation: Some(21),
-            private_bridge_healthy: true,
             proxy_runtime_generation: Some(21),
             proxy_serving_generation: Some(21),
             proxy_credential_version: Some(51),
