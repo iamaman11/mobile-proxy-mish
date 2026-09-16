@@ -79,30 +79,59 @@ impl From<io::Error> for ProxySessionError {
     }
 }
 
-/// Serves one already-accepted TCP stream using the canonical Proxy Serving protocol/auth owner,
-/// one injected outbound effect port and one bounded bidirectional relay.
+/// Established protocol/auth/outbound pair before any long-lived relay execution.
 ///
-/// This function owns no listener, DNS, network selection, routing, root effect or lifecycle.
+/// Proxy Serving remains the sole owner of protocol parsing, authentication and target semantics.
+/// Runtime executors may move the returned sockets into their own I/O scheduler without duplicating
+/// any of those decisions.
+#[derive(Debug)]
+pub struct PreparedProxySession {
+    client: TcpStream,
+    upstream: TcpStream,
+}
+
+impl PreparedProxySession {
+    pub fn into_streams(self) -> (TcpStream, TcpStream) {
+        (self.client, self.upstream)
+    }
+}
+
+/// Performs the bounded blocking setup portion of one proxy session and returns the connected pair
+/// ready for relay. This is the canonical seam used by asynchronous runtime adapters.
+pub fn prepare_proxy_session<C: ProxyOutboundConnector + ?Sized>(
+    protocol: ProxyProtocol,
+    mut client: TcpStream,
+    credentials: &ProxyCredentialMaterial,
+    connector: &C,
+) -> Result<PreparedProxySession, ProxySessionError> {
+    match prepare_proxy_session_inner(protocol, &mut client, credentials, connector) {
+        Ok(upstream) => Ok(PreparedProxySession { client, upstream }),
+        Err(error) => {
+            let _ = client.shutdown(Shutdown::Write);
+            Err(error)
+        }
+    }
+}
+
+/// Synchronous compatibility entry point. Long-lived PRODUCT serving uses
+/// `prepare_proxy_session` plus the runtime owner's asynchronous relay.
 pub fn serve_proxy_session<C: ProxyOutboundConnector + ?Sized>(
     protocol: ProxyProtocol,
     client: TcpStream,
     credentials: &ProxyCredentialMaterial,
     connector: &C,
 ) -> Result<ProxyRelayStats, ProxySessionError> {
-    let mut client = client;
-    let result = serve_proxy_session_inner(protocol, &mut client, credentials, connector);
-    if result.is_err() {
-        let _ = client.shutdown(Shutdown::Write);
-    }
-    result
+    let prepared = prepare_proxy_session(protocol, client, credentials, connector)?;
+    let (client, upstream) = prepared.into_streams();
+    relay_bidirectional(client, upstream).map_err(ProxySessionError::Io)
 }
 
-fn serve_proxy_session_inner<C: ProxyOutboundConnector + ?Sized>(
+fn prepare_proxy_session_inner<C: ProxyOutboundConnector + ?Sized>(
     protocol: ProxyProtocol,
     client: &mut TcpStream,
     credentials: &ProxyCredentialMaterial,
     connector: &C,
-) -> Result<ProxyRelayStats, ProxySessionError> {
+) -> Result<TcpStream, ProxySessionError> {
     let (wire_protocol, target) = accept_target(protocol, client, credentials)?;
     let upstream = match connector.connect(&target) {
         Ok(stream) => stream,
@@ -113,7 +142,7 @@ fn serve_proxy_session_inner<C: ProxyOutboundConnector + ?Sized>(
     };
 
     write_connect_success(client, wire_protocol, &upstream)?;
-    relay_bidirectional(client.try_clone()?, upstream).map_err(ProxySessionError::Io)
+    Ok(upstream)
 }
 
 fn accept_target(
@@ -395,6 +424,38 @@ mod tests {
             &ProxyTargetHost::Domain("example.invalid".into())
         );
         assert_eq!(target.host().numeric(), None);
+    }
+
+    #[test]
+    fn prepared_session_keeps_protocol_owner_before_runtime_relay() {
+        let upstream_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("upstream bind");
+        let upstream_address = upstream_listener.local_addr().expect("upstream address");
+        let upstream = thread::spawn(move || {
+            let (_stream, _) = upstream_listener.accept().expect("upstream accept");
+        });
+        let connector = LoopbackConnector {
+            upstream: upstream_address,
+            calls: AtomicUsize::new(0),
+            target: Mutex::new(None),
+        };
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("session bind");
+        let address = listener.local_addr().expect("session address");
+        let session = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("session accept");
+            configure(&stream);
+            prepare_proxy_session(ProxyProtocol::Http, stream, &credentials(), &connector)
+        });
+        let mut client = TcpStream::connect_timeout(&address, TEST_TIMEOUT).expect("client");
+        configure(&client);
+        client
+            .write_all(b"CONNECT example.invalid:443 HTTP/1.1\r\nHost: example.invalid:443\r\nProxy-Authorization: Basic dXNlcjpwYXNzd29yZA==\r\n\r\n")
+            .expect("request");
+        let response = read_http_header(&mut client);
+        assert!(response.starts_with(b"HTTP/1.1 200 Connection Established\r\n"));
+        let prepared = session.join().expect("session thread").expect("prepared");
+        let (_server_client, upstream_stream) = prepared.into_streams();
+        assert!(upstream_stream.peer_addr().is_ok());
+        upstream.join().expect("upstream thread");
     }
 
     #[test]
