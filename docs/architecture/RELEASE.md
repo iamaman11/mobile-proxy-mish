@@ -2,6 +2,8 @@
 
 This document owns **formal Android release identity and promotion**. Development exact-head CI / DEVICE-1 candidates are governed by `DEVELOPMENT_PIPELINE.md` and Issue #135.
 
+Protected `main` is the latest accepted PRODUCT + CONTROL source. A PR head is only a development candidate until accepted and merged.
+
 ## Supply-chain law
 
 Formal release acceptance preserves:
@@ -21,8 +23,8 @@ PIN
 Authority split:
 
 ```text
-Git source + reviewed workflows
-  = source, lockfiles, build/test/release definitions
+protected main + reviewed workflows
+  = accepted source, lockfiles, build/test/release definitions
 
 GitHub-hosted restricted release workflow
   = Android release build/sign/package authority
@@ -44,7 +46,7 @@ Release-signing private material belongs only to the restricted GitHub release e
 The formal RC path is owned by `.github/workflows/android-release.yml` and the current release contract:
 
 ```text
-accepted release source commit
+accepted release source commit on main
  -> immutable RC tag vMAJOR.MINOR.PATCH-rc.N
  -> restricted hosted build/sign
  -> final signed APK verification
@@ -76,10 +78,10 @@ Rollback selects a previously accepted exact artifact digest after compatibility
 
 ## Development candidate boundary
 
-Development physical evidence is intentionally separate from release identity:
+Development physical evidence is separate from release identity:
 
 ```text
-ready integration PR exact PRODUCT head
+open ready PR to main, exact PRODUCT head
  -> Integration Android Preflight PASS
  -> device-candidate-pr-<PR>-<PRODUCT_SHA>
  -> explicit protected-main Device Cycle request
@@ -90,13 +92,14 @@ ready integration PR exact PRODUCT head
  -> bounded current-PRODUCT diagnostics / requested current-function probe
  -> immutable evidence
  -> STOP_FOR_ANALYSIS
+ -> merge accepted change to main
 ```
 
-This path exists so the active roadmap stage can obtain a real physical fact without merging PRODUCT solely to manufacture APK bytes or pretending a development build is a release.
+This path lets the active roadmap stage obtain a real physical fact **before merge** without pretending a development build is release identity.
 
 A development candidate:
 
-- originates from the exact current integration PR/head allowed by Issue #135;
+- originates from the exact open ready PR to `main` being evaluated;
 - remains bound to `PRODUCT_SHA`, hosted run/artifact identity and digest;
 - is executed by an explicit `CONTROL_SHA` from protected main;
 - uses the isolated debug package identity;
@@ -111,9 +114,9 @@ The Windows LAB is a consumer by default.
 
 Live execution state belongs only to Issue #135. Ordered stage/product direction belongs to `PRODUCT_ROADMAP.md`. Issue #134 is historical research/rationale.
 
-`main` is the protected control/process/canonical-documentation and milestone boundary, not a progress ledger. During an active stage the current PRODUCT implementation may be newer on the working/integration lineage named by #135.
+`main` is the accepted PRODUCT + CONTROL integration boundary. Accepted development slices should merge to `main` promptly after their required evidence passes. Do not keep accepted PRODUCT state on a long-lived parallel integration branch.
 
-A development physical fact does not by itself force PRODUCT integration to `main`. Exact-head hosted debug candidates exist specifically to keep physical attribution exact without creating release identity or a premature merge boundary.
+A development physical fact does not itself authorize formal release promotion. It may, however, be the required evidence for accepting the candidate PR into `main`.
 
 ## Provider and control-plane constraints
 
@@ -126,4 +129,4 @@ Supported provider desired configuration should use one declarative Git-reviewed
 - `DEVELOPMENT_PIPELINE.md` + executable workflows own development candidate/Device Cycle mechanics.
 - This file owns only formal RC/release identity/promotion.
 - `ACCEPTANCE.md` owns evidence-strength boundaries.
-- Issue #135 owns current stage/exact pointers, never release semantics themselves.
+- Issue #135 owns current stage/open PR/evidence ids, never release semantics themselves.
