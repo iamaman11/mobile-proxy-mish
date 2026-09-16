@@ -8,10 +8,10 @@ one fact -> one natural owner -> one write path -> one observation path
 
 | Capability | Physical Rust home | Owns |
 | --- | --- | --- |
-| Transport Reachability | `crates/transport` | Mesh/private transport admission and transport observations |
+| Transport Reachability | `crates/transport` | Mesh/private transport admission, exact admitted endpoint/epoch, canonical external accepted-session budget=64, reject-at-edge semantics and active external-session observation |
 | Proxy Serving | `crates/proxy` | HTTP CONNECT / SOCKS5 / mixed protocol semantics, authentication, unresolved target semantics and proxy policy |
 | Cellular Egress | `crates/cellular` | validated cellular admission, generation/currentness, egress authority and egress observations |
-| Runtime Lifecycle / execution | `crates/runtime` | desired running state, runtime generation, Tokio listener/session/task ownership, cancellation/shutdown and runtime recovery decisions |
+| Runtime Lifecycle / execution | `crates/runtime` | desired running state, runtime generation, the one process-wide Tokio executor/task tree for long-lived Mesh + Proxy work, cancellation/shutdown, internal execution permits/control reserve and runtime recovery decisions |
 | IP Rotation | `crates/rotation` | rotation intent, operation identity, reconciliation/result |
 | Device Identity | `crates/identity` | logical MISH installation/device identity |
 | Desired Configuration | `crates/configuration` | validated non-secret desired state and generation |
@@ -20,25 +20,50 @@ one fact -> one natural owner -> one write path -> one observation path
 
 `crates/application` owns no leaf facts. It is only for genuine cross-owner use-cases.
 
-## Runtime / protocol split
+## Runtime / transport / protocol split
 
-`mish-proxy` does not own an async runtime or scheduler. `mish-runtime` owns Tokio execution and composes the natural-owner contracts.
+The final native execution topology has one executor but several domain owners. Executor ownership and policy ownership are deliberately separate.
 
 ```text
+mish-transport
+  exact Mesh endpoint / admission epoch
+  external accepted-session budget = 64
+  reject-at-edge decision
+  active external-session fact
+
 mish-proxy
   protocol / auth / target semantics
 
 mish-runtime
-  listeners
-  session admission budget
-  task tree
-  blocking setup seam
+  ONE process-wide Tokio runtime
+  Mesh ingress/session task execution
+  Proxy Serving task execution
   async relay execution
+  internal execution permits / control reserve
   terminal runtime failure
   cancellation / bounded shutdown
+
+Cellular Egress
+  current cellular authority
+  exact-network DNS
+  root-policy-gated public socket
 ```
 
-Android/Kotlin does not become a second proxy/runtime lifecycle owner. It executes platform effects and projects typed owner state.
+`mish-transport` and `mish-proxy` do not own async runtimes, schedulers, independent executor pools or per-session OS-thread execution subsystems. Their domain contracts are executed by the one `mish-runtime` Tokio task tree.
+
+The canonical external limit of 64 is **not** a Tokio/runtime business rule. `mish-transport` decides whether an external Mesh session may enter; `mish-runtime` decides how admitted work executes. Internal runtime permits/control reserve may protect execution machinery, but they must not become a second external-capacity authority.
+
+Android/Kotlin does not become a second transport/proxy/runtime lifecycle owner. It executes platform effects and projects typed owner state.
+
+## Architecture enforcement
+
+Architecture tests/guards must prevent regression after the U2 Mesh/Tokio convergence:
+
+- exactly one process-wide PRODUCT Tokio runtime/executor owns long-lived Mesh + Proxy network tasks;
+- no `tokio::runtime::Builder`, independent executor/thread pool or thread-per-session serving subsystem may appear in `mish-transport` or `mish-proxy`;
+- external accepted-session budget=64 and reject-at-edge ownership remain in `mish-transport`;
+- `mish-runtime` retains and drains every long-lived listener/session/relay task at the runtime-generation boundary;
+- Android remains an effects/observation adapter and cannot acquire duplicate counters, admission policy or lifecycle ownership.
 
 ## Cellular/root boundary
 
