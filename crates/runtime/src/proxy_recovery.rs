@@ -34,7 +34,6 @@ mod tests {
         ));
         for terminal in [
             ProxyServingFailure::NativeRuntimeMissing,
-            ProxyServingFailure::LegacyMigrationBlocked,
             ProxyServingFailure::ExternalCredentialUnavailable,
             ProxyServingFailure::ShutdownFailed,
         ] {
