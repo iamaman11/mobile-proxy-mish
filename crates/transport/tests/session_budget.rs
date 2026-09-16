@@ -21,7 +21,10 @@ fn sixty_fifth_mesh_session_is_rejected_by_transport_owner() {
     assert_eq!(owner.active_sessions(), MAX_MESH_SESSIONS);
 
     owner.revoke();
-    assert!(owner.try_admit().is_none(), "revoked generation must fail closed");
+    assert!(
+        owner.try_admit().is_none(),
+        "revoked generation must fail closed"
+    );
     drop(admitted);
     assert_eq!(owner.active_sessions(), 0);
 }
