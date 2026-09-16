@@ -6,7 +6,7 @@ version = 4
 name = "anstyle"
 version = "1.0.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2a4f0244f6f69e9bc8574bd"
+checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
 
 [[package]]
 name = "anyhow"
@@ -412,7 +412,7 @@ dependencies = [
 name = "ndk-sys"
 version = "0.6.0+11769913"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee6cda3051665f1fb8d9e08fc35c96d5a244fb1be711a03b71118828afc9a873"
+checksum = "ee6cda3051665f666402fe6a3024d3bec7ebc898f96a4a23ab71118828afc9a873"
 dependencies = [
  "jni-sys 0.3.1",
 ]
