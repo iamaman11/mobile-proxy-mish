@@ -6,7 +6,6 @@
 mod lifecycle;
 pub use lifecycle::*;
 
-#[path = "lib.rs"]
 mod cellular_connector;
 pub use cellular_connector::*;
 
