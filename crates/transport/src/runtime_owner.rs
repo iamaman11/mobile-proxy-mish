@@ -1,6 +1,6 @@
 use crate::{
     MeshAdmissionSnapshot, MeshAdmissionState, MeshEndpointOwner, MeshIngressError,
-    MeshIngressRuntime, MeshOwnerError, MeshPortForward,
+    MeshIngressExecutor, MeshOwnerError, MeshPortForward, MeshSessionOwner,
 };
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -50,16 +50,17 @@ impl MeshTransportSnapshot {
 
 struct MeshTransportState {
     owner: MeshEndpointOwner,
-    ingress: Option<MeshIngressRuntime>,
+    executor: Option<Arc<dyn MeshIngressExecutor>>,
+    sessions: Option<Arc<MeshSessionOwner>>,
     ingress_epoch: Option<u64>,
     cleanup_failed: bool,
 }
 
-/// Natural-owner runtime coordination for one exact-address Mesh ingress generation.
+/// Natural-owner coordination for one exact-address Mesh ingress generation.
 ///
-/// Admission semantics, ingress epoch ownership and sticky cleanup-failure disposition live here.
-/// Platform/FFI adapters supply one complete typed current-VPN observation and an owner-approved
-/// port mapping, but they do not choose an endpoint or own independent lifecycle state.
+/// Admission, epoch, capacity and `active_sessions` remain here. The supplied executor is only the
+/// runtime mechanism for already-admitted work; it cannot choose endpoints, mint capacity or own a
+/// second external session count.
 pub struct MeshTransportCoordinator {
     state: Mutex<MeshTransportState>,
 }
@@ -72,7 +73,8 @@ impl MeshTransportCoordinator {
         Ok(Arc::new(Self {
             state: Mutex::new(MeshTransportState {
                 owner: MeshEndpointOwner::new(accepted_network, accepted_prefix)?,
-                ingress: None,
+                executor: None,
+                sessions: None,
                 ingress_epoch: None,
                 cleanup_failed: false,
             }),
@@ -96,8 +98,8 @@ impl MeshTransportCoordinator {
         };
         let admission = state.owner.observe_local_ipv4(sequence, addresses)?;
         if state.ingress_epoch.is_some() && state.ingress_epoch != admission.admission_epoch() {
-            // The state mutex makes observation replacement atomic to every caller. Old listeners
-            // and sessions are closed before this method can publish/return the new owner view.
+            // Replacement is atomic to Transport callers: revoke fresh admission first, then wait
+            // for the Runtime execution owner to close listeners/sessions before returning.
             stop_ingress_locked(&mut state)?;
         }
         Ok(snapshot_locked(&state))
@@ -107,6 +109,7 @@ impl MeshTransportCoordinator {
         &self,
         admission_epoch: u64,
         mappings: &[MeshPortForward],
+        executor: Arc<dyn MeshIngressExecutor>,
     ) -> Result<bool, MeshTransportError> {
         let mut state = self.state()?;
         if state.cleanup_failed {
@@ -122,23 +125,26 @@ impl MeshTransportCoordinator {
 
         if state.ingress_epoch == Some(admission_epoch) {
             if state
-                .ingress
+                .executor
                 .as_ref()
-                .is_some_and(MeshIngressRuntime::is_healthy)
+                .is_some_and(|current| current.ingress_healthy())
             {
                 return Ok(true);
             }
             stop_ingress_locked(&mut state)?;
-        } else if state.ingress.is_some() {
+        } else if state.executor.is_some() || state.sessions.is_some() {
             stop_ingress_locked(&mut state)?;
         }
 
         let endpoint = admission
             .admitted_endpoint()
             .ok_or(MeshTransportError::IngressUnavailable)?;
-        let ingress =
-            MeshIngressRuntime::start(endpoint, mappings).map_err(MeshTransportError::Ingress)?;
-        state.ingress = Some(ingress);
+        let sessions = MeshSessionOwner::product_generation();
+        executor
+            .start_ingress(endpoint, mappings, Arc::clone(&sessions))
+            .map_err(MeshTransportError::Ingress)?;
+        state.executor = Some(executor);
+        state.sessions = Some(sessions);
         state.ingress_epoch = Some(admission_epoch);
         Ok(true)
     }
@@ -161,18 +167,26 @@ impl MeshTransportCoordinator {
 
 fn stop_ingress_locked(state: &mut MeshTransportState) -> Result<(), MeshTransportError> {
     state.ingress_epoch = None;
-    let Some(mut ingress) = state.ingress.take() else {
-        return if state.cleanup_failed {
-            Err(MeshTransportError::CleanupFailed)
-        } else {
-            Ok(())
-        };
-    };
+    let sessions = state.sessions.take();
+    if let Some(owner) = sessions.as_ref() {
+        owner.revoke();
+    }
+    let executor = state.executor.take();
 
-    if ingress.stop().is_err() {
+    let execution_result = executor
+        .as_ref()
+        .map_or(Ok(()), |current| current.stop_ingress());
+    let active = sessions
+        .as_ref()
+        .map_or(0, |owner| owner.active_sessions());
+
+    if execution_result.is_err() || active != 0 {
         state.cleanup_failed = true;
+        // Preserve the natural-owner counter for diagnostics if a broken executor failed to drain.
+        state.sessions = sessions;
         return Err(MeshTransportError::CleanupFailed);
     }
+
     if state.cleanup_failed {
         Err(MeshTransportError::CleanupFailed)
     } else {
@@ -185,13 +199,13 @@ fn snapshot_locked(state: &MeshTransportState) -> MeshTransportSnapshot {
         admission: state.owner.snapshot(),
         ingress_running: !state.cleanup_failed
             && state
-                .ingress
+                .executor
                 .as_ref()
-                .is_some_and(MeshIngressRuntime::is_healthy),
+                .is_some_and(|executor| executor.ingress_healthy()),
         active_sessions: state
-            .ingress
+            .sessions
             .as_ref()
-            .map_or(0, MeshIngressRuntime::active_sessions),
+            .map_or(0, |sessions| sessions.active_sessions()),
     }
 }
 
@@ -199,7 +213,52 @@ fn snapshot_locked(state: &MeshTransportState) -> MeshTransportSnapshot {
 mod tests {
     use super::*;
     use crate::MeshAdmissionReason;
-    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    struct FakeExecutor {
+        healthy: AtomicBool,
+        starts: AtomicUsize,
+        stops: AtomicUsize,
+        fail_stop: AtomicBool,
+    }
+
+    impl FakeExecutor {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                healthy: AtomicBool::new(false),
+                starts: AtomicUsize::new(0),
+                stops: AtomicUsize::new(0),
+                fail_stop: AtomicBool::new(false),
+            })
+        }
+    }
+
+    impl MeshIngressExecutor for FakeExecutor {
+        fn start_ingress(
+            &self,
+            _endpoint: Ipv4Addr,
+            _mappings: &[MeshPortForward],
+            _sessions: Arc<MeshSessionOwner>,
+        ) -> Result<(), MeshIngressError> {
+            self.starts.fetch_add(1, Ordering::AcqRel);
+            self.healthy.store(true, Ordering::Release);
+            Ok(())
+        }
+
+        fn stop_ingress(&self) -> Result<(), MeshIngressError> {
+            self.stops.fetch_add(1, Ordering::AcqRel);
+            self.healthy.store(false, Ordering::Release);
+            if self.fail_stop.load(Ordering::Acquire) {
+                Err(MeshIngressError::ShutdownTimedOut)
+            } else {
+                Ok(())
+            }
+        }
+
+        fn ingress_healthy(&self) -> bool {
+            self.healthy.load(Ordering::Acquire)
+        }
+    }
 
     fn coordinator() -> Arc<MeshTransportCoordinator> {
         MeshTransportCoordinator::new(Ipv4Addr::new(100, 96, 0, 0), 12)
@@ -309,14 +368,19 @@ mod tests {
             .observe_vpn(1, unique([Ipv4Addr::new(100, 96, 2, 4)]))
             .expect("observation");
         let epoch = admitted.admission().admission_epoch().expect("epoch");
-        runtime.state().expect("state").cleanup_failed = true;
-
-        assert_eq!(
-            runtime.start_ingress(epoch, &[MeshPortForward::same(40001)]),
-            Err(MeshTransportError::CleanupFailed)
+        let executor = FakeExecutor::new();
+        let execution: Arc<dyn MeshIngressExecutor> = executor.clone();
+        assert!(
+            runtime
+                .start_ingress(epoch, &[MeshPortForward::same(40001)], execution)
+                .expect("start")
         );
+        executor.fail_stop.store(true, Ordering::Release);
+
+        assert_eq!(runtime.stop_ingress(), Err(MeshTransportError::CleanupFailed));
+        let replacement: Arc<dyn MeshIngressExecutor> = FakeExecutor::new();
         assert_eq!(
-            runtime.stop_ingress(),
+            runtime.start_ingress(epoch, &[MeshPortForward::same(40001)], replacement),
             Err(MeshTransportError::CleanupFailed)
         );
         assert_eq!(runtime.ingress_healthy(), Ok(false));
@@ -336,20 +400,18 @@ mod tests {
     }
 
     #[test]
-    fn loss_stops_listener_before_same_endpoint_can_receive_fresh_epoch() {
+    fn admission_loss_stops_runtime_execution_before_returning_new_owner_view() {
         let runtime = MeshTransportCoordinator::new(Ipv4Addr::new(127, 0, 0, 0), 8)
             .expect("loopback test coordinator");
-        let reserve = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("reserve");
-        let port = reserve.local_addr().expect("address").port();
-        drop(reserve);
-
         let first = runtime
             .observe_vpn(1, unique([Ipv4Addr::LOCALHOST]))
             .expect("first");
         let first_epoch = first.admission().admission_epoch().expect("epoch");
+        let executor = FakeExecutor::new();
+        let execution: Arc<dyn MeshIngressExecutor> = executor.clone();
         assert!(
             runtime
-                .start_ingress(first_epoch, &[MeshPortForward::same(port)])
+                .start_ingress(first_epoch, &[MeshPortForward::same(40001)], execution)
                 .expect("start ingress")
         );
         assert!(runtime.ingress_healthy().expect("healthy"));
@@ -359,6 +421,7 @@ mod tests {
             .expect("loss");
         assert!(!lost.ingress_running());
         assert_eq!(lost.active_sessions(), 0);
+        assert_eq!(executor.stops.load(Ordering::Acquire), 1);
 
         let returned = runtime
             .observe_vpn(3, unique([Ipv4Addr::LOCALHOST]))
