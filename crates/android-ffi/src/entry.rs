@@ -1,4 +1,3 @@
-#[path = "lib.rs"]
 mod runtime_boundary;
 pub use runtime_boundary::*;
 
