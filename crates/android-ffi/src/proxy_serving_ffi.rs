@@ -17,12 +17,24 @@ pub struct NativeProxyRuntime {
 
 #[uniffi::export]
 impl NativeProxyRuntime {
+    /// Read-only diagnostic observation. PRODUCT lifecycle decisions do not poll this method.
     pub fn is_healthy(&self) -> bool {
         self.inner.is_healthy()
     }
 
     pub fn active_sessions(&self) -> u32 {
         self.inner.active_sessions().min(u32::MAX as usize) as u32
+    }
+
+    /// Blocks until Rust publishes a terminal serving failure or this generation is stopped.
+    /// `None` is an ordinary stop/close observation, never an inferred health failure.
+    pub fn wait_for_terminal_failure(
+        &self,
+    ) -> Result<Option<ProxyServingFailure>, AndroidRuntimeError> {
+        self.inner
+            .wait_terminal_failure()
+            .map(|failure| failure.map(map_proxy_failure_out))
+            .map_err(map_proxy_stop_error)
     }
 
     pub fn stop(&self) -> Result<(), AndroidRuntimeError> {
