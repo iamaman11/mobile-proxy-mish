@@ -12,6 +12,7 @@ use tokio::io::copy_bidirectional;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::{Semaphore, watch};
+use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::timeout;
 
 const CONTROL_SESSION_RESERVE: usize = 1;
@@ -57,10 +58,15 @@ impl std::error::Error for ProxyServingRuntimeError {}
 /// `mish-proxy` remains the owner of protocol/authentication/target semantics. The injected
 /// connector remains the owner of Cellular admission/currentness, exact-network DNS and outbound
 /// socket effects. Tokio is deliberately confined to this runtime layer.
+///
+/// Every accept task is retained by this owner. Every accepted session is retained by the
+/// corresponding accept task's `JoinSet`. Shutdown therefore has one explicit ownership tree:
+/// signal -> stop admission -> abort/drain sessions -> join acceptors -> destroy Tokio runtime.
 pub struct ProxyServingRuntime {
     listener_count: usize,
     shutdown: watch::Sender<bool>,
     runtime: Mutex<Option<Runtime>>,
+    accept_tasks: Mutex<Vec<JoinHandle<()>>>,
     stopping: AtomicBool,
     fatal: Arc<AtomicBool>,
     live_acceptors: Arc<AtomicUsize>,
@@ -102,13 +108,14 @@ impl ProxyServingRuntime {
         let session_budget = Arc::new(Semaphore::new(MAX_NATIVE_PROXY_SESSIONS));
         let credentials = Arc::new(plan.credentials().clone());
         let listener_count = bound.len();
+        let mut accept_tasks = Vec::with_capacity(listener_count);
 
         {
             let _enter = runtime.enter();
             for (protocol, listener) in bound {
                 let listener = TcpListener::from_std(listener)
                     .map_err(|_| ProxyServingRuntimeError::BindFailed)?;
-                let _accept_task = runtime.spawn(accept_loop(
+                accept_tasks.push(runtime.spawn(accept_loop(
                     protocol,
                     listener,
                     Arc::clone(&credentials),
@@ -119,7 +126,7 @@ impl ProxyServingRuntime {
                     Arc::clone(&fatal),
                     Arc::clone(&live_acceptors),
                     Arc::clone(&active_sessions),
-                ));
+                )));
             }
         }
 
@@ -127,6 +134,7 @@ impl ProxyServingRuntime {
             listener_count,
             shutdown,
             runtime: Mutex::new(Some(runtime)),
+            accept_tasks: Mutex::new(accept_tasks),
             stopping: AtomicBool::new(false),
             fatal,
             live_acceptors,
@@ -164,20 +172,33 @@ impl ProxyServingRuntime {
         self.stopping.store(true, Ordering::Release);
         let _ = self.shutdown.send(true);
 
+        let accept_tasks = self
+            .accept_tasks
+            .lock()
+            .map_err(|_| ProxyServingRuntimeError::StateUnavailable)?
+            .drain(..)
+            .collect::<Vec<_>>();
         let runtime = self
             .runtime
             .lock()
             .map_err(|_| ProxyServingRuntimeError::StateUnavailable)?
             .take();
+
+        let mut joined_cleanly = true;
         if let Some(runtime) = runtime {
+            joined_cleanly = runtime.block_on(async move {
+                timeout(SHUTDOWN_TIMEOUT, async move {
+                    for task in accept_tasks {
+                        let _ = task.await;
+                    }
+                })
+                .await
+                .is_ok()
+            });
             runtime.shutdown_timeout(SHUTDOWN_TIMEOUT);
         }
 
-        let deadline = Instant::now() + SHUTDOWN_TIMEOUT;
-        while self.active_sessions.load(Ordering::Acquire) != 0 && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        if self.active_sessions.load(Ordering::Acquire) != 0 {
+        if !joined_cleanly || self.active_sessions.load(Ordering::Acquire) != 0 {
             return Err(ProxyServingRuntimeError::ShutdownTimedOut);
         }
         Ok(())
@@ -197,18 +218,31 @@ async fn accept_loop(
     credentials: Arc<ProxyCredentialMaterial>,
     connector: Arc<dyn ProxyOutboundConnector>,
     session_budget: Arc<Semaphore>,
-    shutdown: watch::Receiver<bool>,
+    mut shutdown: watch::Receiver<bool>,
     shutdown_tx: watch::Sender<bool>,
     fatal: Arc<AtomicBool>,
     live_acceptors: Arc<AtomicUsize>,
     active_sessions: Arc<AtomicUsize>,
 ) {
     let _acceptor = AcceptorGuard::new(Arc::clone(&live_acceptors));
+    let mut sessions = JoinSet::new();
+
     loop {
+        while sessions.try_join_next().is_some() {}
         if *shutdown.borrow() {
             break;
         }
-        let accepted = match timeout(ACCEPT_POLL_TIMEOUT, listener.accept()).await {
+
+        let accepted = tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    break;
+                }
+                continue;
+            }
+            accepted = timeout(ACCEPT_POLL_TIMEOUT, listener.accept()) => accepted,
+        };
+        let accepted = match accepted {
             Ok(accepted) => accepted,
             Err(_) => continue,
         };
@@ -234,12 +268,18 @@ async fn accept_loop(
         let credentials = Arc::clone(&credentials);
         let connector = Arc::clone(&connector);
         let session_active = Arc::clone(&active_sessions);
-        drop(tokio::spawn(async move {
+        sessions.spawn(async move {
             let _permit = permit;
             let _count = SessionCountGuard(session_active);
             serve_session(protocol, client, credentials, connector).await;
-        }));
+        });
     }
+
+    // Session tasks are children of this acceptor. A runtime generation stop is not graceful
+    // application traffic draining: it is an exact fail-closed generation boundary. Abort active
+    // relays, then await every task so permits/counters/streams are deterministically released.
+    sessions.abort_all();
+    while sessions.join_next().await.is_some() {}
 }
 
 async fn serve_session(
@@ -363,5 +403,6 @@ mod tests {
         assert!(runtime.is_healthy());
         runtime.stop().expect("stop");
         assert!(!runtime.is_healthy());
+        assert_eq!(runtime.active_sessions(), 0);
     }
 }
