@@ -72,6 +72,25 @@ jobs:
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt
           rustup override set "$RUST_TOOLCHAIN"
 
+      # Bounded migration-only step. It emits the exact Cargo-generated lockfile and fails when the
+      # committed lock is stale. The next commit consumes this evidence and deletes this step.
+      - name: Regenerate exact L8 lockfile evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Cargo.lock "$RUNNER_TEMP/Cargo.lock.before"
+          cargo generate-lockfile
+          echo 'MISH_CARGO_LOCK_B64_BEGIN'
+          base64 -w0 Cargo.lock
+          echo
+          echo 'MISH_CARGO_LOCK_B64_END'
+          if cmp -s "$RUNNER_TEMP/Cargo.lock.before" Cargo.lock; then
+            echo 'MISH_CARGO_LOCK_CURRENT=YES'
+          else
+            echo 'MISH_CARGO_LOCK_CURRENT=NO'
+            exit 86
+          fi
+
       - name: Architecture constitution
         shell: bash
         run: |
