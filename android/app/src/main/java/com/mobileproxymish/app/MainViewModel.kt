@@ -135,7 +135,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun proxyReasonCode(reason: ProxyServingFailure): String = when (reason) {
         ProxyServingFailure.NATIVE_RUNTIME_MISSING -> "proxy.native_runtime_missing"
-        ProxyServingFailure.LEGACY_MIGRATION_BLOCKED -> "proxy.legacy_migration_blocked"
         ProxyServingFailure.EXTERNAL_CREDENTIAL_UNAVAILABLE ->
             "proxy.external_credential_unavailable"
         ProxyServingFailure.LISTENER_UNAVAILABLE -> "proxy.listener_unavailable"
