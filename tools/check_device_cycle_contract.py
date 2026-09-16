@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed guard for the explicit, single-run DEVICE-1 engineering cycle."""
+"""Fail-closed guard for the explicit, single-run current-L8 DEVICE-1 engineering cycle."""
 
 from pathlib import Path
 import re
@@ -43,7 +43,7 @@ def main() -> None:
         "build first, then explicitly request the cycle",
         "candidate build is not a completed successful PR preflight",
         "Integration Android Preflight",
-        "probe_only requires exactly one explicit read-only probe",
+        "probe_only supports only the current-function loopback_connect probe",
         "full/install_only/diagnose_only do not accept a probe",
         'echo "control_sha=$GITHUB_SHA"',
         "actions: read",
@@ -58,10 +58,9 @@ def main() -> None:
         'ref: ${{ needs.resolve.outputs.control_sha }}',
         "Launch -> canonical diagnostic -> STOP",
         "Explicitly restart app and wait for bounded stable state",
-        "Collect one canonical diagnostic snapshot",
+        "Collect one canonical current-L8 diagnostic snapshot",
         "mish-device-diagnostic-v2.json",
-        "Explicit probe only - runtime identity",
-        "Explicit probe only - loopback CONNECT",
+        "Explicit current-function probe only - loopback CONNECT",
         "Automatic cycle start: **NO**",
         "Automatic repair/probe decision: **NO**",
         "STOP_FOR_ANALYSIS",
@@ -94,8 +93,11 @@ def main() -> None:
         "pm uninstall",
         "adb uninstall",
         '$env:PACKAGE_NAME/.MainActivity',
+        "runtime_identity",
+        "LEGACY_MIGRATION",
+        "LEGACY_CUTOVER",
     ):
-        forbid(workflow, forbidden, "cycle must not auto-start, spawn another physical workflow, rebuild, or auto-decide repairs")
+        forbid(workflow, forbidden, "cycle must stay current-L8, explicit, non-rebuilding and free of pre-L8 probes")
 
     workflow_text = read(workflow)
     physical_jobs = workflow_text.split("\n  install:", 1)
@@ -125,6 +127,11 @@ def main() -> None:
         raise SystemExit(
             "device cycle contract: separate Device Candidate Physical workflow must not return; "
             "normal install/verify belongs to Device Cycle"
+        )
+    obsolete_runtime_probe = ROOT / "lab/windows/collect-runtime-identity.ps1"
+    if obsolete_runtime_probe.exists():
+        raise SystemExit(
+            "device cycle contract: pre-L8 runtime identity probe must not return to canonical diagnostics"
         )
 
     verifier = "lab/windows/verify-installed-candidate.ps1"
@@ -184,6 +191,9 @@ def main() -> None:
         "CREDENTIAL_LEASE_UNAVAILABLE",
         "privateBridge",
         "RuntimeProcessLifecycle",
+        "LEGACY_MIGRATION",
+        "LEGACY_CUTOVER",
+        "runtime_identity",
     ):
         forbid(diagnostic, obsolete, "obsolete pre-L8 diagnostic semantics must not return")
 
@@ -194,7 +204,6 @@ def main() -> None:
         "PRODUCT_ROOT_POLICY_NOT_AUTHORIZED",
         "PRODUCT_CELLULAR_BOUNDARY_",
         "PRODUCT_CELLULAR_",
-        "PRODUCT_PROXY_LEGACY_CUTOVER_CLEANUP_BLOCKED",
         "PRODUCT_PROXY_SERVING_UNHEALTHY",
         "PRODUCT_MESH_ADMISSION_EPOCH_MISSING",
         "READINESS_BINDING_INELIGIBLE",
@@ -208,13 +217,20 @@ def main() -> None:
         raise SystemExit(
             "device cycle contract: terminal Proxy Serving failure must outrank downstream root/cellular non-observation"
         )
-    forbid(classification, "STALE_PROCESS_IDENTITY_MISMATCH", "pre-L8 process identity must not classify current PRODUCT steady state")
-    forbid(classification, "privateBridge", "deleted private-bridge semantics must not classify current PRODUCT steady state")
+    for obsolete in (
+        "STALE_PROCESS_IDENTITY_MISMATCH",
+        "privateBridge",
+        "LEGACY_MIGRATION",
+        "LEGACY_CUTOVER",
+        "runtime_identity",
+    ):
+        forbid(classification, obsolete, "pre-L8 state must not classify current PRODUCT health")
 
     report = "lab/windows/new-device-cycle-report.ps1"
     for required in (
         "ControlSha",
         "RequestedProbe",
+        "loopback_connect",
         "automatic = $false",
         "MANUAL_PROBE_COMPLETED",
         "LAB_TARGETED_PROBE_COLLECTION_FAILED",
@@ -222,22 +238,30 @@ def main() -> None:
         "NOT_EVALUATED",
         "MISH_DEVICE_CYCLE_EXACT_CANDIDATE_ACCEPTANCE",
     ):
-        require(report, required, "cycle report must distinguish evidence collection from exact PRODUCT acceptance")
+        require(report, required, "cycle report must distinguish current evidence collection from exact PRODUCT acceptance")
+    forbid(report, "runtime_identity", "pre-L8 targeted probe must stay removed")
 
     test = "lab/windows/test-device-cycle.ps1"
     for required in (
         "DEVICE_CYCLE_CONTRACT=PASS",
-        "Terminal L8 Proxy Serving failure was masked by a downstream non-observation",
+        "Terminal current Proxy Serving failure was masked by downstream non-observation",
+        "PRODUCT_PROXY_LISTENER_UNAVAILABLE",
         "Current Cellular admission failure was not attributed to Cellular Egress",
         "Missing Mesh admission epoch was not distinguished from external Mesh reachability",
         "Current readiness probe state was not preserved",
         "Healthy current L8 fact set did not classify PASS",
         "Inactive PRODUCT credential was not distinguished from a LAB lease failure",
         "Full PASS report must accept the exact current candidate and contain no automatic probe decision",
-        "Explicit probe-only evidence may pass collection but must never claim exact PRODUCT candidate acceptance",
+        "Explicit current-function probe may pass collection but cannot claim exact PRODUCT acceptance",
     ):
         require(test, required, "current L8 executable regression coverage drifted")
-    forbid(test, "STALE_PROCESS_IDENTITY_MISMATCH", "pre-L8 process identity fixture must not return to canonical PRODUCT diagnostics tests")
+    for obsolete in (
+        "STALE_PROCESS_IDENTITY_MISMATCH",
+        "runtime_identity",
+        "LEGACY_MIGRATION_BLOCKED",
+        "LEGACY_CUTOVER_CLEANUP",
+    ):
+        forbid(test, obsolete, "pre-L8 fixture must not return to canonical current PRODUCT diagnostics tests")
 
     docs = "docs/architecture/DEVELOPMENT_PIPELINE.md"
     for required in (
