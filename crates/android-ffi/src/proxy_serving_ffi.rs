@@ -23,6 +23,14 @@ pub struct NativeProxyRuntime {
     inner: Arc<ProxyServingRuntime>,
 }
 
+impl NativeProxyRuntime {
+    /// Rust-only composition handle. Android receives the opaque UniFFI object but cannot execute
+    /// arbitrary Tokio work or acquire a second runtime/control-plane surface.
+    pub(crate) fn runtime_handle(&self) -> Arc<ProxyServingRuntime> {
+        Arc::clone(&self.inner)
+    }
+}
+
 #[uniffi::export]
 impl NativeProxyRuntime {
     /// Immutable owner snapshot. Android projects this value; it never drives transitions.
