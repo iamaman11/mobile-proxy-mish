@@ -254,7 +254,8 @@ class MishRuntimeController internal constructor(
         if (restart) start()
     }
 
-    private fun scheduleUnexpectedProxyRecovery(reason: ProxyServingFailure) {
+    /** Execute only the Rust-owned proxy recovery policy; the typed reason is already owner-owned. */
+    private fun scheduleProxyRecoveryIfAllowed(reason: ProxyServingFailure) {
         if (!proxyServingFailureRecoverable(reason)) return
         if (!isRunning || !automaticRecoveryPending.compareAndSet(false, true)) return
         val attempt = automaticRecoveryAttempts.getAndIncrement().coerceAtLeast(0).toUInt()
@@ -284,7 +285,7 @@ class MishRuntimeController internal constructor(
         val proxyRuntime = ProxyRuntimeSupervisor(
             cellularRuntime = cellularRuntime,
             publicCredentials = externalCredentialStore,
-            onUnexpectedFailure = ::scheduleUnexpectedProxyRecovery,
+            onFailureObserved = ::scheduleProxyRecoveryIfAllowed,
         )
         val meshRuntime = MeshIngressRuntimeBridge(
             context = appContext,
