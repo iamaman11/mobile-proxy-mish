@@ -1,3 +1,4 @@
+use crate::ProxyServingFailure;
 use mish_configuration::EXTERNAL_TCP_SESSION_BUDGET;
 use mish_proxy::{
     ProxyCredentialMaterial, ProxyOutboundConnector, ProxyProtocol, ProxyServingPlan,
@@ -31,23 +32,49 @@ const _: () = {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProxyServingRuntimeError {
     NonLoopbackListen,
-    BindFailed,
+    ListenerUnavailable(ProxyProtocol),
     ThreadUnavailable,
     StateUnavailable,
     ShutdownTimedOut,
 }
 
+impl ProxyServingRuntimeError {
+    /// Convert runtime mechanism failure into the one PRODUCT lifecycle vocabulary before FFI.
+    pub const fn lifecycle_failure(self) -> ProxyServingFailure {
+        match self {
+            Self::NonLoopbackListen => ProxyServingFailure::ProxyConfigurationRejected,
+            Self::ListenerUnavailable(ProxyProtocol::Mixed) => {
+                ProxyServingFailure::MixedListenerUnavailable
+            }
+            Self::ListenerUnavailable(ProxyProtocol::Socks5) => {
+                ProxyServingFailure::Socks5ListenerUnavailable
+            }
+            Self::ListenerUnavailable(ProxyProtocol::Http) => {
+                ProxyServingFailure::HttpConnectListenerUnavailable
+            }
+            Self::ThreadUnavailable => ProxyServingFailure::ExecutorUnavailable,
+            Self::StateUnavailable => ProxyServingFailure::RuntimeStateUnavailable,
+            Self::ShutdownTimedOut => ProxyServingFailure::ShutdownFailed,
+        }
+    }
+}
+
 impl fmt::Display for ProxyServingRuntimeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::NonLoopbackListen => "native proxy runtime must bind loopback only",
-            Self::BindFailed => "native proxy runtime could not bind canonical listeners",
-            Self::ThreadUnavailable => "native proxy runtime executor could not start",
-            Self::StateUnavailable => "native proxy runtime state is unavailable",
-            Self::ShutdownTimedOut => {
-                "native proxy sessions did not stop within the bounded timeout"
+        match self {
+            Self::NonLoopbackListen => {
+                formatter.write_str("native proxy runtime must bind loopback only")
             }
-        })
+            Self::ListenerUnavailable(protocol) => {
+                write!(formatter, "native proxy listener is unavailable: {protocol:?}")
+            }
+            Self::ThreadUnavailable => {
+                formatter.write_str("native proxy runtime executor could not start")
+            }
+            Self::StateUnavailable => formatter.write_str("native proxy runtime state is unavailable"),
+            Self::ShutdownTimedOut => formatter
+                .write_str("native proxy sessions did not stop within the bounded timeout"),
+        }
     }
 }
 
@@ -82,15 +109,15 @@ impl ProxyServingRuntime {
             return Err(ProxyServingRuntimeError::NonLoopbackListen);
         }
 
-        // Bind every canonical coordinate before any executor task is published. A partial bind
-        // therefore never becomes an observable runtime generation.
+        // Bind every canonical coordinate before publishing any executor task. Partial listener
+        // availability therefore never becomes an observable runtime generation.
         let mut bound = Vec::with_capacity(plan.listeners().len());
         for listener in plan.listeners() {
             let socket = SocketAddr::new(plan.listen_address(), listener.port);
-            let tcp =
-                StdTcpListener::bind(socket).map_err(|_| ProxyServingRuntimeError::BindFailed)?;
+            let tcp = StdTcpListener::bind(socket)
+                .map_err(|_| ProxyServingRuntimeError::ListenerUnavailable(listener.protocol))?;
             tcp.set_nonblocking(true)
-                .map_err(|_| ProxyServingRuntimeError::BindFailed)?;
+                .map_err(|_| ProxyServingRuntimeError::ListenerUnavailable(listener.protocol))?;
             bound.push((listener.protocol, tcp));
         }
 
@@ -114,7 +141,7 @@ impl ProxyServingRuntime {
             let _enter = runtime.enter();
             for (protocol, listener) in bound {
                 let listener = TcpListener::from_std(listener)
-                    .map_err(|_| ProxyServingRuntimeError::BindFailed)?;
+                    .map_err(|_| ProxyServingRuntimeError::ListenerUnavailable(protocol))?;
                 accept_tasks.push(runtime.spawn(accept_loop(
                     protocol,
                     listener,
@@ -266,9 +293,6 @@ async fn accept_loop(
         });
     }
 
-    // Session tasks are children of this acceptor. A runtime generation stop is not graceful
-    // application traffic draining: it is an exact fail-closed generation boundary. Abort active
-    // relays, then await every task so permits/counters/streams are deterministically released.
     sessions.abort_all();
     while sessions.join_next().await.is_some() {}
 }
@@ -378,10 +402,43 @@ mod tests {
             ProxyCredentialMaterial::new("user", "password").expect("credentials"),
         )
         .expect("explicit non-wildcard plan");
-        assert!(matches!(
-            ProxyServingRuntime::start(plan, Arc::new(RejectingConnector)),
-            Err(ProxyServingRuntimeError::NonLoopbackListen)
-        ));
+        let error = ProxyServingRuntime::start(plan, Arc::new(RejectingConnector))
+            .expect_err("non-loopback plan must fail");
+        assert_eq!(error, ProxyServingRuntimeError::NonLoopbackListen);
+        assert_eq!(
+            error.lifecycle_failure(),
+            ProxyServingFailure::ProxyConfigurationRejected
+        );
+    }
+
+    #[test]
+    fn runtime_error_mapping_is_exact_and_owner_owned() {
+        assert_eq!(
+            ProxyServingRuntimeError::ListenerUnavailable(ProxyProtocol::Mixed)
+                .lifecycle_failure(),
+            ProxyServingFailure::MixedListenerUnavailable
+        );
+        assert_eq!(
+            ProxyServingRuntimeError::ListenerUnavailable(ProxyProtocol::Socks5)
+                .lifecycle_failure(),
+            ProxyServingFailure::Socks5ListenerUnavailable
+        );
+        assert_eq!(
+            ProxyServingRuntimeError::ListenerUnavailable(ProxyProtocol::Http).lifecycle_failure(),
+            ProxyServingFailure::HttpConnectListenerUnavailable
+        );
+        assert_eq!(
+            ProxyServingRuntimeError::ThreadUnavailable.lifecycle_failure(),
+            ProxyServingFailure::ExecutorUnavailable
+        );
+        assert_eq!(
+            ProxyServingRuntimeError::StateUnavailable.lifecycle_failure(),
+            ProxyServingFailure::RuntimeStateUnavailable
+        );
+        assert_eq!(
+            ProxyServingRuntimeError::ShutdownTimedOut.lifecycle_failure(),
+            ProxyServingFailure::ShutdownFailed
+        );
     }
 
     #[test]
