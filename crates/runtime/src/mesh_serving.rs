@@ -10,6 +10,7 @@ use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
+const MESH_ACCEPT_POLL_TIMEOUT: Duration = Duration::from_millis(200);
 const MESH_BACKEND_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const MESH_START_TIMEOUT: Duration = Duration::from_secs(2);
 const MESH_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -230,7 +231,7 @@ impl MeshExecutionOwner {
 async fn mesh_listener_loop(
     listener: TcpListener,
     mapping: MeshPortForward,
-    mut stop: watch::Receiver<bool>,
+    stop: watch::Receiver<bool>,
     sessions: Arc<MeshSessionOwner>,
     live_listeners: Arc<AtomicUsize>,
     startup_ready: mpsc::SyncSender<()>,
@@ -248,14 +249,9 @@ async fn mesh_listener_loop(
             break;
         }
 
-        let accepted = tokio::select! {
-            changed = stop.changed() => {
-                if changed.is_err() || *stop.borrow() {
-                    break;
-                }
-                continue;
-            }
-            accepted = listener.accept() => accepted,
+        let accepted = match timeout(MESH_ACCEPT_POLL_TIMEOUT, listener.accept()).await {
+            Ok(accepted) => accepted,
+            Err(_) => continue,
         };
         let (client, _) = match accepted {
             Ok(pair) => pair,
