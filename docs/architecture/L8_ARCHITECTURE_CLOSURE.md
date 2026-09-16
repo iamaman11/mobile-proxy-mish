@@ -1,8 +1,8 @@
 # L8 Architecture Closure
 
-Status: ACTIVE execution contract for the native proxy cutover.
+Status: **COMPLETED architecture contract; U2 physical re-baseline enforces the one-way cutover**.
 
-This document closes the architectural gap between the accepted L7 native Rust proxy cutover and a production-grade L8 implementation. It is intentionally stricter than a migration checklist: L8 is complete only when the obsolete dataplane, obsolete terminology, accidental Kotlin orchestration ownership and non-deterministic runtime task ownership are gone.
+This document defines the architectural boundary between the accepted L7 native Rust proxy cutover and the final L8 implementation. L8 is complete only when the obsolete Android proxy dataplane, its compatibility/process-management semantics, obsolete terminology, accidental Kotlin orchestration ownership and non-deterministic runtime task ownership are gone.
 
 ## Goal
 
@@ -33,13 +33,13 @@ mish-runtime
         `--> narrow Android/root/network effects
 ```
 
-Core law remains:
+Core law:
 
 ```text
 one fact -> one natural owner -> one write path -> one observation path
 ```
 
-Kotlin is the mechanism boundary. Rust owns product semantics, state and decisions. No new generic framework, event bus, root daemon, second VPN, second lifecycle machine, second scheduler or plugin abstraction is introduced.
+Kotlin is the mechanism boundary. Rust owns product semantics, state and decisions. No generic framework, event bus, root daemon, second VPN, second lifecycle machine, second scheduler or plugin abstraction is introduced.
 
 ## Non-negotiable invariants
 
@@ -52,7 +52,8 @@ Kotlin is the mechanism boundary. Rust owns product semantics, state and decisio
 7. Proxy Serving is the sole owner of canonical loopback listeners and protocol/auth/target semantics.
 8. Runtime Lifecycle owns generation replacement, start/stop/restart and recovery decisions.
 9. Readiness owns one derived terminal projection and no leaf facts.
-10. DEVICE-1 mutation remains blocked until exact-head hosted acceptance and STOP_FOR_ANALYSIS.
+10. DEVICE-1 mutation remains blocked until exact-head hosted acceptance and deliberate physical execution.
+11. **The L8 cutover is one-way:** PRODUCT contains no pre-L8 Android proxy compatibility runtime, migration state, process scan/kill path, marker or migration failure semantic.
 
 ## Closure work
 
@@ -72,40 +73,45 @@ ProxyServingRuntime
 
 Requirements:
 
-- no `drop(tokio::spawn(...))` detached long-lived session task;
+- no detached long-lived session task;
 - one shared bounded session admission budget;
-- blocking proxy handshake / exact-network DNS / connect remains behind one bounded `spawn_blocking` seam;
+- blocking proxy handshake / exact-network DNS / connect behind one bounded `spawn_blocking` seam;
 - shutdown closes admission, signals cancellation, aborts/drains session tasks, joins acceptors and then destroys the Tokio runtime;
 - `active_sessions` is observation/verification only, not ownership;
 - bounded shutdown failure is typed and fail closed.
 
-### B. Remove obsolete external proxy dataplane
+### B. Remove obsolete external Android proxy dataplane completely
 
-After native serving parity is accepted, the following are not PRODUCT dependencies:
+The following are not PRODUCT dependencies or compatibility mechanisms after L8:
 
 - `crates/sing-box-adapter`;
 - `vendor/sing-box`;
 - `tools/materialize_sing_box_android.py`;
 - Gradle sing-box materialization/packaging/verifier tasks;
-- CI sing-box cache/path/package assertions;
 - private Cellular SOCKS bridge implementation/credentials/connector;
-- child PID/launcher/process reconciliation machinery.
+- child PID/launcher/process reconciliation machinery;
+- Android sing-box upgrade/migration recognizers;
+- `/proc` scans or TERM/KILL effects for historical proxy children;
+- old proxy generation/PID/config files or migration markers as startup inputs;
+- any Proxy Serving failure enum or FFI field describing legacy migration.
 
-`LegacySingBoxUpgradeMigration` may remain temporarily only as a one-shot upgrade compatibility adapter that identifies and terminates the exact old PRODUCT-owned process. It must not require packaging a new sing-box binary and must not become a permanent process reconciler.
+Historical residue on a development phone is LAB hygiene. It cannot block, authorize, repair or otherwise participate in PRODUCT startup. If residue physically conflicts with current listeners/routing, LAB removes it outside PRODUCT before the physical acceptance cycle.
 
-### C. Semantic cleanup
+### C. Native semantic cleanup
 
-Private bridge and external-child vocabulary must not describe the native runtime.
+Private bridge, external-child and migration vocabulary must not describe the native runtime.
 
-Remove/replace PRODUCT concepts such as:
+Current PRODUCT semantics are limited to current owners and current native effects, including:
 
-- `privateBridgeHealthy` aliases for native runtime health;
-- `bridge.private_healthy` from the current diagnostics contract;
-- `RuntimeProcessLifecycle`/`Child*` failure names for in-process Proxy Serving.
+- native runtime availability;
+- external credential availability;
+- listener availability;
+- serving health;
+- shutdown success/failure;
+- Cellular/root-policy authority/currentness;
+- Mesh and Readiness current facts.
 
-Use native semantics: Proxy Serving lifecycle, serving health, listener bind/unavailable, shutdown failure and legacy-upgrade migration failure.
-
-Diagnostics move to `mish.diagnostics/v2` rather than keeping a permanently false v1 bridge projection. Producer, LAB consumer and executable schema guards change together.
+Diagnostics use `mish.diagnostics/v2` and expose current native facts only. Producer, LAB consumer and executable schema guards change together when the current schema changes.
 
 ### D. Kotlin architecture closure
 
@@ -161,7 +167,7 @@ Kotlin may execute a requested timer/effect and return a typed result, but the o
 
 ### F. Documentation and executable architecture constitution
 
-Update canonical architecture docs to the native path:
+Canonical architecture path:
 
 ```text
 Cloudflare Mesh
@@ -173,9 +179,11 @@ Cloudflare Mesh
  -> direct LTE/5G
 ```
 
-`tools/check_architecture.py` must fail on regression to:
+Executable guards must fail on regression to:
 
-- PRODUCT sing-box dependency/package;
+- PRODUCT Android sing-box dependency/package/compatibility code;
+- pre-L8 migration/process scan/kill/marker semantics;
+- legacy migration failures in Rust or UniFFI;
 - `privateBridge*` PRODUCT semantics;
 - proxy child-process lifecycle vocabulary;
 - uncontrolled Android/default DNS or process network binding;
@@ -184,26 +192,22 @@ Cloudflare Mesh
 - arbitrary root shell API;
 - duplicated canonical proxy coordinates.
 
-It must positively require deterministic native task ownership, the direct Cellular connector and versioned diagnostics.
+They positively require deterministic native task ownership, direct Cellular connector semantics and versioned diagnostics.
 
 ## Build and acceptance sequence
 
-One implementation line only:
-
 ```text
-L8 branch
- -> Cargo.lock exactly regenerated from current manifests
+L8 code
  -> deterministic Tokio ownership
- -> semantic cleanup + diagnostics v2
+ -> native semantic cleanup + diagnostics v2
  -> safe Kotlin decomposition / policy movement
- -> delete obsolete sing-box packaging/dependencies
- -> update docs + architecture guards + CI producer contract
+ -> delete obsolete Android proxy packaging/dependencies/compatibility
+ -> update docs + architecture guards
  -> exact-head full hosted gate
- -> STOP_FOR_ANALYSIS
  -> deliberate DEVICE-1 exact-candidate acceptance
 ```
 
-Hosted gate must include:
+Hosted gate includes:
 
 - Kotlin compile + lint;
 - Rust fmt + clippy `-D warnings` + workspace tests with `--locked`;
@@ -215,20 +219,20 @@ Hosted gate must include:
 - 64 concurrent accepted sessions and deterministic overload rejection;
 - shutdown/restart/resource cleanup evidence.
 
-Physical gate after hosted acceptance must prove:
+Physical U2 gate after hosted acceptance proves the **current** product only:
 
-- exact hosted APK only, normal `adb install -r`, no clean uninstall;
+- exact hosted APK, normal `adb install -r`, no clean uninstall;
 - stable signer/UID and no repeated Magisk prompt with the existing permanent grant;
-- one-shot legacy process migration if an old detached sing-box survives upgrade;
-- zero root proxy/sing-box child processes in native steady state;
-- canonical HTTP CONNECT/SOCKS5/mixed functionality;
+- native Proxy Serving starts without any pre-L8 prerequisite;
+- PRODUCT spawns no external/root proxy child process;
+- canonical HTTP CONNECT/SOCKS5/mixed functionality, auth isolation and relay;
 - exact cellular DNS/public egress and no fallback;
 - >=64-session physical/resource evidence;
 - stop/start/restart and cellular loss/recovery remain bounded and fail closed.
 
 ## Definition of Done
 
-L8 Architecture Closure is complete only when all are true:
+L8 architecture closure requires:
 
 ```text
 CARGO_LOCK_CURRENT=YES
@@ -236,6 +240,7 @@ TOKIO_TASKS_OWNED_AND_DRAINED=YES
 DETACHED_LONG_LIVED_TASKS=0
 PRIVATE_BRIDGE_PRODUCT_CONCEPTS=0
 SING_BOX_PRODUCT_RUNTIME_DEPENDENCIES=0
+SING_BOX_PRODUCT_COMPATIBILITY_SEMANTICS=0
 SING_BOX_APK_BYTES=0
 PROXY_CHILD_PROCESS_LIFECYCLE_SEMANTICS=0
 KOTLIN_SECOND_OWNER_STATE_MACHINES=0

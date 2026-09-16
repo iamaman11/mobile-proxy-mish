@@ -54,13 +54,11 @@ Historical evidence remains evidence, not a reason to retain mechanisms that no 
 
 ---
 
-# U1 — L8 Architecture Closure — ACTIVE
+# U1 — L8 Architecture Closure — COMPLETED
 
-Execution pointer: Issue #193 / PR #192.
+Accepted implementation: PR #192, integration merge `3a92cc8105737e7bf515e23a0dbf201da2516730`.
 
-Goal: finish the one-way transition from the accepted L7 native cutover to the final clean native architecture.
-
-Required end state:
+L8 establishes the one-way native architecture:
 
 - one owned Tokio listener/session execution tree inside `mish-runtime`;
 - blocking handshake + exact-network DNS/connect behind one bounded blocking seam;
@@ -70,18 +68,16 @@ Required end state:
 - native `ProxyServingLifecycle` and typed native failures;
 - diagnostics v2 with native facts only;
 - recovery classification/backoff, Mesh serving eligibility and readiness structural eligibility owned in Rust;
-- Android split by actual effect/test responsibility: readiness probe, Magisk transport, root-policy mechanisms, credential persistence/Keystore/materialization, VPN observation;
-- root authority proof separated from the one process-wide persistent `su` transport; no repeated Magisk polling during normal recovery;
-- architecture constitution prevents regression to removed topology;
-- exact-head full hosted gate and exact candidate publication.
+- root authority proof separated from the one process-wide persistent `su` transport;
+- architecture constitution prevents regression to removed topology.
 
-L8 does **not** authorize DEVICE-1 automatically. After exact hosted PASS, the next required fact is U2 physical acceptance.
+U2 physical evidence subsequently exposed one incomplete closure item: pre-L8 sing-box upgrade/process compatibility had survived in PRODUCT startup semantics. That compatibility is **not** part of L8 and is removed in U2 rather than hardened. L8 PRODUCT has no fallback, migration, process scan, marker or failure state for the deleted Android sing-box architecture.
 
 ---
 
-# U2 — Native DEVICE-1 Acceptance and physical re-baseline
+# U2 — Native DEVICE-1 Acceptance and physical re-baseline — ACTIVE
 
-This is the first authoritative physical baseline for the final direct native topology. Old resource numbers from the sing-box/private-bridge/thread-per-session architecture are not current-product truth.
+This is the first authoritative physical baseline for the final direct native topology. Old resource numbers and process identities from the sing-box/private-bridge/thread-per-session architecture are not current-product truth.
 
 Use the exact hosted candidate only and normal replacement install:
 
@@ -92,15 +88,22 @@ stable signing identity / UID
 existing Magisk grant remains sufficient
 ```
 
+Pre-L8 PRODUCT compatibility rule:
+
+- PRODUCT does not scan, classify, stop, migrate or otherwise manage historical Android sing-box processes/files;
+- PRODUCT startup is determined only by current L8 owners and current native effects;
+- historical processes/files left on a development phone are LAB residue, not PRODUCT state;
+- if LAB residue physically conflicts with current listeners or routing, it is cleaned as an explicit bounded LAB-maintenance action and never becomes an application startup dependency or fallback mechanism.
+
 Prove on DEVICE-1:
 
-- one-shot exact-identity legacy sing-box migration if an old detached process survives upgrade;
-- zero root proxy/sing-box child processes in steady state;
-- HTTP CONNECT, SOCKS5 and mixed ingress function through the real path;
-- authentication isolation and bidirectional relay;
+- current native runtime starts without any pre-L8 process/migration prerequisite;
+- PRODUCT creates zero external/root proxy child processes in steady state;
+- HTTP CONNECT, SOCKS5 and mixed ingress function through the real current path;
+- correct authentication succeeds, wrong authentication is rejected, and relay is bidirectional;
 - public target DNS occurs only through the exact Cellular owner and public sockets use the root-policy-gated cellular path;
 - no Wi-Fi/default/WARP fallback during uncertainty/loss;
-- 64 accepted full paths and deterministic overload rejection;
+- 64 accepted full paths and deterministic rejection of the 65th external session;
 - stop/start/restart and cellular loss/recovery are bounded and fail closed;
 - stable signer/UID and no repeated Magisk prompt on normal replacement install;
 - one process-wide root shell is reused through repeated root-policy reads/reconciliations within the app process instead of creating one `su` process per command/recovery event;
@@ -108,6 +111,8 @@ Prove on DEVICE-1:
 - repeated recovery cycles do not reopen Magisk prompts or create unbounded root-shell/process growth;
 - baseline/peak/post-cleanup thread count, FD count and RSS/PSS at idle / 10 / 32 / 64 sessions;
 - startup, failure-to-fresh-READY, normal stop and recovery timings.
+
+DEVICE-1 diagnostics are current-product health diagnostics. Canonical acceptance observes current runtime, Cellular, root authority/policy, native Proxy Serving, credentials, Mesh, readiness and functional E2E behavior. Historical sing-box PID/config identity is not a current PRODUCT health fact.
 
 Exit: exact native topology is physically proven and the current resource/recovery baseline is recorded without secret/raw-IP leakage. The Magisk/su privilege boundary is considered physically accepted only after the replacement-install, restart and repeated-recovery evidence above passes.
 
@@ -253,7 +258,6 @@ Prove the appliance can remain operational across normal lifecycle events:
 - one persistent `su` transport remains bounded and replaceable on shell death without becoming a second privileged daemon/lifecycle;
 - bounded recovery from cellular/provider loss;
 - long soak with no unbounded FD/thread/task/memory growth;
-- legacy migration compatibility removed once the supported upgrade window no longer requires it;
 - immutable RC/release bytes, formal release gates and rollback/recovery documentation;
 - diagnostics/support bundle remains typed, bounded and secret-safe.
 

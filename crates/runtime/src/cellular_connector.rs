@@ -222,6 +222,7 @@ fn remaining(deadline: Instant) -> Result<Duration, ProxyOutboundConnectError> {
         .filter(|duration| !duration.is_zero())
         .ok_or(ProxyOutboundConnectError::Unavailable)
 }
+
 fn ensure_deadline(deadline: Instant) -> Result<(), ProxyOutboundConnectError> {
     remaining(deadline).map(|_| ())
 }
@@ -235,6 +236,7 @@ fn issue_authority(
         .admitted_network_authority()
         .map_err(map_authority_error)
 }
+
 fn validate_authority(
     owner: &Arc<Mutex<CellularEgress>>,
     authority: CellularNetworkAuthority,
@@ -245,6 +247,7 @@ fn validate_authority(
         .validate_network_authority(authority)
         .map_err(map_authority_error)
 }
+
 fn map_authority_error(error: CellularNetworkAuthorityError) -> ProxyOutboundConnectError {
     match error {
         CellularNetworkAuthorityError::NoAdmittedNetwork

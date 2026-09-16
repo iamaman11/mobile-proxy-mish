@@ -1,8 +1,8 @@
-//! Vendor-neutral Runtime Lifecycle natural-owner state machines.
+//! Vendor-neutral Runtime Lifecycle natural owners.
 //!
-//! Android platform APIs execute effects, but all start/stop/restart/generation and native Proxy
-//! Serving lifecycle decisions live here. No Android, vendor proxy, UI, persistence, or root
-//! mechanism is imported by this module.
+//! Android executes effects. This module owns the state transitions and typed PRODUCT semantics for
+//! runtime generations and native Proxy Serving. It imports no Android, UI, persistence or root
+//! mechanism.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeLifecycleState {
@@ -59,11 +59,6 @@ impl RuntimeCleanupDisposition {
 }
 
 /// Natural owner of the foreground runtime generation lifecycle.
-///
-/// Effects are deliberately absent. The Android adapter requests transitions, executes the
-/// concrete generation cleanup or startup effect, then publishes the typed outcome here.
-/// `generation` is the exact monotonic key of the currently installed Android effect generation;
-/// it advances only on owner-authorized replacement transitions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeLifecycle {
     state: RuntimeLifecycleState,
@@ -116,8 +111,6 @@ impl RuntimeLifecycle {
         }
     }
 
-    /// Claims a replacement required by an earlier failed cleanup only from an explicit start.
-    /// The generation key advances before the adapter is allowed to install the fresh effects.
     pub fn take_generation_replacement_for_start(&mut self) -> bool {
         if self.state != RuntimeLifecycleState::Starting || !self.generation_requires_replacement {
             return false;
@@ -129,8 +122,6 @@ impl RuntimeLifecycle {
         true
     }
 
-    /// Authorizes one stopped-only generation replacement, used by credential cutover after the
-    /// exact old generation was cleaned. Failure (including counter exhaustion) is fail-closed.
     pub fn advance_stopped_generation(&mut self) -> bool {
         if self.state != RuntimeLifecycleState::Stopped || self.generation_requires_replacement {
             return false;
@@ -138,14 +129,12 @@ impl RuntimeLifecycle {
         self.advance_generation()
     }
 
-    /// Submission failed before any start effect executed. No automatic retry is introduced.
     pub fn start_submission_failed(&mut self) {
         if self.state == RuntimeLifecycleState::Starting {
             self.state = RuntimeLifecycleState::Stopped;
         }
     }
 
-    /// Publishes the result of one start effect sequence.
     pub fn complete_start(
         &mut self,
         started: bool,
@@ -159,17 +148,16 @@ impl RuntimeLifecycle {
 
         if started {
             self.state = RuntimeLifecycleState::Running;
-            RuntimeStartCompletion {
+            return RuntimeStartCompletion {
                 install_fresh_generation_now: false,
-            }
-        } else {
-            self.state = RuntimeLifecycleState::Stopped;
-            let install_fresh_generation_now =
-                clean_after_failed_start && self.advance_generation();
-            self.generation_requires_replacement = !install_fresh_generation_now;
-            RuntimeStartCompletion {
-                install_fresh_generation_now,
-            }
+            };
+        }
+
+        self.state = RuntimeLifecycleState::Stopped;
+        let install_fresh_generation_now = clean_after_failed_start && self.advance_generation();
+        self.generation_requires_replacement = !install_fresh_generation_now;
+        RuntimeStartCompletion {
+            install_fresh_generation_now,
         }
     }
 
@@ -184,7 +172,7 @@ impl RuntimeLifecycle {
         }
     }
 
-    /// Executor rejection means cleanup never ran. Keep STOPPING as terminal fail-closed state.
+    /// Executor rejection means cleanup never ran. Keep STOPPING as a fail-closed terminal state.
     pub fn stop_submission_failed(&mut self) {
         if self.state == RuntimeLifecycleState::Stopping {
             self.restart_after_stop = false;
@@ -244,14 +232,21 @@ pub enum ProxyServingState {
     Failed,
 }
 
-/// Native in-process Proxy Serving failures only. Old external-child/private-bridge vocabulary is
-/// intentionally absent after the L8 cutover.
+/// One semantic failure vocabulary for current native Proxy Serving.
+///
+/// Operational Rust errors are translated into these owner facts before crossing UniFFI, so
+/// Android and diagnostics never need to infer the failing layer from exception text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProxyServingFailure {
     NativeRuntimeMissing,
-    LegacyMigrationBlocked,
     ExternalCredentialUnavailable,
-    ListenerUnavailable,
+    CellularConnectorUnavailable,
+    ProxyConfigurationRejected,
+    MixedListenerUnavailable,
+    Socks5ListenerUnavailable,
+    HttpConnectListenerUnavailable,
+    ExecutorUnavailable,
+    RuntimeStateUnavailable,
     ServingUnhealthy,
     ShutdownFailed,
 }
@@ -272,7 +267,7 @@ impl ProxyServingSnapshot {
     }
 }
 
-/// Natural-owner state machine for one in-process Proxy Serving generation.
+/// Natural owner state machine for one in-process Proxy Serving generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProxyServingLifecycle {
     snapshot: ProxyServingSnapshot,
@@ -433,17 +428,17 @@ mod tests {
     }
 
     #[test]
-    fn proxy_serving_lifecycle_uses_native_failure_semantics() {
+    fn proxy_serving_lifecycle_preserves_typed_native_failure() {
         let mut owner = ProxyServingLifecycle::new();
         assert_eq!(owner.snapshot().state(), ProxyServingState::Stopped);
         assert!(owner.request_start());
         assert!(!owner.request_start());
         assert!(owner.mark_running());
-        owner.mark_failed(ProxyServingFailure::ServingUnhealthy);
+        owner.mark_failed(ProxyServingFailure::MixedListenerUnavailable);
         assert_eq!(owner.snapshot().state(), ProxyServingState::Failed);
         assert_eq!(
             owner.snapshot().failure(),
-            Some(ProxyServingFailure::ServingUnhealthy)
+            Some(ProxyServingFailure::MixedListenerUnavailable)
         );
         assert!(owner.request_start());
         owner.mark_stopped();

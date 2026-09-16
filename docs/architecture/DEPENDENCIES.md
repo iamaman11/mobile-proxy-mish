@@ -49,7 +49,7 @@ UniFFI (+ JNA runtime support)
 
 Rust must not grow Android UI/platform API code or arbitrary root-shell mechanics. Kotlin must not duplicate Rust owner state, admission, readiness, Mesh serving or recovery policy decisions. UniFFI must not expose an alternate generic socket-routing/DNS/root control plane merely for convenience.
 
-There is no Android external proxy child dependency after L8. The legacy sing-box upgrade recognizer is a temporary one-shot compatibility effect only; it does not create a runtime dependency on sing-box bytes, configuration rendering or process supervision.
+There is no Android external proxy child dependency or pre-L8 proxy compatibility layer after L8. PRODUCT does not scan, identify, stop, migrate or model historical Android sing-box processes/files. Any residue on a development device is LAB hygiene outside PRODUCT and cannot become a startup prerequisite, lifecycle state, recovery reason or FFI semantic.
 
 YAML, Gradle Kotlin DSL, PowerShell, Terraform and bounded shell snippets are build/CI/operations technologies, not runtime domain layers.
 

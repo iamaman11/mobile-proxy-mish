@@ -1,26 +1,17 @@
 package com.mobileproxymish.app
 
-import android.content.Context
 import com.mobileproxymish.app.cellular.CellularRuntimeBridge
 import com.mobileproxymish.ffi.NativeProxyRuntime
+import com.mobileproxymish.ffi.NativeProxyRuntimeObserver
 import com.mobileproxymish.ffi.ProxyServingFailure
-import com.mobileproxymish.ffi.ProxyServingLifecycleController
 import com.mobileproxymish.ffi.ProxyServingSnapshotView
 import com.mobileproxymish.ffi.ProxyServingState
 import com.mobileproxymish.ffi.startNativeProxyRuntime
 import java.io.Closeable
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
 
 /** Runtime Lifecycle projection only; it does not own proxy protocol or cellular facts. */
 sealed interface ProxyRuntimeSnapshot {
@@ -63,29 +54,24 @@ internal fun interface ProxyCredentialProvider {
 /**
  * Thin Android lifecycle/composition adapter for the Rust Proxy Serving runtime.
  *
- * Canonical loopback Rust listeners connect directly through the root-policy-gated Cellular
- * Egress connector. Android owns no proxy executor, accept/session thread, health socket, private
- * bridge, private credential, PID, root launcher or steady-state process reconciliation loop.
- * Protocol/auth/relay are owned by Rust; Cellular admission/DNS/routing remain owned by the
- * existing Cellular runtime.
+ * Rust owns listener/session execution, lifecycle state, health/fatal detection, terminal failure
+ * publication, cancellation and bounded shutdown. Android supplies composition inputs, executes
+ * explicit start/stop effects and projects typed Rust owner facts to StateFlow. There is no Android
+ * health decision, lifecycle state machine or runtime supervision loop.
  */
 class ProxyRuntimeSupervisor internal constructor(
-    context: Context,
     private val cellularRuntime: CellularRuntimeBridge,
     private val publicCredentials: ProxyCredentialProvider,
-    private val onUnexpectedFailure: (ProxyServingFailure) -> Unit = {},
+    private val onFailureObserved: (ProxyServingFailure) -> Unit = {},
 ) : Closeable {
-    private val lifecycle = ProxyServingLifecycleController()
-    private val mutableSnapshot = MutableStateFlow(projectLifecycle(lifecycle.snapshot()))
+    private val mutableSnapshot = MutableStateFlow<ProxyRuntimeSnapshot>(ProxyRuntimeSnapshot.Stopped)
     private val closed = AtomicBoolean(false)
     private val lock = Any()
-    private val migration = LegacySingBoxUpgradeMigration(context.applicationContext)
-    private val monitorScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private var nativeRuntime: NativeProxyRuntime? = null
     private var servingCredentialVersion: ULong? = null
-    private var monitorJob: Job? = null
-    private var stopping = false
+    private var nextRuntimeToken = 1L
+    private var activeRuntimeToken: Long? = null
 
     val snapshot: StateFlow<ProxyRuntimeSnapshot>
         get() = mutableSnapshot.asStateFlow()
@@ -101,14 +87,26 @@ class ProxyRuntimeSupervisor internal constructor(
     }
 
     fun start() {
-        if (closed.get() || !lifecycle.requestStart()) return
-        publishLifecycle()
+        val shouldStart = synchronized(lock) {
+            if (closed.get() || nativeRuntime != null || mutableSnapshot.value == ProxyRuntimeSnapshot.Starting) {
+                false
+            } else {
+                // Presentation-only projection while the synchronous Rust start effect is in flight.
+                mutableSnapshot.value = ProxyRuntimeSnapshot.Starting
+                true
+            }
+        }
+        if (!shouldStart) return
         startBlocking()
     }
 
     private fun startBlocking() {
-        synchronized(lock) {
-            if (closed.get()) return
+        val registration = synchronized(lock) {
+            if (closed.get()) {
+                mutableSnapshot.value = ProxyRuntimeSnapshot.Stopped
+                return
+            }
+            if (nativeRuntime != null) return
 
             val publicCredential = try {
                 publicCredentials.currentCredential()
@@ -116,16 +114,11 @@ class ProxyRuntimeSupervisor internal constructor(
                 null
             }
             if (publicCredential == null) {
-                failLifecycle(ProxyServingFailure.EXTERNAL_CREDENTIAL_UNAVAILABLE)
+                publishFailure(ProxyServingFailure.EXTERNAL_CREDENTIAL_UNAVAILABLE)
                 return
             }
 
-            if (!migration.runOnce()) {
-                failLifecycle(ProxyServingFailure.LEGACY_MIGRATION_BLOCKED)
-                return
-            }
-
-            val newRuntime = try {
+            val attempt = try {
                 startNativeProxyRuntime(
                     cellular = cellularRuntime.nativeController(),
                     publicUsername = publicCredential.credentials.username,
@@ -133,97 +126,109 @@ class ProxyRuntimeSupervisor internal constructor(
                     operationTimeoutMs = OUTBOUND_TIMEOUT_MS.toULong(),
                 )
             } catch (_: LinkageError) {
-                failLifecycle(ProxyServingFailure.NATIVE_RUNTIME_MISSING)
+                publishFailure(ProxyServingFailure.NATIVE_RUNTIME_MISSING)
                 return
             } catch (_: Exception) {
-                failLifecycle(ProxyServingFailure.LISTENER_UNAVAILABLE)
+                // Expected PRODUCT failures are typed Rust data. This branch is FFI failure only.
+                publishFailure(ProxyServingFailure.RUNTIME_STATE_UNAVAILABLE)
                 return
             }
 
-            if (!runCatching { newRuntime.isHealthy() }.getOrDefault(false)) {
-                runCatching { newRuntime.stop() }
-                failLifecycle(ProxyServingFailure.LISTENER_UNAVAILABLE)
+            val startFailure = attempt.failure()
+            if (startFailure != null) {
+                publishFailure(startFailure)
                 return
             }
+            val newRuntime = attempt.runtime()
+            if (newRuntime == null) {
+                publishFailure(ProxyServingFailure.RUNTIME_STATE_UNAVAILABLE)
+                return
+            }
+
             if (closed.get()) {
-                runCatching { newRuntime.stop() }
-                stopLifecycle()
+                val stopFailure = stopFailure(newRuntime)
+                if (stopFailure == null) {
+                    mutableSnapshot.value = ProxyRuntimeSnapshot.Stopped
+                } else {
+                    publishFailure(stopFailure)
+                }
                 return
             }
 
-            nativeRuntime = newRuntime
-            servingCredentialVersion = publicCredential.version
-            stopping = false
-            check(lifecycle.markRunning()) { "proxy serving left STARTING before health publication" }
-            publishLifecycle()
-            startMonitor(newRuntime)
-        }
-    }
-
-    private fun startMonitor(expectedRuntime: NativeProxyRuntime) {
-        monitorJob?.cancel()
-        monitorJob = monitorScope.launch {
-            while (isActive && !closed.get()) {
-                delay(HEALTH_POLL_MS)
-                if (runCatching { expectedRuntime.isHealthy() }.getOrDefault(false)) continue
-
-                synchronized(lock) {
-                    if (!stopping && nativeRuntime === expectedRuntime) {
-                        val clean = cleanupCurrentLocked(cancelMonitor = false)
-                        val published = if (clean) {
-                            ProxyServingFailure.SERVING_UNHEALTHY
-                        } else {
-                            ProxyServingFailure.SHUTDOWN_FAILED
-                        }
-                        failLifecycle(published)
-                        onUnexpectedFailure(published)
-                    }
-                }
-                return@launch
+            val ownerSnapshot = try {
+                newRuntime.snapshot()
+            } catch (_: Exception) {
+                val failure = stopFailure(newRuntime) ?: ProxyServingFailure.RUNTIME_STATE_UNAVAILABLE
+                publishFailure(failure)
+                return
             }
+
+            val runtimeToken = nextRuntimeToken++
+            nativeRuntime = newRuntime
+            activeRuntimeToken = runtimeToken
+            servingCredentialVersion = publicCredential.version
+            mutableSnapshot.value = projectOwnerSnapshot(ownerSnapshot)
+            RuntimeObserverRegistration(newRuntime, runtimeToken)
+        }
+
+        registerTerminalObserver(registration)
+    }
+
+    private fun registerTerminalObserver(registration: RuntimeObserverRegistration) {
+        try {
+            registration.runtime.observeTerminalFailure(
+                object : NativeProxyRuntimeObserver {
+                    override fun onTerminalFailure(failure: ProxyServingFailure) {
+                        synchronized(lock) {
+                            if (closed.get()) return
+                            if (activeRuntimeToken != registration.token) return
+                            if (nativeRuntime !== registration.runtime) return
+                            publishFailure(failure)
+                        }
+                    }
+                },
+            )
+        } catch (_: Exception) {
+            val failure = synchronized(lock) {
+                if (activeRuntimeToken != registration.token) return
+                if (nativeRuntime !== registration.runtime) return
+                cleanupCurrentLocked() ?: ProxyServingFailure.RUNTIME_STATE_UNAVAILABLE
+            }
+            publishFailure(failure)
         }
     }
 
-    private fun cleanupCurrentLocked(cancelMonitor: Boolean = true): Boolean {
-        stopping = true
-        if (cancelMonitor) {
-            monitorJob?.cancel()
-        }
-        monitorJob = null
+    private fun cleanupCurrentLocked(): ProxyServingFailure? {
+        activeRuntimeToken = null
         val currentRuntime = nativeRuntime
         nativeRuntime = null
         servingCredentialVersion = null
+        return currentRuntime?.let(::stopFailure)
+    }
 
-        val clean = currentRuntime == null || runCatching { currentRuntime.stop() }.isSuccess
-        stopping = false
-        return clean
+    private fun stopFailure(runtime: NativeProxyRuntime): ProxyServingFailure? = try {
+        runtime.stop()
+    } catch (_: Exception) {
+        ProxyServingFailure.RUNTIME_STATE_UNAVAILABLE
     }
 
     fun stop() {
         if (closed.get()) return
-        val clean = synchronized(lock) { cleanupCurrentLocked() }
-        if (clean) {
-            stopLifecycle()
+        val failure = synchronized(lock) { cleanupCurrentLocked() }
+        if (failure == null) {
+            mutableSnapshot.value = ProxyRuntimeSnapshot.Stopped
         } else {
-            failLifecycle(ProxyServingFailure.SHUTDOWN_FAILED)
+            publishFailure(failure)
         }
     }
 
-    private fun publishLifecycle() {
-        mutableSnapshot.value = projectLifecycle(lifecycle.snapshot())
+    /** Project one typed owner fact; outer runtime decides recovery through Rust policy only. */
+    private fun publishFailure(reason: ProxyServingFailure) {
+        mutableSnapshot.value = ProxyRuntimeSnapshot.Failed(reason)
+        onFailureObserved(reason)
     }
 
-    private fun failLifecycle(reason: ProxyServingFailure) {
-        lifecycle.markFailed(reason)
-        publishLifecycle()
-    }
-
-    private fun stopLifecycle() {
-        lifecycle.markStopped()
-        publishLifecycle()
-    }
-
-    private fun projectLifecycle(view: ProxyServingSnapshotView): ProxyRuntimeSnapshot =
+    private fun projectOwnerSnapshot(view: ProxyServingSnapshotView): ProxyRuntimeSnapshot =
         when (view.state) {
             ProxyServingState.STOPPED -> ProxyRuntimeSnapshot.Stopped
             ProxyServingState.STARTING -> ProxyRuntimeSnapshot.Starting
@@ -235,18 +240,21 @@ class ProxyRuntimeSupervisor internal constructor(
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
-        val clean = synchronized(lock) { cleanupCurrentLocked() }
-        monitorScope.cancel()
-        if (clean) {
-            stopLifecycle()
+        val failure = synchronized(lock) { cleanupCurrentLocked() }
+        if (failure == null) {
+            mutableSnapshot.value = ProxyRuntimeSnapshot.Stopped
         } else {
-            failLifecycle(ProxyServingFailure.SHUTDOWN_FAILED)
-            throw IllegalStateException("native proxy runtime cleanup failed")
+            publishFailure(failure)
+            throw IllegalStateException("native proxy runtime cleanup failed: $failure")
         }
     }
 
+    private data class RuntimeObserverRegistration(
+        val runtime: NativeProxyRuntime,
+        val token: Long,
+    )
+
     private companion object {
         const val OUTBOUND_TIMEOUT_MS = 15_000L
-        const val HEALTH_POLL_MS = 500L
     }
 }

@@ -1,6 +1,5 @@
 use mish_runtime::{
     ProxyServingFailure as OwnerProxyServingFailure,
-    ProxyServingLifecycle as OwnerProxyServingLifecycle,
     ProxyServingSnapshot as OwnerProxyServingSnapshot, ProxyServingState as OwnerProxyServingState,
     RuntimeCleanupDisposition as OwnerCleanupDisposition,
     RuntimeLifecycle as OwnerRuntimeLifecycle, RuntimeLifecycleState as OwnerRuntimeLifecycleState,
@@ -139,12 +138,18 @@ pub enum ProxyServingState {
     Failed,
 }
 
+/// Exact projection of the Rust Runtime Lifecycle failure vocabulary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum ProxyServingFailure {
     NativeRuntimeMissing,
-    LegacyMigrationBlocked,
     ExternalCredentialUnavailable,
-    ListenerUnavailable,
+    CellularConnectorUnavailable,
+    ProxyConfigurationRejected,
+    MixedListenerUnavailable,
+    Socks5ListenerUnavailable,
+    HttpConnectListenerUnavailable,
+    ExecutorUnavailable,
+    RuntimeStateUnavailable,
     ServingUnhealthy,
     ShutdownFailed,
 }
@@ -153,54 +158,6 @@ pub enum ProxyServingFailure {
 pub struct ProxyServingSnapshotView {
     pub state: ProxyServingState,
     pub failure: Option<ProxyServingFailure>,
-}
-
-/// Thin typed UniFFI projection of the native in-process Proxy Serving lifecycle owner.
-#[derive(uniffi::Object)]
-pub struct ProxyServingLifecycleController {
-    owner: Mutex<OwnerProxyServingLifecycle>,
-}
-
-#[uniffi::export]
-impl ProxyServingLifecycleController {
-    #[uniffi::constructor]
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self {
-            owner: Mutex::new(OwnerProxyServingLifecycle::new()),
-        })
-    }
-
-    pub fn snapshot(&self) -> ProxyServingSnapshotView {
-        map_proxy_snapshot(self.owner().snapshot())
-    }
-
-    pub fn request_start(&self) -> bool {
-        self.owner_mut().request_start()
-    }
-
-    pub fn mark_running(&self) -> bool {
-        self.owner_mut().mark_running()
-    }
-
-    pub fn mark_failed(&self, failure: ProxyServingFailure) {
-        self.owner_mut().mark_failed(map_proxy_failure_in(failure));
-    }
-
-    pub fn mark_stopped(&self) {
-        self.owner_mut().mark_stopped();
-    }
-}
-
-impl ProxyServingLifecycleController {
-    fn owner(&self) -> MutexGuard<'_, OwnerProxyServingLifecycle> {
-        self.owner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    fn owner_mut(&self) -> MutexGuard<'_, OwnerProxyServingLifecycle> {
-        self.owner()
-    }
 }
 
 fn map_lifecycle_state(state: OwnerRuntimeLifecycleState) -> RuntimeLifecycleState {
@@ -243,7 +200,7 @@ fn map_cleanup_disposition(disposition: OwnerCleanupDisposition) -> RuntimeClean
     }
 }
 
-fn map_proxy_snapshot(snapshot: OwnerProxyServingSnapshot) -> ProxyServingSnapshotView {
+pub(crate) fn map_proxy_snapshot(snapshot: OwnerProxyServingSnapshot) -> ProxyServingSnapshotView {
     ProxyServingSnapshotView {
         state: match snapshot.state() {
             OwnerProxyServingState::Stopped => ProxyServingState::Stopped,
@@ -255,33 +212,35 @@ fn map_proxy_snapshot(snapshot: OwnerProxyServingSnapshot) -> ProxyServingSnapsh
     }
 }
 
-fn map_proxy_failure_out(failure: OwnerProxyServingFailure) -> ProxyServingFailure {
+pub(crate) const fn map_proxy_failure_out(
+    failure: OwnerProxyServingFailure,
+) -> ProxyServingFailure {
     match failure {
         OwnerProxyServingFailure::NativeRuntimeMissing => ProxyServingFailure::NativeRuntimeMissing,
-        OwnerProxyServingFailure::LegacyMigrationBlocked => {
-            ProxyServingFailure::LegacyMigrationBlocked
-        }
         OwnerProxyServingFailure::ExternalCredentialUnavailable => {
             ProxyServingFailure::ExternalCredentialUnavailable
         }
-        OwnerProxyServingFailure::ListenerUnavailable => ProxyServingFailure::ListenerUnavailable,
+        OwnerProxyServingFailure::CellularConnectorUnavailable => {
+            ProxyServingFailure::CellularConnectorUnavailable
+        }
+        OwnerProxyServingFailure::ProxyConfigurationRejected => {
+            ProxyServingFailure::ProxyConfigurationRejected
+        }
+        OwnerProxyServingFailure::MixedListenerUnavailable => {
+            ProxyServingFailure::MixedListenerUnavailable
+        }
+        OwnerProxyServingFailure::Socks5ListenerUnavailable => {
+            ProxyServingFailure::Socks5ListenerUnavailable
+        }
+        OwnerProxyServingFailure::HttpConnectListenerUnavailable => {
+            ProxyServingFailure::HttpConnectListenerUnavailable
+        }
+        OwnerProxyServingFailure::ExecutorUnavailable => ProxyServingFailure::ExecutorUnavailable,
+        OwnerProxyServingFailure::RuntimeStateUnavailable => {
+            ProxyServingFailure::RuntimeStateUnavailable
+        }
         OwnerProxyServingFailure::ServingUnhealthy => ProxyServingFailure::ServingUnhealthy,
         OwnerProxyServingFailure::ShutdownFailed => ProxyServingFailure::ShutdownFailed,
-    }
-}
-
-fn map_proxy_failure_in(failure: ProxyServingFailure) -> OwnerProxyServingFailure {
-    match failure {
-        ProxyServingFailure::NativeRuntimeMissing => OwnerProxyServingFailure::NativeRuntimeMissing,
-        ProxyServingFailure::LegacyMigrationBlocked => {
-            OwnerProxyServingFailure::LegacyMigrationBlocked
-        }
-        ProxyServingFailure::ExternalCredentialUnavailable => {
-            OwnerProxyServingFailure::ExternalCredentialUnavailable
-        }
-        ProxyServingFailure::ListenerUnavailable => OwnerProxyServingFailure::ListenerUnavailable,
-        ProxyServingFailure::ServingUnhealthy => OwnerProxyServingFailure::ServingUnhealthy,
-        ProxyServingFailure::ShutdownFailed => OwnerProxyServingFailure::ShutdownFailed,
     }
 }
 
@@ -320,26 +279,54 @@ mod tests {
     }
 
     #[test]
-    fn ffi_proxy_projection_preserves_native_failure_reason() {
-        for failure in [
-            ProxyServingFailure::NativeRuntimeMissing,
-            ProxyServingFailure::LegacyMigrationBlocked,
-            ProxyServingFailure::ExternalCredentialUnavailable,
-            ProxyServingFailure::ListenerUnavailable,
-            ProxyServingFailure::ServingUnhealthy,
-            ProxyServingFailure::ShutdownFailed,
+    fn ffi_proxy_failure_projection_preserves_every_native_failure_reason() {
+        for (owner, projected) in [
+            (
+                OwnerProxyServingFailure::NativeRuntimeMissing,
+                ProxyServingFailure::NativeRuntimeMissing,
+            ),
+            (
+                OwnerProxyServingFailure::ExternalCredentialUnavailable,
+                ProxyServingFailure::ExternalCredentialUnavailable,
+            ),
+            (
+                OwnerProxyServingFailure::CellularConnectorUnavailable,
+                ProxyServingFailure::CellularConnectorUnavailable,
+            ),
+            (
+                OwnerProxyServingFailure::ProxyConfigurationRejected,
+                ProxyServingFailure::ProxyConfigurationRejected,
+            ),
+            (
+                OwnerProxyServingFailure::MixedListenerUnavailable,
+                ProxyServingFailure::MixedListenerUnavailable,
+            ),
+            (
+                OwnerProxyServingFailure::Socks5ListenerUnavailable,
+                ProxyServingFailure::Socks5ListenerUnavailable,
+            ),
+            (
+                OwnerProxyServingFailure::HttpConnectListenerUnavailable,
+                ProxyServingFailure::HttpConnectListenerUnavailable,
+            ),
+            (
+                OwnerProxyServingFailure::ExecutorUnavailable,
+                ProxyServingFailure::ExecutorUnavailable,
+            ),
+            (
+                OwnerProxyServingFailure::RuntimeStateUnavailable,
+                ProxyServingFailure::RuntimeStateUnavailable,
+            ),
+            (
+                OwnerProxyServingFailure::ServingUnhealthy,
+                ProxyServingFailure::ServingUnhealthy,
+            ),
+            (
+                OwnerProxyServingFailure::ShutdownFailed,
+                ProxyServingFailure::ShutdownFailed,
+            ),
         ] {
-            let controller = ProxyServingLifecycleController::new();
-            assert!(controller.request_start());
-            assert!(controller.mark_running());
-            controller.mark_failed(failure);
-            assert_eq!(
-                controller.snapshot(),
-                ProxyServingSnapshotView {
-                    state: ProxyServingState::Failed,
-                    failure: Some(failure),
-                }
-            );
+            assert_eq!(map_proxy_failure_out(owner), projected);
         }
     }
 }

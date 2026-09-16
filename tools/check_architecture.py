@@ -48,30 +48,31 @@ def main() -> None:
         "mish-android-network",
         "Android DNS mechanics belong at the platform/FFI boundary",
     )
+    runtime_controller = "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt"
     forbid(
-        "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt",
+        runtime_controller,
         "enum class LifecycleState",
         "Kotlin must not reintroduce a parallel foreground lifecycle state machine",
     )
     forbid(
-        "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt",
+        runtime_controller,
         "RuntimeCleanupDisposition(",
         "cleanup disposition policy belongs to crates/runtime",
     )
     require(
-        "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt",
+        runtime_controller,
         "proxyServingFailureRecoverable(reason)",
         "proxy recovery classification must remain delegated to the Rust runtime owner",
     )
     require(
-        "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt",
+        runtime_controller,
         "proxyRecoveryDelayMs(attempt)",
         "proxy recovery backoff must remain delegated to the Rust runtime owner",
     )
-    forbid(
-        "android/app/src/main/java/com/mobileproxymish/app/ProxyRuntimeSupervisor.kt",
-        "RECOVERABLE_UNEXPECTED_FAILURES",
-        "Android proxy adapter must report typed failures without owning recovery classification",
+    require(
+        runtime_controller,
+        "onFailureObserved = ::scheduleProxyRecoveryIfAllowed",
+        "every typed Proxy Serving failure must flow through the one Rust-owned recovery policy",
     )
 
     # Cross-owner runtime composition decisions belong to Rust, not Android adapters.
@@ -99,7 +100,7 @@ def main() -> None:
     )
 
     # Proxy-target DNS/public egress has exactly one Cellular Egress path and no default fallback.
-    runtime_dns = "crates/runtime/src/lib.rs"
+    runtime_dns = "crates/runtime/src/cellular_connector.rs"
     require(
         runtime_dns,
         "pub trait CellularDnsResolver",
@@ -111,7 +112,7 @@ def main() -> None:
         "android_getaddrinfofornetwork(",
         "Android target DNS must remain scoped to the owner-issued network handle",
     )
-    for product_path in (runtime_dns, "crates/android-ffi/src/lib.rs"):
+    for product_path in (runtime_dns, "crates/android-ffi/src/runtime_boundary.rs"):
         for fallback in ("ToSocketAddrs", "lookup_host("):
             forbid(
                 product_path,
@@ -134,7 +135,7 @@ def main() -> None:
                     f"network fallback: {relative} contains {fallback!r}"
                 )
 
-    # Native Proxy Serving owns one explicit Tokio task tree.
+    # Native Proxy Serving owns one explicit Tokio task tree and one lifecycle snapshot.
     proxy_runtime = "crates/runtime/src/proxy_runtime.rs"
     for required in (
         "JoinSet",
@@ -146,6 +147,14 @@ def main() -> None:
         "copy_bidirectional",
     ):
         require(proxy_runtime, required, "native Proxy Serving must keep deterministic task ownership")
+    for required in (
+        "ProxyServingLifecycle",
+        "pub fn snapshot(&self) -> ProxyServingSnapshot",
+        "owner_state.mark_running()",
+        "owner_state.mark_stopped()",
+        "publish_failure(ProxyServingFailure::ServingUnhealthy)",
+    ):
+        require(proxy_runtime, required, "ProxyServingRuntime must own semantic lifecycle state")
     forbid(
         proxy_runtime,
         "drop(tokio::spawn(",
@@ -281,7 +290,7 @@ def main() -> None:
         )
 
     # Stateful runtime coordination must not drift into the FFI seam.
-    ffi = "crates/android-ffi/src/lib.rs"
+    ffi = "crates/android-ffi/src/runtime_boundary.rs"
     for symbol in (
         "struct RootPolicyEffectGate",
         "struct RootPolicyGatedConnector",
@@ -292,10 +301,31 @@ def main() -> None:
     lifecycle_ffi = "crates/android-ffi/src/runtime_lifecycle_ffi.rs"
     require(
         lifecycle_ffi,
+        "pub struct ProxyServingSnapshotView",
+        "UniFFI must expose the immutable native Proxy Serving snapshot type",
+    )
+    forbid(
+        lifecycle_ffi,
         "ProxyServingLifecycleController",
-        "UniFFI must project native Proxy Serving lifecycle",
+        "UniFFI must not expose a second mutable Proxy Serving lifecycle controller",
     )
     forbid(lifecycle_ffi, "RuntimeProcessLifecycle", "child-process lifecycle must not return to FFI")
+    proxy_serving_ffi = "crates/android-ffi/src/proxy_serving_ffi.rs"
+    require(
+        proxy_serving_ffi,
+        "NativeProxyStartAttempt",
+        "expected native proxy startup failures must cross FFI as typed data",
+    )
+    require(
+        proxy_serving_ffi,
+        "pub fn snapshot(&self) -> ProxyServingSnapshotView",
+        "UniFFI must project the runtime-owned Proxy Serving snapshot read-only",
+    )
+    require(
+        proxy_serving_ffi,
+        "error.lifecycle_failure()",
+        "runtime owner must classify native startup mechanism failures before FFI",
+    )
 
     mesh_ffi = "crates/android-ffi/src/transport_ffi.rs"
     require(
@@ -340,13 +370,53 @@ def main() -> None:
     proxy_android = "android/app/src/main/java/com/mobileproxymish/app/ProxyRuntimeSupervisor.kt"
     for obsolete in ("privateBridge", "childAlive", "RuntimeProcess"):
         forbid(proxy_android, obsolete, "Android proxy supervisor must describe native serving only")
+    for second_owner in (
+        "ProxyServingLifecycleController",
+        ".requestStart()",
+        ".markRunning()",
+        ".markFailed(",
+        ".markStopped()",
+    ):
+        forbid(proxy_android, second_owner, "Android proxy adapter must not drive Proxy Serving lifecycle state")
+    require(
+        proxy_android,
+        "val startFailure = attempt.failure()",
+        "Android proxy adapter must publish Rust-owned typed startup failures",
+    )
+    require(
+        proxy_android,
+        "newRuntime.snapshot()",
+        "Android proxy adapter must project the immutable Rust-owned runtime snapshot",
+    )
+    require(
+        proxy_android,
+        "onFailureObserved(reason)",
+        "startup and post-start failures must share one typed recovery-notification path",
+    )
 
-    # Diagnostics v2 must describe native product facts without a fake bridge projection.
+    # Diagnostics v2 observes current owner facts only. It must never become a repair/control path.
     diagnostics = "android/app/src/main/java/com/mobileproxymish/app/MishDiagnosticsProvider.kt"
     require(diagnostics, 'MISH_DIAGNOSTICS_SCHEMA_V2 = "mish.diagnostics/v2"', "diagnostics must be versioned v2")
     require(diagnostics, 'MISH_DIAGNOSTICS_METHOD_SNAPSHOT_V2 = "snapshot_v2"', "diagnostics method must be v2")
     for obsolete in ("MISH_DIAGNOSTICS_SCHEMA_V1", "snapshot_v1", 'put("bridge"', "private_healthy", "privateBridge"):
         forbid(diagnostics, obsolete, "diagnostics must not retain deleted private-bridge semantics")
+    for mutation in (
+        "startNativeProxyRuntime(",
+        ".start()",
+        ".stop()",
+        "proxyServingFailureRecoverable(",
+        "proxyRecoveryDelayMs(",
+        "RootCommandTransport",
+        "MagiskRootAuthority",
+        "SuProcess",
+        "ProcessBuilder",
+        "rotateExternalCredential",
+        "revokeExternalCredential",
+        "authorizeRootPolicy(",
+        "closeRootPolicyGate(",
+        "observeNetwork(",
+    ):
+        forbid(diagnostics, mutation, "diagnostics must remain observation-only")
 
     # Root authority proof and root-shell transport are separate responsibilities.
     authority = "android/app/src/main/java/com/mobileproxymish/app/cellular/MagiskRootAuthority.kt"

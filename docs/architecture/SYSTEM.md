@@ -142,7 +142,7 @@ Cloudflare One Agent        external Android VPN/private-transport owner
 Cloudflare One Client       external Windows vendor process
 ```
 
-A one-shot `LegacySingBoxUpgradeMigration` may inspect/terminate only the exact old PRODUCT-owned Android sing-box identity during upgrade from an earlier build. It is not a steady-state child process, is not a process reconciler, and does not justify packaging sing-box in the new APK.
+After L8, Android PRODUCT contains no compatibility runtime for the deleted external proxy architecture. It does not scan `/proc` for historical proxy children, interpret old sing-box configuration/PID files, publish migration markers, terminate historical processes, or expose migration failure semantics. Historical residue on a development device is LAB hygiene and can never block or authorize PRODUCT startup.
 
 A new helper/root daemon/process is not part of the default topology. It may be introduced only if a concrete privilege, lifecycle or failure-isolation fact proves that one in-process owner plus one narrow adapter is insufficient.
 

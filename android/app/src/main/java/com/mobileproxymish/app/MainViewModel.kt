@@ -135,10 +135,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun proxyReasonCode(reason: ProxyServingFailure): String = when (reason) {
         ProxyServingFailure.NATIVE_RUNTIME_MISSING -> "proxy.native_runtime_missing"
-        ProxyServingFailure.LEGACY_MIGRATION_BLOCKED -> "proxy.legacy_migration_blocked"
         ProxyServingFailure.EXTERNAL_CREDENTIAL_UNAVAILABLE ->
             "proxy.external_credential_unavailable"
-        ProxyServingFailure.LISTENER_UNAVAILABLE -> "proxy.listener_unavailable"
+        ProxyServingFailure.CELLULAR_CONNECTOR_UNAVAILABLE ->
+            "proxy.cellular_connector_unavailable"
+        ProxyServingFailure.PROXY_CONFIGURATION_REJECTED ->
+            "proxy.configuration_rejected"
+        ProxyServingFailure.MIXED_LISTENER_UNAVAILABLE ->
+            "proxy.mixed_listener_unavailable"
+        ProxyServingFailure.SOCKS5_LISTENER_UNAVAILABLE ->
+            "proxy.socks5_listener_unavailable"
+        ProxyServingFailure.HTTP_CONNECT_LISTENER_UNAVAILABLE ->
+            "proxy.http_connect_listener_unavailable"
+        ProxyServingFailure.EXECUTOR_UNAVAILABLE -> "proxy.executor_unavailable"
+        ProxyServingFailure.RUNTIME_STATE_UNAVAILABLE -> "proxy.runtime_state_unavailable"
         ProxyServingFailure.SERVING_UNHEALTHY -> "proxy.serving_unhealthy"
         ProxyServingFailure.SHUTDOWN_FAILED -> "proxy.shutdown_failed"
     }

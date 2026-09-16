@@ -10,6 +10,7 @@ on:
       - 'crates/**'
       - 'docs/architecture/**'
       - 'tools/check_architecture.py'
+      - 'tools/verify_android_candidate.py'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
@@ -135,55 +136,9 @@ jobs:
           :app:assembleDebug
           :app:assembleDebugAndroidTest
 
-      - name: Verify packaged native runtime and UniFFI surface
+      - name: Verify exact PRODUCT candidate contract
         if: ${{ github.event.pull_request.draft == false }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          APK="android/app/build/outputs/apk/debug/app-debug.apk"
-          TEST_APK="android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"
-          NATIVE="android/app/build/generated/rust-jni/$MISH_TARGET_ABI/libmish_android_ffi.so"
-          GENERATED="android/app/build/generated/uniffi/kotlin/com/mobileproxymish/ffi/mish_android_ffi.kt"
-          test -f "$APK"
-          test -f "$TEST_APK"
-          test -f "$NATIVE"
-          test -f "$GENERATED"
-          unzip -l "$APK" | grep -q "lib/$MISH_TARGET_ABI/libmish_android_ffi.so"
-          unzip -l "$APK" | grep -q "lib/$MISH_TARGET_ABI/libjnidispatch.so"
-          if unzip -l "$APK" | grep -Fq 'libsingbox.so'; then
-            echo 'obsolete sing-box binary leaked into native PRODUCT APK' >&2
-            exit 1
-          fi
-
-          SYMBOLS="$RUNNER_TEMP/mish-android-ffi.symbols"
-          readelf -Ws "$NATIVE" > "$SYMBOLS"
-          grep -Fq 'android_getaddrinfofornetwork' "$SYMBOLS"
-          if grep -Fq 'android_setsocknetwork' "$SYMBOLS"; then
-            echo 'superseded android_setsocknetwork leaked into PRODUCT FFI library' >&2
-            exit 1
-          fi
-
-          for symbol in \
-            CellularController \
-            MeshTransportController \
-            RuntimeLifecycleController \
-            ProxyServingLifecycleController \
-            proxyServingFailureRecoverable \
-            proxyListenerPorts; do
-            grep -Fq "$symbol" "$GENERATED"
-          done
-          for forbidden in \
-            CellularNetworkLease \
-            admittedNetworkLease \
-            bindSocket \
-            resolveHost \
-            RuntimeProcessLifecycleController \
-            PrivateBridge; do
-            if grep -Fq "$forbidden" "$GENERATED"; then
-              echo "obsolete or uncontrolled API leaked into UniFFI surface: $forbidden" >&2
-              exit 1
-            fi
-          done
+        run: python3 tools/verify_android_candidate.py
 
       - name: Stage exact-head device candidate
         if: ${{ github.event.pull_request.draft == false }}

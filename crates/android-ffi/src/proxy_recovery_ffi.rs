@@ -18,13 +18,28 @@ pub fn proxy_recovery_delay_ms(attempt: u32) -> u64 {
 fn map_failure(failure: ProxyServingFailure) -> OwnerProxyServingFailure {
     match failure {
         ProxyServingFailure::NativeRuntimeMissing => OwnerProxyServingFailure::NativeRuntimeMissing,
-        ProxyServingFailure::LegacyMigrationBlocked => {
-            OwnerProxyServingFailure::LegacyMigrationBlocked
-        }
         ProxyServingFailure::ExternalCredentialUnavailable => {
             OwnerProxyServingFailure::ExternalCredentialUnavailable
         }
-        ProxyServingFailure::ListenerUnavailable => OwnerProxyServingFailure::ListenerUnavailable,
+        ProxyServingFailure::CellularConnectorUnavailable => {
+            OwnerProxyServingFailure::CellularConnectorUnavailable
+        }
+        ProxyServingFailure::ProxyConfigurationRejected => {
+            OwnerProxyServingFailure::ProxyConfigurationRejected
+        }
+        ProxyServingFailure::MixedListenerUnavailable => {
+            OwnerProxyServingFailure::MixedListenerUnavailable
+        }
+        ProxyServingFailure::Socks5ListenerUnavailable => {
+            OwnerProxyServingFailure::Socks5ListenerUnavailable
+        }
+        ProxyServingFailure::HttpConnectListenerUnavailable => {
+            OwnerProxyServingFailure::HttpConnectListenerUnavailable
+        }
+        ProxyServingFailure::ExecutorUnavailable => OwnerProxyServingFailure::ExecutorUnavailable,
+        ProxyServingFailure::RuntimeStateUnavailable => {
+            OwnerProxyServingFailure::RuntimeStateUnavailable
+        }
         ProxyServingFailure::ServingUnhealthy => OwnerProxyServingFailure::ServingUnhealthy,
         ProxyServingFailure::ShutdownFailed => OwnerProxyServingFailure::ShutdownFailed,
     }
@@ -39,8 +54,14 @@ mod tests {
         assert!(proxy_serving_failure_recoverable(
             ProxyServingFailure::ServingUnhealthy
         ));
+        assert!(proxy_serving_failure_recoverable(
+            ProxyServingFailure::MixedListenerUnavailable
+        ));
         assert!(!proxy_serving_failure_recoverable(
             ProxyServingFailure::ShutdownFailed
+        ));
+        assert!(!proxy_serving_failure_recoverable(
+            ProxyServingFailure::ProxyConfigurationRejected
         ));
         assert_eq!(proxy_recovery_delay_ms(0), 1_000);
         assert_eq!(proxy_recovery_delay_ms(99), 60_000);

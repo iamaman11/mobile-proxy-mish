@@ -1,8 +1,8 @@
 //! Narrow Rust <-> Kotlin / Android composition boundary.
 //!
-//! This module contains only typed FFI projection/mapping plus the concrete Android DNS effect
-//! adapter. Cellular admission, root-policy effect coordination and direct proxy egress remain
-//! behind public `mish-cellular` / `mish-runtime` APIs rather than inside the FFI seam.
+//! This module contains typed FFI projection/mapping plus the concrete Android DNS effect adapter.
+//! Cellular admission, root-policy coordination and direct proxy egress remain behind public
+//! `mish-cellular` / `mish-runtime` APIs rather than drifting into the FFI seam.
 
 use mish_android_network::AndroidNetworkError;
 use mish_cellular::{
@@ -62,15 +62,14 @@ impl fmt::Display for CellularBridgeError {
 }
 impl std::error::Error for CellularBridgeError {}
 
+/// Effect-level Android runtime errors that genuinely cross the FFI exception channel.
+/// Expected Proxy Serving start failures use the typed `NativeProxyStartAttempt` data path instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Error)]
 pub enum AndroidRuntimeError {
     InvalidOperationTimeout,
     ConnectorUnavailable,
-    ThreadUnavailable,
     RuntimeStateUnavailable,
     ShutdownTimedOut,
-    InvalidListenAddress,
-    ProxyConfigurationRejected,
 }
 impl fmt::Display for AndroidRuntimeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -79,11 +78,8 @@ impl fmt::Display for AndroidRuntimeError {
                 "runtime operation timeout is outside the accepted range"
             }
             Self::ConnectorUnavailable => "cellular outbound connector could not start",
-            Self::ThreadUnavailable => "native runtime executor could not start",
             Self::RuntimeStateUnavailable => "native runtime state is unavailable",
             Self::ShutdownTimedOut => "native runtime did not stop within the bounded timeout",
-            Self::InvalidListenAddress => "public proxy listen address is invalid",
-            Self::ProxyConfigurationRejected => "proxy runtime configuration was rejected",
         })
     }
 }
@@ -134,14 +130,17 @@ impl CellularController {
             .map(map_snapshot)
             .map_err(|_| CellularBridgeError::OwnerUnavailable)
     }
+
     pub fn close_root_policy_gate(&self) -> Result<(), AndroidRuntimeError> {
         self.runtime.close_root_policy_gate().map_err(Into::into)
     }
+
     pub fn await_root_policy_quiesced(&self, timeout_ms: u64) -> Result<bool, AndroidRuntimeError> {
         self.runtime
             .await_root_policy_quiesced(Duration::from_millis(timeout_ms))
             .map_err(Into::into)
     }
+
     pub fn authorize_root_policy(
         &self,
         sequence: u64,
@@ -157,6 +156,7 @@ impl CellularController {
             .authorize_root_policy(sequence, network_handle)
             .map_err(Into::into)
     }
+
     pub fn observe_network(
         &self,
         sequence: u64,
@@ -183,6 +183,7 @@ impl CellularController {
             .map(map_snapshot)
             .map_err(|_| CellularBridgeError::OwnerUnavailable)
     }
+
     pub fn network_lost(
         &self,
         sequence: u64,
@@ -244,6 +245,7 @@ impl From<CellularRuntimeError> for AndroidRuntimeError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn foreign_controller_starts_unknown() {
         let controller = CellularController::new();
@@ -257,6 +259,7 @@ mod tests {
             }
         );
     }
+
     #[test]
     fn foreign_observation_delegates_admission_to_natural_owner() {
         let controller = CellularController::new();
@@ -266,6 +269,7 @@ mod tests {
         assert_eq!(view.state, CellularAdmissionState::Admitted);
         assert_eq!(view.admitted_network_handle, Some(42));
     }
+
     #[test]
     fn stale_generation_cannot_reopen_root_policy_effect_gate() {
         let controller = CellularController::new();
