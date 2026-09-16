@@ -8,9 +8,10 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import com.mobileproxymish.ffi.MeshAdmissionState
 import com.mobileproxymish.ffi.MeshAdmissionView
-import com.mobileproxymish.ffi.MeshTransportController
 import com.mobileproxymish.ffi.MeshTransportBoundaryException
+import com.mobileproxymish.ffi.MeshTransportController
 import com.mobileproxymish.ffi.ProductReadinessState
+import com.mobileproxymish.ffi.meshIngressServingAllowed
 import java.io.Closeable
 import java.net.Inet4Address
 import java.util.concurrent.Executors
@@ -50,21 +51,6 @@ internal fun classifyMeshVpnNetworks(
     else -> AndroidMeshVpnObservation.AmbiguousVpn
 }
 
-/**
- * Public Mesh listeners are a derived serving effect, never proof of egress readiness. A new
- * listener generation is therefore allowed only after the existing readiness owner has published
- * a generation-bound private cellular DNS+TLS success.
- */
-internal fun meshIngressServingAllowed(
-    proxyRunning: Boolean,
-    readiness: ProductReadinessState,
-    meshAdmitted: Boolean,
-    admissionEpoch: ULong?,
-): Boolean = proxyRunning &&
-    readiness == ProductReadinessState.READY &&
-    meshAdmitted &&
-    admissionEpoch != null
-
 /** Safe, endpoint-free diagnostic classification of the last ingress realization attempt. */
 internal enum class MeshIngressDiagnosticFailure {
     NONE,
@@ -82,9 +68,9 @@ internal enum class MeshIngressDiagnosticFailure {
  * Platform authority is current ConnectivityManager VPN Network cardinality plus each current
  * VPN's LinkProperties. Every callback schedules a fresh whole snapshot; callback deltas are never
  * admission truth. Rust consumes the raw unique-VPN IPv4 facts, applies the configured Mesh CIDR,
- * decides 0/1/>1 accepted addresses, owns admission epochs and owns exact-address listener/session
- * teardown. Android never infers Mesh from package presence, interface names, default routes or a
- * global NetworkInterface scan.
+ * decides 0/1/>1 accepted addresses, owns admission epochs, owns cross-owner serving eligibility,
+ * and owns exact-address listener/session teardown. Android never infers Mesh from package
+ * presence, interface names, default routes or a global NetworkInterface scan.
  */
 internal class MeshIngressRuntimeBridge(
     context: Context,
@@ -281,7 +267,7 @@ internal class MeshIngressRuntimeBridge(
                     proxyRunning = proxyRuntime.snapshot.value == ProxyRuntimeSnapshot.Running,
                     readiness = egressReadiness?.value ?: ProductReadinessState.UNKNOWN,
                     meshAdmitted = view.state == MeshAdmissionState.ADMITTED,
-                    admissionEpoch = epoch,
+                    admissionEpochPresent = epoch != null,
                 )
             ) {
                 if (!view.ingressRunning || !activeController.ingressHealthy()) {
