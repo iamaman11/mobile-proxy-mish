@@ -36,6 +36,10 @@ jobs:
       - name: Verify delivery and CI invariants
         run: python3 tools/check_delivery_contract.py
 
+      - name: Verify capacity probe held-session contract
+        shell: pwsh
+        run: ./lab/windows/test-capacity-probe-contract.ps1
+
   changes:
     name: PRODUCT Change Classification
     if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.base.ref == 'main' && github.event.pull_request.draft == false) }}
