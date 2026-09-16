@@ -86,16 +86,10 @@ class PhysicalCompositionDiagnosticTest {
             is ProxyRuntimeSnapshot.Failed -> "FAILED_${snapshot.reason.name}"
         }
         val runtimeObservation = application.proxyRuntime.diagnosticObservation()
-        val privateBridgePort = runtimeObservation.privateBridgePort
-        val privateBridgeDistinct = privateBridgePort != null &&
-            privateBridgePort in 1..65535 &&
-            privateBridgePort !in PUBLIC_PORTS
         println(
             "PHYSICAL_PROXY_DIAGNOSTIC runtime_state=$state " +
-                "child_alive=${runtimeObservation.childAlive} " +
-                "private_bridge_present=${privateBridgePort != null} " +
-                "private_bridge_healthy=${runtimeObservation.privateBridgeHealthy} " +
-                "private_bridge_distinct=$privateBridgeDistinct",
+                "native_healthy=${runtimeObservation.healthy} " +
+                "credential_bound=${runtimeObservation.credentialVersion != null}",
         )
 
         val sockets = runProductRoot("ss -ltnpe")
