@@ -16,15 +16,12 @@ import com.mobileproxymish.ffi.ProductReadinessState
 import java.nio.charset.StandardCharsets
 import org.json.JSONObject
 
-internal const val MISH_DIAGNOSTICS_SCHEMA_V1 = "mish.diagnostics/v1"
-internal const val MISH_DIAGNOSTICS_METHOD_SNAPSHOT_V1 = "snapshot_v1"
+internal const val MISH_DIAGNOSTICS_SCHEMA_V2 = "mish.diagnostics/v2"
+internal const val MISH_DIAGNOSTICS_METHOD_SNAPSHOT_V2 = "snapshot_v2"
 internal const val MISH_DIAGNOSTICS_RESULT_PAYLOAD_B64 = "payload_b64"
 
-/**
- * Stable semantic diagnostics payload. These fields intentionally describe product facts rather
- * than Kotlin/Rust implementation class names so the ADB/LAB bridge can survive internal rewrites.
- */
-internal data class MishDiagnosticFactsV1(
+/** Stable semantic diagnostics for the native L8 product topology. */
+internal data class MishDiagnosticFactsV2(
     val applicationId: String,
     val pid: Int,
     val capturedElapsedMs: Long,
@@ -36,7 +33,6 @@ internal data class MishDiagnosticFactsV1(
     val cellularBoundaryFailure: String?,
     val rootAuthorityObservation: String,
     val rootPolicyAuthorized: Boolean,
-    val privateBridgeHealthy: Boolean,
     val proxyState: String,
     val proxyHealthy: Boolean,
     val proxyFailure: String?,
@@ -51,9 +47,9 @@ internal data class MishDiagnosticFactsV1(
     val readinessProbeState: String,
 )
 
-internal fun renderMishDiagnosticSnapshotV1(facts: MishDiagnosticFactsV1): String =
+internal fun renderMishDiagnosticSnapshotV2(facts: MishDiagnosticFactsV2): String =
     JSONObject().apply {
-        put("schema", MISH_DIAGNOSTICS_SCHEMA_V1)
+        put("schema", MISH_DIAGNOSTICS_SCHEMA_V2)
         put("application_id", facts.applicationId)
         put("pid", facts.pid)
         put("captured_elapsed_ms", facts.capturedElapsedMs)
@@ -70,9 +66,6 @@ internal fun renderMishDiagnosticSnapshotV1(facts: MishDiagnosticFactsV1): Strin
         put("root", JSONObject().apply {
             put("authority_observation", facts.rootAuthorityObservation)
             put("policy_authorized", facts.rootPolicyAuthorized)
-        })
-        put("bridge", JSONObject().apply {
-            put("private_healthy", facts.privateBridgeHealthy)
         })
         put("proxy", JSONObject().apply {
             put("state", facts.proxyState)
@@ -92,8 +85,6 @@ internal fun renderMishDiagnosticSnapshotV1(facts: MishDiagnosticFactsV1): Strin
         put("readiness", JSONObject().apply {
             put("state", facts.readinessState)
             put("binding_eligible", facts.readinessBindingEligible)
-            // V1 deliberately does not duplicate the readiness probe implementation. The LAB
-            // collector runs an independent authenticated loopback probe for detailed attribution.
             put("probe_state", facts.readinessProbeState)
         })
         put("rotation", JSONObject().apply {
@@ -108,16 +99,14 @@ private fun JSONObject.putNullable(name: String, value: String?) {
 /**
  * Permission-gated ADB diagnostics bridge available in every APK variant.
  *
- * This provider is strictly read-only. It executes no root command, no retry/recovery action,
- * no network toggle, no credential mutation and no provider mutation. The manifest protects it
- * with the platform `android.permission.DUMP` permission, which is available to ADB shell but not
- * ordinary third-party applications.
+ * This provider is strictly read-only. It executes no root command, retry/recovery action, network
+ * toggle, credential mutation or provider mutation. The manifest protects it with DUMP permission.
  */
 class MishDiagnosticsProvider : ContentProvider() {
     override fun onCreate(): Boolean = true
 
     override fun call(method: String, arg: String?, extras: Bundle?): Bundle {
-        require(method == MISH_DIAGNOSTICS_METHOD_SNAPSHOT_V1) {
+        require(method == MISH_DIAGNOSTICS_METHOD_SNAPSHOT_V2) {
             "unsupported diagnostics method"
         }
         require(arg == null && (extras == null || extras.isEmpty)) {
@@ -131,7 +120,7 @@ class MishDiagnosticsProvider : ContentProvider() {
             Base64.NO_WRAP,
         )
         return Bundle().apply {
-            putString("schema", MISH_DIAGNOSTICS_SCHEMA_V1)
+            putString("schema", MISH_DIAGNOSTICS_SCHEMA_V2)
             putString(MISH_DIAGNOSTICS_RESULT_PAYLOAD_B64, encoded)
         }
     }
@@ -182,8 +171,8 @@ class MishDiagnosticsProvider : ContentProvider() {
             ProductReadinessState.UNKNOWN -> "NOT_OBSERVED"
         }
 
-        return renderMishDiagnosticSnapshotV1(
-            MishDiagnosticFactsV1(
+        return renderMishDiagnosticSnapshotV2(
+            MishDiagnosticFactsV2(
                 applicationId = app.packageName,
                 pid = Process.myPid(),
                 capturedElapsedMs = SystemClock.elapsedRealtime(),
@@ -195,7 +184,6 @@ class MishDiagnosticsProvider : ContentProvider() {
                 cellularBoundaryFailure = boundaryFailure?.diagnosticCode(),
                 rootAuthorityObservation = rootAuthorityObservation,
                 rootPolicyAuthorized = readinessDiagnostic.rootPolicyVerified,
-                privateBridgeHealthy = readinessDiagnostic.privateBridgeHealthy,
                 proxyState = proxyState,
                 proxyHealthy = readinessDiagnostic.proxyHealthy,
                 proxyFailure = proxyFailure,
