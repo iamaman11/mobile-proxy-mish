@@ -119,7 +119,7 @@ class LegacyRuntimeCutoverCleanupTest {
             .filter { it.isFile && it.extension == "kt" }
             .filter { file ->
                 val source = file.readText()
-                forbiddenLegacyMechanisms.any(source::contains)
+                forbiddenLegacyMechanisms.any { token -> source.contains(token) }
             }
             .map { it.relativeTo(mainSource).invariantSeparatorsPath }
             .sorted()
@@ -137,7 +137,10 @@ class LegacyRuntimeCutoverCleanupTest {
             "MeshTransport",
             "ProductReadiness",
         )) {
-            assertFalse("cutover cleanup must not become steady-state runtime: $steadyStateToken", cleanup.contains(steadyStateToken))
+            assertFalse(
+                "cutover cleanup must not become steady-state runtime: $steadyStateToken",
+                cleanup.contains(steadyStateToken),
+            )
         }
     }
 
