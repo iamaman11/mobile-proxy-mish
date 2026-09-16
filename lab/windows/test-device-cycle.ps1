@@ -8,7 +8,9 @@ try {
         'start-device-app.ps1',
         'collect-device-diagnostic.ps1',
         'DeviceDiagnosticClassification.psm1',
+        'DiagnosticConnectProbe.psm1',
         'diagnose-loopback-connect.ps1',
+        'test-diagnostic-connect-probe.ps1',
         'new-device-cycle-report.ps1'
     )) {
         $tokens = $null
@@ -27,16 +29,27 @@ try {
         }
     }
 
+    & (Join-Path $PSScriptRoot 'test-diagnostic-connect-probe.ps1')
+
     $loopbackProbeSource = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'diagnose-loopback-connect.ps1')
     foreach ($required in @(
         "'ss', '-H', '-tanp'",
         "'/proc/net/tcp'",
         "'/proc/net/tcp6'",
         'listener_state = $listenerState',
-        'MISH_LOOPBACK_DIAGNOSTIC_TARGET_SOCKET_ROWS'
+        'MISH_LOOPBACK_DIAGNOSTIC_TARGET_SOCKET_ROWS',
+        'Invoke-MishDiagnosticHttpRelayProbe',
+        'Invoke-MishDiagnosticSocks5RelayProbe',
+        '$forwardPorts[1080]',
+        '$forwardPorts[1081]',
+        '$forwardPorts[3128]',
+        '-ExpectAuthRejection',
+        'protocol_matrix = $protocolMatrix',
+        'U2_PROXY_PROTOCOL_MATRIX_PASS',
+        'MISH_LOOPBACK_DIAGNOSTIC_PROTOCOL_MATRIX_PASS'
     )) {
         if (-not $loopbackProbeSource.Contains($required)) {
-            throw "Manual loopback probe lost bounded listener-state evidence: $required"
+            throw "Manual loopback probe lost bounded U2 listener/protocol evidence: $required"
         }
     }
     foreach ($forbidden in @(
@@ -290,7 +303,7 @@ try {
     $targetedEvidence = Join-Path $root 'targeted-evidence.json'
     [ordered]@{
         schema = 'mish.lab.loopback-connect/v1'
-        classification = 'CONNECT_RESPONSE_RECEIVED'
+        classification = 'U2_PROXY_PROTOCOL_MATRIX_PASS'
     } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $targetedEvidence
     $probeReport = & $reportScript `
         -Mode probe_only `
