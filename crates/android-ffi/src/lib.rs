@@ -1,8 +1,8 @@
 //! Narrow Rust <-> Kotlin / Android composition boundary.
 //!
 //! This module contains only typed FFI projection/mapping plus the concrete Android DNS effect
-//! adapter. Cellular admission, root-policy effect coordination and private-bridge runtime state
-//! live behind public `mish-cellular` / `mish-runtime` APIs rather than inside the FFI seam.
+//! adapter. Cellular admission, root-policy effect coordination and direct proxy egress remain
+//! behind public `mish-cellular` / `mish-runtime` APIs rather than inside the FFI seam.
 
 use mish_android_network::AndroidNetworkError;
 use mish_cellular::{
@@ -12,14 +12,9 @@ use mish_cellular::{
     NetworkObservation, ObservationSequence,
 };
 use mish_cellular_egress_bridge::OutboundConnectError;
-use mish_proxy::{ProxyCredentialMaterial, ProxyServingPlan};
-use mish_runtime::{
-    CellularDnsResolver, CellularPrivateBridgeRuntime, CellularRuntimeCoordinator,
-    CellularRuntimeError,
-};
-use mish_sing_box_adapter::{PrivateSocks5Endpoint, render_product_config};
+use mish_runtime::{CellularDnsResolver, CellularRuntimeCoordinator, CellularRuntimeError};
 use std::fmt;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -87,19 +82,15 @@ impl fmt::Display for AndroidRuntimeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::InvalidOperationTimeout => {
-                "bridge operation timeout is outside the accepted range"
+                "network operation timeout is outside the accepted range"
             }
-            Self::BridgeAlreadyRunning => {
-                "a private bridge already belongs to this owner generation"
-            }
-            Self::BridgeConfigurationRejected => "private bridge configuration was rejected",
-            Self::BridgeBindFailed => "private bridge could not bind loopback",
+            Self::BridgeAlreadyRunning => "legacy private bridge is already running",
+            Self::BridgeConfigurationRejected => "legacy private bridge configuration was rejected",
+            Self::BridgeBindFailed => "legacy private bridge could not bind loopback",
             Self::ConnectorUnavailable => "cellular outbound connector could not start",
-            Self::ThreadUnavailable => "bounded bridge worker thread could not start",
-            Self::BridgeStateUnavailable => "private bridge state is unavailable",
-            Self::ShutdownTimedOut => {
-                "private bridge sessions did not stop within the bounded timeout"
-            }
+            Self::ThreadUnavailable => "native runtime executor could not start",
+            Self::BridgeStateUnavailable => "native runtime state is unavailable",
+            Self::ShutdownTimedOut => "native runtime did not stop within the bounded timeout",
             Self::InvalidListenAddress => "public proxy listen address is invalid",
             Self::ProxyConfigurationRejected => "proxy runtime configuration was rejected",
         })
@@ -132,6 +123,12 @@ impl CellularDnsResolver for AndroidDnsResolver {
 #[derive(uniffi::Object)]
 pub struct CellularController {
     runtime: Arc<CellularRuntimeCoordinator>,
+}
+
+impl CellularController {
+    pub(crate) fn runtime_handle(&self) -> Arc<CellularRuntimeCoordinator> {
+        Arc::clone(&self.runtime)
+    }
 }
 
 #[uniffi::export]
@@ -217,75 +214,6 @@ impl CellularController {
             .map(map_snapshot)
             .map_err(|_| CellularBridgeError::OwnerUnavailable)
     }
-
-    pub fn start_bridge(
-        &self,
-        username: String,
-        password: String,
-        operation_timeout_ms: u64,
-    ) -> Result<Arc<CellularBridgeRuntime>, AndroidRuntimeError> {
-        let inner = self
-            .runtime
-            .start_private_bridge(
-                username,
-                password,
-                Duration::from_millis(operation_timeout_ms),
-            )
-            .map_err(AndroidRuntimeError::from)?;
-        Ok(Arc::new(CellularBridgeRuntime { inner }))
-    }
-}
-
-/// Stateless UniFFI handle for a runtime-owned private bridge generation.
-#[derive(uniffi::Object)]
-pub struct CellularBridgeRuntime {
-    inner: Arc<CellularPrivateBridgeRuntime>,
-}
-
-#[uniffi::export]
-impl CellularBridgeRuntime {
-    pub fn port(&self) -> u16 {
-        self.inner.port()
-    }
-
-    pub fn is_healthy(&self) -> bool {
-        self.inner.is_healthy()
-    }
-
-    pub fn active_sessions(&self) -> u32 {
-        self.inner.active_sessions().min(u32::MAX as usize) as u32
-    }
-
-    pub fn stop(&self) -> Result<(), AndroidRuntimeError> {
-        self.inner.stop().map_err(Into::into)
-    }
-}
-
-#[uniffi::export]
-pub fn render_proxy_runtime_config(
-    listen_address: String,
-    public_username: String,
-    public_password: String,
-    bridge_port: u16,
-    bridge_username: String,
-    bridge_password: String,
-) -> Result<String, AndroidRuntimeError> {
-    let listen_address = listen_address
-        .parse::<IpAddr>()
-        .map_err(|_| AndroidRuntimeError::InvalidListenAddress)?;
-    let public_credentials = ProxyCredentialMaterial::new(public_username, public_password)
-        .map_err(|_| AndroidRuntimeError::ProxyConfigurationRejected)?;
-    let plan = ProxyServingPlan::canonical(listen_address, public_credentials)
-        .map_err(|_| AndroidRuntimeError::ProxyConfigurationRejected)?;
-    let egress = PrivateSocks5Endpoint::new(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        bridge_port,
-        bridge_username,
-        bridge_password,
-    )
-    .map_err(|_| AndroidRuntimeError::ProxyConfigurationRejected)?;
-    render_product_config(&plan, &egress)
-        .map_err(|_| AndroidRuntimeError::ProxyConfigurationRejected)
 }
 
 fn map_snapshot(snapshot: OwnerAdmissionSnapshot) -> CellularAdmissionView {
@@ -374,23 +302,5 @@ mod tests {
             .observe_network(2, 43, true, true, true, true)
             .expect("newer observation");
         assert!(!controller.authorize_root_policy(1, 42).expect("stale"));
-    }
-
-    #[test]
-    fn rendered_proxy_runtime_is_loopback_only_and_has_no_direct_fallback() {
-        let rendered = render_proxy_runtime_config(
-            "127.0.0.1".into(),
-            "public-user".into(),
-            "public-secret".into(),
-            19080,
-            "private-user".into(),
-            "private-secret".into(),
-        )
-        .expect("render proxy runtime");
-        for port in [1080, 1081, 3128] {
-            assert!(rendered.contains(&format!("\"listen_port\": {port}")));
-        }
-        assert!(rendered.contains("\"listen\": \"127.0.0.1\""));
-        assert!(!rendered.contains("\"type\": \"direct\""));
     }
 }

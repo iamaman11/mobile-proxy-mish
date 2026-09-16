@@ -5,7 +5,6 @@ import android.content.pm.ApplicationInfo
 import android.os.Process
 import com.mobileproxymish.ffi.CellularAdmissionState
 import com.mobileproxymish.ffi.CellularAdmissionView
-import com.mobileproxymish.ffi.CellularBridgeRuntime
 import com.mobileproxymish.ffi.CellularController
 import java.io.Closeable
 import java.util.concurrent.Callable
@@ -139,18 +138,10 @@ class CellularRuntimeBridge(
         mutableSnapshot = MutableStateFlow(initialSnapshot)
     }
 
-    /**
-     * Starts the private bridge from the exact same Rust Cellular Egress owner instance.
-     * This is composition only: it neither copies nor mutates admission policy.
-     */
-    internal fun startPrivateBridge(
-        username: String,
-        password: String,
-        operationTimeoutMs: ULong,
-    ): CellularBridgeRuntime {
+    /** Exact FFI handle for composition with the native proxy runtime; no state is copied. */
+    internal fun nativeController(): CellularController {
         check(!closed.get()) { "cellular runtime is closed" }
-        val activeController = controller ?: error("Cellular Egress owner is unavailable")
-        return activeController.startBridge(username, password, operationTimeoutMs)
+        return controller ?: error("Cellular Egress owner is unavailable")
     }
 
     fun start() {
@@ -171,24 +162,6 @@ class CellularRuntimeBridge(
                 }
             }
         }
-    }
-
-    /**
-     * Bounded composition gate for a dependent proxy generation. This reads the existing
-     * Cellular Egress projection only: it neither creates an admission state nor authorizes a
-     * route. An admitted OwnerSnapshot is published only after the same generation passed exact
-     * root-policy reconciliation and Rust authorization.
-     */
-    internal fun awaitAuthorizedAdmission(timeoutMs: Long): Boolean {
-        if (timeoutMs <= 0L || closed.get()) return false
-        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
-        while (!closed.get() && System.nanoTime() < deadline) {
-            val admission = (mutableSnapshot.value as? CellularRuntimeSnapshot.OwnerSnapshot)
-                ?.admission
-            if (admission?.state == CellularAdmissionState.ADMITTED) return true
-            Thread.sleep(AUTHORIZED_ADMISSION_POLL_MS)
-        }
-        return false
     }
 
     override fun onEvent(event: CellularNetworkEvent) {
@@ -583,9 +556,9 @@ class CellularRuntimeBridge(
         runCatching { controller?.closeRootPolicyGate() }
         observer.close()
         val cleanup = try {
-            // The lambda returns the cleanup fact.  Use Callable explicitly: the Runnable
-            // overload returns a Future whose value is always null, which would turn a
-            // successful exact cleanup into a false failure.
+            // The lambda returns the cleanup fact. Use Callable explicitly: the Runnable overload
+            // returns a Future whose value is always null, which would turn a successful exact
+            // cleanup into a false failure.
             policyExecutor.submit(Callable {
                 interfaceHints.clear()
                 val quiesced = try {
@@ -625,7 +598,6 @@ class CellularRuntimeBridge(
     }
 
     private companion object {
-        const val AUTHORIZED_ADMISSION_POLL_MS = 100L
         const val CLOSE_TIMEOUT_SECONDS = 60L
         const val EFFECT_DRAIN_TIMEOUT_MS = 20_000L
     }
