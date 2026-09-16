@@ -14,6 +14,9 @@ pub use proxy_serving_ffi::*;
 mod readiness_ffi;
 pub use readiness_ffi::*;
 
+mod runtime_composition_ffi;
+pub use runtime_composition_ffi::*;
+
 mod runtime_lifecycle_ffi;
 pub use runtime_lifecycle_ffi::*;
 
