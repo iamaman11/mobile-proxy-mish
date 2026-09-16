@@ -10,8 +10,8 @@ This file contains no live stage SHA or mutable status. It exists so a new execu
 protected main
   -> this file: stable authority/reconstruction rules
   -> docs/architecture/PRODUCT_ROADMAP.md: ordered PRODUCT/architecture plan
-  -> Issue #135: current stage, working lineage, accepted/current implementation pointer, immutable evidence ids
-  -> exact working-lineage head / current slice PR named by #135: current PRODUCT implementation
+  -> Issue #135: current stage + explicit CONTROL/PRODUCT identities + immutable evidence ids
+  -> PRODUCT_SOURCE_SHA / current slice PR named by #135: current PRODUCT implementation
   -> SYSTEM.md / DEPENDENCIES.md / OWNERSHIP.md: architecture contracts
   -> DEVELOPMENT_PIPELINE.md / EXECUTION.md / ACCEPTANCE.md: development/evidence process
   -> docs/lab/PLAN.md: physical execution boundary
@@ -28,14 +28,56 @@ Before planning, diagnosis or mutation:
 
 1. Read fresh protected `main` and record its SHA as `CONTROL_SHA_BASELINE`.
 2. Read this file from that exact `main`.
-3. Read fresh Issue #135.
-4. Read `PRODUCT_ROADMAP.md` from protected `main` for stage ordering and architecture direction.
-5. Resolve `WORKING_LINEAGE`, `ACCEPTED_INTEGRATION_HEAD`, `CURRENT_STAGE` and `OPEN_IMPLEMENTATION_PR` from #135.
-6. Inspect the exact working-lineage/current PR source before making any claim about PRODUCT composition.
-7. Read only the natural-owner contracts and executable workflow/tests needed for the active slice.
-8. If a physical fact is required, use immutable run/evidence ids from #135 or obtain one new bounded physical observation.
+3. Read fresh Issue #135 and resolve its reconstruction identity block.
+4. Verify `CONTROL_MAIN_SHA` in #135 matches the fresh protected-main SHA or explicitly update #135 before proceeding.
+5. Resolve `PRODUCT_SOURCE_REF`, `PRODUCT_SOURCE_SHA`, `PRODUCT_ON_PROTECTED_MAIN`, `CURRENT_STAGE`, `OPEN_IMPLEMENTATION_PR` and `CURRENT_PRODUCT_CANDIDATE_SHA` from #135.
+6. If `PRODUCT_ON_PROTECTED_MAIN = NO`, do **not** inspect protected-main Rust/Android source to determine current PRODUCT composition. Read `PRODUCT_SOURCE_SHA` first.
+7. Read `PRODUCT_ROADMAP.md` from protected `main` for stage ordering and architecture direction.
+8. Inspect the exact PRODUCT source/current PR before making any claim about PRODUCT composition.
+9. Read only the natural-owner contracts and executable workflow/tests needed for the active slice.
+10. If a physical fact is required, use immutable run/evidence ids from #135 or obtain one new bounded physical observation.
 
 One fresh baseline opens one bounded mutation window. Do not re-baseline after every write performed inside that same window.
+
+## Required live pointer schema in Issue #135
+
+Issue #135 must keep these semantic roles explicit even when compatibility aliases are also retained:
+
+```text
+CONTROL_MAIN_SHA
+  exact protected-main identity for control/process/canonical docs
+
+PRODUCT_SOURCE_REF
+  branch/ref containing the current accepted PRODUCT implementation lineage
+
+PRODUCT_SOURCE_SHA
+  exact source tree that defines current PRODUCT composition
+
+PRODUCT_ON_PROTECTED_MAIN = YES|NO
+  whether protected main and current PRODUCT source are intentionally the same implementation boundary
+
+CURRENT_PRODUCT_CANDIDATE_SHA
+  exact build-source identity physically exercised by the currently recorded candidate evidence
+```
+
+Compatibility aliases such as `PROTECTED_MAIN`, `WORKING_LINEAGE`, `ACCEPTED_INTEGRATION_HEAD`, and `ACCEPTED_PRODUCT_CANDIDATE_SHA` may remain for existing automation/history, but they do not replace the explicit semantic names above.
+
+Reconstruction is **fail closed** if any required role is missing or contradictory. Fix #135 before making PRODUCT claims or mutations.
+
+### Critical branch rule
+
+`main` has two possible roles depending on #135:
+
+```text
+PRODUCT_ON_PROTECTED_MAIN = YES
+  protected main may be used as both CONTROL and current PRODUCT source
+
+PRODUCT_ON_PROTECTED_MAIN = NO
+  protected main is CONTROL/process/canonical-docs only for current reconstruction
+  current PRODUCT composition MUST be read from PRODUCT_SOURCE_SHA
+```
+
+Therefore old Rust/Android code, dependencies, build guards, or historical vendor checks still present on `main` do not become current PRODUCT facts merely because they are on the protected branch. Likewise, a docs/control merge to `main` never implies that an unmerged PRODUCT lineage has been accepted into `main`.
 
 ## Three authority namespaces
 
@@ -54,10 +96,11 @@ DEVICE_EVIDENCE
 
 Rules:
 
-- Do not infer PRODUCT composition from protected `main` when #135 points to a newer accepted integration head.
+- Do not infer PRODUCT composition from protected `main` when #135 says `PRODUCT_ON_PROTECTED_MAIN = NO`.
 - Do not infer PRODUCT architecture from historical processes/files found on a development phone.
 - Do not infer current physical state from source code.
 - Do not promote a successful read-only probe into exact PRODUCT acceptance.
+- Do not silently substitute `CONTROL_SHA` for `PRODUCT_SHA`, even when both are Git commit SHAs.
 
 ## Canonical product architecture
 
@@ -140,11 +183,12 @@ Use it only when source/CI/current Device Cycle cannot establish a material phys
 
 If documents disagree:
 
-1. executable source/workflow defines mechanics;
+1. executable source/workflow defines mechanics for its own exact SHA;
 2. `PRODUCT_ROADMAP.md` defines ordered product direction;
-3. #135 defines the live stage/exact pointer/evidence ids;
-4. SYSTEM/DEPENDENCIES/OWNERSHIP define architecture;
-5. EXECUTION/DEVELOPMENT_PIPELINE/ACCEPTANCE/LAB PLAN define process;
-6. older issue/comment prose is historical unless explicitly re-adopted.
+3. #135 defines the live stage and explicit CONTROL/PRODUCT/evidence identities;
+4. PRODUCT composition comes only from `PRODUCT_SOURCE_SHA` resolved from #135;
+5. SYSTEM/DEPENDENCIES/OWNERSHIP define architecture contracts;
+6. EXECUTION/DEVELOPMENT_PIPELINE/ACCEPTANCE/LAB PLAN define process;
+7. older issue/comment prose is historical unless explicitly re-adopted.
 
 When a contradiction is found, correct GitHub immediately rather than carrying an unwritten exception in chat memory.
