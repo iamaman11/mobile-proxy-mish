@@ -48,30 +48,31 @@ def main() -> None:
         "mish-android-network",
         "Android DNS mechanics belong at the platform/FFI boundary",
     )
+    runtime_controller = "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt"
     forbid(
-        "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt",
+        runtime_controller,
         "enum class LifecycleState",
         "Kotlin must not reintroduce a parallel foreground lifecycle state machine",
     )
     forbid(
-        "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt",
+        runtime_controller,
         "RuntimeCleanupDisposition(",
         "cleanup disposition policy belongs to crates/runtime",
     )
     require(
-        "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt",
+        runtime_controller,
         "proxyServingFailureRecoverable(reason)",
         "proxy recovery classification must remain delegated to the Rust runtime owner",
     )
     require(
-        "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt",
+        runtime_controller,
         "proxyRecoveryDelayMs(attempt)",
         "proxy recovery backoff must remain delegated to the Rust runtime owner",
     )
-    forbid(
-        "android/app/src/main/java/com/mobileproxymish/app/ProxyRuntimeSupervisor.kt",
-        "RECOVERABLE_UNEXPECTED_FAILURES",
-        "Android proxy adapter must report typed failures without owning recovery classification",
+    require(
+        runtime_controller,
+        "onFailureObserved = ::scheduleProxyRecoveryIfAllowed",
+        "every typed Proxy Serving failure must flow through the one Rust-owned recovery policy",
     )
 
     # Cross-owner runtime composition decisions belong to Rust, not Android adapters.
@@ -355,6 +356,11 @@ def main() -> None:
         proxy_android,
         "val startFailure = attempt.failure()",
         "Android proxy adapter must publish Rust-owned typed startup failures",
+    )
+    require(
+        proxy_android,
+        "onFailureObserved(reason)",
+        "startup and post-start failures must share one typed recovery-notification path",
     )
 
     # Diagnostics v2 observes current owner facts only. It must never become a repair/control path.
