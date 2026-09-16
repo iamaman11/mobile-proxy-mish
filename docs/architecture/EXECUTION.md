@@ -1,39 +1,40 @@
 # Development execution and integration policy
 
-This document defines stable execution policy. Live stage status belongs only to Issue #135. Ordered product direction belongs only to `PRODUCT_ROADMAP.md`.
+This document defines stable execution policy. Protected `main` is the latest accepted PRODUCT + CONTROL source. Live stage status belongs only to Issue #135. Ordered product direction belongs only to `PRODUCT_ROADMAP.md`.
 
 ## Authority model
 
 ```text
 protected main
-  -> stable process/control/canonical docs boundary
+  -> latest accepted PRODUCT implementation
+  -> latest accepted CONTROL/workflow/LAB implementation
+  -> canonical architecture/process documentation
 
 Issue #135
   -> CURRENT_STAGE
-  -> WORKING_LINEAGE
-  -> ACCEPTED_INTEGRATION_HEAD
   -> OPEN_IMPLEMENTATION_PR
   -> immutable evidence ids
 
-working lineage / current slice PR
-  -> current PRODUCT implementation while the stage is active
+open implementation PR
+  -> temporary candidate change under review
 ```
 
-`main` may intentionally lag the current PRODUCT implementation during an active stage. Do not infer PRODUCT composition from `main` when #135 points to a newer accepted integration head.
+An open PR head is not a second accepted PRODUCT source. Once its required evidence passes, merge it to `main` promptly so accepted implementation and accepted process stay together.
 
 ## Single-pass roadmap rule
 
-Development proceeds linearly through the current `PRODUCT_ROADMAP.md` stage order. Exactly one roadmap stage is current.
+Development proceeds linearly through `PRODUCT_ROADMAP.md`. Exactly one roadmap stage is current.
 
 Within a stage:
 
 ```text
-fresh exact baseline
+fresh exact main baseline
  -> complete independent hosted/code work
  -> exact-head hosted gate when configured/required
  -> physical fact only when source/hosted evidence cannot establish it
  -> record immutable evidence in #135
  -> fix only surfaced defects on the same stage
+ -> merge accepted slice to main
  -> advance #135 only when stage exit criteria are complete
 ```
 
@@ -44,10 +45,10 @@ A failed gate does not create a new roadmap stage.
 Keep these distinct:
 
 ```text
-commit batch != slice PR != milestone/main boundary
+commit batch != slice PR != roadmap-stage completion
 ```
 
-A slice branch starts from the exact current working/integration head in #135.
+A normal slice branch starts from fresh protected `main`.
 
 Default slice shape:
 
@@ -55,26 +56,24 @@ Default slice shape:
 - at most one necessary platform/vendor/composition adapter;
 - direct tests for that owner/adapter boundary.
 
-Open a slice PR when the change is coherent enough to review. Its base is the current integration branch from #135 unless #135 explicitly records another boundary.
-
-After review, merge the slice into the integration lineage. Updating the integration lineage does not automatically justify a `main` merge, physical run or release build.
+Open a slice PR against `main` when the change is coherent enough to review. Use another base only for an explicitly documented short-lived exceptional dependency; do not create a long-lived accepted integration branch.
 
 ## Protected-main boundary
 
-`main` is not a progress ledger. Merge PRODUCT implementation to `main` only at a coherent milestone/evidence boundary defined by the active process.
+`main` is the accepted integration boundary, not a scratch branch and not merely a progress ledger.
 
-A docs/control-only PR may update protected `main` earlier when its purpose is to keep source-of-truth, workflow or evidence mechanics accurate. Such a merge must not claim that newer PRODUCT code on the working lineage has already landed on `main`.
+Accepted PRODUCT/control changes land on `main`. Do not keep already accepted PRODUCT state indefinitely on a parallel branch just to preserve process history; Git and PR history already provide that history.
 
 ## CI law
 
-Executable workflow configuration is the mechanical authority. Prose must follow YAML, never the reverse.
+Executable workflow configuration is the mechanical authority. Prose follows YAML, never the reverse.
 
-For the current Android/Rust development line, `Integration Android Preflight` is the exact-head hosted candidate producer. Read `.github/workflows/integration-android-preflight.yml` for exact trigger conditions and steps.
+`Integration Android Preflight` is the exact-head hosted candidate producer for PRODUCT-changing PRs to `main`. Read `.github/workflows/integration-android-preflight.yml` for exact trigger conditions and steps.
 
 General law:
 
 ```text
-coherent exact PRODUCT head
+coherent exact PR head
  -> configured complete hosted gate
  -> first failing gate is current hosted diagnosis
  -> smallest owner-aligned correction
@@ -91,7 +90,8 @@ A successful build is never a phone-mutation trigger.
 When #135 requires a physical fact:
 
 ```text
-exact hosted candidate already exists
+open ready PR to main
+ -> exact hosted candidate already exists
  -> analysis decides one explicit Device Cycle action
  -> /mish-cycle command against exact PRODUCT SHA
  -> protected-main CONTROL_SHA resolves/verifies provenance
@@ -99,6 +99,7 @@ exact hosted candidate already exists
  -> bounded install/launch/diagnostic/probe as requested
  -> immutable typed evidence
  -> STOP_FOR_ANALYSIS
+ -> accepted change merges to main
 ```
 
 The current supported modes/probes are defined by `.github/workflows/device-cycle.yml` and `DEVELOPMENT_PIPELINE.md`.
@@ -107,7 +108,7 @@ No workflow automatically chooses a repair, starts a follow-up probe, rotates cr
 
 ## PRODUCT / CONTROL / DEVICE provenance
 
-Every physical conclusion must keep separate:
+For a pre-merge physical candidate run, keep separate:
 
 ```text
 PRODUCT_SHA
@@ -115,6 +116,8 @@ CONTROL_SHA
 HOSTED_RUN_ID when an artifact is consumed
 DEVICE_CYCLE_RUN_ID or equivalent immutable physical evidence id
 ```
+
+This split is evidence provenance only. After acceptance and merge, the accepted PRODUCT and CONTROL source are both protected `main`.
 
 Do not mix a stale APK, different control scripts, prior device state or local rebuild into one acceptance claim.
 
@@ -130,7 +133,7 @@ material ambiguity
  -> implementation decision
 ```
 
-The local agent does not own architecture or current product state. Record relevant conclusions back to #135 or a natural-owner/evidence contract.
+The local agent does not own architecture or current product state. Record material conclusions back to #135 or a natural-owner/evidence contract.
 
 ## Evidence boundary
 
