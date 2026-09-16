@@ -21,7 +21,7 @@ env:
 
 jobs:
   architecture:
-    name: Architecture Guards
+    name: Architecture + Delivery Guards
     if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.base.ref == 'main' && github.event.pull_request.draft == false) }}
     runs-on: ubuntu-latest
     steps:
@@ -33,10 +33,62 @@ jobs:
       - name: Verify accepted architecture invariants
         run: python3 tools/check_architecture.py
 
+      - name: Verify delivery and CI invariants
+        run: python3 tools/check_delivery_contract.py
+
+  changes:
+    name: PRODUCT Change Classification
+    if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.base.ref == 'main' && github.event.pull_request.draft == false) }}
+    runs-on: ubuntu-latest
+    outputs:
+      product_changed: ${{ steps.classify.outputs.product_changed }}
+    steps:
+      - name: Checkout exact PR head and history
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Classify PRODUCT/build changes
+        id: classify
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" != 'pull_request' ]]; then
+            echo 'product_changed=true' >> "$GITHUB_OUTPUT"
+            echo 'PRODUCT_CHANGED=true (explicit workflow_dispatch)'
+            exit 0
+          fi
+
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git cat-file -e "$BASE_SHA^{commit}"
+          git cat-file -e "$HEAD_SHA^{commit}"
+
+          product_changed=false
+          while IFS= read -r path; do
+            case "$path" in
+              android/*|crates/*|config/*|contracts/*|Cargo.toml|Cargo.lock|rust-toolchain.toml)
+                product_changed=true
+                break
+                ;;
+            esac
+          done < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+
+          echo "product_changed=$product_changed" >> "$GITHUB_OUTPUT"
+          echo "PRODUCT_CHANGED=$product_changed"
+
   rust:
     name: Rust Workspace
-    needs: architecture
-    if: ${{ needs.architecture.result == 'success' }}
+    needs: [architecture, changes]
+    if: ${{ needs.architecture.result == 'success' && needs.changes.outputs.product_changed == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -94,8 +146,8 @@ jobs:
 
   android:
     name: Android Compose Shell
-    needs: architecture
-    if: ${{ needs.architecture.result == 'success' }}
+    needs: [architecture, changes]
+    if: ${{ needs.architecture.result == 'success' && needs.changes.outputs.product_changed == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
