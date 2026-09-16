@@ -1,8 +1,7 @@
 use mish_runtime::{
     ProxyServingFailure as OwnerProxyServingFailure,
     ProxyServingLifecycle as OwnerProxyServingLifecycle,
-    ProxyServingSnapshot as OwnerProxyServingSnapshot,
-    ProxyServingState as OwnerProxyServingState,
+    ProxyServingSnapshot as OwnerProxyServingSnapshot, ProxyServingState as OwnerProxyServingState,
     RuntimeCleanupDisposition as OwnerCleanupDisposition,
     RuntimeLifecycle as OwnerRuntimeLifecycle, RuntimeLifecycleState as OwnerRuntimeLifecycleState,
     RuntimeStartAction as OwnerRuntimeStartAction,

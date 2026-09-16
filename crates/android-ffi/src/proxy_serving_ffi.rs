@@ -52,7 +52,11 @@ pub fn start_native_proxy_runtime(
 
 #[uniffi::export]
 pub fn proxy_listener_ports() -> Vec<u16> {
-    vec![mish_proxy::MIXED_PORT, mish_proxy::SOCKS5_PORT, mish_proxy::HTTP_CONNECT_PORT]
+    vec![
+        mish_proxy::MIXED_PORT,
+        mish_proxy::SOCKS5_PORT,
+        mish_proxy::HTTP_CONNECT_PORT,
+    ]
 }
 
 fn map_proxy_runtime_error(error: ProxyServingRuntimeError) -> AndroidRuntimeError {

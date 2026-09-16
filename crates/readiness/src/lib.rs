@@ -274,7 +274,10 @@ mod tests {
     fn coherent_facts_produce_the_exact_probe_binding() {
         let input = ready_input();
         let expected = input.probe.expect("probe").binding;
-        assert_eq!(probe_eligibility(input), ProbeEligibility::Eligible(expected));
+        assert_eq!(
+            probe_eligibility(input),
+            ProbeEligibility::Eligible(expected)
+        );
     }
 
     #[test]

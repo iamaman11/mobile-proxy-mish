@@ -317,7 +317,8 @@ fn prepare_blocking_session(
         .set_write_timeout(Some(SESSION_SETUP_TIMEOUT))
         .map_err(|_| ())?;
 
-    let prepared = prepare_proxy_session(protocol, client, credentials, connector).map_err(|_| ())?;
+    let prepared =
+        prepare_proxy_session(protocol, client, credentials, connector).map_err(|_| ())?;
     let (client, upstream) = prepared.into_streams();
     client.set_read_timeout(None).map_err(|_| ())?;
     client.set_write_timeout(None).map_err(|_| ())?;

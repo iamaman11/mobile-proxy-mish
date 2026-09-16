@@ -73,7 +73,11 @@ impl CellularOutboundRuntimeConnector {
         if operation_timeout.is_zero() {
             return Err(CellularConnectorConfigError::ZeroOperationTimeout);
         }
-        Ok(Self { owner, operation_timeout, resolver })
+        Ok(Self {
+            owner,
+            operation_timeout,
+            resolver,
+        })
     }
 }
 
@@ -97,7 +101,9 @@ impl ProxyOutboundConnector for CellularOutboundRuntimeConnector {
             target.port(),
             deadline,
             |authority, domain, _deadline| self.resolver.resolve(authority, domain),
-            |_authority, address, attempt_deadline| connect_root_policy_socket(address, attempt_deadline),
+            |_authority, address, attempt_deadline| {
+                connect_root_policy_socket(address, attempt_deadline)
+            },
         )
     }
 }
@@ -108,7 +114,10 @@ fn connect_root_policy_socket(
 ) -> Result<TcpStream, ProxyOutboundConnectError> {
     let timeout = remaining(deadline)?;
     TcpStream::connect_timeout(&address, timeout).map_err(|error| {
-        if matches!(error.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) {
+        if matches!(
+            error.kind(),
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+        ) {
             ProxyOutboundConnectError::Unavailable
         } else {
             ProxyOutboundConnectError::Failed
@@ -121,10 +130,20 @@ fn connect_host_with<T>(
     host: &ProxyTargetHost,
     port: u16,
     deadline: Instant,
-    resolve: impl FnOnce(CellularNetworkAuthority, &str, Instant) -> Result<Vec<IpAddr>, ProxyOutboundConnectError>,
-    mut connect: impl FnMut(CellularNetworkAuthority, SocketAddr, Instant) -> Result<T, ProxyOutboundConnectError>,
+    resolve: impl FnOnce(
+        CellularNetworkAuthority,
+        &str,
+        Instant,
+    ) -> Result<Vec<IpAddr>, ProxyOutboundConnectError>,
+    mut connect: impl FnMut(
+        CellularNetworkAuthority,
+        SocketAddr,
+        Instant,
+    ) -> Result<T, ProxyOutboundConnectError>,
 ) -> Result<T, ProxyOutboundConnectError> {
-    if port == 0 { return Err(ProxyOutboundConnectError::Rejected); }
+    if port == 0 {
+        return Err(ProxyOutboundConnectError::Rejected);
+    }
     ensure_deadline(deadline)?;
     let authority = issue_authority(owner)?;
     let candidates = match host {
@@ -160,14 +179,24 @@ fn connect_host_with<T>(
     Err(last_error)
 }
 
-fn bounded_ipv4_candidates(addresses: Vec<IpAddr>) -> Result<Vec<IpAddr>, ProxyOutboundConnectError> {
+fn bounded_ipv4_candidates(
+    addresses: Vec<IpAddr>,
+) -> Result<Vec<IpAddr>, ProxyOutboundConnectError> {
     let mut candidates = Vec::with_capacity(MAX_IPV4_CANDIDATES);
     for address in addresses {
-        if !address.is_ipv4() || candidates.contains(&address) { continue; }
+        if !address.is_ipv4() || candidates.contains(&address) {
+            continue;
+        }
         candidates.push(address);
-        if candidates.len() == MAX_IPV4_CANDIDATES { break; }
+        if candidates.len() == MAX_IPV4_CANDIDATES {
+            break;
+        }
     }
-    if candidates.is_empty() { Err(ProxyOutboundConnectError::Failed) } else { Ok(candidates) }
+    if candidates.is_empty() {
+        Err(ProxyOutboundConnectError::Failed)
+    } else {
+        Ok(candidates)
+    }
 }
 
 fn per_candidate_deadline(
@@ -175,10 +204,15 @@ fn per_candidate_deadline(
     attempts_remaining: usize,
 ) -> Result<Instant, ProxyOutboundConnectError> {
     let remaining_budget = remaining(operation_deadline)?;
-    let divisor = u32::try_from(attempts_remaining).map_err(|_| ProxyOutboundConnectError::Rejected)?;
-    if divisor == 0 { return Err(ProxyOutboundConnectError::Rejected); }
+    let divisor =
+        u32::try_from(attempts_remaining).map_err(|_| ProxyOutboundConnectError::Rejected)?;
+    if divisor == 0 {
+        return Err(ProxyOutboundConnectError::Rejected);
+    }
     let slice = remaining_budget / divisor;
-    let candidate = Instant::now().checked_add(slice).unwrap_or(operation_deadline);
+    let candidate = Instant::now()
+        .checked_add(slice)
+        .unwrap_or(operation_deadline);
     Ok(candidate.min(operation_deadline))
 }
 
@@ -188,24 +222,33 @@ fn remaining(deadline: Instant) -> Result<Duration, ProxyOutboundConnectError> {
         .filter(|duration| !duration.is_zero())
         .ok_or(ProxyOutboundConnectError::Unavailable)
 }
-fn ensure_deadline(deadline: Instant) -> Result<(), ProxyOutboundConnectError> { remaining(deadline).map(|_| ()) }
+fn ensure_deadline(deadline: Instant) -> Result<(), ProxyOutboundConnectError> {
+    remaining(deadline).map(|_| ())
+}
 
-fn issue_authority(owner: &Arc<Mutex<CellularEgress>>) -> Result<CellularNetworkAuthority, ProxyOutboundConnectError> {
-    owner.lock().map_err(|_| ProxyOutboundConnectError::Unavailable)?
-        .admitted_network_authority().map_err(map_authority_error)
+fn issue_authority(
+    owner: &Arc<Mutex<CellularEgress>>,
+) -> Result<CellularNetworkAuthority, ProxyOutboundConnectError> {
+    owner
+        .lock()
+        .map_err(|_| ProxyOutboundConnectError::Unavailable)?
+        .admitted_network_authority()
+        .map_err(map_authority_error)
 }
 fn validate_authority(
     owner: &Arc<Mutex<CellularEgress>>,
     authority: CellularNetworkAuthority,
 ) -> Result<(), ProxyOutboundConnectError> {
-    owner.lock().map_err(|_| ProxyOutboundConnectError::Unavailable)?
-        .validate_network_authority(authority).map_err(map_authority_error)
+    owner
+        .lock()
+        .map_err(|_| ProxyOutboundConnectError::Unavailable)?
+        .validate_network_authority(authority)
+        .map_err(map_authority_error)
 }
 fn map_authority_error(error: CellularNetworkAuthorityError) -> ProxyOutboundConnectError {
     match error {
-        CellularNetworkAuthorityError::NoAdmittedNetwork | CellularNetworkAuthorityError::NetworkChanged => {
-            ProxyOutboundConnectError::Unavailable
-        }
+        CellularNetworkAuthorityError::NoAdmittedNetwork
+        | CellularNetworkAuthorityError::NetworkChanged => ProxyOutboundConnectError::Unavailable,
     }
 }
 
@@ -216,22 +259,39 @@ mod tests {
     use std::cell::Cell;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
-    fn sequence(raw: u64) -> ObservationSequence { ObservationSequence::new(raw).expect("sequence") }
-    fn handle(raw: u64) -> NetworkHandle { NetworkHandle::new(raw).expect("network") }
+    fn sequence(raw: u64) -> ObservationSequence {
+        ObservationSequence::new(raw).expect("sequence")
+    }
+    fn handle(raw: u64) -> NetworkHandle {
+        NetworkHandle::new(raw).expect("network")
+    }
     fn admitted_owner() -> Arc<Mutex<CellularEgress>> {
         let mut owner = CellularEgress::new();
-        owner.observe(NetworkObservation::new(sequence(1), handle(42), true, true, true, true));
+        owner.observe(NetworkObservation::new(
+            sequence(1),
+            handle(42),
+            true,
+            true,
+            true,
+            true,
+        ));
         Arc::new(Mutex::new(owner))
     }
-    fn deadline() -> Instant { Instant::now() + Duration::from_secs(2) }
+    fn deadline() -> Instant {
+        Instant::now() + Duration::from_secs(2)
+    }
 
     #[test]
     fn zero_timeout_is_rejected() {
         let result = CellularOutboundRuntimeConnector::new(
-            admitted_owner(), Duration::ZERO,
+            admitted_owner(),
+            Duration::ZERO,
             Arc::new(|_, _| -> Result<Vec<IpAddr>, ProxyOutboundConnectError> { Ok(Vec::new()) }),
         );
-        assert!(matches!(result, Err(CellularConnectorConfigError::ZeroOperationTimeout)));
+        assert!(matches!(
+            result,
+            Err(CellularConnectorConfigError::ZeroOperationTimeout)
+        ));
     }
 
     #[test]
@@ -240,9 +300,18 @@ mod tests {
         let resolved = Cell::new(false);
         let connected = Cell::new(false);
         let result = connect_host_with(
-            &owner, &ProxyTargetHost::Domain("example.invalid".into()), 443, deadline(),
-            |_, _, _| { resolved.set(true); Ok(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]) },
-            |_, _, _| { connected.set(true); Ok(()) },
+            &owner,
+            &ProxyTargetHost::Domain("example.invalid".into()),
+            443,
+            deadline(),
+            |_, _, _| {
+                resolved.set(true);
+                Ok(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)])
+            },
+            |_, _, _| {
+                connected.set(true);
+                Ok(())
+            },
         );
         assert_eq!(result, Err(ProxyOutboundConnectError::Unavailable));
         assert!(!resolved.get());
@@ -254,9 +323,17 @@ mod tests {
         let owner = admitted_owner();
         let connected = Cell::new(false);
         let result = connect_host_with(
-            &owner, &ProxyTargetHost::Ipv4(Ipv4Addr::new(203,0,113,10)), 443, deadline(),
-            |_, _, _| -> Result<Vec<IpAddr>, ProxyOutboundConnectError> { panic!("numeric target must not invoke DNS") },
-            |_, _, _| { connected.set(true); Ok(()) },
+            &owner,
+            &ProxyTargetHost::Ipv4(Ipv4Addr::new(203, 0, 113, 10)),
+            443,
+            deadline(),
+            |_, _, _| -> Result<Vec<IpAddr>, ProxyOutboundConnectError> {
+                panic!("numeric target must not invoke DNS")
+            },
+            |_, _, _| {
+                connected.set(true);
+                Ok(())
+            },
         );
         assert_eq!(result, Ok(()));
         assert!(connected.get());
@@ -267,8 +344,14 @@ mod tests {
         let owner = admitted_owner();
         let resolved = Cell::new(false);
         let result = connect_host_with(
-            &owner, &ProxyTargetHost::Ipv6(Ipv6Addr::LOCALHOST), 443, deadline(),
-            |_, _, _| { resolved.set(true); Ok(Vec::new()) },
+            &owner,
+            &ProxyTargetHost::Ipv6(Ipv6Addr::LOCALHOST),
+            443,
+            deadline(),
+            |_, _, _| {
+                resolved.set(true);
+                Ok(Vec::new())
+            },
             |_, _, _| Ok(()),
         );
         assert_eq!(result, Err(ProxyOutboundConnectError::Rejected));
@@ -281,12 +364,21 @@ mod tests {
         let owner_during_dns = Arc::clone(&owner);
         let connected = Cell::new(false);
         let result = connect_host_with(
-            &owner, &ProxyTargetHost::Domain("example.invalid".into()), 443, deadline(),
+            &owner,
+            &ProxyTargetHost::Domain("example.invalid".into()),
+            443,
+            deadline(),
             move |_, _, _| {
-                owner_during_dns.lock().expect("owner").lost(sequence(2), handle(42));
-                Ok(vec![IpAddr::V4(Ipv4Addr::new(203,0,113,20))])
+                owner_during_dns
+                    .lock()
+                    .expect("owner")
+                    .lost(sequence(2), handle(42));
+                Ok(vec![IpAddr::V4(Ipv4Addr::new(203, 0, 113, 20))])
             },
-            |_, _, _| { connected.set(true); Ok(()) },
+            |_, _, _| {
+                connected.set(true);
+                Ok(())
+            },
         );
         assert_eq!(result, Err(ProxyOutboundConnectError::Unavailable));
         assert!(!connected.get());
@@ -296,10 +388,12 @@ mod tests {
     fn candidate_list_is_ipv4_only_deduplicated_and_bounded() {
         let mut addresses = vec![
             IpAddr::V6(Ipv6Addr::LOCALHOST),
-            IpAddr::V4(Ipv4Addr::new(203,0,113,1)),
-            IpAddr::V4(Ipv4Addr::new(203,0,113,1)),
+            IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1)),
+            IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1)),
         ];
-        for suffix in 2..=20 { addresses.push(IpAddr::V4(Ipv4Addr::new(203,0,113,suffix))); }
+        for suffix in 2..=20 {
+            addresses.push(IpAddr::V4(Ipv4Addr::new(203, 0, 113, suffix)));
+        }
         let candidates = bounded_ipv4_candidates(addresses).expect("candidates");
         assert_eq!(candidates.len(), MAX_IPV4_CANDIDATES);
         assert!(candidates.iter().all(IpAddr::is_ipv4));
