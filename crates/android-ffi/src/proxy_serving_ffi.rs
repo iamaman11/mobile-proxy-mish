@@ -1,14 +1,20 @@
-use crate::runtime_boundary::{AndroidRuntimeError, CellularController};
+use crate::runtime_boundary::CellularController;
 use crate::runtime_lifecycle_ffi::{ProxyServingFailure, map_proxy_failure_out};
 use mish_proxy::{ProxyCredentialMaterial, ProxyServingPlan};
 use mish_runtime::{
-    ProxyServingFailure as OwnerProxyServingFailure, ProxyServingRuntime, ProxyServingRuntimeError,
+    ProxyServingFailure as OwnerProxyServingFailure, ProxyServingRuntime,
+    ProxyServingTerminalObserver,
 };
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::time::Duration;
 
 const MAX_OUTBOUND_OPERATION_TIMEOUT_MS: u64 = 15_000;
+
+#[uniffi::export(foreign)]
+pub trait NativeProxyRuntimeObserver: Send + Sync {
+    fn on_terminal_failure(&self, failure: ProxyServingFailure);
+}
 
 #[derive(uniffi::Object)]
 pub struct NativeProxyRuntime {
@@ -25,8 +31,23 @@ impl NativeProxyRuntime {
         self.inner.active_sessions().min(u32::MAX as usize) as u32
     }
 
-    pub fn stop(&self) -> Result<(), AndroidRuntimeError> {
-        self.inner.stop().map_err(map_proxy_stop_error)
+    pub fn terminal_failure(&self) -> Option<ProxyServingFailure> {
+        self.inner.terminal_failure().map(map_proxy_failure_out)
+    }
+
+    pub fn observe_terminal_failure(&self, observer: Arc<dyn NativeProxyRuntimeObserver>) {
+        let terminal_observer: ProxyServingTerminalObserver = Arc::new(move |failure| {
+            observer.on_terminal_failure(map_proxy_failure_out(failure));
+        });
+        self.inner.set_terminal_observer(terminal_observer);
+    }
+
+    /// Expected shutdown failures remain typed owner data; Kotlin does not classify Rust errors.
+    pub fn stop(&self) -> Option<ProxyServingFailure> {
+        self.inner
+            .stop()
+            .err()
+            .map(|error| map_proxy_failure_out(error.lifecycle_failure()))
     }
 }
 
@@ -120,18 +141,6 @@ pub fn proxy_listener_ports() -> Vec<u16> {
         mish_proxy::SOCKS5_PORT,
         mish_proxy::HTTP_CONNECT_PORT,
     ]
-}
-
-fn map_proxy_stop_error(error: ProxyServingRuntimeError) -> AndroidRuntimeError {
-    match error {
-        ProxyServingRuntimeError::ShutdownTimedOut => AndroidRuntimeError::ShutdownTimedOut,
-        ProxyServingRuntimeError::StateUnavailable => AndroidRuntimeError::RuntimeStateUnavailable,
-        ProxyServingRuntimeError::NonLoopbackListen
-        | ProxyServingRuntimeError::ListenerUnavailable(_)
-        | ProxyServingRuntimeError::ThreadUnavailable => {
-            AndroidRuntimeError::RuntimeStateUnavailable
-        }
-    }
 }
 
 #[cfg(test)]

@@ -39,6 +39,33 @@ class L8OneWayArchitectureTest {
     }
 
     @Test
+    fun androidProxyAdapterCannotOwnNativeHealthSupervision() {
+        val supervisor = repositoryFile(
+            "android/app/src/main/java/com/mobileproxymish/app/ProxyRuntimeSupervisor.kt",
+        ).readText()
+        val forbidden = listOf(
+            "startMonitor(",
+            "HEALTH_POLL_MS",
+            "monitorScope",
+            "monitorJob",
+            "kotlinx.coroutines.delay",
+            "kotlinx.coroutines.launch",
+            "SERVING_UNHEALTHY\n                            } else",
+        )
+        val offenders = forbidden.filter(supervisor::contains)
+
+        assertTrue(
+            "Android ProxyRuntimeSupervisor must not own native health supervision: $offenders",
+            offenders.isEmpty(),
+        )
+        assertTrue(
+            "Android must subscribe to the typed Rust terminal observation path",
+            supervisor.contains("NativeProxyRuntimeObserver") &&
+                supervisor.contains("observeTerminalFailure("),
+        )
+    }
+
+    @Test
     fun rustRuntimeAndFfiExposeOnlyCurrentNativeProxyFailures() {
         val roots = listOf(
             repositoryDirectory("crates/runtime/src"),
