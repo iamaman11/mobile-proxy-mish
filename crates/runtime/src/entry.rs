@@ -13,5 +13,8 @@ pub use cellular_connector::*;
 mod cellular_runtime;
 pub use cellular_runtime::*;
 
+mod proxy_recovery;
+pub use proxy_recovery::*;
+
 mod proxy_runtime;
 pub use proxy_runtime::*;
