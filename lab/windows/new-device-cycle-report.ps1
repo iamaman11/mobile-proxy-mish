@@ -39,7 +39,7 @@ if ($launchFailed -and $launchFailureCategory -notmatch '^[A-Z0-9_]+$') {
 $classification = switch ($Mode) {
     'install_only' { 'INSTALL_ONLY_PASS'; break }
     'probe_only' {
-        if ($RequestedProbe -notin @('runtime_identity', 'loopback_connect')) {
+        if ($RequestedProbe -cne 'loopback_connect') {
             'LAB_PROBE_NOT_EXPLICIT'
         }
         elseif ($null -eq $targeted) {
@@ -89,9 +89,9 @@ $cycleResult = switch ($Mode) {
 }
 
 # This field answers a different question from cycle_result. `cycle_result=PASS` can mean that a
-# targeted read-only probe was collected successfully. Only `full` installs/verifies the exact
-# candidate and then exercises the canonical PRODUCT baseline, so only that mode can accept/reject
-# the exact PRODUCT candidate. LAB/infrastructure failure leaves PRODUCT acceptance unevaluated.
+# targeted read-only current-function probe was collected successfully. Only `full`
+# installs/verifies the exact candidate and then exercises the canonical PRODUCT baseline, so only
+# that mode can accept/reject the exact PRODUCT candidate. LAB failure leaves acceptance unevaluated.
 $exactCandidateAcceptance = if ($Mode -cne 'full') {
     'NOT_EVALUATED'
 }
