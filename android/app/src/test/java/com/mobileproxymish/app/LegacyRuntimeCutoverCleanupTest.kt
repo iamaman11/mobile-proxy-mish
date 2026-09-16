@@ -149,6 +149,26 @@ class LegacyRuntimeCutoverCleanupTest {
     }
 
     @Test
+    fun legacyScanShortlistsFromOneProcessTableInsteadOfWalkingEveryProcStatus() {
+        val root = Files.createTempDirectory("mish-legacy-scan-shape").toFile()
+        val runtime = root.resolve("proxy-runtime")
+        val marker = root.resolve("proxy-native-migration-v1")
+        val process = FakeRootProcess(
+            RootProcessResult(exitCode = 0, stdout = ""),
+            RootProcessResult(exitCode = 0, stdout = ""),
+        )
+        val cleanup = LegacyRuntimeCutoverCleanup(runtime, marker, process)
+
+        assertTrue(cleanup.ensureLegacyRuntimeAbsent())
+        assertEquals(2, process.commands.size)
+        process.commands.forEach { command ->
+            assertTrue(command.contains("ps -A"))
+            assertTrue(command.contains("candidate_pids="))
+            assertFalse(command.contains("for proc in /proc/[0-9]*"))
+        }
+    }
+
+    @Test
     fun preL8RuntimeMechanismsAreConfinedToOneShotCutoverCleanup() {
         val mainSource = repositoryDirectory("android/app/src/main/java/com/mobileproxymish/app")
         val forbiddenLegacyMechanisms = listOf(
