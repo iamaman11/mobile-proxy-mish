@@ -245,7 +245,7 @@ def main() -> None:
     for required in (
         "DEVICE_CYCLE_CONTRACT=PASS",
         "Terminal current Proxy Serving failure was masked by downstream non-observation",
-        "PRODUCT_PROXY_LISTENER_UNAVAILABLE",
+        "PRODUCT_PROXY_MIXED_LISTENER_UNAVAILABLE",
         "Current Cellular admission failure was not attributed to Cellular Egress",
         "Missing Mesh admission epoch was not distinguished from external Mesh reachability",
         "Current readiness probe state was not preserved",
@@ -256,12 +256,13 @@ def main() -> None:
     ):
         require(test, required, "current L8 executable regression coverage drifted")
     for obsolete in (
+        "PRODUCT_PROXY_LISTENER_UNAVAILABLE",
         "STALE_PROCESS_IDENTITY_MISMATCH",
         "runtime_identity",
         "LEGACY_MIGRATION_BLOCKED",
         "LEGACY_CUTOVER_CLEANUP",
     ):
-        forbid(test, obsolete, "pre-L8 fixture must not return to canonical current PRODUCT diagnostics tests")
+        forbid(test, obsolete, "obsolete or generic fixture must not return to canonical current PRODUCT diagnostics tests")
 
     docs = "docs/architecture/DEVELOPMENT_PIPELINE.md"
     for required in (
