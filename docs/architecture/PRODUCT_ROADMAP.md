@@ -25,6 +25,7 @@ MISH is an industrial rooted-Android mobile proxy appliance that is simple to op
 - exact-network cellular DNS and public sockets only;
 - Cloudflare One Agent remains the only Android VPN owner;
 - one process-wide persistent Magisk `su` transport, with authority cached per live shell generation;
+- narrow typed root effects above that transport; no generic shell/control API and no root daemon/helper;
 - normal replacement install through `adb install -r`, stable signer/UID, no repeated Magisk prompt after the existing grant;
 - bounded fail-closed recovery without Wi-Fi/default/WARP fallback;
 - backend-owned product state with a thin Android platform/UI boundary;
@@ -44,7 +45,7 @@ The following foundation is already accepted and is not reopened without contrar
 
 1. Android 11 / API 30, `armeabi-v7a`, pinned Android/Rust/NDK delivery contract.
 2. Exact-head hosted candidate production and Windows LAB as artifact consumer by default.
-3. Persistent process-wide Magisk shell semantics; terminal grant/denial is not repeatedly polled within one app process.
+3. Persistent process-wide Magisk shell semantics; terminal grant/denial is not repeatedly polled within one app process. Magisk + one persistent `su` shell remains the minimal platform privilege boundary unless physical evidence proves a simpler supported mechanism; do not replace it with a root daemon/helper or run the whole application as root merely to remove `su`.
 4. Exact stale MISH-owned root-policy identity may self-heal only when the complete known PRODUCT contract is proven; foreign/malformed state stays fail-closed.
 5. Canonical external capacity is 64 accepted sessions with deterministic overload rejection.
 6. Rust Proxy Serving L1-L7: HTTP CONNECT, SOCKS5, mixed ingress, authentication, unresolved-target preservation, relay, bounded capacity and atomic Android cutover to in-process native listeners.
@@ -70,6 +71,7 @@ Required end state:
 - diagnostics v2 with native facts only;
 - recovery classification/backoff, Mesh serving eligibility and readiness structural eligibility owned in Rust;
 - Android split by actual effect/test responsibility: readiness probe, Magisk transport, root-policy mechanisms, credential persistence/Keystore/materialization, VPN observation;
+- root authority proof separated from the one process-wide persistent `su` transport; no repeated Magisk polling during normal recovery;
 - architecture constitution prevents regression to removed topology;
 - exact-head full hosted gate and exact candidate publication.
 
@@ -101,10 +103,13 @@ Prove on DEVICE-1:
 - 64 accepted full paths and deterministic overload rejection;
 - stop/start/restart and cellular loss/recovery are bounded and fail closed;
 - stable signer/UID and no repeated Magisk prompt on normal replacement install;
+- one process-wide root shell is reused through repeated root-policy reads/reconciliations within the app process instead of creating one `su` process per command/recovery event;
+- process restart establishes a fresh shell generation while the already-granted Magisk policy remains sufficient and does not require another interactive grant;
+- repeated recovery cycles do not reopen Magisk prompts or create unbounded root-shell/process growth;
 - baseline/peak/post-cleanup thread count, FD count and RSS/PSS at idle / 10 / 32 / 64 sessions;
 - startup, failure-to-fresh-READY, normal stop and recovery timings.
 
-Exit: exact native topology is physically proven and the current resource/recovery baseline is recorded without secret/raw-IP leakage.
+Exit: exact native topology is physically proven and the current resource/recovery baseline is recorded without secret/raw-IP leakage. The Magisk/su privilege boundary is considered physically accepted only after the replacement-install, restart and repeated-recovery evidence above passes.
 
 ---
 
@@ -121,7 +126,10 @@ Still-live questions from #134/S0:
 - one end-to-end startup/recovery/stop latency budget with per-stage observations;
 - long-effect lock scope only where direct tests prove exact identity remains safe;
 - readiness behavior for a silent upstream public-path failure that leaves structural facts unchanged;
-- bounded diagnostics for generations, recovery attempt/backoff, coalescing, root timing/count, DNS occupancy/rejects, capacity rejects and lifecycle durations.
+- bounded diagnostics for generations, recovery attempt/backoff, coalescing, root timing/count, DNS occupancy/rejects, capacity rejects and lifecycle durations;
+- after U2 proves the persistent Magisk boundary on DEVICE-1, remove the remaining shell-shaped internal API form such as `RootProcess.run(["su", "-c", command])` and expose narrow typed root effects instead, while retaining exactly one persistent `ProcessBuilder("su")` transport underneath;
+- the typed-root cleanup must preserve serialized execution, bounded output/deadlines, shell-generation authority invalidation, no automatic mutation replay after transport uncertainty, and fail-closed policy verification;
+- do not replace this cleanup with a generic privileged RPC service, root daemon/helper, second privilege state machine, or whole-app root execution.
 
 Superseded by the native cutover and **not** carried forward as work items:
 
@@ -226,6 +234,7 @@ Evaluate:
 - connect/DNS latency distribution;
 - battery and thermal behavior;
 - root reconcile round trips;
+- root-shell lifetime/process count and command serialization overhead;
 - long-lived relay cleanup and cancellation;
 - repeated recovery/rotation cycles.
 
@@ -241,6 +250,7 @@ Prove the appliance can remain operational across normal lifecycle events:
 - device reboot and expected startup path;
 - repeated `adb install -r` upgrades using the same signing identity;
 - no repeated Magisk authorization after the existing grant unless Magisk itself revokes it;
+- one persistent `su` transport remains bounded and replaceable on shell death without becoming a second privileged daemon/lifecycle;
 - bounded recovery from cellular/provider loss;
 - long soak with no unbounded FD/thread/task/memory growth;
 - legacy migration compatibility removed once the supported upgrade window no longer requires it;
