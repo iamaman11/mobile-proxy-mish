@@ -1,6 +1,6 @@
 # Development CI and DEVICE-1 candidate contract
 
-This document is the stable versioned authority for development CI, hosted Android candidate production, and DEVICE-1 development diagnostics. Live stage/checkpoint state belongs to Issue #135. The PRODUCT/architecture hardening plan belongs to Issue #134.
+This document is the stable versioned authority for development CI, hosted Android candidate production, and DEVICE-1 development diagnostics. Live stage/checkpoint state belongs to Issue #135. The canonical PRODUCT/architecture plan is `docs/architecture/PRODUCT_ROADMAP.md`; Issue #134 is historical research/rationale only.
 
 It does not replace the immutable RC/release contract in `docs/architecture/RELEASE.md` for formal release promotion.
 
@@ -92,6 +92,8 @@ PRODUCT_SHA = exact integration PR head whose APK is installed
 CONTROL_SHA = exact protected-main commit whose installer/verifier/diagnostic scripts execute
 ```
 
+A PRODUCT PR may still be open, or it may already be merged into the current integration lineage. A merged candidate is eligible only when its exact `PRODUCT_SHA` is still an ancestor of current `fix/root-policy-reconciliation`; a closed-unmerged PR is never eligible.
+
 For `full` and `install_only`, the candidate producer policy is also immutable evidence. Before DEVICE-1 may install anything, the Git blob for `.github/workflows/integration-android-preflight.yml` at `PRODUCT_SHA` must be byte-identical to the producer workflow blob at `CONTROL_SHA`. If those producer blobs differ, the cycle fails closed before artifact download/install. Build-policy changes therefore land through protected `main` review and CI first, then the PRODUCT branch consumes the accepted producer policy.
 
 The normal physical path inside the same Device Cycle run is:
@@ -99,6 +101,7 @@ The normal physical path inside the same Device Cycle run is:
 ```text
 successful exact-head hosted artifact already exists
  -> explicit cycle request after analysis
+ -> verify open/merged integration lineage identity
  -> verify accepted producer workflow blob identity
  -> verify candidate.json + hosted run identity + artifact digest
  -> create/reuse persistent LAB-only debug signing identity
@@ -110,7 +113,7 @@ successful exact-head hosted artifact already exists
  -> installed signing certificate == expected LAB certificate
  -> INSTALL_VERIFY=PASS
  -> launch
- -> canonical diagnostic
+ -> generation-fenced diagnostics v2
  -> STOP_FOR_ANALYSIS
 ```
 
@@ -140,21 +143,24 @@ A completed build is a hard barrier, not a trigger. No successful build, merge t
 /mish-cycle probe_only <PRODUCT_SHA> loopback_connect
 ```
 
-Operationally this command is the separate engineering action that authorizes DEVICE-1. It is accepted only on an open canonical PR and only from the repository owner identity. `full` and `install_only` additionally require a ready integration PR plus an already completed successful exact-head `Integration Android Preflight` artifact. The cycle never starts itself when that build finishes.
+Operationally this command is the separate engineering action that authorizes DEVICE-1 and is accepted only from the repository owner identity. It may target an open canonical integration PR or an already-merged accepted integration PR whose exact source remains in the current integration lineage. `full` and `install_only` additionally require an already completed successful exact-head `Integration Android Preflight` artifact; an open PR must also be ready/non-draft. The cycle never starts itself when that build or merge finishes.
 
 One explicit request produces one GitHub Actions Device Cycle run. There is no bot-dispatched `Device Candidate Physical` child workflow in the normal path. Within that one run the mechanical stages remain sequential:
 
 ```text
 RESOLVE_EXPLICIT_REQUEST
+ -> VERIFY_INTEGRATION_LINEAGE
  -> VERIFY_ACCEPTED_PRODUCER_POLICY
  -> VERIFY_COMPLETED_EXACT_BUILD
  -> INSTALL
  -> INSTALL_VERIFY
  -> LAUNCH
- -> CANONICAL_DIAGNOSTIC
+ -> CANONICAL_DIAGNOSTIC_V2
  -> EVIDENCE
  -> STOP_FOR_ANALYSIS
 ```
+
+The canonical L8 diagnostic is `mish.diagnostics/v2` via `snapshot_v2`. It is read-only and generation-fenced. It observes current runtime, Cellular admission, root authority/root-policy authorization, native Proxy Serving, credential, Mesh and readiness facts. It must not resurrect pre-L8 sing-box/private-bridge ownership assumptions or execute a root mutation.
 
 There is **No automatic targeted probe** in `full` or `diagnose_only`. If the canonical snapshot is insufficient, analysis happens first; only then may a separate explicit `probe_only` request run exactly one read-only probe such as `runtime_identity` or `loopback_connect`.
 
@@ -199,6 +205,7 @@ The visible control points are intentionally sequential and independently attrib
 ```text
 BUILD_PASS          # prerequisite only; does not start the cycle
 EXPLICIT_CYCLE_REQUEST
+INTEGRATION_LINEAGE_VERIFIED
 PRODUCER_POLICY_MATCH
 ARTIFACT_RESOLVED
 INSTALL_PASS
@@ -213,7 +220,7 @@ No workflow stage after `DIAGNOSTIC_CAPTURED` mutates PRODUCT state or decides w
 
 ## Evidence boundary
 
-An exact-head PR debug candidate may be used for development physical diagnostics when Issue #135 explicitly requires a physical fact for the next engineering decision.
+An exact-head PR debug candidate may be used for development physical diagnostics when Issue #135 explicitly requires a physical fact for the next engineering decision. This remains true after that exact PR is merged into the accepted integration lineage; merging does not invalidate already-proven exact candidate bytes.
 
 It is not PRODUCT release identity and cannot be promoted to a stable release.
 
@@ -252,7 +259,10 @@ explicit post-analysis targeted probes
 live execution pointer
   -> Issue #135
 
-master hardening/product plan
+canonical ordered product plan
+  -> docs/architecture/PRODUCT_ROADMAP.md
+
+historical research/rationale
   -> Issue #134
 ```
 

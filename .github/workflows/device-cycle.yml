@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/device-cycle.yml'
+      - '.github/workflows/integration-android-preflight.yml'
       - 'lab/windows/install-device-candidate.ps1'
       - 'lab/windows/verify-installed-candidate.ps1'
       - 'lab/windows/test-device-candidate.ps1'
@@ -16,7 +17,6 @@ on:
       - 'lab/windows/test-device-cycle.ps1'
       - 'tools/check_device_cycle_contract.py'
       - 'tools/check_delivery_contract.py'
-      - 'tools/check_architecture.py'
       - 'docs/architecture/DEVELOPMENT_PIPELINE.md'
   issue_comment:
     types: [created]
@@ -54,6 +54,7 @@ jobs:
           .\lab\windows\test-device-candidate.ps1
           .\lab\windows\test-device-cycle.ps1
           python .\tools\check_device_cycle_contract.py
+          python .\tools\check_delivery_contract.py
 
   resolve:
     name: Resolve explicit cycle request and completed build
@@ -124,27 +125,49 @@ jobs:
           branch = str((pr.get('head') or {}).get('ref') or '')
           head_repo = str((((pr.get('head') or {}).get('repo') or {}).get('full_name')) or '')
           base = str((pr.get('base') or {}).get('ref') or '')
-          if pr.get('state') != 'open':
-              raise SystemExit('device cycle requires an open PR')
+          state = str(pr.get('state') or '')
+          merged = bool(pr.get('merged'))
+          if state not in {'open', 'closed'} or (state == 'closed' and not merged):
+              raise SystemExit('device cycle requires an open PR or a merged accepted integration PR')
           if str(pr.get('number')) != requested_pr:
               raise SystemExit('device cycle PR identity mismatch')
           if head_repo != repository:
               raise SystemExit('device cycle requires the canonical repository head')
           if not re.fullmatch(r'[0-9a-f]{40}', head) or head != expected:
-              raise SystemExit('device cycle current PR head does not match the explicitly requested SHA')
+              raise SystemExit('device cycle PR head does not match the explicitly requested SHA')
           if not branch:
               raise SystemExit('device cycle PR head branch is missing')
           if mode in {'full', 'install_only'}:
-              if pr.get('draft') is not False:
-                  raise SystemExit('installing a device candidate requires a ready PR')
               if base != 'fix/root-policy-reconciliation':
                   raise SystemExit('installing a device candidate requires the integration base')
+              if state == 'open' and pr.get('draft') is not False:
+                  raise SystemExit('installing a device candidate requires a ready PR')
+              if state == 'closed':
+                  merge_sha = str(pr.get('merge_commit_sha') or '')
+                  if not merged or not pr.get('merged_at') or not re.fullmatch(r'[0-9a-f]{40}', merge_sha):
+                      raise SystemExit('merged candidate PR lacks immutable merge identity')
           print(head)
           print(branch)
+          print('merged' if merged else 'open')
           PY
           )
           SOURCE_SHA="${prmeta[0]}"
           HEAD_BRANCH="${prmeta[1]}"
+          PR_LIFECYCLE="${prmeta[2]}"
+
+          if [[ "$PR_LIFECYCLE" == 'merged' && ( "$MODE" == 'full' || "$MODE" == 'install_only' ) ]]; then
+            gh api "repos/$GITHUB_REPOSITORY/compare/$SOURCE_SHA...fix/root-policy-reconciliation" > "$root/integration-compare.json"
+            python3 - "$root/integration-compare.json" "$SOURCE_SHA" <<'PY'
+          import json, sys
+          path, source = sys.argv[1:]
+          data = json.load(open(path, encoding='utf-8'))
+          status = str(data.get('status') or '')
+          merge_base = str((data.get('merge_base_commit') or {}).get('sha') or '')
+          if status not in {'ahead', 'identical'} or merge_base != source:
+              raise SystemExit('merged candidate source is not contained in current integration lineage')
+          PY
+          fi
+
           ARTIFACT_ID=''
           ARTIFACT_NAME=''
           ARTIFACT_DIGEST=''
@@ -153,8 +176,8 @@ jobs:
 
           if [[ "$MODE" == 'full' || "$MODE" == 'install_only' ]]; then
             PRODUCER_PATH='.github/workflows/integration-android-preflight.yml'
-            PRODUCT_PRODUCER_SHA="$(gh api "repos/$GITHUB_REPOSITORY/contents/$PRODUCER_PATH?ref=$SOURCE_SHA" --jq '.sha // empty' 2>/dev/null || true)"
-            CONTROL_PRODUCER_SHA="$(gh api "repos/$GITHUB_REPOSITORY/contents/$PRODUCER_PATH?ref=$GITHUB_SHA" --jq '.sha // empty' 2>/dev/null || true)"
+            PRODUCT_PRODUCER_SHA="$(gh api "repos/$GITHUB_REPOSITORY/contents/$PRODUCER_PATH?ref=$SOURCE_SHA" --jq '.sha // empty')"
+            CONTROL_PRODUCER_SHA="$(gh api "repos/$GITHUB_REPOSITORY/contents/$PRODUCER_PATH?ref=$GITHUB_SHA" --jq '.sha // empty')"
             if ! [[ "$PRODUCT_PRODUCER_SHA" =~ ^[0-9a-f]{40}$ && "$CONTROL_PRODUCER_SHA" =~ ^[0-9a-f]{40}$ ]]; then
               echo 'candidate producer workflow identity could not be resolved at PRODUCT_SHA and CONTROL_SHA' >&2
               exit 1
@@ -425,7 +448,7 @@ jobs:
           .\lab\windows\collect-device-diagnostic.ps1 `
             -AdbPath $env:ADB_EXE `
             -PackageName $env:PACKAGE_NAME `
-            -EvidencePath "$env:RUNNER_TEMP\mish-device-diagnostic-v1.json"
+            -EvidencePath "$env:RUNNER_TEMP\mish-device-diagnostic-v2.json"
 
       - name: Explicit probe only - runtime identity
         if: ${{ needs.resolve.outputs.mode == 'probe_only' && needs.resolve.outputs.probe == 'runtime_identity' }}
@@ -473,7 +496,7 @@ jobs:
             -HostedRunId $env:HOSTED_RUN_ID `
             -InstallRunId $env:INSTALL_RUN_ID `
             -LaunchReceiptPath "$env:RUNNER_TEMP\mish-device-start-v1.json" `
-            -DiagnosticEvidencePath "$env:RUNNER_TEMP\mish-device-diagnostic-v1.json" `
+            -DiagnosticEvidencePath "$env:RUNNER_TEMP\mish-device-diagnostic-v2.json" `
             -RequestedProbe $env:REQUESTED_PROBE `
             -TargetedEvidencePath $targeted `
             -OutputPath "$env:RUNNER_TEMP\mish-device-cycle-v1.json" | Out-Host
@@ -490,7 +513,7 @@ jobs:
           path: |
             ${{ runner.temp }}\mish-device-cycle-v1.json
             ${{ runner.temp }}\mish-device-start-v1.json
-            ${{ runner.temp }}\mish-device-diagnostic-v1.json
+            ${{ runner.temp }}\mish-device-diagnostic-v2.json
             ${{ runner.temp }}\mish-targeted-probe-v1.json
           if-no-files-found: warn
           retention-days: 30

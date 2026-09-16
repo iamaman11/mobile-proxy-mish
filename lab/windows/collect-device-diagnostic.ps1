@@ -4,15 +4,15 @@ param(
     [string] $PackageName = 'com.mobileproxymish.app.debug',
     [string] $MeshCidr = '100.96.0.0/12',
     [string] $ProbeUrl = 'https://example.com/',
-    [string] $EvidencePath = (Join-Path $env:TEMP 'mish-device-diagnostic-v1.json')
+    [string] $EvidencePath = (Join-Path $env:TEMP 'mish-device-diagnostic-v2.json')
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$script:AndroidSchema = 'mish.diagnostics/v1'
-$script:EvidenceSchema = 'mish.lab.diagnostic/v1'
-$script:SnapshotMethod = 'snapshot_v1'
+$script:AndroidSchema = 'mish.diagnostics/v2'
+$script:EvidenceSchema = 'mish.lab.diagnostic/v2'
+$script:SnapshotMethod = 'snapshot_v2'
 $script:TcpTimeoutMs = 3000
 $script:HttpTimeoutSeconds = 15
 
@@ -157,7 +157,7 @@ $contentOutput = Invoke-MishAdbText -Arguments @(
 )
 $payloadMatch = [regex]::Match($contentOutput, 'payload_b64=(?<payload>[A-Za-z0-9+/=]+)')
 if (-not $payloadMatch.Success) {
-    Stop-MishDiagnostic 'SNAPSHOT_INVALID' 'Android diagnostics bridge returned no V1 payload.'
+    Stop-MishDiagnostic 'SNAPSHOT_INVALID' 'Android diagnostics bridge returned no V2 payload.'
 }
 $payloadBytes = $null
 try {
@@ -166,7 +166,7 @@ try {
     $android = $androidJson | ConvertFrom-Json
 }
 catch {
-    Stop-MishDiagnostic 'SNAPSHOT_INVALID' 'Android diagnostics V1 payload is malformed.'
+    Stop-MishDiagnostic 'SNAPSHOT_INVALID' 'Android diagnostics V2 payload is malformed.'
 }
 finally {
     if ($null -ne $payloadBytes) { [Array]::Clear($payloadBytes, 0, $payloadBytes.Length) }
@@ -203,30 +203,18 @@ if ($null -ne $meshAddress) {
     $tcp3128 = Test-MishTcp -HostName $meshAddress -Port 3128
 }
 
-# Diagnostics observes PRODUCT state first. A Windows credential lease is a later LAB probe
-# prerequisite, never evidence that the PRODUCT credential itself is absent. Do not even request
-# a lease until the PRODUCT proxy says it is RUNNING and its credential owner says it is active.
 $lease = $null
 $credentialLeaseStatus = 'NOT_ATTEMPTED'
 $credentialStorePath = $null
 if ([string]$android.proxy.state -ceq 'RUNNING' -and [bool]$android.credential.active) {
     Import-Module (Join-Path $PSScriptRoot 'CredentialProvisioning.psm1') -Force
-    $credentialTempRoot = if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
-        $env:RUNNER_TEMP
-    } else {
-        $env:TEMP
-    }
+    $credentialTempRoot = if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) { $env:RUNNER_TEMP } else { $env:TEMP }
     if ([string]::IsNullOrWhiteSpace($credentialTempRoot)) {
         $credentialLeaseStatus = 'PROVISIONING_FAILED'
     } else {
-        $credentialStorePath = Join-Path `
-            ([IO.Path]::GetFullPath($credentialTempRoot)) `
-            ('mish-diagnostic-credential-' + [Guid]::NewGuid().ToString('N') + '.dpapi')
+        $credentialStorePath = Join-Path ([IO.Path]::GetFullPath($credentialTempRoot)) ('mish-diagnostic-credential-' + [Guid]::NewGuid().ToString('N') + '.dpapi')
         try {
-            [void](Invoke-MishExternalProxyCredentialProvisioning `
-                -AdbPath $AdbPath `
-                -PackageName $PackageName `
-                -StorePath $credentialStorePath)
+            [void](Invoke-MishExternalProxyCredentialProvisioning -AdbPath $AdbPath -PackageName $PackageName -StorePath $credentialStorePath)
         }
         catch {
             $credentialLeaseStatus = 'PROVISIONING_FAILED'
@@ -255,16 +243,10 @@ try {
         $forwardText = ($forwardOutput -join "`n").Trim()
         if ($forwardExit -eq 0 -and $forwardText -match '^\d+$') {
             $adbForwardPort = [int]$forwardText
-            $loopbackProbe = Invoke-MishHttpProxyProbe `
-                -ProxyHost '127.0.0.1' `
-                -ProxyPort $adbForwardPort `
-                -Lease $lease
+            $loopbackProbe = Invoke-MishHttpProxyProbe -ProxyHost '127.0.0.1' -ProxyPort $adbForwardPort -Lease $lease
         }
         if ($null -ne $meshAddress) {
-            $meshProbe = Invoke-MishHttpProxyProbe `
-                -ProxyHost $meshAddress `
-                -ProxyPort 3128 `
-                -Lease $lease
+            $meshProbe = Invoke-MishHttpProxyProbe -ProxyHost $meshAddress -ProxyPort 3128 -Lease $lease
         }
     }
 }
@@ -284,6 +266,11 @@ $pidStable = $pidStable -and ($pidFinal -ceq $pidBefore)
 $classification = Get-MishDeviceDiagnosticClassification `
     -PidStable $pidStable `
     -AndroidConsistent ([bool]$android.consistent) `
+    -CellularState ([string]$android.cellular.state) `
+    -CellularReason ([string]$android.cellular.reason) `
+    -CellularAdmitted ([bool]$android.cellular.admitted) `
+    -RootAuthorityObservation ([string]$android.root.authority_observation) `
+    -RootPolicyAuthorized ([bool]$android.root.policy_authorized) `
     -ProxyState ([string]$android.proxy.state) `
     -ProxyFailure ([string]$android.proxy.failure) `
     -CredentialActive ([bool]$android.credential.active) `
@@ -332,9 +319,13 @@ if ($parent) { [IO.Directory]::CreateDirectory($parent) | Out-Null }
     [Text.UTF8Encoding]::new($false)
 )
 
-Write-Host "MISH_DIAGNOSTIC_COLLECTION=PASS"
+Write-Host 'MISH_DIAGNOSTIC_COLLECTION=PASS'
 Write-Host "MISH_DIAGNOSTIC_CLASSIFICATION=$classification"
 Write-Host "MISH_DIAGNOSTIC_PID_STABLE=$pidStable"
+Write-Host "MISH_DIAGNOSTIC_CELLULAR=$([string]$android.cellular.state)/$([string]$android.cellular.reason)"
+Write-Host "MISH_DIAGNOSTIC_ROOT_AUTHORITY=$([string]$android.root.authority_observation)"
+Write-Host "MISH_DIAGNOSTIC_ROOT_POLICY_AUTHORIZED=$([bool]$android.root.policy_authorized)"
+Write-Host "MISH_DIAGNOSTIC_PROXY=$([string]$android.proxy.state)"
 Write-Host "MISH_DIAGNOSTIC_ANDROID_READINESS=$([string]$android.readiness.state)"
 Write-Host "MISH_DIAGNOSTIC_MESH_INGRESS=$([bool]$android.mesh.ingress_running)"
 Write-Host "MISH_DIAGNOSTIC_CREDENTIAL_LEASE=$credentialLeaseStatus"

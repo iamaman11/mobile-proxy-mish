@@ -12,7 +12,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $schema = 'mish.device-start/v1'
-$snapshotMethod = 'snapshot_v1'
+$snapshotMethod = 'snapshot_v2'
 
 function Write-MishDeviceStartFailureReceipt {
     param([Parameter(Mandatory)][string] $Category)

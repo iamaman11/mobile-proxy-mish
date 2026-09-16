@@ -5,6 +5,11 @@ function Get-MishDeviceDiagnosticClassification {
     param(
         [Parameter(Mandatory)][bool] $PidStable,
         [Parameter(Mandatory)][bool] $AndroidConsistent,
+        [string] $CellularState = 'ADMITTED',
+        [string] $CellularReason = 'NONE',
+        [bool] $CellularAdmitted = $true,
+        [string] $RootAuthorityObservation = 'READY_AT_POLICY_AUTHORIZATION',
+        [bool] $RootPolicyAuthorized = $true,
         [Parameter(Mandatory)][string] $ProxyState,
         [AllowNull()][string] $ProxyFailure,
         [Parameter(Mandatory)][bool] $CredentialActive,
@@ -24,6 +29,18 @@ function Get-MishDeviceDiagnosticClassification {
 
     if (-not $PidStable) { return 'INVALID_PROCESS_CHANGED_DURING_CAPTURE' }
     if (-not $AndroidConsistent) { return 'INVALID_ANDROID_SNAPSHOT_CHANGED_DURING_CAPTURE' }
+
+    if ($RootAuthorityObservation -ceq 'UNAVAILABLE') {
+        return 'PRODUCT_ROOT_AUTHORITY_UNAVAILABLE'
+    }
+    if (-not $CellularAdmitted) {
+        $state = if ([string]::IsNullOrWhiteSpace($CellularState)) { 'UNKNOWN' } else { $CellularState }
+        $reason = if ([string]::IsNullOrWhiteSpace($CellularReason)) { 'UNKNOWN' } else { $CellularReason }
+        return "PRODUCT_CELLULAR_${state}_${reason}"
+    }
+    if (-not $RootPolicyAuthorized) {
+        return 'PRODUCT_ROOT_POLICY_NOT_AUTHORIZED'
+    }
 
     if ($ProxyState -ceq 'FAILED') {
         $reason = if ([string]::IsNullOrWhiteSpace($ProxyFailure)) { 'UNKNOWN' } else { $ProxyFailure }

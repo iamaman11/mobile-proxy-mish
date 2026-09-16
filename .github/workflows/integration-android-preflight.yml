@@ -8,11 +8,11 @@ on:
       - '.github/workflows/integration-android-preflight.yml'
       - 'android/**'
       - 'crates/**'
+      - 'docs/architecture/**'
+      - 'tools/check_architecture.py'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
-      - 'vendor/sing-box/**'
-      - 'tools/materialize_sing_box_android.py'
 
 permissions:
   contents: read
@@ -60,8 +60,7 @@ jobs:
             ~/.cargo/git/db
             ~/.cargo/bin/cargo-ndk
             target
-            android/app/build/vendor-cache/sing-box
-          key: integration-android-${{ runner.os }}-${{ env.CACHE_MODE }}-rust-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/**/Cargo.toml', 'crates/**/*.rs', 'vendor/sing-box/release.toml') }}
+          key: integration-android-${{ runner.os }}-${{ env.CACHE_MODE }}-rust-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/**/Cargo.toml', 'crates/**/*.rs') }}
           restore-keys: |
             integration-android-${{ runner.os }}-full-rust-${{ env.RUST_TOOLCHAIN }}-
             integration-android-${{ runner.os }}-static-rust-${{ env.RUST_TOOLCHAIN }}-
@@ -72,6 +71,12 @@ jobs:
           set -euo pipefail
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt
           rustup override set "$RUST_TOOLCHAIN"
+
+      - name: Architecture constitution
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/check_architecture.py
 
       - name: Fast Kotlin compile and lint
         run: >-
@@ -145,7 +150,10 @@ jobs:
           test -f "$GENERATED"
           unzip -l "$APK" | grep -q "lib/$MISH_TARGET_ABI/libmish_android_ffi.so"
           unzip -l "$APK" | grep -q "lib/$MISH_TARGET_ABI/libjnidispatch.so"
-          unzip -l "$APK" | grep -q "lib/$MISH_TARGET_ABI/libsingbox.so"
+          if unzip -l "$APK" | grep -Fq 'libsingbox.so'; then
+            echo 'obsolete sing-box binary leaked into native PRODUCT APK' >&2
+            exit 1
+          fi
 
           SYMBOLS="$RUNNER_TEMP/mish-android-ffi.symbols"
           readelf -Ws "$NATIVE" > "$SYMBOLS"
@@ -159,13 +167,20 @@ jobs:
             CellularController \
             MeshTransportController \
             RuntimeLifecycleController \
-            RuntimeProcessLifecycleController \
+            ProxyServingLifecycleController \
+            proxyServingFailureRecoverable \
             proxyListenerPorts; do
             grep -Fq "$symbol" "$GENERATED"
           done
-          for forbidden in CellularNetworkLease admittedNetworkLease bindSocket resolveHost; do
+          for forbidden in \
+            CellularNetworkLease \
+            admittedNetworkLease \
+            bindSocket \
+            resolveHost \
+            RuntimeProcessLifecycleController \
+            PrivateBridge; do
             if grep -Fq "$forbidden" "$GENERATED"; then
-              echo "network-scoped Android mechanism leaked into UniFFI surface: $forbidden" >&2
+              echo "obsolete or uncontrolled API leaked into UniFFI surface: $forbidden" >&2
               exit 1
             fi
           done

@@ -38,6 +38,8 @@ def main() -> None:
         "startsWith(github.event.comment.body, '/mish-cycle ')",
         "expected /mish-cycle <mode> <40-hex-sha> [probe]",
         "device-cycle requires an explicit exact 40-hex PRODUCT SHA",
+        "open PR or a merged accepted integration PR",
+        "merged candidate source is not contained in current integration lineage",
         "build first, then explicitly request the cycle",
         "candidate build is not a completed successful PR preflight",
         "Integration Android Preflight",
@@ -57,6 +59,7 @@ def main() -> None:
         "Launch -> canonical diagnostic -> STOP",
         "Explicitly restart app and wait for bounded stable state",
         "Collect one canonical diagnostic snapshot",
+        "mish-device-diagnostic-v2.json",
         "Explicit probe only - runtime identity",
         "Explicit probe only - loopback CONNECT",
         "Automatic cycle start: **NO**",
@@ -142,24 +145,42 @@ def main() -> None:
         "com.mobileproxymish.app.debug/com.mobileproxymish.app.MainActivity",
         "am', 'force-stop'",
         "am', 'start', '-W'",
-        "snapshot_v1",
+        "snapshot_v2",
         "processIdResult",
         "Write-MishDeviceStartFailureReceipt",
         "PRODUCT_TERMINAL_FAILURE",
     ):
         require(start, required, "deterministic launch contract drifted")
+    forbid(start, "snapshot_v1", "obsolete pre-L8 diagnostic method must not return")
     forbid_regex(start, r"\$pid(?![A-Za-z0-9_])", "launcher must not shadow PowerShell automatic PID")
     forbid(start, "su'", "launch stage must stay non-root")
 
     diagnostic = "lab/windows/collect-device-diagnostic.ps1"
     for required in (
+        "mish.diagnostics/v2",
+        "mish.lab.diagnostic/v2",
+        "snapshot_v2",
         "DeviceDiagnosticClassification.psm1",
+        "android.root.authority_observation",
+        "android.root.policy_authorized",
+        "android.cellular.admitted",
         "android.proxy.state -ceq 'RUNNING' -and [bool]$android.credential.active",
         "credential_lease_status = $credentialLeaseStatus",
         "Get-MishDeviceDiagnosticClassification",
     ):
-        require(diagnostic, required, "diagnostic attribution must remain fact-first")
+        require(diagnostic, required, "native L8 diagnostic attribution must remain fact-first")
+    forbid(diagnostic, "snapshot_v1", "obsolete pre-L8 diagnostic method must not return")
+    forbid(diagnostic, "mish.diagnostics/v1", "obsolete pre-L8 diagnostic schema must not return")
     forbid(diagnostic, "CREDENTIAL_LEASE_UNAVAILABLE", "ambiguous LAB/Product credential classification must not return")
+
+    classification = "lab/windows/DeviceDiagnosticClassification.psm1"
+    for required in (
+        "PRODUCT_ROOT_AUTHORITY_UNAVAILABLE",
+        "PRODUCT_ROOT_POLICY_NOT_AUTHORIZED",
+        "PRODUCT_CELLULAR_",
+        "PRODUCT_PROXY_",
+    ):
+        require(classification, required, "L8 diagnostics must preserve owner-aligned failure attribution")
 
     report = "lab/windows/new-device-cycle-report.ps1"
     for required in (
