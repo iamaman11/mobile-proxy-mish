@@ -79,7 +79,7 @@ class ProxyRuntimeSupervisor internal constructor(
     private val mutableSnapshot = MutableStateFlow(projectLifecycle(lifecycle.snapshot()))
     private val closed = AtomicBoolean(false)
     private val lock = Any()
-    private val migration = LegacySingBoxUpgradeMigration(context.applicationContext)
+    private val legacyCutoverCleanup = LegacyRuntimeCutoverCleanup(context.applicationContext)
     private val monitorScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private var nativeRuntime: NativeProxyRuntime? = null
@@ -120,7 +120,9 @@ class ProxyRuntimeSupervisor internal constructor(
                 return
             }
 
-            if (!migration.runOnce()) {
+            // One-way pre-L8 cutover only. After the marker exists this is a local file read and
+            // cannot participate in native runtime lifecycle, serving, health, recovery or routing.
+            if (!legacyCutoverCleanup.ensureLegacyRuntimeAbsent()) {
                 failLifecycle(ProxyServingFailure.LEGACY_MIGRATION_BLOCKED)
                 return
             }
