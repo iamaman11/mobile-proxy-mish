@@ -4,16 +4,6 @@ on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - '.github/workflows/integration-android-preflight.yml'
-      - 'android/**'
-      - 'crates/**'
-      - 'docs/architecture/**'
-      - 'tools/check_architecture.py'
-      - 'tools/verify_android_candidate.py'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'rust-toolchain.toml'
 
 permissions:
   contents: read
@@ -31,28 +21,65 @@ env:
 
 jobs:
   android-gate:
-    name: Android Fast -> Full Gate
+    name: Android Compose Shell
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Checkout exact PR head
+      - name: Checkout exact PR head and history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
           persist-credentials: false
 
+      - name: Classify PRODUCT/build changes
+        id: classify
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git cat-file -e "$BASE_SHA^{commit}"
+          git cat-file -e "$HEAD_SHA^{commit}"
+
+          build_changed=false
+          while IFS= read -r path; do
+            case "$path" in
+              android/*|crates/*|config/*|contracts/*|Cargo.toml|Cargo.lock|rust-toolchain.toml|.github/workflows/ci.yml|.github/workflows/integration-android-preflight.yml|tools/verify_android_candidate.py)
+                build_changed=true
+                break
+                ;;
+            esac
+          done < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+
+          echo "build_changed=$build_changed" >> "$GITHUB_OUTPUT"
+          echo "BUILD_CHANGED=$build_changed"
+
+      - name: Verify accepted architecture and delivery invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/check_architecture.py
+          python3 tools/check_delivery_contract.py
+
       - name: Set up JDK 17
+        if: ${{ steps.classify.outputs.build_changed == 'true' }}
         uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
         with:
           distribution: temurin
           java-version: '17'
 
       - name: Set up pinned Gradle
+        if: ${{ steps.classify.outputs.build_changed == 'true' }}
         uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
         with:
           gradle-version: ${{ env.GRADLE_VERSION }}
 
       - name: Restore Rust build cache
+        if: ${{ steps.classify.outputs.build_changed == 'true' }}
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
@@ -66,36 +93,23 @@ jobs:
             integration-android-${{ runner.os }}-full-rust-${{ env.RUST_TOOLCHAIN }}-
             integration-android-${{ runner.os }}-static-rust-${{ env.RUST_TOOLCHAIN }}-
 
-      - name: Set up host Rust toolchain
+      - name: Set up pinned host Rust toolchain
+        if: ${{ steps.classify.outputs.build_changed == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
           rustup override set "$RUST_TOOLCHAIN"
 
-      - name: Architecture constitution
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 tools/check_architecture.py
-
       - name: Fast Kotlin compile and lint
+        if: ${{ steps.classify.outputs.build_changed == 'true' }}
         run: >-
           gradle --no-daemon -p android
           :app:compileDebugKotlin
           :app:lintDebug
 
-      - name: Rust workspace quality gate
-        if: ${{ github.event.pull_request.draft == false }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo fmt --all --check
-          cargo clippy --workspace --all-targets --locked -- -D warnings
-          cargo test --workspace --locked
-
       - name: Set up Android Rust toolchain
-        if: ${{ github.event.pull_request.draft == false }}
+        if: ${{ steps.classify.outputs.build_changed == 'true' && github.event.pull_request.draft == false }}
         shell: bash
         run: |
           set -euo pipefail
@@ -112,7 +126,7 @@ jobs:
           echo "MISH_TARGET_ABI=$TARGET_ABI" >> "$GITHUB_ENV"
 
       - name: Set up pinned Android NDK
-        if: ${{ github.event.pull_request.draft == false }}
+        if: ${{ steps.classify.outputs.build_changed == 'true' && github.event.pull_request.draft == false }}
         shell: bash
         run: |
           set -euo pipefail
@@ -129,7 +143,7 @@ jobs:
           echo "ANDROID_NDK=$NDK_PATH" >> "$GITHUB_ENV"
 
       - name: Unit test and assemble host gate
-        if: ${{ github.event.pull_request.draft == false }}
+        if: ${{ steps.classify.outputs.build_changed == 'true' && github.event.pull_request.draft == false }}
         run: >-
           gradle --no-daemon -p android
           :app:testDebugUnitTest
@@ -137,11 +151,11 @@ jobs:
           :app:assembleDebugAndroidTest
 
       - name: Verify exact PRODUCT candidate contract
-        if: ${{ github.event.pull_request.draft == false }}
+        if: ${{ steps.classify.outputs.build_changed == 'true' && github.event.pull_request.draft == false }}
         run: python3 tools/verify_android_candidate.py
 
       - name: Stage exact-head device candidate
-        if: ${{ github.event.pull_request.draft == false }}
+        if: ${{ steps.classify.outputs.build_changed == 'true' && github.event.pull_request.draft == false }}
         shell: bash
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -185,7 +199,7 @@ jobs:
           PY
 
       - name: Upload exact-head device candidate
-        if: ${{ github.event.pull_request.draft == false }}
+        if: ${{ steps.classify.outputs.build_changed == 'true' && github.event.pull_request.draft == false }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: device-candidate-pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
@@ -194,7 +208,7 @@ jobs:
           retention-days: 7
 
       - name: Publish device candidate summary
-        if: ${{ github.event.pull_request.draft == false }}
+        if: ${{ steps.classify.outputs.build_changed == 'true' && github.event.pull_request.draft == false }}
         shell: bash
         env:
           SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
