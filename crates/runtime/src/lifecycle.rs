@@ -244,12 +244,11 @@ pub enum ProxyServingState {
     Failed,
 }
 
-/// Native in-process Proxy Serving failures only. Old external-child/private-bridge vocabulary is
-/// intentionally absent after the L8 cutover.
+/// Native in-process Proxy Serving failures only. Pre-L8 external-process compatibility is not a
+/// PRODUCT lifecycle concept after the one-way native cutover.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProxyServingFailure {
     NativeRuntimeMissing,
-    LegacyMigrationBlocked,
     ExternalCredentialUnavailable,
     ListenerUnavailable,
     ServingUnhealthy,
