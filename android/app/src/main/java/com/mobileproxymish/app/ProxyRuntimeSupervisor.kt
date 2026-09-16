@@ -73,7 +73,7 @@ class ProxyRuntimeSupervisor internal constructor(
     context: Context,
     private val cellularRuntime: CellularRuntimeBridge,
     private val publicCredentials: ProxyCredentialProvider,
-    private val onRecoverableUnexpectedFailure: (ProxyServingFailure) -> Unit = {},
+    private val onUnexpectedFailure: (ProxyServingFailure) -> Unit = {},
 ) : Closeable {
     private val lifecycle = ProxyServingLifecycleController()
     private val mutableSnapshot = MutableStateFlow(projectLifecycle(lifecycle.snapshot()))
@@ -176,9 +176,7 @@ class ProxyRuntimeSupervisor internal constructor(
                             ProxyServingFailure.SHUTDOWN_FAILED
                         }
                         failLifecycle(published)
-                        if (published in RECOVERABLE_UNEXPECTED_FAILURES) {
-                            onRecoverableUnexpectedFailure(published)
-                        }
+                        onUnexpectedFailure(published)
                     }
                 }
                 return@launch
@@ -250,9 +248,5 @@ class ProxyRuntimeSupervisor internal constructor(
     private companion object {
         const val OUTBOUND_TIMEOUT_MS = 15_000L
         const val HEALTH_POLL_MS = 500L
-        val RECOVERABLE_UNEXPECTED_FAILURES = setOf(
-            ProxyServingFailure.LISTENER_UNAVAILABLE,
-            ProxyServingFailure.SERVING_UNHEALTHY,
-        )
     }
 }
