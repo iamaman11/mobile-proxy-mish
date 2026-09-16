@@ -1,81 +1,94 @@
 # Architecture decision index
 
-This file is a navigation index, not a second source of truth. Live execution state belongs to GitHub Issues; stable contracts live in versioned repository files.
+This file is navigation only. It is not a second live-status system.
 
 ## Current authorities
 
-- Issue #135 — current execution/checkpoint pointer: stage, active slice, integration head, current blocker and required physical fact.
-- Issue #134 — master PRODUCT/architecture hardening plan and research findings. It does not become a second current-stage pointer.
-- `AGENTS.md` — executor startup, bounded-slice, CI and physical-uncertainty policy.
-- `docs/architecture/EXECUTION.md` — stable implementation/integration execution policy.
-- `docs/architecture/DEVELOPMENT_PIPELINE.md` — canonical development CI, Android product-floor, hosted exact-head candidate and DEVICE-1 diagnostic contract.
-- `docs/architecture/RELEASE.md` — formal immutable RC/release identity and promotion contract.
-- `docs/architecture/ACCEPTANCE.md` — evidence-level and development-vs-formal acceptance boundaries.
-- `docs/lab/PLAN.md` — physical LAB ownership/trust/execution architecture.
-
-## PRODUCT ownership contracts
-
-- `docs/architecture/SYSTEM.md` — canonical product path and system topology.
+- `docs/architecture/SOURCE_OF_TRUTH.md` — stable reconstruction and conflict-resolution entrypoint.
+- Issue #135 — single live execution/checkpoint pointer: current roadmap stage, working lineage, exact implementation pointer and immutable evidence ids.
+- `docs/architecture/PRODUCT_ROADMAP.md` — canonical ordered PRODUCT/architecture plan.
+- `AGENTS.md` — executor startup and bounded-work policy.
+- `docs/architecture/SYSTEM.md` — canonical current system topology.
 - `docs/architecture/OWNERSHIP.md` — natural-owner map.
 - `docs/architecture/DEPENDENCIES.md` — dependency direction and minimal-layer invariant.
-- `docs/architecture/CONTRACTS.md` — durable interface/contract navigation.
-- `docs/architecture/CELLULAR_ROOT_POLICY.md` — root-policy mechanism and fail-closed constraints.
+- `docs/architecture/CONTRACTS.md` — serialization/interface boundary rules.
+- `docs/architecture/EXECUTION.md` — stable implementation/integration policy.
+- `docs/architecture/DEVELOPMENT_PIPELINE.md` — hosted exact-head candidate + explicit Device Cycle contract.
+- `docs/architecture/ACCEPTANCE.md` — evidence levels and development-vs-formal acceptance.
+- `docs/architecture/RELEASE.md` — immutable RC/release identity and promotion.
+- `docs/lab/PLAN.md` — physical LAB execution boundary.
 
-The project law remains:
+Issue #134 is historical research/rationale. It does not own current stage order after `PRODUCT_ROADMAP.md` superseded that role.
+
+## Current architecture law
 
 ```text
 one fact -> one natural owner -> one write path -> one observation path
 ```
 
-Prefer the existing natural owner plus one narrow adapter. Do not add a second VPN/TUN, second Cellular Egress/Runtime Lifecycle/Readiness owner, generic root shell/control API, mutable status database, or Wi-Fi/default/WARP public-egress fallback.
+Current Android PRODUCT is one in-process Rust proxy data plane. Android/Kotlin is the thin platform/effect/projection boundary. `mish-runtime` owns Tokio runtime execution/lifecycle; `mish-proxy` owns protocol/auth/target semantics; Cellular Egress owns cellular admission/currentness/exact-network DNS/socket authority.
 
-## Android development delivery decision
+Cloudflare One Agent is the only Android VPN/VpnService owner. Android PRODUCT has no sing-box runtime/compatibility/migration/process-management path. Historical phone residue is LAB hygiene only.
 
-The supported appliance target is Android 11 / API 30 with `armeabi-v7a` PRODUCT ABI.
-
-Stable authority split:
+## PRODUCT vs CONTROL vs DEVICE
 
 ```text
-android/app/build.gradle.kts
-  -> one androidMinSdk=30 authority for Android minSdk + cargo-ndk -P
+PRODUCT_SHA
+  exact current application implementation/build identity
 
-android/gradle.properties
-  -> mishTargetAbi=armeabi-v7a
+CONTROL_SHA
+  protected-main workflow/LAB/diagnostic identity
 
-lab/windows/toolchain.json
-  -> mirror min_sdk=30 and rust.target=armv7-linux-androideabi
-
-Integration Android Preflight
-  -> hosted exact-head debug/test build and verification
-
-Device Candidate Physical
-  -> protected-main exact-artifact consumer on DEVICE-1
+DEVICE_EVIDENCE
+  immutable physical observation tied to explicit provenance
 ```
 
-Android 23/26 compatibility is not a supported PRODUCT requirement unless a future explicit product decision reopens it.
+Protected `main` may lag current PRODUCT implementation during an active roadmap stage. Use Issue #135 to resolve the accepted working-lineage/current PRODUCT head before reasoning about application composition.
 
-## Development physical diagnostics vs formal release acceptance
+## Android development delivery
 
-A successful ready integration PR may produce a short-lived exact-head debug candidate. When Issue #135 requires a physical fact for the next engineering decision, the protected-main consumer may install those exact verified bytes on DEVICE-1 without a local rebuild.
+Supported floor:
 
-That diagnostic path is not release identity and cannot be promoted.
+```text
+Android 11 / API 30
+armeabi-v7a
+```
 
-Formal release acceptance remains the stronger immutable RC/release path:
+Stable mechanics:
+
+```text
+Integration Android Preflight
+  -> exact-head hosted build/test/candidate producer
+
+Device Cycle
+  -> explicit protected-main physical consumer/orchestrator
+  -> exact artifact/provenance verification
+  -> adb install -r when requested
+  -> installed-byte/signature verification
+  -> launch/current-L8 diagnostics/current-function probe
+  -> STOP_FOR_ANALYSIS
+```
+
+The executable workflow `.github/workflows/device-cycle.yml` owns the supported Device Cycle command/mode/probe vocabulary. There is no separate `device-candidate-physical.yml` normal path.
+
+No successful build/merge/artifact automatically starts the phone.
+
+## Development physical evidence vs release acceptance
+
+Exact-head debug candidates may establish stage-specific physical facts when #135 records the exact provenance. They are not release identity and cannot be promoted.
+
+Formal release acceptance remains:
 
 ```text
 PIN -> BUILD ONCE -> HASH -> SIGN -> ATTEST -> TEST EXACT BYTES -> PROMOTE EXACT BYTES
 ```
 
-No development artifact or weaker evidence may be relabeled as formal E3/release acceptance.
+under `RELEASE.md`.
 
-## Test/evidence navigation
+## Historical material
 
-- `docs/testing/E3_PHYSICAL_CELLULAR.md` — formal physical Cellular Egress acceptance protocol.
-- `docs/testing/E4_FULL_STACK.md` — later Windows/Cloudflare/Mesh/Android/external-client full-stack contract.
-- `.github/workflows/integration-android-preflight.yml` — hosted development Android fast-to-full gate and device-candidate producer.
-- `.github/workflows/device-candidate-physical.yml` — protected-main development DEVICE-1 candidate consumer.
-- `.github/workflows/e3-physical-cellular.yml` — formal self-hosted E3 workflow; it must match the currently accepted PRODUCT mechanism before it can claim E3 PASS.
+Older issues, branches, E3/E4 protocols and comments remain useful history/evidence, but they do not override the current authority map. Before reusing an older physical/test protocol, verify that it matches the current native topology and active roadmap stage.
 
 ## Non-authority rule
 
-README text, chat handoffs, generated artifacts, CI summaries and this index are not mutable product-state authorities. Always begin from fresh GitHub facts and the current authority named above.
+Chat handoffs, copied CI summaries, README prose, generated artifacts and this index never own mutable live stage status. Always reconstruct from fresh GitHub using `SOURCE_OF_TRUTH.md` and #135.

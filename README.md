@@ -1,8 +1,22 @@
 # mobile-proxy-mish
 
-Clean VM-free Android mobile-proxy successor built around Cloudflare Mesh and phone-owned cellular egress.
+Industrial rooted-Android mobile proxy appliance built around Cloudflare Mesh ingress and phone-owned cellular public egress.
 
-## Product path
+## Reconstruct the project from GitHub
+
+GitHub is the only durable source of truth. Do not reconstruct current state from chat handoffs or old issue comments.
+
+Start here:
+
+1. fresh protected `main`;
+2. [`docs/architecture/SOURCE_OF_TRUTH.md`](docs/architecture/SOURCE_OF_TRUTH.md);
+3. fresh Issue #135 for the current stage, working lineage, exact implementation pointer and immutable evidence ids;
+4. [`docs/architecture/PRODUCT_ROADMAP.md`](docs/architecture/PRODUCT_ROADMAP.md) for ordered product direction;
+5. the exact working/integration head named by #135 for current PRODUCT composition.
+
+Protected `main` is the stable control/process/canonical-documentation boundary and may intentionally lag the current PRODUCT implementation while a roadmap stage is active. Never infer current PRODUCT composition from `main` when #135 points to a newer accepted integration head.
+
+## Current canonical PRODUCT path
 
 ```text
 Kameleo / Camoufox
@@ -13,70 +27,88 @@ Cloudflare Mesh
         ↓
 Cloudflare One Agent on Android
         ↓
-product-admitted Mesh listener
+Rust Transport / Mesh ingress
         ↓
-sing-box (:1080 / :1081 / :3128)
+in-process Rust Proxy Serving (:1080 / :1081 / :3128)
         ↓
-product Cellular Egress owner
+Cellular Egress owner
         ↓
 validated direct-cellular authority
         ↓
-fail-closed product-owned cellular routing
+exact-network target DNS + root-policy-gated public socket
         ↓
 LTE/5G Internet
 ```
 
-Current commits are implementation-stage evidence only. They must not be interpreted as proof that Mesh, proxy serving, rotation, full runtime recovery, E3 physical cellular acceptance, E4 full-stack acceptance, or product readiness is complete.
+There is no Android sing-box PRODUCT dataplane after L8. Historical Android proxy processes/files on a development phone are LAB hygiene only and never become PRODUCT startup, migration or recovery state.
 
-## Architecture navigation
+Cloudflare One Agent is the only Android VPN/VpnService owner. Public proxy target egress has no Wi-Fi/default/WARP fallback.
 
-- [Executor policy](AGENTS.md)
-- [Development execution policy](docs/architecture/EXECUTION.md)
-- [Decision index](docs/architecture/DECISION_INDEX.md)
-- [System and process model](docs/architecture/SYSTEM.md)
-- [Capability ownership](docs/architecture/OWNERSHIP.md)
-- [Allowed dependency graph](docs/architecture/DEPENDENCIES.md)
-- [Contract boundaries](docs/architecture/CONTRACTS.md)
-- [Readiness and acceptance](docs/architecture/ACCEPTANCE.md)
-- [Build, release, and GitHub delivery](docs/architecture/RELEASE.md)
-- [Managed physical lab plan](docs/lab/PLAN.md)
-- [Physical lab security boundary](docs/lab/SECURITY.md)
-- [Managed lab evidence contract](docs/lab/EVIDENCE.md)
-- [E3 physical cellular protocol](docs/testing/E3_PHYSICAL_CELLULAR.md)
-- [E4 future full-stack protocol](docs/testing/E4_FULL_STACK.md)
-
-Durable architecture decision history is in GitHub Issue #2 and ADR #5. Physical-tree derivation is Issue #6. Current cross-component execution to `PROXY_ON_PHONE_WORKING=YES` is tracked in Issue #86; natural-owner semantics and acceptance remain in their respective issues such as #10, #64 and #75.
-
-## Core laws
+## Core architecture
 
 ```text
 one fact -> one natural owner -> one write path -> one observation path
 ```
 
 ```text
-Do not add a new architectural layer when an existing natural owner plus one narrow adapter can solve the concrete requirement correctly.
+Android / Kotlin
+  thin platform + effect + projection boundary
+        ↓
+thin UniFFI
+        ↓
+Rust mish-runtime
+  runtime generation/lifecycle
+  Tokio listener/session/task tree
+  terminal failure/recovery
+        ↓
+  mish-proxy        protocol/auth/target semantics
+  Cellular Egress   admission/currentness/DNS/socket authority
+  Transport         Mesh/private transport
+  Readiness         derived projection only
+  Credentials       credential lifecycle
 ```
 
-The repository is a modular monolith. Capability crates are compile-time ownership boundaries, not separate services or processes. The canonical dependency and minimal-layer rules live in `docs/architecture/DEPENDENCIES.md`.
+Prefer an existing natural owner plus one narrow adapter. Do not add a new framework, daemon, generic root control API, second VPN/TUN, second lifecycle/readiness/cellular owner, mutable status DB or fallback egress path without a demonstrated requirement.
 
-## Development entry path
+## Architecture navigation
 
-This is a navigation procedure, not a second live-status system:
+- [Source-of-truth / reconstruction map](docs/architecture/SOURCE_OF_TRUTH.md)
+- [Product roadmap](docs/architecture/PRODUCT_ROADMAP.md)
+- [Executor policy](AGENTS.md)
+- [System and process model](docs/architecture/SYSTEM.md)
+- [Capability ownership](docs/architecture/OWNERSHIP.md)
+- [Allowed dependency graph](docs/architecture/DEPENDENCIES.md)
+- [Contract boundaries](docs/architecture/CONTRACTS.md)
+- [Development execution policy](docs/architecture/EXECUTION.md)
+- [Development CI and DEVICE-1 contract](docs/architecture/DEVELOPMENT_PIPELINE.md)
+- [Readiness and acceptance](docs/architecture/ACCEPTANCE.md)
+- [Build/release contract](docs/architecture/RELEASE.md)
+- [Managed physical lab plan](docs/lab/PLAN.md)
+
+Issue #135 is the single live execution/checkpoint pointer. Issue #134 is historical research/rationale and does not define a competing current roadmap.
+
+## Development process
+
+Canonical development loop:
 
 ```text
-fresh accepted main + Issue #86 + relevant natural-owner Issue(s)
- -> identify the next evidence milestone
- -> keep E1/E2-completable adjacent work in one draft integration PR
- -> batch coherent edits before remote pushes
- -> use direct tests at the cheapest valid evidence level
- -> run deliberate exact-head CI checkpoints, not CI after every edit
- -> merge once when the milestone is complete as far as E1/E2 can prove it
-    or when the next required fact genuinely needs accepted main
- -> verify fresh accepted main
- -> request main-only LAB/provider/release evidence only when the tracker requires it
- -> record live stage status in #86 and natural-owner Issues
+fresh GitHub baseline
+ -> exact working-lineage PRODUCT slice
+ -> exact-head hosted gate
+ -> explicit physical Device Cycle only when the next required fact is physical
+ -> typed immutable evidence
+ -> STOP_FOR_ANALYSIS
+ -> smallest owner-aligned correction if required
 ```
 
-`main` is an accepted integration/evidence boundary, not a progress ledger. An internal implementation stage is not automatically a merge boundary.
+A successful build, merge, label or artifact publication never starts DEVICE-1 automatically. The Windows LAB consumes exact hosted artifacts in the normal path; it does not rebuild Android PRODUCT locally.
 
-Physical claims are never promoted from weaker evidence: E3 proves the real rooted-phone/carrier Cellular Egress boundary; E4 proves the Windows -> Mesh -> Android -> proxy -> cellular full stack. Development LAB accepts only an exact accepted green PRODUCT `main` SHA. New framework/process/control-plane/state layers require a concrete blocking ownership, privilege, lifecycle or failure-isolation fact and direct evidence as defined by `docs/architecture/DEPENDENCIES.md`.
+Every physical conclusion separates:
+
+```text
+PRODUCT_SHA
+CONTROL_SHA
+DEVICE_EVIDENCE / run id
+```
+
+Development debug candidates can establish exact stage-specific physical facts recorded by #135, but they are not formal RC/release identity. Formal promotion follows the immutable release contract in `RELEASE.md`.
