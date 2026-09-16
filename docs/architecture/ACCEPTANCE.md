@@ -11,6 +11,8 @@ UNKNOWN
 
 Lifecycle is orthogonal. Missing or stale required observations become `UNKNOWN`; `UNKNOWN` never counts as success.
 
+Protected `main` is the latest accepted PRODUCT + CONTROL source.
+
 ## Evidence levels
 
 ```text
@@ -28,7 +30,7 @@ Two physical paths exist and must not be conflated.
 
 ### Stage-specific development DEVICE-1 evidence
 
-An exact-head debug candidate produced by `Integration Android Preflight` may be consumed by the explicit protected-main `Device Cycle` workflow before the PRODUCT lineage is merged to `main` when Issue #135 says the current stage requires that physical fact.
+An exact-head debug candidate produced by `Integration Android Preflight` may be consumed by the explicit protected-main `Device Cycle` workflow while its ready PR to `main` is still open when Issue #135 says the current stage requires that physical fact.
 
 Such evidence is valid for the exact stage claim only when it records explicit provenance, including:
 
@@ -40,7 +42,9 @@ physical run/evidence id
 installed-byte/signature verification when installation is part of the claim
 ```
 
-A `full` Device Cycle may therefore establish exact-candidate stage acceptance facts. `diagnose_only` and `probe_only` evidence are observations for analysis and do not prove that a requested PRODUCT candidate was installed/accepted.
+A `full` Device Cycle may establish exact-candidate stage acceptance facts for that open PR. `diagnose_only` and `probe_only` evidence are observations for analysis and do not prove that a requested PRODUCT candidate was installed/accepted.
+
+Once accepted, the candidate change merges to `main`; the PRODUCT_SHA/CONTROL_SHA split remains evidence provenance, not a second accepted source.
 
 Development debug evidence never becomes RC/release identity and cannot authorize release promotion.
 
@@ -117,8 +121,9 @@ Lab evidence is immutable per-run evidence only. It is not a mutable runtime rea
 
 ## Authority
 
+- accepted PRODUCT + CONTROL source: protected `main`;
 - stage order and exit criteria: `PRODUCT_ROADMAP.md`;
-- live stage/exact implementation/evidence ids: Issue #135;
+- live stage/open PR/evidence ids: Issue #135;
 - development candidate/DEVICE-1 mechanics: `DEVELOPMENT_PIPELINE.md` + executable workflows;
 - formal release acceptance: `RELEASE.md`;
 - physical execution boundary: `docs/lab/PLAN.md`;
