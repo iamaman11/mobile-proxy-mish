@@ -8,7 +8,6 @@ try {
         'start-device-app.ps1',
         'collect-device-diagnostic.ps1',
         'DeviceDiagnosticClassification.psm1',
-        'collect-runtime-identity.ps1',
         'diagnose-loopback-connect.ps1',
         'new-device-cycle-report.ps1'
     )) {
@@ -61,12 +60,12 @@ try {
         MeshProbeReason = 'NONE'
     }
 
-    # Current L8 causal rule: a terminal Proxy Serving owner failure must not be masked by the
-    # downstream Cellular/root/readiness facts that were never reached during startup.
+    # Current L8 causal rule: a terminal native Proxy Serving owner failure must not be masked by
+    # downstream facts that were never reached during startup.
     $case = $base.Clone()
     $case.ProxyState = 'FAILED'
     $case.ProxyHealthy = $false
-    $case.ProxyFailure = 'LEGACY_MIGRATION_BLOCKED'
+    $case.ProxyFailure = 'LISTENER_UNAVAILABLE'
     $case.CellularState = 'BOUNDARY_UNAVAILABLE'
     $case.CellularAdmitted = $false
     $case.RootAuthorityObservation = 'NOT_OBSERVED'
@@ -81,8 +80,8 @@ try {
     $case.ReadinessBindingEligible = $false
     $case.ReadinessProbeState = 'BLOCKED'
     $observed = Get-MishDeviceDiagnosticClassification @case
-    if ($observed -cne 'PRODUCT_PROXY_LEGACY_CUTOVER_CLEANUP_BLOCKED') {
-        throw "Terminal L8 Proxy Serving failure was masked by a downstream non-observation: $observed"
+    if ($observed -cne 'PRODUCT_PROXY_LISTENER_UNAVAILABLE') {
+        throw "Terminal current Proxy Serving failure was masked by downstream non-observation: $observed"
     }
 
     $case = $base.Clone()
@@ -179,6 +178,14 @@ try {
         throw 'Healthy current L8 fact set did not classify PASS.'
     }
 
+    $classifierSource = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'DeviceDiagnosticClassification.psm1')
+    $testSource = Get-Content -Raw -LiteralPath $PSCommandPath
+    foreach ($forbidden in @('LEGACY_MIGRATION', 'LEGACY_CUTOVER', 'STALE_PROCESS_IDENTITY', 'runtime_identity')) {
+        if ($classifierSource.Contains($forbidden) -or $testSource.Contains($forbidden)) {
+            throw "Canonical current-L8 diagnostics contain pre-L8 semantic token: $forbidden"
+        }
+    }
+
     $reportScript = Join-Path $PSScriptRoot 'new-device-cycle-report.ps1'
     $controlSha = '1' * 40
 
@@ -187,7 +194,7 @@ try {
         ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $passDiagnostic
     $report = & $reportScript `
         -Mode full `
-        -PrNumber 195 `
+        -PrNumber 197 `
         -SourceSha ('a' * 40) `
         -ControlSha $controlSha `
         -DiagnosticEvidencePath $passDiagnostic `
@@ -205,12 +212,12 @@ try {
     $productDiagnostic = Join-Path $root 'product-diagnostic.json'
     [ordered]@{
         schema = 'mish.lab.diagnostic/v2'
-        classification = 'PRODUCT_PROXY_LEGACY_CUTOVER_CLEANUP_BLOCKED'
+        classification = 'PRODUCT_PROXY_LISTENER_UNAVAILABLE'
         collection_result = 'PASS'
     } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $productDiagnostic
     $productReport = & $reportScript `
         -Mode full `
-        -PrNumber 195 `
+        -PrNumber 197 `
         -SourceSha ('b' * 40) `
         -ControlSha $controlSha `
         -DiagnosticEvidencePath $productDiagnostic `
@@ -218,10 +225,10 @@ try {
         -OutputPath (Join-Path $root 'product-report.json') | Select-Object -Last 1 | ConvertFrom-Json
     if (
         [string]$productReport.cycle_result -cne 'PRODUCT_FAIL' -or
-        [string]$productReport.classification -cne 'PRODUCT_PROXY_LEGACY_CUTOVER_CLEANUP_BLOCKED' -or
+        [string]$productReport.classification -cne 'PRODUCT_PROXY_LISTENER_UNAVAILABLE' -or
         [string]$productReport.exact_candidate_acceptance -cne 'FAIL'
     ) {
-        throw 'Current L8 PRODUCT diagnostic classification and exact candidate rejection were not preserved.'
+        throw 'Current native PRODUCT diagnostic classification and exact candidate rejection were not preserved.'
     }
 
     $launchFailure = Join-Path $root 'launch-failure.json'
@@ -232,7 +239,7 @@ try {
     } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $launchFailure
     $launchFailureReport = & $reportScript `
         -Mode full `
-        -PrNumber 195 `
+        -PrNumber 197 `
         -SourceSha ('c' * 40) `
         -ControlSha $controlSha `
         -LaunchReceiptPath $launchFailure `
@@ -248,32 +255,30 @@ try {
 
     $missingProbe = & $reportScript `
         -Mode probe_only `
-        -PrNumber 195 `
+        -PrNumber 197 `
         -SourceSha ('d' * 40) `
         -ControlSha $controlSha `
-        -RequestedProbe runtime_identity `
+        -RequestedProbe loopback_connect `
         -OutputPath (Join-Path $root 'missing-probe-report.json') | Select-Object -Last 1 | ConvertFrom-Json
     if (
         [string]$missingProbe.cycle_result -cne 'LAB_FAIL' -or
         [string]$missingProbe.classification -cne 'LAB_TARGETED_PROBE_COLLECTION_FAILED' -or
         [string]$missingProbe.exact_candidate_acceptance -cne 'NOT_EVALUATED'
     ) {
-        throw 'Explicit probe without evidence must fail closed without evaluating the PRODUCT candidate.'
+        throw 'Explicit current-function probe without evidence must fail closed without evaluating PRODUCT.'
     }
 
-    # Historical runtime-identity is intentionally isolated as a manual read-only cutover probe.
-    # It may observe a pre-L8 orphan, but its evidence can never become steady-state PRODUCT PASS.
     $targetedEvidence = Join-Path $root 'targeted-evidence.json'
     [ordered]@{
-        schema = 'mish.lab.runtime-identity/v1'
-        classification = 'VISIBLE_PROCESS_WITHOUT_RECORDED_IDENTITY'
+        schema = 'mish.lab.loopback-connect/v1'
+        classification = 'CONNECT_RESPONSE_RECEIVED'
     } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $targetedEvidence
     $probeReport = & $reportScript `
         -Mode probe_only `
-        -PrNumber 195 `
+        -PrNumber 197 `
         -SourceSha ('e' * 40) `
         -ControlSha $controlSha `
-        -RequestedProbe runtime_identity `
+        -RequestedProbe loopback_connect `
         -TargetedEvidencePath $targetedEvidence `
         -OutputPath (Join-Path $root 'probe-report.json') | Select-Object -Last 1 | ConvertFrom-Json
     if (
@@ -282,7 +287,7 @@ try {
         [string]$probeReport.exact_candidate_acceptance -cne 'NOT_EVALUATED' -or
         [bool]$probeReport.targeted_probe.automatic -ne $false
     ) {
-        throw 'Explicit probe-only evidence may pass collection but must never claim exact PRODUCT candidate acceptance.'
+        throw 'Explicit current-function probe may pass collection but cannot claim exact PRODUCT acceptance.'
     }
 
     Write-Host 'DEVICE_CYCLE_CONTRACT=PASS'
