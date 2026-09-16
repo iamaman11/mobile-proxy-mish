@@ -1,6 +1,4 @@
-use crate::{
-    ProxyServingFailure, ProxyServingLifecycle, ProxyServingSnapshot, ProxyServingState,
-};
+use crate::{ProxyServingFailure, ProxyServingLifecycle, ProxyServingSnapshot, ProxyServingState};
 use mish_configuration::EXTERNAL_TCP_SESSION_BUDGET;
 use mish_proxy::{
     ProxyCredentialMaterial, ProxyOutboundConnector, ProxyProtocol, ProxyServingPlan,
