@@ -37,6 +37,7 @@ sealed interface ProxyRuntimeSnapshot {
 internal data class ProxyRuntimeDiagnosticObservation(
     val healthy: Boolean,
     val credentialVersion: ULong?,
+    val cutover: LegacyRuntimeCutoverDiagnosticObservation,
 )
 
 /** In-memory only external proxy credential material. */
@@ -97,6 +98,7 @@ class ProxyRuntimeSupervisor internal constructor(
         ProxyRuntimeDiagnosticObservation(
             healthy = runtimeHealthy,
             credentialVersion = servingCredentialVersion,
+            cutover = legacyCutoverCleanup.diagnosticObservation(),
         )
     }
 
