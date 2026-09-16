@@ -104,6 +104,23 @@ The canonical proxy surface is:
 
 The active roadmap stage decides which protocol/auth/relay/capacity/resource facts must be reproven physically. Hosted Rust tests may establish deterministic protocol semantics, but they do not replace a required real-device topology claim.
 
+For the U2 Mesh -> existing-Tokio convergence, exact-head E1 acceptance must prove all of the following on the same ready PR head before merge:
+
+```text
+architecture constitution PASS
+Kotlin + generated UniFFI compile/lint PASS
+Rust fmt/clippy/workspace tests PASS
+positive Mesh listener -> loopback backend -> bidirectional byte relay PASS
+64 admitted Mesh sessions + 65th rejected before backend PASS
+backend-connect failure releases the Transport-owned session lease PASS
+Mesh cancellation drains sessions PASS
+fresh Mesh generation can restart on the same process Tokio runtime PASS
+Android NDK/native packaging + unit tests + debug APK/androidTest assembly PASS
+exact PRODUCT candidate contract PASS
+```
+
+The architecture guard must also make the convergence one-way: `mish-transport` cannot regain listener/session threads or relay execution; Mesh cannot create a second Tokio runtime or external capacity counter; Android cannot own a duplicate Mesh session counter.
+
 ## Evidence hygiene
 
 Durable evidence must be typed, bounded and sanitized.
