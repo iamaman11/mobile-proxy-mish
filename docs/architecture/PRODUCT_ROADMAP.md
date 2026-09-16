@@ -60,7 +60,7 @@ Accepted implementation: PR #192, integration merge `3a92cc8105737e7bf515e23a0db
 
 L8 establishes the one-way native architecture:
 
-- one owned Tokio listener/session execution tree inside `mish-runtime`;
+- one owned Tokio listener/session execution tree inside `mish-runtime` for native Proxy Serving;
 - blocking handshake + exact-network DNS/connect behind one bounded blocking seam;
 - long-lived relay async and owned/drained deterministically;
 - direct root-policy-gated Cellular Egress; no private SOCKS bridge;
@@ -95,7 +95,42 @@ Pre-L8 PRODUCT compatibility rule:
 - historical processes/files left on a development phone are LAB residue, not PRODUCT state;
 - if LAB residue physically conflicts with current listeners or routing, it is cleaned as an explicit bounded LAB-maintenance action and never becomes an application startup dependency or fallback mechanism.
 
-Prove on DEVICE-1:
+## U2 execution refinement — converge Mesh ingress onto the one Tokio executor
+
+Current `mish-transport` correctly owns the external Mesh boundary, exact admitted endpoint/epoch, the canonical external capacity of 64 sessions and deterministic overload rejection. That policy ownership remains in `mish-transport`.
+
+Current implementation still executes Mesh ingress with a separate `std::net` / `std::thread` concurrency subsystem: listener threads plus per-session blocking relay threads. This is a known current-topology implementation split, not the target resource/lifetime model for final U2 acceptance.
+
+Before final 64/65 capacity and resource acceptance:
+
+1. finish the current upstream-lifetime attribution for the inconclusive `example.com:443` hold-open experiment without mutating PRODUCT;
+2. move Mesh listener/session execution onto the existing process-wide Tokio runtime owned by `mish-runtime`;
+3. keep `mish-transport` as the natural owner of Mesh admission, admission epoch, external capacity=64 and reject-at-edge semantics;
+4. do **not** add another Tokio runtime/executor, move external capacity policy into `mish-runtime`, or create a second session/lifecycle owner;
+5. replace thread-per-session relay with owned async tasks / async bidirectional relay and deterministic cancellation/drain;
+6. preserve the current external contract and owner-backed diagnostics (`mesh.active_sessions`, `proxy.active_sessions`);
+7. adapt only tests/guards that encode the old thread implementation; protocol/auth/real-Mesh black-box acceptance remains the same contract;
+8. after convergence, rerun exact hosted gates and record a **fresh** physical idle/10/32/64/overflow/post-cleanup resource baseline. Pre-convergence thread/resource numbers remain diagnostic evidence only and cannot close final U2 resource acceptance.
+
+Target execution/ownership split:
+
+```text
+mish-runtime
+  -> one process-wide Tokio runtime / cancellation tree
+       -> Mesh ingress/session tasks     [policy owner: mish-transport]
+       -> native Proxy Serving tasks     [protocol owner: mish-proxy]
+       -> async relays
+            -> Cellular Egress           [egress owner: mish-cellular/runtime boundary]
+
+mish-transport retains:
+  exact Mesh endpoint + admission epoch
+  external session budget = 64
+  deterministic overload rejection at the Mesh edge
+```
+
+The reason for doing this inside U2 rather than after it is evidence validity: accepting thread/FD/RSS/PSS at 64 on a thread-per-session Mesh implementation and then replacing that implementation immediately afterward would invalidate the physical baseline U2 is supposed to establish.
+
+Prove on DEVICE-1 after the Mesh/Tokio convergence:
 
 - current native runtime starts without any pre-L8 process/migration prerequisite;
 - PRODUCT creates zero external/root proxy child processes in steady state;
@@ -103,18 +138,19 @@ Prove on DEVICE-1:
 - correct authentication succeeds, wrong authentication is rejected, and relay is bidirectional;
 - public target DNS occurs only through the exact Cellular owner and public sockets use the root-policy-gated cellular path;
 - no Wi-Fi/default/WARP fallback during uncertainty/loss;
-- 64 accepted full paths and deterministic rejection of the 65th external session;
+- 64 accepted full paths and deterministic rejection of the 65th external session at the `mish-transport` edge;
+- a bounded overflow burst beyond 65 does not increase accepted owner counts, evict existing sessions or destabilize the runtime;
 - stop/start/restart and cellular loss/recovery are bounded and fail closed;
 - stable signer/UID and no repeated Magisk prompt on normal replacement install;
 - one process-wide root shell is reused through repeated root-policy reads/reconciliations within the app process instead of creating one `su` process per command/recovery event;
 - process restart establishes a fresh shell generation while the already-granted Magisk policy remains sufficient and does not require another interactive grant;
 - repeated recovery cycles do not reopen Magisk prompts or create unbounded root-shell/process growth;
-- baseline/peak/post-cleanup thread count, FD count and RSS/PSS at idle / 10 / 32 / 64 sessions;
+- fresh post-convergence baseline/peak/post-cleanup thread count, FD count and RSS/PSS at idle / 10 / 32 / 64 sessions;
 - startup, failure-to-fresh-READY, normal stop and recovery timings.
 
 DEVICE-1 diagnostics are current-product health diagnostics. Canonical acceptance observes current runtime, Cellular, root authority/policy, native Proxy Serving, credentials, Mesh, readiness and functional E2E behavior. Historical sing-box PID/config identity is not a current PRODUCT health fact.
 
-Exit: exact native topology is physically proven and the current resource/recovery baseline is recorded without secret/raw-IP leakage. The Magisk/su privilege boundary is considered physically accepted only after the replacement-install, restart and repeated-recovery evidence above passes.
+Exit: exact native topology, including one process-wide Tokio execution model for long-lived Mesh + Proxy session work, is physically proven and the current resource/recovery baseline is recorded without secret/raw-IP leakage. The Magisk/su privilege boundary is considered physically accepted only after the replacement-install, restart and repeated-recovery evidence above passes.
 
 ---
 
@@ -233,7 +269,7 @@ Measure the **current** direct native Tokio architecture, not deleted topology.
 Evaluate:
 
 - idle CPU/wakeup cost;
-- Mesh accept behavior if polling remains;
+- Tokio Mesh accept/task scheduling, cancellation and drain behavior;
 - native health observation cadence/cost;
 - thread/FD/RSS/PSS headroom at 64 sessions;
 - connect/DNS latency distribution;
