@@ -98,8 +98,6 @@ impl MeshTransportCoordinator {
         };
         let admission = state.owner.observe_local_ipv4(sequence, addresses)?;
         if state.ingress_epoch.is_some() && state.ingress_epoch != admission.admission_epoch() {
-            // Replacement is atomic to Transport callers: revoke fresh admission first, then wait
-            // for the Runtime execution owner to close listeners/sessions before returning.
             stop_ingress_locked(&mut state)?;
         }
         Ok(snapshot_locked(&state))
@@ -176,13 +174,10 @@ fn stop_ingress_locked(state: &mut MeshTransportState) -> Result<(), MeshTranspo
     let execution_result = executor
         .as_ref()
         .map_or(Ok(()), |current| current.stop_ingress());
-    let active = sessions
-        .as_ref()
-        .map_or(0, |owner| owner.active_sessions());
+    let active = sessions.as_ref().map_or(0, |owner| owner.active_sessions());
 
     if execution_result.is_err() || active != 0 {
         state.cleanup_failed = true;
-        // Preserve the natural-owner counter for diagnostics if a broken executor failed to drain.
         state.sessions = sessions;
         return Err(MeshTransportError::CleanupFailed);
     }
@@ -377,7 +372,10 @@ mod tests {
         );
         executor.fail_stop.store(true, Ordering::Release);
 
-        assert_eq!(runtime.stop_ingress(), Err(MeshTransportError::CleanupFailed));
+        assert_eq!(
+            runtime.stop_ingress(),
+            Err(MeshTransportError::CleanupFailed)
+        );
         let replacement: Arc<dyn MeshIngressExecutor> = FakeExecutor::new();
         assert_eq!(
             runtime.start_ingress(epoch, &[MeshPortForward::same(40001)], replacement),
