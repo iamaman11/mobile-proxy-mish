@@ -13,6 +13,9 @@ pub use cellular_connector::*;
 mod cellular_runtime;
 pub use cellular_runtime::*;
 
+mod mesh_serving;
+pub use mesh_serving::*;
+
 mod proxy_recovery;
 pub use proxy_recovery::*;
 
