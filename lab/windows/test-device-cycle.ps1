@@ -27,6 +27,30 @@ try {
         }
     }
 
+    $loopbackProbeSource = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'diagnose-loopback-connect.ps1')
+    foreach ($required in @(
+        "'ss', '-H', '-tanp'",
+        "'/proc/net/tcp'",
+        "'/proc/net/tcp6'",
+        "'pidof', 'sing-box'",
+        'listener_state = $listenerState',
+        'MISH_LOOPBACK_DIAGNOSTIC_SING_BOX_PID'
+    )) {
+        if (-not $loopbackProbeSource.Contains($required)) {
+            throw "Manual loopback probe lost bounded listener-state evidence: $required"
+        }
+    }
+    foreach ($forbidden in @(
+        "'shell', 'su'",
+        "'shell', 'kill'",
+        "'shell', 'pkill'",
+        "'shell', 'am', 'force-stop'"
+    )) {
+        if ($loopbackProbeSource.Contains($forbidden)) {
+            throw "Manual loopback probe must remain read-only and non-root: $forbidden"
+        }
+    }
+
     Import-Module (Join-Path $PSScriptRoot 'DeviceDiagnosticClassification.psm1') -Force
     $base = @{
         PidStable = $true
