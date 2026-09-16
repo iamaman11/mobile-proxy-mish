@@ -6,13 +6,13 @@ GitHub is the only durable source of truth. Chat handoffs, copied status text, C
 
 Before planning or mutating:
 
-1. read fresh protected `main`;
-2. read `docs/architecture/SOURCE_OF_TRUTH.md`;
-3. read fresh Issue #135;
-4. read `docs/architecture/PRODUCT_ROADMAP.md` from protected `main`;
-5. inspect the exact working/integration head and current slice PR named by #135, when one exists;
+1. read fresh protected `main` and record its exact SHA;
+2. read `docs/architecture/SOURCE_OF_TRUTH.md` from that exact `main`;
+3. read `docs/architecture/PRODUCT_ROADMAP.md` from the same `main`;
+4. read fresh Issue #135 for the current stage, open implementation PR if any, and immutable evidence ids;
+5. inspect an open PR exact head only for the candidate change currently under review;
 6. read only the natural-owner contracts, implementation files and executable workflows/tests required by the active slice;
-7. distinguish PRODUCT source facts, CONTROL/process facts and DEVICE evidence.
+7. distinguish accepted source facts from candidate evidence and physical DEVICE evidence.
 
 One fresh baseline opens one bounded mutation window. Do not re-baseline after every write inside that window.
 
@@ -30,17 +30,28 @@ concrete product/operator problem
 
 Prefer NO CHANGE when the accepted requirement is already met. Do not introduce a framework, daemon, generic shell API, second owner, second control plane or refactor merely because it is possible.
 
-## Authority separation
+## Accepted-source rule
 
-Always keep three identities separate:
+Protected `main` is the latest accepted PRODUCT + CONTROL + canonical-documentation boundary.
+
+A feature/slice branch is temporary candidate work. It does not become a second accepted PRODUCT source. Accepted work is merged back to `main` promptly after the required evidence passes.
+
+For accepted repository facts:
 
 ```text
-PRODUCT_SHA   -> exact application source/build identity
-CONTROL_SHA   -> protected-main workflow/LAB/diagnostic identity
-DEVICE_EVIDENCE -> immutable physical observation tied to explicit provenance
+ACCEPTED_PRODUCT_SHA = protected main SHA
+ACCEPTED_CONTROL_SHA = protected main SHA
 ```
 
-Do not infer PRODUCT composition from a stale control branch. Do not infer current architecture from historical device residue. Do not infer physical state from source code.
+For an explicit pre-merge physical cycle only:
+
+```text
+PRODUCT_SHA = exact candidate PR head
+CONTROL_SHA = exact protected-main Device Cycle/control implementation
+DEVICE_EVIDENCE = immutable observation tied to both
+```
+
+That split is provenance, not durable source-of-truth separation.
 
 ## Architecture law
 
@@ -66,20 +77,17 @@ Do not introduce:
 
 Tokio belongs to runtime execution. Hyper/Tonic or another framework is not added without a demonstrated product requirement.
 
-## Working lineage and slice rule
-
-`main` is the protected control/process/canonical-documentation boundary and a milestone acceptance boundary; it is not a scratch branch and it may lag the current PRODUCT implementation while a roadmap stage is still active.
-
-The current PRODUCT implementation lineage is the exact working/integration head recorded by #135.
+## Slice and PR rule
 
 A normal implementation slice:
 
-- begins from that exact integration head;
-- has one natural owner and at most one necessary adapter/composition boundary;
+- begins from fresh protected `main`;
+- changes one natural owner plus at most one necessary adapter/composition boundary;
 - includes direct tests for that boundary;
-- targets the current integration branch named by #135, not `main`, unless #135 explicitly says otherwise.
+- targets `main` unless the current roadmap explicitly defines a temporary exceptional base;
+- is merged to `main` once the required evidence passes.
 
-Do not merge the working lineage to `main` merely to record progress. Docs/control changes whose only purpose is to keep the protected source-of-truth/process boundary accurate may land on `main` independently, but they must not imply that unmerged PRODUCT implementation is already on `main`.
+Do not keep accepted PRODUCT changes indefinitely on a parallel integration branch merely to record progress.
 
 ## CI and candidate production
 
@@ -92,7 +100,7 @@ Android 11 / API 30
 armeabi-v7a
 ```
 
-For integration PRs targeting the working lineage, `Integration Android Preflight` builds/tests the exact head and publishes a candidate only after the configured complete gate passes.
+PRODUCT-changing PRs to `main` must run the exact-head hosted Android/Rust gate and may publish an immutable debug candidate artifact for explicit physical validation.
 
 A successful hosted build is a prerequisite only. It never starts DEVICE-1 automatically.
 
@@ -136,7 +144,7 @@ Do not persist secrets, raw public IPs, unrelated logcat, device identifiers or 
 
 When the next decision depends on a real physical fact that source/hosted CI/current Device Cycle cannot establish, request the smallest bounded local-agent diagnostic.
 
-The local agent is a physical executor, not a second architecture or state authority. Prefer read-only scope, define exact output, and write the sanitized conclusion back to #135 or the appropriate owner/evidence surface.
+The local agent is a physical executor, not a second architecture or state authority. Prefer read-only scope, define exact output, and write the sanitized conclusion back to #135 or the appropriate owner/evidence surface when it materially affects the plan.
 
 ## Physical uncertainty
 
