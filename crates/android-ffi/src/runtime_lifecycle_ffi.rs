@@ -142,7 +142,6 @@ pub enum ProxyServingState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum ProxyServingFailure {
     NativeRuntimeMissing,
-    LegacyMigrationBlocked,
     ExternalCredentialUnavailable,
     ListenerUnavailable,
     ServingUnhealthy,
@@ -258,9 +257,6 @@ fn map_proxy_snapshot(snapshot: OwnerProxyServingSnapshot) -> ProxyServingSnapsh
 fn map_proxy_failure_out(failure: OwnerProxyServingFailure) -> ProxyServingFailure {
     match failure {
         OwnerProxyServingFailure::NativeRuntimeMissing => ProxyServingFailure::NativeRuntimeMissing,
-        OwnerProxyServingFailure::LegacyMigrationBlocked => {
-            ProxyServingFailure::LegacyMigrationBlocked
-        }
         OwnerProxyServingFailure::ExternalCredentialUnavailable => {
             ProxyServingFailure::ExternalCredentialUnavailable
         }
@@ -273,9 +269,6 @@ fn map_proxy_failure_out(failure: OwnerProxyServingFailure) -> ProxyServingFailu
 fn map_proxy_failure_in(failure: ProxyServingFailure) -> OwnerProxyServingFailure {
     match failure {
         ProxyServingFailure::NativeRuntimeMissing => OwnerProxyServingFailure::NativeRuntimeMissing,
-        ProxyServingFailure::LegacyMigrationBlocked => {
-            OwnerProxyServingFailure::LegacyMigrationBlocked
-        }
         ProxyServingFailure::ExternalCredentialUnavailable => {
             OwnerProxyServingFailure::ExternalCredentialUnavailable
         }
@@ -323,7 +316,6 @@ mod tests {
     fn ffi_proxy_projection_preserves_native_failure_reason() {
         for failure in [
             ProxyServingFailure::NativeRuntimeMissing,
-            ProxyServingFailure::LegacyMigrationBlocked,
             ProxyServingFailure::ExternalCredentialUnavailable,
             ProxyServingFailure::ListenerUnavailable,
             ProxyServingFailure::ServingUnhealthy,
