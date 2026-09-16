@@ -92,6 +92,11 @@ class ProxyRuntimeSupervisor internal constructor(
         )
     }
 
+    /** Opaque composition handle only; Android cannot schedule Tokio work through this object. */
+    internal fun currentNativeRuntimeHandle(): NativeProxyRuntime? = synchronized(lock) {
+        nativeRuntime
+    }
+
     fun start() {
         val shouldStart = synchronized(lock) {
             if (closed.get() || nativeRuntime != null || mutableSnapshot.value == ProxyRuntimeSnapshot.Starting) {
