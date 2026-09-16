@@ -1,16 +1,15 @@
 use mish_transport::{MeshIngressError, MeshPortForward, MeshSessionOwner};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener as StdTcpListener};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 use tokio::io::copy_bidirectional;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::Runtime;
 use tokio::sync::watch;
-use tokio::task::{JoinSet};
+use tokio::task::JoinSet;
 use tokio::time::timeout;
 
-const MESH_ACCEPT_POLL_TIMEOUT: Duration = Duration::from_millis(200);
 const MESH_BACKEND_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const MESH_START_TIMEOUT: Duration = Duration::from_secs(2);
 const MESH_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -109,6 +108,7 @@ impl MeshExecutionOwner {
         let (stop, stop_rx) = watch::channel(false);
         let live_listeners = Arc::new(AtomicUsize::new(0));
         let expected_listeners = async_bound.len();
+        let (startup_tx, startup_rx) = mpsc::sync_channel(expected_listeners);
         let mut listeners = JoinSet::new();
         for (listener, mapping) in async_bound {
             listeners.spawn_on(
@@ -118,10 +118,12 @@ impl MeshExecutionOwner {
                     stop_rx.clone(),
                     Arc::clone(&sessions),
                     Arc::clone(&live_listeners),
+                    startup_tx.clone(),
                 ),
                 runtime.handle(),
             );
         }
+        drop(startup_tx);
 
         {
             let mut state = self
@@ -137,10 +139,17 @@ impl MeshExecutionOwner {
             });
         }
 
+        // Every listener must explicitly acknowledge that its Tokio task is live. This replaces
+        // startup polling with one bounded, deterministic publication barrier.
         let deadline = Instant::now() + MESH_START_TIMEOUT;
-        while !self.is_healthy() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
+        for _ in 0..expected_listeners {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() || startup_rx.recv_timeout(remaining).is_err() {
+                let _ = self.stop(Some(runtime));
+                return Err(MeshIngressError::ExecutorUnavailable);
+            }
         }
+
         if self.is_healthy() {
             Ok(())
         } else {
@@ -221,22 +230,32 @@ impl MeshExecutionOwner {
 async fn mesh_listener_loop(
     listener: TcpListener,
     mapping: MeshPortForward,
-    stop: watch::Receiver<bool>,
+    mut stop: watch::Receiver<bool>,
     sessions: Arc<MeshSessionOwner>,
     live_listeners: Arc<AtomicUsize>,
+    startup_ready: mpsc::SyncSender<()>,
 ) {
     let _listener_guard = MeshListenerGuard::new(live_listeners);
-    let mut session_tasks = JoinSet::new();
+    if startup_ready.try_send(()).is_err() {
+        return;
+    }
+    drop(startup_ready);
 
+    let mut session_tasks = JoinSet::new();
     loop {
         while session_tasks.try_join_next().is_some() {}
         if *stop.borrow() || !sessions.is_accepting() {
             break;
         }
 
-        let accepted = match timeout(MESH_ACCEPT_POLL_TIMEOUT, listener.accept()).await {
-            Ok(accepted) => accepted,
-            Err(_) => continue,
+        let accepted = tokio::select! {
+            changed = stop.changed() => {
+                if changed.is_err() || *stop.borrow() {
+                    break;
+                }
+                continue;
+            }
+            accepted = listener.accept() => accepted,
         };
         let (client, _) = match accepted {
             Ok(pair) => pair,
@@ -254,8 +273,8 @@ async fn mesh_listener_loop(
             continue;
         };
         session_tasks.spawn(async move {
-            let _lease = lease;
-            if !_lease.is_current() {
+            let lease = lease;
+            if !lease.is_current() {
                 return;
             }
             serve_mesh_session(client, mapping.backend_port()).await;
@@ -304,7 +323,7 @@ impl Drop for MeshListenerGuard {
 mod tests {
     use super::*;
     use mish_transport::{MAX_MESH_SESSIONS, MeshSessionOwner};
-    use std::io::Read;
+    use std::io::{Read, Write};
     use std::net::{TcpListener as StdBackendListener, TcpStream as StdClient};
     use std::sync::mpsc;
     use std::thread;
@@ -349,6 +368,57 @@ mod tests {
                 facts.0, facts.1, facts.2, facts.3
             ));
         }
+    }
+
+    #[test]
+    fn bidirectional_relay_forwards_bytes_on_existing_runtime_generation() {
+        let runtime = test_runtime();
+        let execution = MeshExecutionOwner::new();
+        let sessions = MeshSessionOwner::product_generation();
+        let backend = StdBackendListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("backend");
+        let backend_port = backend.local_addr().expect("backend address").port();
+        let ingress_port = reserve_port();
+
+        let backend_thread = thread::spawn(move || {
+            let (mut stream, _) = backend.accept().expect("backend session");
+            stream
+                .set_read_timeout(Some(TEST_TIMEOUT))
+                .expect("backend read timeout");
+            stream
+                .set_write_timeout(Some(TEST_TIMEOUT))
+                .expect("backend write timeout");
+            let mut request = [0_u8; 4];
+            stream.read_exact(&mut request).expect("backend read");
+            assert_eq!(&request, b"ping");
+            stream.write_all(b"pong").expect("backend write");
+        });
+
+        execution
+            .start(
+                &runtime,
+                Ipv4Addr::LOCALHOST,
+                &[MeshPortForward::new(ingress_port, backend_port)],
+                Arc::clone(&sessions),
+            )
+            .expect("start Mesh execution");
+
+        let mut client =
+            StdClient::connect((Ipv4Addr::LOCALHOST, ingress_port)).expect("Mesh client");
+        client
+            .set_read_timeout(Some(TEST_TIMEOUT))
+            .expect("client read timeout");
+        client
+            .set_write_timeout(Some(TEST_TIMEOUT))
+            .expect("client write timeout");
+        client.write_all(b"ping").expect("client write");
+        let mut response = [0_u8; 4];
+        client.read_exact(&mut response).expect("client read");
+        assert_eq!(&response, b"pong");
+
+        drop(client);
+        backend_thread.join().expect("backend thread");
+        wait_until(Instant::now() + TEST_TIMEOUT, || sessions.active_sessions() == 0);
+        execution.stop(Some(&runtime)).expect("clean Mesh stop");
     }
 
     #[test]
