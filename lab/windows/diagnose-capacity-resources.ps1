@@ -140,6 +140,20 @@ function Read-MishStatusLine {
     return ''
 }
 
+function Read-MishConnectHeaders {
+    param([Parameter(Mandatory)][System.IO.Stream] $Stream)
+    for ($index = 0; $index -lt 64; $index++) {
+        $line = Read-MishStatusLine -Stream $Stream
+        if ($null -eq $line) {
+            throw 'Proxy closed before CONNECT response headers completed.'
+        }
+        if ($line.Length -eq 0) {
+            return
+        }
+    }
+    throw 'CONNECT response headers exceeded the bounded parser limit.'
+}
+
 function Open-MishHeldConnectSession {
     param(
         [Parameter(Mandatory)][string] $ProxyHost,
@@ -147,6 +161,7 @@ function Open-MishHeldConnectSession {
     )
     $client = [Net.Sockets.TcpClient]::new()
     $stream = $null
+    $tlsStream = $null
     $plainPassword = $null
     try {
         $connectTask = $client.ConnectAsync($ProxyHost, 3128)
@@ -177,10 +192,26 @@ function Open-MishHeldConnectSession {
         if ($null -eq $status -or $status -notmatch '^HTTP/1\.[01]\s+2\d\d(?:\s|$)') {
             throw "Authenticated CONNECT was not established: '$status'"
         }
-        return [pscustomobject]@{ Client = $client; Stream = $stream; StatusLine = $status }
+
+        # A raw CONNECT socket is not a stable held session against a TLS endpoint: the target may
+        # close clients that never start TLS. Complete the target protocol handshake before counting
+        # the tunnel as held so capacity observations measure PRODUCT ownership, not target timeout.
+        Read-MishConnectHeaders -Stream $stream
+        $tlsStream = [Net.Security.SslStream]::new($stream, $false)
+        $tlsStream.ReadTimeout = $script:ConnectTimeoutMs
+        $tlsStream.WriteTimeout = $script:ConnectTimeoutMs
+        $tlsStream.AuthenticateAsClient($TargetHost)
+
+        return [pscustomobject]@{
+            Client = $client
+            Stream = $tlsStream
+            StatusLine = $status
+            HeldProtocol = 'TLS'
+        }
     }
     catch {
-        if ($null -ne $stream) { $stream.Dispose() }
+        if ($null -ne $tlsStream) { $tlsStream.Dispose() }
+        elseif ($null -ne $stream) { $stream.Dispose() }
         $client.Dispose()
         throw
     }
@@ -423,6 +454,7 @@ $evidence = [ordered]@{
     pid_stable = $pidStable
     mesh_address = $meshAddress
     target = "${TargetHost}:$TargetPort"
+    held_session_protocol = 'TLS'
     stages = @($stages)
     overflow_65th = $overflow
     overflow_owner_counts = $overflowCounts
