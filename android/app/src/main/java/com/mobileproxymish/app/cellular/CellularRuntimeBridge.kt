@@ -5,7 +5,6 @@ import android.content.pm.ApplicationInfo
 import android.os.Process
 import com.mobileproxymish.ffi.CellularAdmissionState
 import com.mobileproxymish.ffi.CellularAdmissionView
-import com.mobileproxymish.ffi.CellularBridgeRuntime
 import com.mobileproxymish.ffi.CellularController
 import java.io.Closeable
 import java.util.concurrent.Callable
@@ -74,6 +73,18 @@ internal fun sameCellularOwnerGeneration(
     expected.state == current.state &&
     expected.admittedNetworkHandle == current.admittedNetworkHandle
 
+/** Only transport/incomplete authority states are expected to recover without operator action. */
+internal fun shouldRetryRootAuthority(status: RootAuthorityStatus): Boolean = when (status) {
+    RootAuthorityStatus.Unavailable,
+    RootAuthorityStatus.Incomplete,
+    -> true
+
+    RootAuthorityStatus.Ready,
+    RootAuthorityStatus.InteractiveGrantRequired,
+    RootAuthorityStatus.Denied,
+    -> false
+}
+
 /**
  * One process-generation bridge between Android observations, the Rust natural owner,
  * and the narrow root policy-routing adapter that realizes an already owner-admitted
@@ -127,18 +138,10 @@ class CellularRuntimeBridge(
         mutableSnapshot = MutableStateFlow(initialSnapshot)
     }
 
-    /**
-     * Starts the private bridge from the exact same Rust Cellular Egress owner instance.
-     * This is composition only: it neither copies nor mutates admission policy.
-     */
-    internal fun startPrivateBridge(
-        username: String,
-        password: String,
-        operationTimeoutMs: ULong,
-    ): CellularBridgeRuntime {
+    /** Exact FFI handle for composition with the native proxy runtime; no state is copied. */
+    internal fun nativeController(): CellularController {
         check(!closed.get()) { "cellular runtime is closed" }
-        val activeController = controller ?: error("Cellular Egress owner is unavailable")
-        return activeController.startBridge(username, password, operationTimeoutMs)
+        return controller ?: error("Cellular Egress owner is unavailable")
     }
 
     fun start() {
@@ -291,7 +294,9 @@ class CellularRuntimeBridge(
             return
         }
 
-        if (policyResult is CellularRootPolicyResult.AuthorityUnavailable) {
+        if (policyResult is CellularRootPolicyResult.AuthorityUnavailable &&
+            shouldRetryRootAuthority(policyResult.status)
+        ) {
             scheduleRootAuthorityRecovery(activeController)
         } else {
             resetRootAuthorityRecovery()
@@ -429,7 +434,11 @@ class CellularRuntimeBridge(
 
         mutableSnapshot.value = when (result) {
             is CellularRootPolicyResult.AuthorityUnavailable -> {
-                scheduleRootAuthorityRecovery(activeController)
+                if (shouldRetryRootAuthority(result.status)) {
+                    scheduleRootAuthorityRecovery(activeController)
+                } else {
+                    resetRootAuthorityRecovery()
+                }
                 CellularRuntimeSnapshot.BoundaryUnavailable(
                     CellularBoundaryFailure.RootAuthorityUnavailable,
                 )
@@ -496,34 +505,38 @@ class CellularRuntimeBridge(
             )
         }
         return when (val result = rootPolicy.failClosed()) {
-        is CellularRootPolicyResult.AuthorityUnavailable -> {
-            controller?.let(::scheduleRootAuthorityRecovery)
-            CellularRuntimeSnapshot.BoundaryUnavailable(
-                CellularBoundaryFailure.RootAuthorityUnavailable,
-            )
-        }
-
-        is CellularRootPolicyResult.FailClosed -> {
-            resetRootAuthorityRecovery()
-            when {
-                result.reason != null -> CellularRuntimeSnapshot.BoundaryUnavailable(
-                    CellularBoundaryFailure.RootPolicyUnavailable(result.reason),
-                )
-
-                preserveOnCleanFailClosed -> null
-                preferredFailure != null -> CellularRuntimeSnapshot.BoundaryUnavailable(preferredFailure)
-                else -> CellularRuntimeSnapshot.BoundaryUnavailable(
-                    CellularBoundaryFailure.RootPolicyReconcileFailed,
+            is CellularRootPolicyResult.AuthorityUnavailable -> {
+                if (shouldRetryRootAuthority(result.status)) {
+                    controller?.let(::scheduleRootAuthorityRecovery)
+                } else {
+                    resetRootAuthorityRecovery()
+                }
+                CellularRuntimeSnapshot.BoundaryUnavailable(
+                    CellularBoundaryFailure.RootAuthorityUnavailable,
                 )
             }
-        }
 
-        CellularRootPolicyResult.Enforced -> {
-            resetRootAuthorityRecovery()
-            preferredFailure?.let {
-                CellularRuntimeSnapshot.BoundaryUnavailable(it)
+            is CellularRootPolicyResult.FailClosed -> {
+                resetRootAuthorityRecovery()
+                when {
+                    result.reason != null -> CellularRuntimeSnapshot.BoundaryUnavailable(
+                        CellularBoundaryFailure.RootPolicyUnavailable(result.reason),
+                    )
+
+                    preserveOnCleanFailClosed -> null
+                    preferredFailure != null -> CellularRuntimeSnapshot.BoundaryUnavailable(preferredFailure)
+                    else -> CellularRuntimeSnapshot.BoundaryUnavailable(
+                        CellularBoundaryFailure.RootPolicyReconcileFailed,
+                    )
+                }
             }
-        }
+
+            CellularRootPolicyResult.Enforced -> {
+                resetRootAuthorityRecovery()
+                preferredFailure?.let {
+                    CellularRuntimeSnapshot.BoundaryUnavailable(it)
+                }
+            }
         }
     }
 
@@ -543,9 +556,9 @@ class CellularRuntimeBridge(
         runCatching { controller?.closeRootPolicyGate() }
         observer.close()
         val cleanup = try {
-            // The lambda returns the cleanup fact.  Use Callable explicitly: the Runnable
-            // overload returns a Future whose value is always null, which would turn a
-            // successful exact cleanup into a false failure.
+            // The lambda returns the cleanup fact. Use Callable explicitly: the Runnable overload
+            // returns a Future whose value is always null, which would turn a successful exact
+            // cleanup into a false failure.
             policyExecutor.submit(Callable {
                 interfaceHints.clear()
                 val quiesced = try {

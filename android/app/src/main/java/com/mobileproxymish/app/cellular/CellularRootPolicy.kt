@@ -10,6 +10,13 @@ enum class CellularRootPolicyFailure {
     RouteTableDiscoveryFailed,
     RuleMutationFailed,
     VerificationFailed,
+    MangleChainCreationFailed,
+    OwnerNewMarkRuleFailed,
+    OutputJumpCreationFailed,
+    MangleVerificationFailed,
+    LookupRuleCreationFailed,
+    RouteLookupVerificationFailed,
+    ExactCleanupFailed,
 }
 
 /**
@@ -29,12 +36,12 @@ sealed interface CellularRootPolicyResult {
 }
 
 /**
- * Narrow PRODUCT-owned root policy-routing adapter for Cellular Egress.
+ * Narrow PRODUCT-owned root policy-routing transaction facade for Cellular Egress.
  *
- * The adapter owns no network admission state. One small deterministic candidate set is
- * audited against the live RPDB/mangle state and exactly one non-conflicting identity is
- * selected. Selection is runtime infrastructure state only; Cellular Egress remains the
- * sole semantic owner of admission and generation/currentness.
+ * RootPolicyExecutor owns bounded root effects, RootPolicySnapshot owns pure RPDB parsing, and
+ * DirectCellularRouteInspector owns read-only route validation. This facade alone sequences the
+ * fail-closed transaction and owns no network admission state. Cellular Egress remains the sole
+ * semantic owner of admission and generation/currentness.
  *
  * PRODUCT UID -> MISH_EGRESS_V1
  *   -> loopback RETURN
@@ -43,10 +50,10 @@ sealed interface CellularRootPolicyResult {
  * selected bit -> current direct-cellular IPv4 table
  * selected bit -> unreachable guard
  *
- * Saving/restoring the selected bit makes the routing decision flow-stable. Inbound Mesh
- * replies are ESTABLISHED and never acquire the PRODUCT NEW-flow mark. A referenced MISH
- * chain is immutable: detached state is fully populated and verified before one OUTPUT jump
- * is attached. Unsupported IPv6 receives only the selector plus unreachable guard.
+ * Saving/restoring the selected bit makes the routing decision flow-stable. Inbound Mesh replies
+ * are ESTABLISHED and never acquire the PRODUCT NEW-flow mark. A referenced MISH chain is
+ * immutable: detached state is fully populated and verified before one OUTPUT jump is attached.
+ * Unsupported IPv6 receives only the selector plus unreachable guard.
  */
 class CellularRootPolicy internal constructor(
     private val productUid: Int,
@@ -61,7 +68,11 @@ class CellularRootPolicy internal constructor(
     internal constructor(productUid: Int, debugIsolation: Boolean) :
         this(productUid, MagiskRootAuthority(), SuProcess(), debugIsolation)
 
+    private val executor = RootPolicyExecutor(process)
+    private val routeInspector = DirectCellularRouteInspector(executor)
     private var activeIdentity: PolicyIdentity? = null
+    /** Sanitized teardown stage for lifecycle/E3 evidence; never contains commands or addresses. */
+    private var lastCleanupFailure: CellularRootPolicyFailure? = null
 
     @Synchronized
     fun failClosed(): CellularRootPolicyResult = reconcile(admitted = false, interfaceName = null)
@@ -114,30 +125,34 @@ class CellularRootPolicy internal constructor(
         if (!removeOwnedIpv4Lookups()) {
             return CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.RuleMutationFailed)
         }
-        if (!ensureManglePolicy() || !verifyFailClosedBase()) {
-            return CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.RuleMutationFailed)
+        when (val mangle = ensureManglePolicy()) {
+            ManglePolicyResult.Enforced -> Unit
+            is ManglePolicyResult.Failed -> return CellularRootPolicyResult.FailClosed(mangle.failure)
+        }
+        if (!verifyFailClosedBase()) {
+            return CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.MangleVerificationFailed)
         }
 
         if (!admitted) {
             return CellularRootPolicyResult.FailClosed()
         }
 
-        val iface = interfaceName?.takeIf { isSafeInterfaceName(it) }
+        val iface = interfaceName?.takeIf(RootPolicySnapshot::isSafeInterfaceName)
             ?: return CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.InvalidInterface)
 
-        val table = discoverValidatedIpv4Table(iface)
+        val table = routeInspector.discoverValidatedIpv4Table(iface, IPV4_RULE_SHOW)
             ?: return CellularRootPolicyResult.FailClosed(
                 CellularRootPolicyFailure.RouteTableDiscoveryFailed,
             )
 
         if (!replaceIpv4Lookup(table)) {
             removeOwnedIpv4Lookups()
-            return CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.RuleMutationFailed)
+            return CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.LookupRuleCreationFailed)
         }
 
-        if (!verifyIpv4Path(iface)) {
+        if (!routeInspector.verifyIpv4Path(iface, MARK_HEX)) {
             removeOwnedIpv4Lookups()
-            return CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.VerificationFailed)
+            return CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.RouteLookupVerificationFailed)
         }
 
         return CellularRootPolicyResult.Enforced
@@ -146,12 +161,13 @@ class CellularRootPolicy internal constructor(
     /** Exact intentional teardown. Foreign overlapping state is never deleted or repurposed. */
     @Synchronized
     internal fun cleanupExactOwnedRules(): Boolean {
+        lastCleanupFailure = null
         if (authority.probe() != RootAuthorityStatus.Ready) return false
 
         if (activeIdentity == null) {
             when (resolvePolicyIdentity()) {
                 PolicyIdentityResolution.Selected -> Unit
-                PolicyIdentityResolution.Unavailable -> return false
+                PolicyIdentityResolution.Unavailable -> return cleanupFailed()
                 PolicyIdentityResolution.Collision -> {
                     // A collision before PRODUCT published anything needs no mutation.
                     return !hasAnyProductSignature()
@@ -174,13 +190,21 @@ class CellularRootPolicy internal constructor(
         }
 
         val verifiedClean = verifyExactCleanup()
+        if (!mutatedCleanly || !verifiedClean) lastCleanupFailure = CellularRootPolicyFailure.ExactCleanupFailed
         if (mutatedCleanly && verifiedClean) activeIdentity = null
         return mutatedCleanly && verifiedClean
     }
 
+    private fun cleanupFailed(): Boolean {
+        lastCleanupFailure = CellularRootPolicyFailure.ExactCleanupFailed
+        return false
+    }
+
     @Synchronized
     override fun close() {
-        check(cleanupExactOwnedRules()) { "exact PRODUCT root-policy cleanup failed" }
+        check(cleanupExactOwnedRules()) {
+            "exact PRODUCT root-policy cleanup failed: ${lastCleanupFailure?.name ?: "UNKNOWN"}"
+        }
     }
 
     private fun resolvePolicyIdentity(): PolicyIdentityResolution {
@@ -297,7 +321,7 @@ class CellularRootPolicy internal constructor(
         }
         val priority = trimmed.substringBefore(':').toIntOrNull()
         return priority == LOOKUP_PRIORITY || priority == GUARD_PRIORITY ||
-            rpdbLineTouchesReservedMark(trimmed)
+            RootPolicySnapshot.rpdbLineTouchesReservedMark(trimmed, MARK_VALUE)
     }
 
     private fun isForeignReservedIpv6RpdbLine(line: String): Boolean {
@@ -305,91 +329,86 @@ class CellularRootPolicy internal constructor(
         if (OWNED_IPV6_GUARD_REGEX.matches(trimmed)) return false
         val priority = trimmed.substringBefore(':').toIntOrNull()
         return priority == LOOKUP_PRIORITY || priority == GUARD_PRIORITY ||
-            rpdbLineTouchesReservedMark(trimmed)
-    }
-
-    private fun rpdbLineTouchesReservedMark(line: String): Boolean {
-        val tokens = line.split(WHITESPACE_REGEX)
-        val index = tokens.indexOf("fwmark")
-        if (index < 0) return false
-        val spec = tokens.getOrNull(index + 1) ?: return true
-        return markSpecTouchesReservedBit(spec)
-    }
-
-    private fun markSpecTouchesReservedBit(spec: String): Boolean {
-        val parts = spec.split('/', limit = 2)
-        val value = parseUnsigned(parts[0]) ?: return true
-        val mask = if (parts.size == 2) parseUnsigned(parts[1]) ?: return true else IPV4_FULL_MASK
-        if (value > IPV4_FULL_MASK || mask > IPV4_FULL_MASK) return true
-        return (mask and MARK_VALUE) != 0UL
-    }
-
-    private fun parseUnsigned(raw: String?): ULong? {
-        if (raw == null) return null
-        return if (raw.startsWith("0x", ignoreCase = true)) {
-            raw.substring(2).toULongOrNull(16)
-        } else {
-            raw.toULongOrNull()
-        }
+            RootPolicySnapshot.rpdbLineTouchesReservedMark(trimmed, MARK_VALUE)
     }
 
     private fun ensureFailClosedGuards(): Boolean =
         ensureRpdbGuard(IPV4_RULE_SHOW, ::isOwnedIpv4Guard, IPV4_GUARD_ADD) &&
             ensureRpdbGuard(IPV6_RULE_SHOW, ::isOwnedIpv6Guard, IPV6_GUARD_ADD)
 
-    private fun ensureManglePolicy(): Boolean =
-        ensureMangleFamily(IPTABLES, ipv4OwnedChainLines(), ipv4OutputJump()) &&
-            ensureMangleFamily(IP6TABLES, ipv6OwnedChainLines(), ipv6OutputJump()) &&
-            removeLegacySelectors()
+    private fun ensureManglePolicy(): ManglePolicyResult {
+        val ipv4 = ensureMangleFamily(IPTABLES, ipv4OwnedChainLines(), ipv4OutputJump())
+        if (ipv4 != null) return ManglePolicyResult.Failed(ipv4)
+        val ipv6 = ensureMangleFamily(IP6TABLES, ipv6OwnedChainLines(), ipv6OutputJump())
+        if (ipv6 != null) return ManglePolicyResult.Failed(ipv6)
+        return if (removeLegacySelectors()) {
+            ManglePolicyResult.Enforced
+        } else {
+            ManglePolicyResult.Failed(CellularRootPolicyFailure.OwnerNewMarkRuleFailed)
+        }
+    }
 
     /** A referenced versioned chain is immutable; only detached state may be rebuilt. */
     private fun ensureMangleFamily(
         binary: String,
         expectedChainLines: List<String>,
         outputJump: String,
-    ): Boolean {
-        var snapshot = mangleOutputOrNull(binary) ?: return false
+    ): CellularRootPolicyFailure? {
+        var snapshot = mangleOutputOrNull(binary) ?: return CellularRootPolicyFailure.MangleVerificationFailed
         var chainExists = snapshot.any { it == "-N $MISH_CHAIN" }
         var actualChainLines = snapshot.filter { it.startsWith("-A $MISH_CHAIN ") }
         var jumpCount = snapshot.count { it == outputJump }
 
         if (!chainExists) {
-            if (jumpCount != 0) return false
-            if (!commandSucceeded("$binary -t mangle -N $MISH_CHAIN")) return false
+            if (jumpCount != 0) return CellularRootPolicyFailure.MangleVerificationFailed
+            if (!commandSucceeded("$binary -t mangle -N $MISH_CHAIN")) {
+                return CellularRootPolicyFailure.MangleChainCreationFailed
+            }
             chainExists = true
             actualChainLines = emptyList()
         }
 
         if (actualChainLines != expectedChainLines) {
-            if (jumpCount != 0) return false
-            if (!commandSucceeded("$binary -t mangle -F $MISH_CHAIN")) return false
-            for (line in expectedChainLines) {
-                if (!commandSucceeded("$binary -t mangle $line")) return false
+            if (jumpCount != 0) return CellularRootPolicyFailure.MangleVerificationFailed
+            if (!commandSucceeded("$binary -t mangle -F $MISH_CHAIN")) {
+                return CellularRootPolicyFailure.MangleChainCreationFailed
             }
-            snapshot = mangleOutputOrNull(binary) ?: return false
+            for (line in expectedChainLines) {
+                if (!commandSucceeded("$binary -t mangle $line")) {
+                    return CellularRootPolicyFailure.OwnerNewMarkRuleFailed
+                }
+            }
+            snapshot = mangleOutputOrNull(binary) ?: return CellularRootPolicyFailure.MangleVerificationFailed
             chainExists = snapshot.any { it == "-N $MISH_CHAIN" }
             actualChainLines = snapshot.filter { it.startsWith("-A $MISH_CHAIN ") }
             jumpCount = snapshot.count { it == outputJump }
             if (!chainExists || actualChainLines != expectedChainLines || jumpCount != 0) {
-                return false
+                return CellularRootPolicyFailure.MangleVerificationFailed
             }
         }
 
         if (jumpCount == 0) {
-            if (!commandSucceeded("$binary -t mangle $outputJump")) return false
+            if (!commandSucceeded("$binary -t mangle $outputJump")) {
+                return CellularRootPolicyFailure.OutputJumpCreationFailed
+            }
             jumpCount = 1
         }
         while (jumpCount > 1) {
             if (!commandSucceeded("$binary -t mangle ${outputJump.replaceFirst("-A ", "-D ")}")) {
-                return false
+                return CellularRootPolicyFailure.OutputJumpCreationFailed
             }
             jumpCount -= 1
         }
 
-        snapshot = mangleOutputOrNull(binary) ?: return false
-        return snapshot.count { it == outputJump } == 1 &&
+        snapshot = mangleOutputOrNull(binary) ?: return CellularRootPolicyFailure.MangleVerificationFailed
+        return if (snapshot.count { it == outputJump } == 1 &&
             snapshot.any { it == "-N $MISH_CHAIN" } &&
             snapshot.filter { it.startsWith("-A $MISH_CHAIN ") } == expectedChainLines
+        ) {
+            null
+        } else {
+            CellularRootPolicyFailure.MangleVerificationFailed
+        }
     }
 
     private fun removeLegacySelectors(): Boolean =
@@ -493,38 +512,6 @@ class CellularRootPolicy internal constructor(
         return mangleOutputOrNull(binary)?.none { it.contains(MISH_CHAIN) } == true
     }
 
-    private fun discoverValidatedIpv4Table(iface: String): String? {
-        // Android/iproute output for `route show table all` does not consistently retain the
-        // originating table token on every default-route line. Treat the complete RPDB snapshot
-        // as the candidate authority, then validate each candidate table directly. This remains
-        // fail-closed on no candidate, ambiguity, partial output or interface contradiction.
-        val ruleLines = ruleOutputOrNull(IPV4_RULE_SHOW) ?: return null
-        val referencedTables = ruleLines
-            .mapNotNull { line ->
-                Regex("""(?:^|\s)(?:lookup|table)\s+([^\s]+)(?:\s|$)""")
-                    .find(line)
-                    ?.groupValues
-                    ?.get(1)
-                    ?.takeIf(::isSafeTableToken)
-            }
-            .distinct()
-
-        val tables = referencedTables.filter { candidate ->
-            val result = runRoot("ip -4 route show table $candidate default")
-            !result.timedOut && result.outputComplete && result.exitCode == 0 &&
-                result.stdout.lineSequence()
-                    .map(String::trim)
-                    .any { line ->
-                        (line.startsWith("default ") || line == "default") &&
-                            Regex("""(?:^|\s)dev\s+${Regex.escape(iface)}(?:\s|$)""")
-                                .containsMatchIn(line)
-                    }
-        }
-
-        if (tables.size != 1) return null
-        return tables.single()
-    }
-
     private fun replaceIpv4Lookup(table: String): Boolean {
         val initialRules = ruleOutputOrNull(IPV4_RULE_SHOW) ?: return false
         val existing = ownedIpv4LookupTables(initialRules)
@@ -553,45 +540,21 @@ class CellularRootPolicy internal constructor(
             ?.isEmpty() == true
     }
 
-    private fun verifyIpv4Path(iface: String): Boolean {
-        val lookup = runRoot("ip -4 route get 1.1.1.1 mark $MARK_HEX")
-        if (lookup.timedOut || !lookup.outputComplete || lookup.exitCode != 0) return false
-        return Regex("""(?:^|\s)dev\s+${Regex.escape(iface)}(?:\s|$)""")
-            .containsMatchIn(lookup.stdout)
-    }
-
     private fun ownedIpv4LookupTables(lines: List<String>): List<String> = lines.mapNotNull { line ->
         OWNED_IPV4_LOOKUP_REGEX.matchEntire(line.trim())?.groupValues?.get(1)
-    }.filter { isSafeTableToken(it) }.distinct()
+    }.filter(RootPolicySnapshot::isSafeTableToken).distinct()
 
     private fun isOwnedIpv4Guard(line: String): Boolean = OWNED_IPV4_GUARD_REGEX.matches(line.trim())
     private fun isOwnedIpv6Guard(line: String): Boolean = OWNED_IPV6_GUARD_REGEX.matches(line.trim())
 
-    private fun ruleOutputOrNull(command: String): List<String>? {
-        val result = runRoot(command)
-        if (result.timedOut || !result.outputComplete || result.exitCode != 0) return null
-        return result.stdout.lineSequence().map(String::trim).filter(String::isNotEmpty).toList()
-    }
+    private fun ruleOutputOrNull(command: String): List<String>? = executor.lines(command)
 
-    private fun mangleOutputOrNull(binary: String): List<String>? = ruleOutputOrNull("$binary -t mangle -S")
+    private fun mangleOutputOrNull(binary: String): List<String>? = executor.mangleLines(binary)
 
-    private fun commandSucceeded(command: String): Boolean {
-        val result = runRoot(command)
-        return !result.timedOut && result.outputComplete && result.exitCode == 0
-    }
+    private fun commandSucceeded(command: String): Boolean = executor.commandSucceeded(command)
 
-    private fun removeExactRule(checkCommand: String, deleteCommand: String): Boolean {
-        repeat(MAX_RECONCILE_PASSES) {
-            val check = runRoot(checkCommand)
-            if (check.timedOut || !check.outputComplete) return false
-            if (check.exitCode != 0) return true
-            if (!commandSucceeded(deleteCommand)) return false
-        }
-        val finalCheck = runRoot(checkCommand)
-        return !finalCheck.timedOut && finalCheck.outputComplete && finalCheck.exitCode != 0
-    }
-
-    private fun runRoot(command: String): RootProcessResult = process.run(listOf("su", "-c", command))
+    private fun removeExactRule(checkCommand: String, deleteCommand: String): Boolean =
+        executor.removeExactRule(checkCommand, deleteCommand, MAX_RECONCILE_PASSES)
 
     private fun ipv4OutputJump(): String = "-A OUTPUT -m owner --uid-owner $productUid -j $MISH_CHAIN"
     private fun ipv6OutputJump(): String = "-A OUTPUT -m owner --uid-owner $productUid -j $MISH_CHAIN"
@@ -690,6 +653,14 @@ class CellularRootPolicy internal constructor(
     private enum class PolicySpaceAudit { Clean, Collision, Unavailable }
     private enum class PolicyIdentityResolution { Selected, Collision, Unavailable }
 
+    private sealed interface ManglePolicyResult {
+        data object Enforced : ManglePolicyResult
+
+        data class Failed(
+            val failure: CellularRootPolicyFailure,
+        ) : ManglePolicyResult
+    }
+
     private data class PolicyIdentity(
         val markHex: String,
         val markValue: ULong,
@@ -719,14 +690,6 @@ class CellularRootPolicy internal constructor(
         const val IP6TABLES = "ip6tables"
         const val IPV4_RULE_SHOW = "ip -4 rule show"
         const val IPV6_RULE_SHOW = "ip -6 rule show"
-        const val IPV4_FULL_MASK = 0xffffffffUL
-        val WHITESPACE_REGEX = Regex("""\s+""")
-
-        fun isSafeInterfaceName(value: String): Boolean =
-            value.length in 1..15 && Regex("""[A-Za-z0-9_.-]+""").matches(value)
-
-        fun isSafeTableToken(value: String): Boolean =
-            value.length in 1..32 && Regex("""[A-Za-z0-9_.-]+""").matches(value)
     }
 
     private val POLICY_CANDIDATES: List<PolicyIdentity>

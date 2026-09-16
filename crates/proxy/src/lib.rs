@@ -1,8 +1,27 @@
 //! Proxy Serving natural-owner capability.
 //!
-//! Owns the vendor-neutral listener and public authentication policy. Vendor JSON,
-//! Mesh endpoint discovery, credential persistence, cellular selection, and child
+//! Owns the vendor-neutral listener, target and public authentication policy. Vendor JSON,
+//! Mesh endpoint discovery, credential persistence, cellular selection, DNS effects and child
 //! process lifecycle remain outside this capability.
+
+mod http_connect;
+mod mixed;
+mod session;
+mod socks5;
+mod target;
+
+pub use http_connect::{HttpConnectError, parse_http_connect_request};
+pub use mixed::{
+    HttpConnectStreamError, MixedConnectError, accept_http_connect_stream, accept_mixed_connect,
+};
+pub use session::{
+    PreparedProxySession, ProxyOutboundConnectError, ProxyOutboundConnector, ProxyRelayStats,
+    ProxySessionError, prepare_proxy_session, serve_proxy_session,
+};
+pub use socks5::{
+    Socks5ProtocolError, Socks5Reply, Socks5SessionError, accept_socks5_connect, write_socks5_reply,
+};
+pub use target::{ProxyConnectTarget, ProxyTargetError, ProxyTargetHost};
 
 use std::{error::Error, fmt, net::IpAddr};
 
@@ -38,10 +57,6 @@ const CANONICAL_LISTENERS: [ProxyListener; 3] = [
     },
 ];
 
-/// Returns the single canonical product listener contract.
-///
-/// Composition adapters may project these facts into transport mappings or platform health
-/// checks, but must not duplicate the port values or redefine protocol ownership.
 pub const fn canonical_listeners() -> &'static [ProxyListener; 3] {
     &CANONICAL_LISTENERS
 }
@@ -59,21 +74,17 @@ impl ProxyCredentialMaterial {
     ) -> Result<Self, ProxyPolicyError> {
         let username = username.into();
         let password = password.into();
-
         if username.trim().is_empty() {
             return Err(ProxyPolicyError::EmptyUsername);
         }
         if password.trim().is_empty() {
             return Err(ProxyPolicyError::EmptyPassword);
         }
-
         Ok(Self { username, password })
     }
-
     pub fn username(&self) -> &str {
         &self.username
     }
-
     pub fn password(&self) -> &str {
         &self.password
     }
@@ -96,8 +107,6 @@ pub struct ProxyServingPlan {
 }
 
 impl ProxyServingPlan {
-    /// Builds the canonical public serving plan for an exact address supplied by the
-    /// Transport/composition boundary. Wildcard exposure is forbidden fail-closed.
     pub fn canonical(
         listen_address: IpAddr,
         credentials: ProxyCredentialMaterial,
@@ -105,23 +114,17 @@ impl ProxyServingPlan {
         if listen_address.is_unspecified() {
             return Err(ProxyPolicyError::WildcardListenAddress);
         }
-
         Ok(Self {
             listen_address,
             credentials,
         })
     }
-
     pub fn listen_address(&self) -> IpAddr {
         self.listen_address
     }
-
     pub fn listeners(&self) -> &'static [ProxyListener; 3] {
         canonical_listeners()
     }
-
-    /// Runtime-resolved material consumed by the serving adapter. This capability owns
-    /// authentication semantics, not durable credential storage.
     pub fn credentials(&self) -> &ProxyCredentialMaterial {
         &self.credentials
     }
@@ -136,25 +139,21 @@ pub enum ProxyPolicyError {
 
 impl fmt::Display for ProxyPolicyError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let message = match self {
+        formatter.write_str(match self {
             Self::WildcardListenAddress => "wildcard proxy exposure is forbidden",
             Self::EmptyUsername => "public proxy username must be non-empty",
             Self::EmptyPassword => "public proxy password must be non-empty",
-        };
-        formatter.write_str(message)
+        })
     }
 }
-
 impl Error for ProxyPolicyError {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
     fn credentials() -> ProxyCredentialMaterial {
         ProxyCredentialMaterial::new("ci-user", "ci-password").expect("valid credentials")
     }
-
     #[test]
     fn canonical_listener_contract_is_fixed() {
         assert_eq!(
@@ -162,23 +161,22 @@ mod tests {
             &[
                 ProxyListener {
                     protocol: ProxyProtocol::Mixed,
-                    port: 1080,
+                    port: 1080
                 },
                 ProxyListener {
                     protocol: ProxyProtocol::Socks5,
-                    port: 1081,
+                    port: 1081
                 },
                 ProxyListener {
                     protocol: ProxyProtocol::Http,
-                    port: 3128,
+                    port: 3128
                 },
-            ],
+            ]
         );
         let plan = ProxyServingPlan::canonical(IpAddr::from([127, 0, 0, 1]), credentials())
             .expect("explicit address");
         assert_eq!(plan.listeners(), canonical_listeners());
     }
-
     #[test]
     fn wildcard_ipv4_and_ipv6_are_rejected() {
         for address in ["0.0.0.0", "::"] {
@@ -188,26 +186,23 @@ mod tests {
             assert_eq!(error, ProxyPolicyError::WildcardListenAddress);
         }
     }
-
     #[test]
     fn explicit_loopback_is_allowed_for_bounded_local_acceptance() {
         let plan = ProxyServingPlan::canonical(IpAddr::from([127, 0, 0, 1]), credentials())
-            .expect("explicit loopback is not wildcard exposure");
+            .expect("explicit loopback");
         assert_eq!(plan.listen_address(), IpAddr::from([127, 0, 0, 1]));
     }
-
     #[test]
     fn public_authentication_material_cannot_be_empty() {
         assert_eq!(
             ProxyCredentialMaterial::new("", "password"),
-            Err(ProxyPolicyError::EmptyUsername),
+            Err(ProxyPolicyError::EmptyUsername)
         );
         assert_eq!(
             ProxyCredentialMaterial::new("user", "  "),
-            Err(ProxyPolicyError::EmptyPassword),
+            Err(ProxyPolicyError::EmptyPassword)
         );
     }
-
     #[test]
     fn credential_debug_output_is_redacted() {
         let material = ProxyCredentialMaterial::new("visible-user", "secret-password")

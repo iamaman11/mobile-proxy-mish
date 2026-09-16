@@ -9,7 +9,7 @@ import com.mobileproxymish.app.cellular.CellularRuntimeSnapshot
 import com.mobileproxymish.ffi.CellularAdmissionReason
 import com.mobileproxymish.ffi.CellularAdmissionState
 import com.mobileproxymish.ffi.ProductReadinessState
-import com.mobileproxymish.ffi.RuntimeProcessFailure
+import com.mobileproxymish.ffi.ProxyServingFailure
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -117,25 +117,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             "cellular.root_policy_rule_mutation_failed"
         CellularRootPolicyFailure.VerificationFailed ->
             "cellular.root_policy_verification_failed"
+        CellularRootPolicyFailure.MangleChainCreationFailed ->
+            "cellular.root_policy_mangle_chain_creation_failed"
+        CellularRootPolicyFailure.OwnerNewMarkRuleFailed ->
+            "cellular.root_policy_owner_new_mark_rule_failed"
+        CellularRootPolicyFailure.OutputJumpCreationFailed ->
+            "cellular.root_policy_output_jump_creation_failed"
+        CellularRootPolicyFailure.MangleVerificationFailed ->
+            "cellular.root_policy_mangle_verification_failed"
+        CellularRootPolicyFailure.LookupRuleCreationFailed ->
+            "cellular.root_policy_lookup_rule_creation_failed"
+        CellularRootPolicyFailure.RouteLookupVerificationFailed ->
+            "cellular.root_policy_route_lookup_verification_failed"
+        CellularRootPolicyFailure.ExactCleanupFailed ->
+            "cellular.root_policy_exact_cleanup_failed"
     }
 
-    private fun proxyReasonCode(reason: RuntimeProcessFailure): String = when (reason) {
-        RuntimeProcessFailure.NATIVE_RUNTIME_MISSING -> "proxy.native_runtime_missing"
-        RuntimeProcessFailure.STALE_PROCESS_IDENTITY_MISMATCH ->
-            "proxy.stale_process_identity_mismatch"
-        RuntimeProcessFailure.EXTERNAL_CREDENTIAL_UNAVAILABLE ->
+    private fun proxyReasonCode(reason: ProxyServingFailure): String = when (reason) {
+        ProxyServingFailure.NATIVE_RUNTIME_MISSING -> "proxy.native_runtime_missing"
+        ProxyServingFailure.EXTERNAL_CREDENTIAL_UNAVAILABLE ->
             "proxy.external_credential_unavailable"
-        RuntimeProcessFailure.PRIVATE_BRIDGE_UNAVAILABLE -> "proxy.private_bridge_unavailable"
-        RuntimeProcessFailure.CONFIGURATION_REJECTED -> "proxy.configuration_rejected"
-        RuntimeProcessFailure.CHILD_LAUNCH_FAILED -> "proxy.child_launch_failed"
-        RuntimeProcessFailure.CHILD_EXECUTOR_REJECTED -> "proxy.child_executor_rejected"
-        RuntimeProcessFailure.CHILD_PROCESS_START_FAILED -> "proxy.child_process_start_failed"
-        RuntimeProcessFailure.CHILD_PID_OR_PERSISTENCE_FAILED ->
-            "proxy.child_pid_or_persistence_failed"
-        RuntimeProcessFailure.HEALTH_CHECK_FAILED -> "proxy.health_check_failed"
-        RuntimeProcessFailure.CHILD_EXITED -> "proxy.child_exited"
-        RuntimeProcessFailure.PRIVATE_BRIDGE_UNHEALTHY -> "proxy.private_bridge_unhealthy"
-        RuntimeProcessFailure.CLEANUP_FAILED -> "proxy.cleanup_failed"
+        ProxyServingFailure.CELLULAR_CONNECTOR_UNAVAILABLE ->
+            "proxy.cellular_connector_unavailable"
+        ProxyServingFailure.PROXY_CONFIGURATION_REJECTED ->
+            "proxy.configuration_rejected"
+        ProxyServingFailure.MIXED_LISTENER_UNAVAILABLE ->
+            "proxy.mixed_listener_unavailable"
+        ProxyServingFailure.SOCKS5_LISTENER_UNAVAILABLE ->
+            "proxy.socks5_listener_unavailable"
+        ProxyServingFailure.HTTP_CONNECT_LISTENER_UNAVAILABLE ->
+            "proxy.http_connect_listener_unavailable"
+        ProxyServingFailure.EXECUTOR_UNAVAILABLE -> "proxy.executor_unavailable"
+        ProxyServingFailure.RUNTIME_STATE_UNAVAILABLE -> "proxy.runtime_state_unavailable"
+        ProxyServingFailure.SERVING_UNHEALTHY -> "proxy.serving_unhealthy"
+        ProxyServingFailure.SHUTDOWN_FAILED -> "proxy.shutdown_failed"
     }
 
     private fun reasonCode(reason: CellularAdmissionReason): String = when (reason) {

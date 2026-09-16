@@ -127,7 +127,7 @@ jobs:
           state = str(pr.get('state') or '')
           merged = bool(pr.get('merged'))
           if state not in {'open', 'closed'} or (state == 'closed' and not merged):
-              raise SystemExit('device cycle requires an open PR or a merged accepted integration PR')
+              raise SystemExit('device cycle requires an open PR or a merged PR for observation-only diagnostics')
           if str(pr.get('number')) != requested_pr:
               raise SystemExit('device cycle PR identity mismatch')
           if head_repo != repository:
@@ -137,14 +137,12 @@ jobs:
           if not branch:
               raise SystemExit('device cycle PR head branch is missing')
           if mode in {'full', 'install_only'}:
-              if base != 'fix/root-policy-reconciliation':
-                  raise SystemExit('installing a device candidate requires the integration base')
-              if state == 'open' and pr.get('draft') is not False:
+              if state != 'open':
+                  raise SystemExit('installing a device candidate requires an open PR to main')
+              if base != 'main':
+                  raise SystemExit('installing a device candidate requires base main')
+              if pr.get('draft') is not False:
                   raise SystemExit('installing a device candidate requires a ready PR')
-              if state == 'closed':
-                  merge_sha = str(pr.get('merge_commit_sha') or '')
-                  if not merged or not pr.get('merged_at') or not re.fullmatch(r'[0-9a-f]{40}', merge_sha):
-                      raise SystemExit('merged candidate PR lacks immutable merge identity')
           print(head)
           print(branch)
           print('merged' if merged else 'open')
@@ -153,19 +151,6 @@ jobs:
           SOURCE_SHA="${prmeta[0]}"
           HEAD_BRANCH="${prmeta[1]}"
           PR_LIFECYCLE="${prmeta[2]}"
-
-          if [[ "$PR_LIFECYCLE" == 'merged' && ( "$MODE" == 'full' || "$MODE" == 'install_only' ) ]]; then
-            gh api "repos/$GITHUB_REPOSITORY/compare/$SOURCE_SHA...fix/root-policy-reconciliation" > "$root/integration-compare.json"
-            python3 - "$root/integration-compare.json" "$SOURCE_SHA" <<'PY'
-          import json, sys
-          path, source = sys.argv[1:]
-          data = json.load(open(path, encoding='utf-8'))
-          status = str(data.get('status') or '')
-          merge_base = str((data.get('merge_base_commit') or {}).get('sha') or '')
-          if status not in {'ahead', 'identical'} or merge_base != source:
-              raise SystemExit('merged candidate source is not contained in current integration lineage')
-          PY
-          fi
 
           ARTIFACT_ID=''
           ARTIFACT_NAME=''

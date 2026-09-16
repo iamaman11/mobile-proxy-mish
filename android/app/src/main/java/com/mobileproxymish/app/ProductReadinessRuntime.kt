@@ -1,11 +1,9 @@
 package com.mobileproxymish.app
 
-import android.util.Base64
 import com.mobileproxymish.app.cellular.CellularRuntimeBridge
 import com.mobileproxymish.app.cellular.CellularRuntimeSnapshot
 import com.mobileproxymish.ffi.CellularAdmissionState
 import com.mobileproxymish.ffi.EgressProbeObservationView
-import com.mobileproxymish.ffi.EgressProbeOutcome
 import com.mobileproxymish.ffi.MeshAdmissionState
 import com.mobileproxymish.ffi.MeshAdmissionView
 import com.mobileproxymish.ffi.ProbeBindingView
@@ -13,25 +11,14 @@ import com.mobileproxymish.ffi.ProbeTicketView
 import com.mobileproxymish.ffi.ProductReadinessController
 import com.mobileproxymish.ffi.ProductReadinessFactsView
 import com.mobileproxymish.ffi.ProductReadinessState
-import com.mobileproxymish.ffi.ReadinessProbeTargetView
 import com.mobileproxymish.ffi.egressProbeBudgetMs
-import com.mobileproxymish.ffi.proxyHttpConnectPort
+import com.mobileproxymish.ffi.readinessProbeBindingIfEligible
 import com.mobileproxymish.ffi.readinessProbeTarget
-import java.io.ByteArrayOutputStream
 import java.io.Closeable
-import java.io.IOException
-import java.net.InetSocketAddress
-import java.net.Socket
-import java.net.SocketTimeoutException
-import java.nio.charset.StandardCharsets
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
-import javax.net.ssl.HttpsURLConnection
-import javax.net.ssl.SSLException
-import javax.net.ssl.SSLSocket
-import javax.net.ssl.SSLSocketFactory
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -44,15 +31,12 @@ import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 
 /**
- * Android effect/composition adapter for the Rust D2 readiness/application contracts.
+ * Thin Android composition adapter for the Rust Readiness/Application contracts.
  *
- * This object owns no readiness truth and caches no leaf owner state. Structural observations are
- * read from their existing owner projections, Rust invalidates/issues one freshness ticket, and the
- * only mutable UI value is the latest Rust `project()` result. The concrete network effect is one
- * authenticated HTTP CONNECT through the PRODUCT loopback proxy followed by an HTTPS-validated TLS
- * handshake. The CONNECT authority remains a hostname, so Android never resolves the public target;
- * sing-box -> private Cellular Egress SOCKS -> cellular-owned scoped DNS remains the only target
- * resolver path.
+ * Rust owns freshness, probe eligibility and terminal readiness projection. This adapter only
+ * assembles immutable owner projections, executes one requested Android CONNECT+TLS effect through
+ * `AuthenticatedEgressProbe`, and returns the typed observation. The public hostname is never
+ * resolved by Android: native Proxy Serving preserves it until the exact Cellular DNS owner.
  */
 internal class ProductReadinessRuntime(
     private val runtimeGeneration: ULong,
@@ -63,12 +47,13 @@ internal class ProductReadinessRuntime(
 ) : Closeable {
     private val controller = ProductReadinessController()
     private val closed = AtomicBoolean(false)
-    private val socketLock = Any()
     private val observationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val probeExecutor = Executors.newSingleThreadExecutor { task ->
         Thread(task, "mish-readiness-probe").apply { isDaemon = true }
     }
-    private var activeSocket: Socket? = null
+    private val probeEffect = AuthenticatedEgressProbe { freshness ->
+        !closed.get() && controller.expectedFreshness() == freshness
+    }
     private val mutableState = MutableStateFlow(projectUnknown())
     private var observationJob: Job? = null
     private var lastStructuralFacts: ProductReadinessFactsView? = null
@@ -76,10 +61,7 @@ internal class ProductReadinessRuntime(
     val state: StateFlow<ProductReadinessState>
         get() = mutableState.asStateFlow()
 
-    /**
-     * Sanitized structural prerequisite projection for device diagnostics. It deliberately exposes
-     * no endpoint, DNS, credential material, route/table, network handle, or probe response.
-     */
+    /** Sanitized owner facts only; no endpoint, DNS, credentials, route or probe response. */
     internal fun diagnosticObservation(): ProductReadinessDiagnostic {
         val facts = currentFacts()
         val admission = (cellularRuntime.snapshot.value as? CellularRuntimeSnapshot.OwnerSnapshot)
@@ -89,11 +71,10 @@ internal class ProductReadinessRuntime(
             cellularReason = admission?.reason?.name ?: "NONE",
             cellularAdmitted = facts.cellularAdmitted,
             rootPolicyVerified = facts.rootPolicyVerified,
-            privateBridgeHealthy = facts.privateBridgeHealthy,
             proxyHealthy = facts.proxyHealthy,
             credentialActive = facts.credentialActive,
             meshAdmitted = facts.meshAdmitted,
-            bindingEligible = candidateBinding(facts) != null,
+            bindingEligible = eligibleBinding(facts) != null,
         )
     }
 
@@ -111,24 +92,20 @@ internal class ProductReadinessRuntime(
         if (closed.get()) return
 
         val facts = currentFacts(observation)
-        // Mesh observer callbacks carry a monotonically increasing local observation sequence.
-        // That sequence is not a readiness fact: repeating the same admitted endpoint/epoch must
-        // not continually cancel a DNS+TLS probe before it can complete. Only semantic owner facts
-        // are allowed to invalidate the current probe binding.
+        // Callback sequence noise is not a readiness fact. Only semantic owner facts invalidate the
+        // current binding, so duplicate equivalent Mesh observations cannot starve the probe.
         if (facts == lastStructuralFacts) return
         lastStructuralFacts = facts
 
-        // Structural change invalidates any older in-flight/completed probe before its socket is
-        // closed. A concurrent late completion therefore cannot publish READY even for one frame.
         if (runCatching { controller.invalidateProbe() }.isFailure) {
-            closeActiveSocket()
+            probeEffect.cancel()
             mutableState.value = projectUnknown()
             return
         }
-        closeActiveSocket()
+        probeEffect.cancel()
 
         mutableState.value = projectOrUnknown(facts, null)
-        val binding = candidateBinding(facts) ?: return
+        val binding = eligibleBinding(facts) ?: return
         val ticket = try {
             controller.beginProbe(binding)
         } catch (_: Exception) {
@@ -168,8 +145,8 @@ internal class ProductReadinessRuntime(
         }
 
         val started = System.nanoTime()
-        val outcome = performAuthenticatedProxyTlsProbe(
-            ticket = ticket,
+        val outcome = probeEffect.execute(
+            freshness = ticket.freshness,
             target = target,
             credentials = credential.credentials,
             budgetMs = budgetMs,
@@ -185,9 +162,6 @@ internal class ProductReadinessRuntime(
             null
         } ?: return
 
-        // Re-read every owner projection after the effect. Rust compares the completed binding to
-        // those current facts; a callback that has updated a StateFlow but has not yet run this
-        // adapter's collector still cannot make a stale success READY.
         val facts = currentFacts()
         val projected = projectOrUnknown(facts, completed)
         if (controller.expectedFreshness() == completed.freshness) {
@@ -195,150 +169,20 @@ internal class ProductReadinessRuntime(
         }
     }
 
-    private fun performAuthenticatedProxyTlsProbe(
-        ticket: ProbeTicketView,
-        target: ReadinessProbeTargetView,
-        credentials: ProxyRuntimeCredentials,
-        budgetMs: Long,
-    ): EgressProbeOutcome {
-        val started = System.nanoTime()
-        val deadline = started + TimeUnit.MILLISECONDS.toNanos(budgetMs)
-        val socket = Socket()
-        if (!registerActiveSocket(ticket, socket)) {
-            socket.close()
-            return EgressProbeOutcome.TRANSPORT_FAILED
-        }
-
-        try {
-            socket.connect(
-                InetSocketAddress(LOOPBACK, proxyHttpConnectPort().toInt()),
-                remainingMillis(deadline),
-            )
-            socket.soTimeout = remainingMillis(deadline)
-
-            val authority = "${target.hostname}:${target.port}"
-            val basic = Base64.encodeToString(
-                "${credentials.username}:${credentials.password}"
-                    .toByteArray(StandardCharsets.UTF_8),
-                Base64.NO_WRAP,
-            )
-            val request = buildString {
-                append("CONNECT ")
-                append(authority)
-                append(" HTTP/1.1\r\nHost: ")
-                append(authority)
-                append("\r\nProxy-Authorization: Basic ")
-                append(basic)
-                append("\r\nProxy-Connection: keep-alive\r\n\r\n")
-            }.toByteArray(StandardCharsets.US_ASCII)
-            socket.getOutputStream().apply {
-                write(request)
-                flush()
-            }
-
-            val header = readBoundedConnectHeader(socket, deadline)
-                ?: return EgressProbeOutcome.TRANSPORT_FAILED
-            val status = classifyProxyConnectStatusLine(header.lineSequence().firstOrNull().orEmpty())
-            if (status != EgressProbeOutcome.SUCCEEDED) return status
-
-            val sslFactory = SSLSocketFactory.getDefault() as? SSLSocketFactory
-                ?: return EgressProbeOutcome.TLS_FAILED
-            val ssl = sslFactory.createSocket(
-                socket,
-                target.hostname,
-                target.port.toInt(),
-                false,
-            ) as? SSLSocket ?: return EgressProbeOutcome.TLS_FAILED
-            ssl.use {
-                it.soTimeout = remainingMillis(deadline)
-                it.startHandshake()
-                if (!HttpsURLConnection.getDefaultHostnameVerifier().verify(target.hostname, it.session)) {
-                    return EgressProbeOutcome.TLS_FAILED
-                }
-            }
-            return EgressProbeOutcome.SUCCEEDED
-        } catch (_: SocketTimeoutException) {
-            return EgressProbeOutcome.TIMEOUT
-        } catch (_: SSLException) {
-            return EgressProbeOutcome.TLS_FAILED
-        } catch (_: IOException) {
-            return EgressProbeOutcome.TRANSPORT_FAILED
-        } catch (_: RuntimeException) {
-            return EgressProbeOutcome.TRANSPORT_FAILED
-        } finally {
-            synchronized(socketLock) {
-                if (activeSocket === socket) activeSocket = null
-            }
-            runCatching { socket.close() }
-        }
-    }
-
-    private fun registerActiveSocket(ticket: ProbeTicketView, socket: Socket): Boolean =
-        synchronized(socketLock) {
-            if (closed.get() || controller.expectedFreshness() != ticket.freshness) {
-                false
-            } else {
-                activeSocket?.let { runCatching { it.close() } }
-                activeSocket = socket
-                true
-            }
-        }
-
-    private fun closeActiveSocket() {
-        synchronized(socketLock) {
-            activeSocket?.let { runCatching { it.close() } }
-            activeSocket = null
-        }
-    }
-
-    private fun readBoundedConnectHeader(socket: Socket, deadline: Long): String? {
-        val input = socket.getInputStream()
-        val output = ByteArrayOutputStream()
-        var suffix = 0
-        while (output.size() < MAX_CONNECT_HEADER_BYTES) {
-            socket.soTimeout = remainingMillis(deadline)
-            val next = input.read()
-            if (next < 0) return null
-            output.write(next)
-            suffix = when {
-                suffix == 0 && next == '\r'.code -> 1
-                suffix == 1 && next == '\n'.code -> 2
-                suffix == 2 && next == '\r'.code -> 3
-                suffix == 3 && next == '\n'.code -> 4
-                next == '\r'.code -> 1
-                else -> 0
-            }
-            if (suffix == 4) {
-                return output.toString(StandardCharsets.US_ASCII.name())
-            }
-        }
-        return null
-    }
-
-    private fun remainingMillis(deadline: Long): Int {
-        val remainingNanos = deadline - System.nanoTime()
-        if (remainingNanos <= 0L) throw SocketTimeoutException("readiness probe deadline expired")
-        return TimeUnit.NANOSECONDS
-            .toMillis(remainingNanos)
-            .coerceAtLeast(1L)
-            .coerceAtMost(Int.MAX_VALUE.toLong())
-            .toInt()
-    }
-
-    private fun currentFacts(observation: StructuralObservation = StructuralObservation(
-        cellularRuntime.snapshot.value,
-        proxyRuntime.snapshot.value,
-        meshRuntime.snapshot.value,
-    )): ProductReadinessFactsView {
-        val cellular = observation.cellular
-        val ownerAdmission = (cellular as? CellularRuntimeSnapshot.OwnerSnapshot)?.admission
+    private fun currentFacts(
+        observation: StructuralObservation = StructuralObservation(
+            cellularRuntime.snapshot.value,
+            proxyRuntime.snapshot.value,
+            meshRuntime.snapshot.value,
+        ),
+    ): ProductReadinessFactsView {
+        val ownerAdmission = (observation.cellular as? CellularRuntimeSnapshot.OwnerSnapshot)?.admission
         val cellularGeneration = ownerAdmission?.lastSequence
         val cellularAdmitted = ownerAdmission?.state == CellularAdmissionState.ADMITTED
 
         val proxyDiagnostic = proxyRuntime.diagnosticObservation()
         val proxyHealthy = observation.proxy == ProxyRuntimeSnapshot.Running &&
-            proxyDiagnostic.childAlive &&
-            proxyDiagnostic.privateBridgeHealthy &&
+            proxyDiagnostic.healthy &&
             proxyDiagnostic.credentialVersion != null
         val credential = credentialStore.currentReadinessSnapshot()
         val mesh = observation.mesh
@@ -346,11 +190,10 @@ internal class ProductReadinessRuntime(
         return ProductReadinessFactsView(
             cellularOwnerGeneration = cellularGeneration,
             cellularAdmitted = cellularAdmitted,
-            // CellularRuntimeBridge publishes an admitted OwnerSnapshot only after exact root-policy
-            // reconciliation and Rust owner authorization for that same admission sequence.
+            // The Cellular adapter publishes ADMITTED only after exact root-policy reconcile and
+            // Rust owner authorization for that same generation.
             rootPolicyVerified = cellularAdmitted,
             runtimeGeneration = runtimeGeneration,
-            privateBridgeHealthy = proxyDiagnostic.privateBridgeHealthy,
             proxyRuntimeGeneration = runtimeGeneration,
             proxyServingGeneration = if (proxyHealthy) runtimeGeneration else null,
             proxyCredentialVersion = if (proxyHealthy) proxyDiagnostic.credentialVersion else null,
@@ -360,38 +203,15 @@ internal class ProductReadinessRuntime(
             meshRuntimeGeneration = if (mesh != null) runtimeGeneration else null,
             meshAdmissionEpoch = mesh?.admissionEpoch,
             meshAdmitted = mesh?.state == MeshAdmissionState.ADMITTED,
-            // Public ingress is an effect of READY, never an input to it. Including its transient
-            // listener lifecycle here would create a READY -> ingress -> invalidate-READY loop.
+            // Public ingress is an effect of READY, never an input to READY.
             meshIngressRunning = false,
         )
     }
 
-    private fun candidateBinding(facts: ProductReadinessFactsView): ProbeBindingView? {
-        val cellularGeneration = facts.cellularOwnerGeneration ?: return null
-        val proxyGeneration = facts.proxyServingGeneration ?: return null
-        val proxyCredential = facts.proxyCredentialVersion ?: return null
-        val credentialVersion = facts.credentialVersion ?: return null
-        val meshEpoch = facts.meshAdmissionEpoch ?: return null
-        if (!facts.cellularAdmitted ||
-            !facts.rootPolicyVerified ||
-            !facts.privateBridgeHealthy ||
-            !facts.proxyHealthy ||
-            !facts.credentialActive ||
-            !facts.meshAdmitted ||
-            facts.runtimeGeneration != runtimeGeneration ||
-            facts.proxyRuntimeGeneration != runtimeGeneration ||
-            facts.meshRuntimeGeneration != runtimeGeneration ||
-            proxyCredential != credentialVersion
-        ) {
-            return null
-        }
-        return ProbeBindingView(
-            cellularOwnerGeneration = cellularGeneration,
-            runtimeGeneration = runtimeGeneration,
-            proxyServingGeneration = proxyGeneration,
-            meshAdmissionEpoch = meshEpoch,
-            credentialVersion = credentialVersion,
-        )
+    private fun eligibleBinding(facts: ProductReadinessFactsView): ProbeBindingView? = try {
+        readinessProbeBindingIfEligible(facts)
+    } catch (_: Exception) {
+        null
     }
 
     private fun projectOrUnknown(
@@ -414,7 +234,6 @@ internal class ProductReadinessRuntime(
         cellularAdmitted = false,
         rootPolicyVerified = false,
         runtimeGeneration = null,
-        privateBridgeHealthy = false,
         proxyRuntimeGeneration = null,
         proxyServingGeneration = null,
         proxyCredentialVersion = null,
@@ -432,7 +251,7 @@ internal class ProductReadinessRuntime(
         observationJob?.cancel()
         observationJob = null
         runCatching { controller.invalidateProbe() }
-        closeActiveSocket()
+        probeEffect.cancel()
         probeExecutor.shutdownNow()
         val stopped = try {
             probeExecutor.awaitTermination(PROBE_CLOSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
@@ -453,23 +272,7 @@ internal class ProductReadinessRuntime(
     )
 
     private companion object {
-        const val LOOPBACK = "127.0.0.1"
-        const val MAX_CONNECT_HEADER_BYTES = 8_192
         const val PROBE_CLOSE_TIMEOUT_SECONDS = 2L
-    }
-}
-
-/** Pure parser used by the concrete effect; it owns no proxy policy. */
-internal fun classifyProxyConnectStatusLine(statusLine: String): EgressProbeOutcome {
-    val parts = statusLine.trim().split(Regex("\\s+"), limit = 3)
-    if (parts.size < 2 || (parts[0] != "HTTP/1.0" && parts[0] != "HTTP/1.1")) {
-        return EgressProbeOutcome.TRANSPORT_FAILED
-    }
-    val status = parts[1].toIntOrNull() ?: return EgressProbeOutcome.TRANSPORT_FAILED
-    return when {
-        status == 407 -> EgressProbeOutcome.AUTHENTICATION_FAILED
-        status in 200..299 -> EgressProbeOutcome.SUCCEEDED
-        else -> EgressProbeOutcome.TRANSPORT_FAILED
     }
 }
 
@@ -478,7 +281,6 @@ internal data class ProductReadinessDiagnostic(
     val cellularReason: String,
     val cellularAdmitted: Boolean,
     val rootPolicyVerified: Boolean,
-    val privateBridgeHealthy: Boolean,
     val proxyHealthy: Boolean,
     val credentialActive: Boolean,
     val meshAdmitted: Boolean,

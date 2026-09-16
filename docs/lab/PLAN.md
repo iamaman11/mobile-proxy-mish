@@ -1,163 +1,180 @@
 # Managed physical lab plan
 
-This document defines the stable physical-lab execution architecture. Live stage/checkpoint state belongs to Issue #135. PRODUCT/runtime ownership remains outside the lab.
+This document defines the stable physical-execution boundary. Protected `main` is the latest accepted PRODUCT + CONTROL source. Live stage status belongs to Issue #135.
 
 ## Purpose
 
-The Windows LAB is one controlled execution environment for real-device/provider evidence. It is **not** an Android release-build authority, a second product owner, a mutable status database, or a remote-control service.
+The Windows/DEVICE-1 lab is a controlled evidence executor, not a second PRODUCT control plane or build authority.
 
-The lab has two intentionally different consumption modes:
-
-```text
-DEVELOPMENT DIAGNOSTIC
-exact-head hosted debug candidate
- -> protected-main physical consumer
- -> DEVICE-1 bounded engineering evidence
-
-FORMAL ACCEPTANCE
-exact immutable RC/release bytes
- -> protected/manual acceptance workflow
- -> formal E3/E4/release evidence
-```
-
-The detailed development candidate contract is `docs/architecture/DEVELOPMENT_PIPELINE.md`. Formal release identity remains `docs/architecture/RELEASE.md`.
-
-## Ownership
+There are two distinct physical paths:
 
 ```text
-Git/GitHub
-  source, review, workflow definitions, immutable run/artifact/evidence records
-
-GitHub-hosted CI
-  development exact-head debug/test candidate production
-
-GitHub-hosted restricted release workflow
-  formal Android release build/sign/package authority
-
-GitHub Release exact tag + digest
-  formal binary distribution identity
-
-Windows lab host
-  physical execution environment and verified-byte consumer
-
-GitHub self-hosted runner
-  bounded job transport into that host
-
-repository-owned PowerShell/labctl
-  stateless verification/execution adapters
-
-Android / MISH runtime owners
-  live product facts
+1. development exact-head Device Cycle
+2. formal immutable RC/release acceptance
 ```
 
-Root/network commands executed by LAB are test/evidence authority only. ADB/root success does not substitute for PRODUCT runtime ownership of root/network behavior.
+They share trust/evidence discipline but not artifact identity or promotion authority.
 
-## Development DEVICE-1 diagnostic
+## Development Device Cycle
 
-When Issue #135 states that the next engineering decision requires a real-device fact, use the hosted candidate path rather than rebuilding on Windows:
+Use this path when the active roadmap stage needs a physical fact before merging a candidate to `main`.
+
+Canonical shape:
 
 ```text
-ready PR targeting fix/root-policy-reconciliation
- -> Integration Android Preflight full gate PASS
- -> exact artifact device-candidate-pr-<PR>-<40-hex source SHA>
- -> protected-main Device Candidate Physical workflow
- -> verify PR/head/run/artifact/digest identity
- -> self-hosted Windows LAB
- -> built-in Windows PowerShell
- -> exactly one authorized DEVICE-1
- -> verify API 30 + armeabi-v7a
- -> verify candidate.json + APK SHA-256
- -> create/reuse persistent LAB-only debug signing identity
- -> adb install -r com.mobileproxymish.app.debug
- -> collect only the bounded physical fact requested by #135
+open ready PR to main, exact PRODUCT head
+ -> successful Integration Android Preflight
+ -> immutable debug candidate artifact + digest
+ -> explicit owner /mish-cycle command after analysis
+ -> protected-main CONTROL_SHA resolves/verifies provenance
+ -> isolated Windows self-hosted runner
+ -> pinned lab tools / PowerShell runtime
+ -> consume exact artifact; NO local Android build
+ -> adb install -r when requested
+ -> pull/read back installed base.apk
+ -> verify installed digest + signing identity
+ -> launch/read-only diagnostics/current-function probe as explicitly requested
+ -> bounded sanitized evidence
+ -> STOP_FOR_ANALYSIS
+ -> merge accepted change to main
 ```
 
-Normal development consumption must not run Gradle, Cargo, cargo-ndk, UniFFI generation, NDK compilation or APK assembly locally. Portable PowerShell is not a prerequisite for this candidate path.
+A successful hosted build, merge, artifact publication or workflow completion never starts DEVICE-1 automatically.
 
-If the exact hosted candidate, digest, device identity, signing prerequisite or required tool is missing/wrong, fail closed. Do not automatically substitute another commit or start a local build.
+`Device Cycle` is the executable authority for currently supported modes and probes.
 
-A local build remains available only as an explicit engineering fallback after a separate decision. It does not inherit the identity/evidence of the hosted candidate.
+## Development artifact rules
 
-Development debug candidates are not PRODUCT release identity and cannot authorize release promotion.
+The physical runner is a consumer by default.
 
-## Formal RC/release acceptance
+Normal development physical work must not:
 
-Formal acceptance continues to use the stronger immutable-release ceremony:
+- run Gradle/Cargo/cargo-ndk/NDK compilation to manufacture a substitute APK;
+- silently fall back to another candidate;
+- clean-uninstall as the normal upgrade mechanism;
+- rotate credentials merely to make a test pass;
+- automatically repair PRODUCT/root/network state;
+- start another cycle after a result.
+
+When installing a candidate, exact installed bytes and signing identity are verified before launch/acceptance claims.
+
+Development debug candidate evidence may close the exact stage-specific physical fact recorded by #135. It is not release identity.
+
+## Formal RC/release physical acceptance
+
+Formal release uses the immutable release path in `RELEASE.md`:
 
 ```text
-PIN
- -> BUILD ONCE
- -> HASH
- -> SIGN
- -> ATTEST
- -> TEST EXACT BYTES
- -> PROMOTE EXACT BYTES
+accepted release source/version from main
+ -> restricted hosted build/sign authority
+ -> immutable manifest + digest
+ -> exact RC/release asset
+ -> protected/manual physical consumer
+ -> test exact bytes
+ -> promote exact already-tested bytes
 ```
 
-A formal physical workflow resolves an exact RC/release tag and digest, downloads those exact bytes, verifies them, and tests them without rebuilding. Release-signing private material never belongs on the self-hosted LAB.
+No debug candidate is relabeled as RC/release. No release-signing secret belongs on the physical runner.
 
-## LAB bootstrap/toolchain
-
-`lab/windows/toolchain.json` is the pinned bootstrap manifest for the broader managed LAB. For the fixed appliance profile it mirrors:
+## Physical ownership
 
 ```text
-Android min SDK = 30
-PRODUCT ABI = armeabi-v7a
-Rust Android target = armv7-linux-androideabi
-NDK = 29.0.14206865
+GitHub protected main
+  accepted PRODUCT + CONTROL source, review, workflow definitions
+
+hosted candidate/release producers
+  Android build/package authority for their respective artifact class
+
+Windows lab host / self-hosted runner
+  bounded physical execution environment and artifact consumer
+
+ADB / supported Android interfaces
+  device mechanism only
+
+Cloudflare / carrier / Android OS / Magisk
+  external live reality
+
+MISH runtime owners
+  live PRODUCT facts
 ```
 
-The normal DEVICE-1 hosted-candidate consumer requires only the bounded runtime prerequisites it actually uses (including ADB/sign/install tooling); it must not require the full local Android build toolchain merely because legacy/bootstrap workflows can provide it.
+Root commands executed by LAB are diagnostic/evidence authority only. ADB/root success never proves that PRODUCT runtime itself has the required root capability.
 
-## Fixed DEVICE-1 profile
+## Supported current PRODUCT topology
 
-Current supported physical appliance:
+Android PRODUCT is one in-process native Rust proxy runtime.
 
 ```text
-Samsung SM-A022G
-Android 11 / API 30
-armeabi-v7a / 32-bit userspace
-Magisk-rooted
+Cloudflare One Agent
+  = only Android VPN/VpnService owner
+
+MISH Android app
+  = thin Kotlin platform/effect boundary
+  = in-process Rust/UniFFI runtime
+  = NO Android external proxy child
+  = NO Android sing-box PRODUCT runtime
+
+MISH public target egress
+  = exact Cellular Egress owner
+  = exact-network target DNS
+  = root-policy-gated public sockets
+  = NO Wi-Fi/default/WARP fallback
 ```
 
-DEVICE-1 observations are physical evidence, not a second configuration owner. Raw identifiers, credentials, public IPs and unrelated logs must not be persisted in durable evidence.
+Historical `/data/adb/mobile-proxy-node`, Android sing-box binaries, watchdog/supervisor trees or similar residue are LAB hygiene only. They are not current PRODUCT state, startup prerequisites or migration inputs. If found and proven to conflict with current PRODUCT, cleanup is a separate bounded LAB-maintenance action with current package/data/UID explicitly protected.
 
-## Cellular/root physical boundary
+## PRODUCT / CONTROL provenance
 
-Cellular Egress remains the sole semantic owner of cellular admission, generation/currentness and availability. Root routing is a narrow infrastructure adapter.
-
-Physical work must preserve:
-
-- no global replacement of Android default routing;
-- no Wi-Fi/default/WARP public-egress fallback;
-- no second Android VPN/TUN;
-- stale or ambiguous authority remains fail closed;
-- temporary LAB mutations are exactly scoped and removed/verified;
-- ADB root cannot substitute for explicit PRODUCT runtime root authority.
-
-## Provider/release trust boundaries
-
-Provider credentials, release-signing secrets and protected mutations must never be exposed to an untrusted PR head or stored on the physical runner unless an explicitly accepted contract requires that exact secret there.
-
-Terraform/provider state is deployment machinery, not runtime truth. The lab remains stateless across runs except for explicitly accepted host prerequisites and the persistent LAB-only debug signing identity needed for repeatable `adb install -r` of the isolated debug package.
-
-## What the LAB must not become
-
-The LAB must not become:
-
-- an always-on daemon or HTTP/RPC command service;
-- a scheduler or generic Issue-command router;
-- a device registry;
-- a mutable readiness/status database;
-- a second PRODUCT lifecycle/cellular/readiness owner;
-- a release-signing authority;
-- a second artifact registry;
-- a mechanism that selects `latest` instead of exact identities.
-
-## Evidence law
+Accepted repository state is protected `main`. A development physical run may temporarily separate:
 
 ```text
-E1 < E2 < E3 < E4
+PRODUCT_SHA = exact open PR head under test
+CONTROL_SHA = exact protected-main Device Cycle/control implementation
+HOSTED_RUN_ID when consuming a hosted artifact
+DEVICE_CYCLE_RUN_ID
 ```
 
-Development physical diagnostics may inform engineering decisions, but weaker/debug evidence must never be promoted into stronger formal acceptance claims.
+That split is provenance only, not a second accepted source. After acceptance/merge, PRODUCT and CONTROL are together on `main` again.
+
+Do not infer architecture from stale device processes. Do not infer physical state from source.
+
+## Local-agent diagnostics
+
+A local agent may be used for a bounded missing physical fact that the current repository workflow does not expose, for example:
+
+- process/socket ownership;
+- `su` process/session count;
+- `/proc` FD/thread/resource measurements;
+- Magisk prompt observation;
+- OS-level mechanism facts.
+
+Default scope is read-only. Give one exact question, explicit allowed mutations if any, exact expected output, and stop after the evidence is returned. Relevant sanitized conclusions are written back to #135 or the natural-owner/evidence surface.
+
+The local agent is not a second architecture planner or mutable product-state database.
+
+## Device identity / prerequisites
+
+The canonical DEVICE-1 profile and exact tool requirements are enforced by executable workflow/scripts. Do not copy mutable serials or secrets into documentation.
+
+If required device/tool/artifact identity is missing or ambiguous, fail closed rather than substitute another device, build or mechanism.
+
+## Security and evidence
+
+The repository is public. Provider credentials, release-signing material, device secrets and private identifiers are never exposed to untrusted PR code or durable logs.
+
+Evidence must be typed, bounded and redacted. Do not persist raw carrier/public IPs, credential material, unrelated logcat or unbounded process/environment data.
+
+## Non-negotiable constraints
+
+```text
+ONE_FACT_ONE_OWNER
+NO_SECOND_CONTROL_PLANE
+NO_MUTABLE_LAB_STATUS_DB
+NO_AUTOMATIC_DEVICE_MUTATION_FROM_BUILD_OR_MERGE
+NO_LOCAL_ANDROID_REBUILD_IN_NORMAL_PHYSICAL_PATH
+NO_SECOND_ANDROID_VPN
+NO_ANDROID_SING_BOX_PRODUCT_COMPATIBILITY
+NO_DEFAULT_WIFI_WARP_PUBLIC_EGRESS_FALLBACK
+NO_EVIDENCE_ESCALATION
+NO_SECRET_OR_DEVICE_IDENTIFIER_PERSISTENCE
+```

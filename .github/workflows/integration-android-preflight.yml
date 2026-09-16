@@ -2,7 +2,7 @@ name: Integration Android Preflight
 
 on:
   pull_request:
-    branches: [fix/root-policy-reconciliation]
+    branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - '.github/workflows/integration-android-preflight.yml'

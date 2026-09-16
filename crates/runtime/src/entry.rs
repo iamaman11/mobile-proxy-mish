@@ -6,9 +6,17 @@
 mod lifecycle;
 pub use lifecycle::*;
 
-#[path = "lib.rs"]
 mod cellular_connector;
 pub use cellular_connector::*;
 
 mod cellular_runtime;
 pub use cellular_runtime::*;
+
+mod mesh_serving;
+pub use mesh_serving::*;
+
+mod proxy_recovery;
+pub use proxy_recovery::*;
+
+mod proxy_runtime;
+pub use proxy_runtime::*;

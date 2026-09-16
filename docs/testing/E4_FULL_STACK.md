@@ -19,6 +19,8 @@ Windows DNS
  -> not Cloudflare DNS mode
 ```
 
+The Windows sing-box above is an external Windows routing fixture. It is not part of the Android PRODUCT.
+
 Selected application path:
 
 ```text
@@ -27,46 +29,50 @@ Kameleo / Camoufox
   -> Cloudflare Mesh
   -> Cloudflare One Agent on Android
   -> product-admitted Mesh ingress
-  -> sing-box (:1080 / :1081 / :3128), proxy/server mode only
+  -> in-process Rust Proxy Serving (:1080 / :1081 / :3128)
   -> Cellular Egress owner
   -> validated direct-cellular authority
+  -> exact-network target DNS
   -> PRODUCT root policy-routing adapter
-  -> intended proxy-egress flow -> current direct-cellular table
+  -> ordinary PRODUCT-UID public socket on current direct-cellular table
   -> fail-closed unreachable guard behind that lookup
-  -> cellular-owned target DNS + public connection
   -> LTE/5G Internet
 ```
 
 Cloudflare Local Proxy / WarpProxy on Windows is not part of this path. Split Tunnel is destination-based and must not be treated as per-process enforcement. Final selected-application fail-closed behavior requires its own Windows enforcement proof.
 
-This document is intentionally an execution contract only. The E4 workflow must not be enabled as an acceptance gate until Proxy Serving and Transport Reachability are implemented. Creating a fake checker earlier would violate `NO_EVIDENCE_ESCALATION`.
+This document is an execution contract. E4 acceptance must exercise the current implemented Proxy Serving and Transport Reachability path; weaker hosted evidence cannot substitute for the physical full stack.
 
 ## Android VPN and egress ownership contract
 
-Cloudflare One Agent is the only Android VPN/VpnService owner in Mesh mode. MISH/sing-box must not start a second Android TUN/VpnService.
+Cloudflare One Agent is the only Android VPN/VpnService owner in Mesh mode. MISH must not start a second Android TUN/VpnService.
 
 ```text
 Cloudflare One Agent       -> Android VPN/private Mesh transport owner
-sing-box on Android        -> proxy/server only; NO TUN/VpnService
-MISH Cellular Egress       -> semantic owner of public proxy egress admission/currentness
+Rust mish-runtime          -> in-process Proxy Serving lifecycle/execution owner
+mish-proxy                 -> proxy protocol/auth/target semantics
+MISH Cellular Egress       -> public proxy egress admission/currentness authority
 root policy-routing        -> narrow infrastructure adapter to Cellular Egress
-proxy-target DNS           -> cellular-owned path; final resolver/anti-leak acceptance in #64
+exact-network DNS adapter  -> read-only DNS mechanic under owner-issued authority
 ```
 
-Cloudflare One Agent may operate in `Traffic and DNS` and may own Android system DNS for ordinary Android traffic. That does not satisfy proxy-target DNS correctness. Proxy target DNS/public sockets must follow the same admitted cellular egress policy and must not silently use Android default/system/WARP/Wi-Fi egress.
+There is no Android sing-box PRODUCT dataplane, proxy child process, compatibility runtime or migration owner in the L8 architecture.
 
-The earlier exact-network per-socket binding seam is historical implementation evidence, not the E4 target contract. On the target One Agent topology, `Network.bindSocket/android_setsocknetwork` failed `EPERM`; the accepted implementation direction is lifecycle-bounded PRODUCT root policy-routing while retaining Cellular Egress as the sole semantic owner.
+Cloudflare One Agent may operate in `Traffic and DNS` and may own Android system DNS for ordinary Android traffic. That does not satisfy proxy-target DNS correctness. Proxy target DNS/public sockets must follow the admitted Cellular Egress authority and must not silently use Android default/system/WARP/Wi-Fi public egress.
+
+The earlier exact-network per-socket binding seam is historical implementation evidence, not the E4 target contract. On the target One Agent topology, `Network.bindSocket/android_setsocknetwork` failed `EPERM`; the accepted implementation uses owner-scoped DNS plus PRODUCT root policy-routing while retaining Cellular Egress as the sole semantic egress owner.
 
 Cloudflare/Wi-Fi may carry the **Mesh ingress underlay** while LTE/5G carries the **proxy Internet egress**. These are intentionally different flows and must be observed independently.
 
-The future Android profile should route only the Mesh/device destinations needed for private reachability where the supported mobile-client configuration permits it. Configuration alone never proves cellular egress; physical policy-routing/carrier evidence remains mandatory.
+The Android Cloudflare profile should route only the Mesh/device destinations needed for private reachability where supported. Configuration alone never proves cellular public egress; physical policy-routing/carrier evidence remains mandatory.
 
 ## External fixtures are not product artifacts
 
-The following components remain external vendor/test fixtures and are never repackaged into the MISH APK:
+The following remain external vendor/test fixtures and are never repackaged into the MISH APK:
 
 - Cloudflare One Agent on Android;
 - Cloudflare One Client on Windows;
+- Windows sing-box routing fixture;
 - Kameleo;
 - Camoufox;
 - Android OS / carrier network.
@@ -90,14 +96,14 @@ actual browser-visible public IP classification
 GitHub
   -> protected manual/release workflow
   -> self-hosted Windows acceptance runner
-       |- sing-box TUN
+       |- sing-box TUN (Windows fixture only)
        |- Cloudflare One Client (Traffic only / Mesh route owner)
        |- Kameleo
        |- Camoufox
        `- ADB access to physical Android phone
             |- MISH exact accepted artifact
+            |    `- in-process Rust Proxy Serving
             |- Cloudflare One Agent (only Android VPN owner)
-            |- sing-box proxy/server mode only
             `- real SIM / LTE/5G + Wi-Fi as required by scenario
 ```
 
@@ -109,15 +115,15 @@ At minimum, the future workflow must prove:
 
 ```text
 Windows route ownership
-  ordinary IPv4 -> sing-box TUN
+  ordinary IPv4 -> Windows sing-box TUN
   ordinary IPv6 -> controlled policy, no silent physical fallback
   actual Mesh/device CIDR -> CloudflareWARP
   Windows DNS remains outside Cloudflare DNS mode
 
 Android VPN ownership
   Cloudflare One Agent is the only active Android VPN/VpnService owner
-  sing-box runs in proxy/server mode only
-  no second Android TUN/VpnService exists
+  MISH owns no TUN/VpnService
+  no external Android proxy child process exists
 
 Mesh reachability
   Windows -> actual Android Mesh IP:proxy port
@@ -129,17 +135,18 @@ proxy protocol/auth
   :3128 HTTP + HTTPS CONNECT
   correct credentials accepted
   wrong/missing credentials rejected
+  bidirectional relay proven through current native Proxy Serving
 
 cellular-only egress positive
   Wi-Fi connected simultaneously
   Cloudflare One Agent/Mesh remains connected
   direct cellular Network admitted by the natural owner
   PRODUCT root authority is available to the accepted narrow adapter
-  intended proxy-egress flow is selected by the accepted narrow policy
   current direct-cellular routing table is derived from fresh live state
   marked/direct-cellular route is validated
   fail-closed guard is present behind the cellular lookup
-  target DNS/public connection follows the cellular-owned path
+  target DNS resolves through exact owner-issued network authority
+  public socket follows the root-policy-gated cellular path
   proxy/browser-visible public IP classified as carrier egress
   no Android default/system/WARP/Wi-Fi target egress
 
@@ -157,7 +164,7 @@ cellular recovery
   new cellular observation produces a fresh authority generation
   direct-cellular routing target is rediscovered
   root policy is freshly reconciled and validated
-  cellular-owned DNS/public egress returns
+  exact-network DNS/public egress returns
   stale readiness/policy is not restored
 
 IPv6
@@ -191,6 +198,7 @@ Mesh ingress transport
 
 Proxy target Internet egress
   MUST follow current Cellular Egress authority
+  -> exact-network DNS when target is a domain
   -> PRODUCT-owned narrow root policy-routing adapter
   -> direct LTE/5G route
   -> fail closed on loss/ambiguity
@@ -200,7 +208,7 @@ Do not route the whole PRODUCT UID merely to satisfy E4 unless loopback and Mesh
 
 MASQUE is the primary Cloudflare transport for acceptance. Cloudflare One WireGuard is only a bounded fallback if a concrete MASQUE defect is demonstrated and must receive equivalent route/recovery evidence before use. A separate custom WireGuard mesh/control plane is outside this architecture.
 
-Load/soak, reboot, rotation and longer recovery scenarios remain later release evidence as defined by A12 unless they become necessary to close a concrete E4 finding.
+Load/soak, reboot, rotation and longer recovery scenarios remain later release evidence as defined by the roadmap unless they become necessary to close a concrete E4 finding.
 
 ## GitHub evidence identity
 
@@ -209,7 +217,7 @@ Every E4 run must bind evidence to exact identities:
 ```text
 Git commit / accepted artifact digest
 MISH APK/native artifact digest
-sing-box version + checksum
+Windows sing-box fixture version + checksum
 Android device model/build (non-secret)
 Cloudflare One Agent version where supported
 Cloudflare One Client version where supported

@@ -2,7 +2,7 @@
 
 This is the versioned execution protocol for the first physical proof under Issue #10.
 
-E3 proves only the Cellular Egress boundary on a real rooted Android phone with a real carrier. It does **not** prove Cloudflare Mesh end-to-end, sing-box proxy serving, Kameleo/Camoufox, E4, final DNS anti-leak acceptance under Issue #64, or overall product readiness.
+E3 proves only the Cellular Egress boundary on a real rooted Android phone with a real carrier. It does **not** prove Cloudflare Mesh end-to-end, full native Proxy Serving, Kameleo/Camoufox, E4, final DNS anti-leak acceptance under Issue #64, or overall product readiness.
 
 The historical RC6 bind-based path is failure evidence only. Physical DEVICE-1 evidence showed `Network.bindSocket(FileDescriptor)` / `android_setsocknetwork` fail with `EPERM` on the target Cloudflare One Agent topology. A future E3 PASS must exercise the replacement PRODUCT-owned root policy-routing adapter on exact immutable PRODUCT bytes; an old bind-based harness cannot satisfy this revised protocol.
 

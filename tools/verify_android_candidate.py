@@ -41,7 +41,9 @@ def main() -> None:
         "CellularController",
         "MeshTransportController",
         "RuntimeLifecycleController",
-        "ProxyServingLifecycleController",
+        "NativeProxyRuntime",
+        "NativeProxyRuntimeObserver",
+        "ProxyServingSnapshotView",
         "proxyServingFailureRecoverable",
         "proxyListenerPorts",
     )
@@ -51,6 +53,7 @@ def main() -> None:
         "bindSocket",
         "resolveHost",
         "RuntimeProcessLifecycleController",
+        "ProxyServingLifecycleController",
         "PrivateBridge",
     )
     for symbol in required:
