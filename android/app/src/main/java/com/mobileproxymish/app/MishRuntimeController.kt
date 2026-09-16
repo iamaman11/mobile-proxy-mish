@@ -285,7 +285,7 @@ class MishRuntimeController internal constructor(
             context = appContext,
             cellularRuntime = cellularRuntime,
             publicCredentials = externalCredentialStore,
-            onRecoverableUnexpectedFailure = ::scheduleUnexpectedProxyRecovery,
+            onUnexpectedFailure = ::scheduleUnexpectedProxyRecovery,
         )
         val meshRuntime = MeshIngressRuntimeBridge(
             context = appContext,
