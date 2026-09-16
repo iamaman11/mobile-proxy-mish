@@ -442,7 +442,10 @@ mod tests {
             leases.push(sessions.try_admit().expect("within Mesh budget"));
         }
         assert_eq!(sessions.active_sessions(), MAX_MESH_SESSIONS);
-        assert!(sessions.try_admit().is_none(), "65th session must be rejected");
+        assert!(
+            sessions.try_admit().is_none(),
+            "65th session must be rejected"
+        );
 
         drop(leases.pop());
         assert_eq!(sessions.active_sessions(), MAX_MESH_SESSIONS - 1);
