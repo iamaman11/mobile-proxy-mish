@@ -1,5 +1,7 @@
 package com.mobileproxymish.app
 
+import com.mobileproxymish.ffi.ProductReadinessState
+import com.mobileproxymish.ffi.meshIngressServingAllowed
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -47,11 +49,11 @@ class MeshIngressRuntimeBridgeTest {
     }
 
     @Test
-    fun publicIngressWaitsForPrivateEgressReadiness() {
+    fun publicIngressEligibilityIsOwnedByRustRuntimeComposition() {
         assertFalse(
             meshIngressServingAllowed(
                 proxyRunning = true,
-                readiness = com.mobileproxymish.ffi.ProductReadinessState.NOT_READY,
+                readiness = ProductReadinessState.NOT_READY,
                 meshAdmitted = true,
                 admissionEpoch = 7u,
             ),
@@ -59,7 +61,7 @@ class MeshIngressRuntimeBridgeTest {
         assertFalse(
             meshIngressServingAllowed(
                 proxyRunning = true,
-                readiness = com.mobileproxymish.ffi.ProductReadinessState.DEGRADED,
+                readiness = ProductReadinessState.DEGRADED,
                 meshAdmitted = true,
                 admissionEpoch = 7u,
             ),
@@ -67,7 +69,7 @@ class MeshIngressRuntimeBridgeTest {
         assertFalse(
             meshIngressServingAllowed(
                 proxyRunning = false,
-                readiness = com.mobileproxymish.ffi.ProductReadinessState.READY,
+                readiness = ProductReadinessState.READY,
                 meshAdmitted = true,
                 admissionEpoch = 7u,
             ),
@@ -75,7 +77,7 @@ class MeshIngressRuntimeBridgeTest {
         assertTrue(
             meshIngressServingAllowed(
                 proxyRunning = true,
-                readiness = com.mobileproxymish.ffi.ProductReadinessState.READY,
+                readiness = ProductReadinessState.READY,
                 meshAdmitted = true,
                 admissionEpoch = 7u,
             ),
