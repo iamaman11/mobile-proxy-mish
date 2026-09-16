@@ -62,7 +62,10 @@ Architecture tests/guards must prevent regression after the U2 Mesh/Tokio conver
 - exactly one process-wide PRODUCT Tokio runtime/executor owns long-lived Mesh + Proxy network tasks;
 - no `tokio::runtime::Builder`, independent executor/thread pool or thread-per-session serving subsystem may appear in `mish-transport` or `mish-proxy`;
 - external accepted-session budget=64 and reject-at-edge ownership remain in `mish-transport`;
+- `mish-runtime` consumes the exact Transport-owned session generation and cannot mint a second external Mesh capacity owner;
+- a Mesh listener generation becomes healthy only after every retained listener task gives an explicit bounded startup-ready acknowledgement; PRODUCT startup polling/sleep is forbidden;
 - `mish-runtime` retains and drains every long-lived listener/session/relay task at the runtime-generation boundary;
+- hosted tests must include a real positive bidirectional byte relay through the Mesh listener/backend seam, in addition to 64/65 overflow, failure cleanup, cancellation and fresh-generation restart;
 - Android remains an effects/observation adapter and cannot acquire duplicate counters, admission policy or lifecycle ownership.
 
 ## Cellular/root boundary
