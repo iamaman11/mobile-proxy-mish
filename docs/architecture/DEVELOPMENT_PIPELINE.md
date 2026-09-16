@@ -69,6 +69,7 @@ Current accepted command forms are defined by the workflow. At this policy revis
 
 ```text
 /mish-cycle full <PRODUCT_SHA>
+/mish-cycle full <PRODUCT_SHA> capacity_resources
 /mish-cycle install_only <PRODUCT_SHA>
 /mish-cycle diagnose_only <PRODUCT_SHA>
 /mish-cycle probe_only <PRODUCT_SHA> loopback_connect
@@ -76,14 +77,14 @@ Current accepted command forms are defined by the workflow. At this policy revis
 
 `probe_only` supports only the current-function `loopback_connect` probe unless the executable workflow is deliberately changed and this document is updated with it.
 
-`full`, `install_only` and `diagnose_only` accept no probe argument.
+`full` accepts one optional, explicit `capacity_resources` acceptance probe. It is never selected automatically. `install_only` and `diagnose_only` accept no probe argument.
 
 ## PRODUCT_SHA and CONTROL_SHA
 
-Protected `main` is the accepted source for both PRODUCT and CONTROL. The two-SHA form exists only as pre-merge physical evidence provenance:
+Protected `main` is the accepted source for both PRODUCT and CONTROL. The two-SHA form exists only as physical evidence provenance:
 
 ```text
-PRODUCT_SHA = exact open ready PR head being physically exercised
+PRODUCT_SHA = exact candidate source being physically exercised
 CONTROL_SHA = exact protected-main workflow/scripts executing that physical cycle
 ```
 
@@ -91,12 +92,13 @@ That split does not create two accepted sources. When a candidate is accepted an
 
 For `full` / `install_only`:
 
-- the candidate must be an **open, ready PR to `main`**;
+- an open candidate must be a ready PR to `main`;
+- a merged candidate may be reused only when the resolver proves its canonical PRODUCT input tree is exactly identical to current protected `main`;
 - the exact hosted candidate producer must already have completed successfully;
 - the producer workflow blob at PRODUCT_SHA must match the protected-main producer workflow blob required by the Device Cycle resolver;
 - any mismatch fails closed before installation.
 
-Do not perform a second `full`/`install_only` acceptance of a merged PR merely to reconstruct accepted state. Accepted state comes from `main`; later physical work starts from a new explicit need/candidate.
+A merged candidate is never reused merely to reconstruct accepted state. Reuse is allowed only for a new explicit physical need when PRODUCT identity is mechanically unchanged by later control-only commits.
 
 ## Physical runner contract
 
@@ -105,22 +107,21 @@ The Windows LAB is a consumer, not a builder.
 Normal path:
 
 ```text
-successful exact hosted artifact already exists for an open ready PR to main
+successful exact hosted artifact already exists
  -> explicit /mish-cycle request after analysis
  -> verify PR/base/source identity
  -> verify accepted producer policy
  -> verify hosted run/artifact/digest provenance
  -> checkout exact CONTROL_SHA
  -> verify pinned PowerShell/runtime + DEVICE-1 prerequisites
- -> consume exact candidate
- -> stable LAB-only debug signing where configured
+ -> consume exact candidate when the mode installs
  -> adb install -r when mode requests installation
  -> read back installed base.apk
  -> installed base.apk SHA-256 == exact signed candidate SHA-256
  -> verify installed signing identity
  -> launch when mode requests it
  -> collect generation-consistent current-L8 diagnostics
- -> optional explicitly requested current-function probe
+ -> optional explicitly requested current-function/acceptance probe
  -> produce typed evidence/report
  -> STOP_FOR_ANALYSIS
 ```
@@ -135,7 +136,7 @@ Pinned PowerShell/tool requirements are real physical-run prerequisites and are 
 
 ### `full`
 
-Requires an already successful exact-head hosted candidate from an open ready PR to `main`.
+Requires an already successful exact-head hosted candidate from a ready PR lineage accepted by the resolver.
 
 ```text
 resolve provenance
@@ -143,13 +144,29 @@ resolve provenance
  -> verify installed bytes/signing identity
  -> launch/restart app as defined by workflow
  -> canonical diagnostics
+ -> optional explicitly requested acceptance probe
  -> exact-candidate acceptance classification
  -> STOP
 ```
 
+With no probe argument this is the normal baseline. With `capacity_resources`, the canonical baseline must first PASS, then the same run executes one bounded capacity/resource acceptance from the Windows LAB through the real external Mesh endpoint.
+
+The capacity probe is deliberately correlated to the implementation owners:
+
+```text
+Windows external client -> admitted Mesh endpoint:3128
+ -> mish-transport external session owner (limit 64)
+ -> loopback native Proxy Serving backend
+ -> Cellular Egress target connect
+```
+
+It holds authenticated CONNECT paths at `10`, `32` and `64`, reads owner-backed `mesh.active_sessions` and `proxy.active_sessions`, requires the 65th external client to be rejected before the backend count grows, drains to zero, and records threads / FD / RSS / PSS at idle, load and post-cleanup. It does not infer capacity from `/proc/net/tcp`, does not use ADB forwarding, and does not add a LAB-owned session counter.
+
+Resource values are measurements, not invented absolute production thresholds. Capacity, owner-count causality, PID stability and post-cleanup session drain are strict acceptance facts; resource baselines/peaks/deltas are durable evidence for later lifetime evaluation.
+
 ### `install_only`
 
-Requires an already successful exact-head hosted candidate from an open ready PR to `main`.
+Requires an already successful exact-head hosted candidate accepted by the resolver.
 
 ```text
 resolve provenance
@@ -177,11 +194,12 @@ No install and no app restart.
 
 ```text
 run exactly one explicitly named read-only current-function probe
- -> evidence
+ -> typed evidence
+ -> content-level acceptance evaluation
  -> STOP
 ```
 
-A successful probe means the probe executed/collected evidence; it is not exact PRODUCT acceptance.
+A targeted JSON artifact is not success merely because it exists. The report evaluates the probe's functional acceptance fields. A green `probe_only` still does not claim exact PRODUCT acceptance because installation identity was not established in that cycle.
 
 ## Canonical diagnostics
 
@@ -191,9 +209,13 @@ Current APK diagnostics use `mish.diagnostics/v2` / `snapshot_v2` and observe cu
 - Cellular admission/boundary state;
 - root authority/root-policy authorization;
 - native Proxy Serving state/health/typed failure;
+- owner-backed native Proxy Serving active-session count;
 - credential state;
 - Mesh admission/ingress;
+- owner-backed Mesh active-session count;
 - Readiness.
+
+The active-session fields are projections of their Rust natural owners. Android and LAB do not maintain parallel capacity semaphores or counters.
 
 Diagnostics do not own or execute repairs, root mutations, network toggles, credential rotation, install, runtime lifecycle decisions or legacy process management.
 
@@ -205,21 +227,23 @@ Automatic airplane recovery is not part of the baseline cycle. Baseline function
 
 ## Acceptance fields
 
-Physical reporting separates mechanical execution from PRODUCT acceptance.
+Physical reporting separates mechanical collection from PRODUCT acceptance.
 
 ```text
 cycle_result
-  did the requested cycle/probe execute and collect its required evidence?
+  did the requested scope meet its typed functional acceptance semantics?
 
 exact_candidate_acceptance
-  evaluated only when the exact installed candidate and required baseline were exercised
+  evaluated only when the exact installed candidate and every required full-mode baseline/probe fact were exercised
 ```
+
+For a targeted probe, evidence presence and evidence success are separate facts. A PRODUCT-classified probe failure is not converted into LAB success because a JSON file was uploaded. LAB/control failure leaves exact PRODUCT acceptance unevaluated.
 
 A green `probe_only` or `diagnose_only` must never be interpreted as exact candidate acceptance.
 
 ## Formal release boundary
 
-Development debug candidates are stage/development evidence only. It is not PRODUCT release identity and cannot be promoted.
+Development debug candidates are stage/development evidence only. They are not PRODUCT release identity and cannot be promoted.
 
 Formal promotion remains:
 
@@ -242,4 +266,4 @@ architecture                            -> SYSTEM.md / DEPENDENCIES.md / OWNERSH
 formal release                          -> RELEASE.md
 ```
 
-Repository guards should reject drift back to automatic phone starts, local rebuilding in the normal physical path, long-lived accepted PRODUCT outside main, stale/floating control identity, automatic repair/probe decisions, legacy Android proxy assumptions, accepting `adb install` without installed-byte/signature verification, or treating a read-only probe as exact PRODUCT acceptance.
+Repository guards should reject drift back to automatic phone starts, local rebuilding in the normal physical path, long-lived accepted PRODUCT outside main, stale/floating control identity, automatic repair/probe decisions, legacy Android proxy assumptions, accepting `adb install` without installed-byte/signature verification, treating evidence presence as functional acceptance, or bypassing the Mesh admission owner when testing external capacity.
