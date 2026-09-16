@@ -139,11 +139,18 @@ pub enum ProxyServingState {
     Failed,
 }
 
+/// Exact projection of the Rust Runtime Lifecycle failure vocabulary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum ProxyServingFailure {
     NativeRuntimeMissing,
     ExternalCredentialUnavailable,
-    ListenerUnavailable,
+    CellularConnectorUnavailable,
+    ProxyConfigurationRejected,
+    MixedListenerUnavailable,
+    Socks5ListenerUnavailable,
+    HttpConnectListenerUnavailable,
+    ExecutorUnavailable,
+    RuntimeStateUnavailable,
     ServingUnhealthy,
     ShutdownFailed,
 }
@@ -254,25 +261,65 @@ fn map_proxy_snapshot(snapshot: OwnerProxyServingSnapshot) -> ProxyServingSnapsh
     }
 }
 
-fn map_proxy_failure_out(failure: OwnerProxyServingFailure) -> ProxyServingFailure {
+pub(crate) const fn map_proxy_failure_out(
+    failure: OwnerProxyServingFailure,
+) -> ProxyServingFailure {
     match failure {
         OwnerProxyServingFailure::NativeRuntimeMissing => ProxyServingFailure::NativeRuntimeMissing,
         OwnerProxyServingFailure::ExternalCredentialUnavailable => {
             ProxyServingFailure::ExternalCredentialUnavailable
         }
-        OwnerProxyServingFailure::ListenerUnavailable => ProxyServingFailure::ListenerUnavailable,
+        OwnerProxyServingFailure::CellularConnectorUnavailable => {
+            ProxyServingFailure::CellularConnectorUnavailable
+        }
+        OwnerProxyServingFailure::ProxyConfigurationRejected => {
+            ProxyServingFailure::ProxyConfigurationRejected
+        }
+        OwnerProxyServingFailure::MixedListenerUnavailable => {
+            ProxyServingFailure::MixedListenerUnavailable
+        }
+        OwnerProxyServingFailure::Socks5ListenerUnavailable => {
+            ProxyServingFailure::Socks5ListenerUnavailable
+        }
+        OwnerProxyServingFailure::HttpConnectListenerUnavailable => {
+            ProxyServingFailure::HttpConnectListenerUnavailable
+        }
+        OwnerProxyServingFailure::ExecutorUnavailable => ProxyServingFailure::ExecutorUnavailable,
+        OwnerProxyServingFailure::RuntimeStateUnavailable => {
+            ProxyServingFailure::RuntimeStateUnavailable
+        }
         OwnerProxyServingFailure::ServingUnhealthy => ProxyServingFailure::ServingUnhealthy,
         OwnerProxyServingFailure::ShutdownFailed => ProxyServingFailure::ShutdownFailed,
     }
 }
 
-fn map_proxy_failure_in(failure: ProxyServingFailure) -> OwnerProxyServingFailure {
+pub(crate) const fn map_proxy_failure_in(
+    failure: ProxyServingFailure,
+) -> OwnerProxyServingFailure {
     match failure {
         ProxyServingFailure::NativeRuntimeMissing => OwnerProxyServingFailure::NativeRuntimeMissing,
         ProxyServingFailure::ExternalCredentialUnavailable => {
             OwnerProxyServingFailure::ExternalCredentialUnavailable
         }
-        ProxyServingFailure::ListenerUnavailable => OwnerProxyServingFailure::ListenerUnavailable,
+        ProxyServingFailure::CellularConnectorUnavailable => {
+            OwnerProxyServingFailure::CellularConnectorUnavailable
+        }
+        ProxyServingFailure::ProxyConfigurationRejected => {
+            OwnerProxyServingFailure::ProxyConfigurationRejected
+        }
+        ProxyServingFailure::MixedListenerUnavailable => {
+            OwnerProxyServingFailure::MixedListenerUnavailable
+        }
+        ProxyServingFailure::Socks5ListenerUnavailable => {
+            OwnerProxyServingFailure::Socks5ListenerUnavailable
+        }
+        ProxyServingFailure::HttpConnectListenerUnavailable => {
+            OwnerProxyServingFailure::HttpConnectListenerUnavailable
+        }
+        ProxyServingFailure::ExecutorUnavailable => OwnerProxyServingFailure::ExecutorUnavailable,
+        ProxyServingFailure::RuntimeStateUnavailable => {
+            OwnerProxyServingFailure::RuntimeStateUnavailable
+        }
         ProxyServingFailure::ServingUnhealthy => OwnerProxyServingFailure::ServingUnhealthy,
         ProxyServingFailure::ShutdownFailed => OwnerProxyServingFailure::ShutdownFailed,
     }
@@ -313,11 +360,17 @@ mod tests {
     }
 
     #[test]
-    fn ffi_proxy_projection_preserves_native_failure_reason() {
+    fn ffi_proxy_projection_preserves_every_native_failure_reason() {
         for failure in [
             ProxyServingFailure::NativeRuntimeMissing,
             ProxyServingFailure::ExternalCredentialUnavailable,
-            ProxyServingFailure::ListenerUnavailable,
+            ProxyServingFailure::CellularConnectorUnavailable,
+            ProxyServingFailure::ProxyConfigurationRejected,
+            ProxyServingFailure::MixedListenerUnavailable,
+            ProxyServingFailure::Socks5ListenerUnavailable,
+            ProxyServingFailure::HttpConnectListenerUnavailable,
+            ProxyServingFailure::ExecutorUnavailable,
+            ProxyServingFailure::RuntimeStateUnavailable,
             ProxyServingFailure::ServingUnhealthy,
             ProxyServingFailure::ShutdownFailed,
         ] {
