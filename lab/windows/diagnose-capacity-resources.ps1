@@ -28,7 +28,7 @@ function Invoke-MishAdbText {
     $output = @(& $AdbPath @Arguments 2>$null | ForEach-Object { [string]$_ })
     $exitCode = if ($null -eq $LASTEXITCODE) { -1 } else { [int]$LASTEXITCODE }
     if ($exitCode -ne 0) {
-        Stop-MishCapacityProbe 'ADB_FAILED' "ADB command failed with exit code $exitCode: $($Arguments -join ' ')"
+        Stop-MishCapacityProbe 'ADB_FAILED' "ADB command failed with exit code ${exitCode}: $($Arguments -join ' ')"
     }
     return ($output -join "`n").Trim()
 }
