@@ -10,24 +10,26 @@ class L8OneWayArchitectureTest {
     @Test
     fun shippingProductContainsNoPreL8AndroidProxyRuntimeCompatibility() {
         val androidMain = repositoryDirectory("android/app/src/main")
-        val forbidden = listOf(
-            "LegacySingBox",
-            "LegacyRuntimeCutover",
+        val forbiddenLowercase = listOf(
+            "sing-box",
             "libsingbox.so",
-            "sing-box.json",
+            "legacysingbox",
+            "legacyruntimecutover",
+            "legacy_migration",
+            "legacy migration",
+            "legacy_cutover",
+            "proxy-native-migration",
             "sing-box-current-generation",
             "sing-box-owned-cleanup",
-            "proxy-native-migration",
-            "LEGACY_MIGRATION",
         )
 
         val offenders = androidMain.walkTopDown()
             .filter(File::isFile)
             .filter { it.extension in setOf("kt", "java", "xml") }
             .flatMap { file ->
-                val source = file.readText()
-                forbidden.asSequence()
-                    .filter(source::contains)
+                val sourceLowercase = file.readText().lowercase()
+                forbiddenLowercase.asSequence()
+                    .filter(sourceLowercase::contains)
                     .map { token -> "${file.relativeTo(androidMain).invariantSeparatorsPath}:$token" }
             }
             .toList()
@@ -41,11 +43,15 @@ class L8OneWayArchitectureTest {
             repositoryDirectory("crates/runtime/src"),
             repositoryDirectory("crates/android-ffi/src"),
         )
-        val forbidden = listOf(
-            "LegacyMigrationBlocked",
-            "LEGACY_MIGRATION",
-            "LegacySingBox",
-            "LegacyRuntimeCutover",
+        val forbiddenLowercase = listOf(
+            "sing-box",
+            "libsingbox",
+            "legacymigrationblocked",
+            "legacy_migration",
+            "legacy migration",
+            "legacysingbox",
+            "legacyruntimecutover",
+            "legacy_cutover",
         )
 
         val offenders = roots.flatMap { root ->
@@ -53,9 +59,9 @@ class L8OneWayArchitectureTest {
                 .filter(File::isFile)
                 .filter { it.extension == "rs" }
                 .flatMap { file ->
-                    val source = file.readText()
-                    forbidden.asSequence()
-                        .filter(source::contains)
+                    val sourceLowercase = file.readText().lowercase()
+                    forbiddenLowercase.asSequence()
+                        .filter(sourceLowercase::contains)
                         .map { token -> "${file.relativeTo(repositoryRoot()).invariantSeparatorsPath}:$token" }
                 }
                 .toList()
