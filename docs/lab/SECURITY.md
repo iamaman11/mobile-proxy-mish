@@ -1,47 +1,64 @@
 # Physical lab security boundary
 
-The physical lab exists to execute accepted code against real Windows/Android/Cloudflare/carrier reality. It is not a privileged development shell for unreviewed pull requests and is not an Android release-signing/build authority.
+The physical lab executes explicitly authorized evidence against real Windows/Android/Cloudflare/carrier reality. It is not a privileged development shell for unreviewed PR code and is not an Android release-signing/build authority.
 
 ## Threat model
 
-This repository is public. A persistent self-hosted runner has access to local machine state, attached devices and any credentials installed on that host. Terraform configuration is also executable enough to exfiltrate credentials through providers/provisioners. Android release-signing material is long-lived product authority and must likewise never be exposed to untrusted PR execution or the physical lab host. Therefore untrusted code must never be able to select the physical runner or receive provider/release credentials.
+This repository is public. A persistent self-hosted runner can reach local machine state, attached devices and any credentials installed on that host. Terraform/provider authority and Android release-signing material are separately sensitive. Untrusted PR code must never select the physical runner or receive provider/release credentials.
 
-The main threats are:
+Primary threats:
 
-- untrusted PR code executing on the lab host;
-- untrusted PR Terraform receiving provider/R2 credentials;
-- Android release keystore/private-key material reaching PR jobs or the physical runner;
+- untrusted code executing on the lab host;
+- provider/R2 credentials reaching PR-head execution;
+- Android release keys/passwords reaching PR jobs or the physical runner;
 - credentials leaking through logs/artifacts/process environment;
-- Cloudflare provider write authority being reachable from the physical host;
-- a persistent runner retaining stale files between jobs;
-- ADB/root/device identifiers being recorded in public evidence;
-- a custom local daemon turning into an undocumented remote-control plane.
+- a persistent runner retaining sensitive state;
+- ADB/root/device identifiers leaking into public evidence;
+- a custom daemon becoming an undocumented remote-control plane;
+- confusing an exact development PRODUCT candidate with formal release authority.
 
 ## Runner policy
 
-Normal repository CI and Android release construction remain GitHub-hosted.
+Normal CI and Android release construction remain GitHub-hosted.
 
 ```text
-pull_request static CI       -> GitHub-hosted, no provider/release credentials
-push/main CI                 -> GitHub-hosted
-Android release build/sign   -> restricted GitHub-hosted release environment only
-credentialed provider plan   -> GitHub-hosted, accepted protected main only
-provider apply               -> GitHub-hosted, accepted protected main only
-physical evidence            -> dedicated self-hosted Windows lab runner
+pull_request/static/product CI   -> GitHub-hosted, no provider/release secrets
+Android release build/sign       -> restricted GitHub-hosted release environment
+credentialed provider plan/apply -> protected hosted path only
+physical evidence                -> dedicated self-hosted Windows lab runner
 ```
+
+There are two legitimate physical evidence classes.
+
+### Development exact-head Device Cycle
+
+The self-hosted runner executes only through the protected-main `Device Cycle` workflow after an explicit owner `/mish-cycle` request.
+
+The control workflow itself is protected-main `CONTROL_SHA`; the selected PRODUCT may be an exact accepted/current integration-head candidate identified by `PRODUCT_SHA` and Issue #135.
+
+Before any install/device effect, the workflow must verify the exact request, current integration lineage, accepted producer workflow, completed successful hosted candidate and exact artifact identity/digest. The physical runner consumes those exact bytes and does not rebuild Android PRODUCT locally.
+
+No successful build, merge, label or artifact publication automatically starts DEVICE-1.
+
+### Formal release acceptance
+
+Formal release physical acceptance resolves/downloads/verifies exact immutable RC/release bytes under `RELEASE.md`. Release-signing secrets never reach the physical runner.
+
+## Physical workflow requirements
 
 Physical workflows must:
 
-- use explicit self-hosted labels that normal CI never references;
-- be manual/protected acceptance workflows;
-- reject non-main refs;
-- verify the checked-out commit is the intended accepted identity before a device/vendor effect;
-- resolve/download/verify the exact selected immutable release asset rather than rebuilding it;
-- serialize execution where the same device/account is shared;
-- use bounded timeouts and explicit cancellation/failure handling;
-- clean run-generated sensitive temporary files before completion where practical.
+- use explicit self-hosted labels that ordinary CI never references;
+- be explicitly authorized/manual or otherwise protected by the accepted control workflow;
+- execute versioned control scripts from an exact protected `CONTROL_SHA`;
+- verify exact PRODUCT/artifact identity before PRODUCT/device effects;
+- serialize when the same device/account is shared;
+- use bounded timeouts and fail closed on ambiguous identity/provenance;
+- produce bounded sanitized immutable evidence;
+- clean generated sensitive temporary material where practical;
+- never automatically select a repair/follow-up cycle after a result.
 
-Credentialed provider workflows must also reject non-main/unaccepted refs. Pull requests may run only credential-free `terraform fmt`, `terraform validate`, schema/policy checks and other static validation. Android release-signing credentials are available only to the restricted release job after the immutable RC tag gate; ordinary PR/main CI must not receive them.
+Provider write workflows remain protected hosted paths. Pull requests may run only credential-free static/provider validation. Android release-signing credentials are available only to the restricted release job after its release gate.
 
 ## Host separation
 
@@ -53,15 +70,15 @@ C:\mish-lab\tools\
 C:\projects\mobile-proxy-mish\   # optional human clone only
 ```
 
-The runner owns its own `_work` checkout. A human development clone is never used as physical evidence identity.
+The runner owns its own `_work` checkout. A human development clone is never evidence identity.
 
-Prefer a dedicated Windows account for the runner with only the local rights required by the accepted workflows. Do not make Cloudflare provider credentials or Android release-signing material generally available to that account.
+Prefer a dedicated Windows runner identity with only the local rights needed by accepted workflows. Do not make Cloudflare provider credentials or Android release-signing material generally available to that identity.
 
 ## Credential split
 
 ### Physical runner may have
 
-Only credentials materially required for the physical fixture and only when their supported deployment path requires them. Prefer interactive/vendor-managed enrollment over durable secrets on disk.
+Only credentials materially required for the physical fixture and only through their accepted supported path. Prefer vendor-managed/interactive enrollment over unrelated durable secrets.
 
 ### Physical runner must not have
 
@@ -69,17 +86,17 @@ Only credentials materially required for the physical fixture and only when thei
 - R2 Terraform-state credentials;
 - Android release keystore/private key;
 - Android release keystore/key passwords or release-signing aliases;
-- broad GitHub write token/PAT;
+- broad GitHub write PAT;
 - unrelated repository/provider secrets;
 - production fleet credentials.
 
 ### Hosted Android release job
 
-Android release-signing material belongs only to the restricted GitHub `android-release` environment and is materialized ephemerally in the GitHub-hosted release job. The job must fail closed if the signing secret set is incomplete, must not log private signing material, and must remove its temporary keystore after the job. The final signed APK is hashed and published as immutable versioned release bytes; the signing private key itself is never an artifact.
+Android release-signing material belongs only to the restricted GitHub release environment and is materialized ephemerally in the hosted release job. The job fails closed if its signing set is incomplete, never logs private signing material, removes temporary key material, and publishes only the final signed APK plus non-secret identity/digests/attestation.
 
 ### Hosted provider jobs
 
-Cloudflare desired-config credentials belong to protected GitHub-hosted provider workflows running accepted protected `main`. Use least privilege and separate read/plan from write/apply authority where practical. Never expose those credentials to PR-head Terraform execution.
+Provider desired-config credentials belong to protected hosted workflows under least privilege. Never expose them to PR-head Terraform execution or the physical runner merely to simplify orchestration.
 
 ## Public evidence redaction
 
@@ -90,25 +107,29 @@ IMEI
 IMSI
 SIM/ICCID/phone number
 Cloudflare enrollment/API tokens
-proxy passwords
+proxy passwords or credential material
 GitHub runner registration token
 R2 credentials
-Android release keystore/private key/passwords
+Android release private key/passwords
 private account identifiers when not required
 Android ephemeral Network handles
-unredacted secrets from command lines/environment
+unredacted secret-bearing command lines/environment
 ```
 
-A public carrier IP should be validated when an acceptance contract requires it, but should not be persisted when the contract can record only that a valid IP literal was observed.
+When a public IP must be validated, prefer a typed assertion/digest/change fact instead of persisting the literal unless a specific local-only product requirement needs the value.
 
-A release manifest may persist non-secret signing identity such as the signing-certificate SHA-256. That fingerprint is evidence/identity, not private signing material.
+A signing-certificate SHA-256 is non-secret artifact identity and may be persisted.
 
-## Vendor boundary
+## Current Android PRODUCT security boundary
 
-Use supported Cloudflare/Android/Kameleo/Camoufox interfaces only. Do not make UI scraping, reverse engineering, private APIs or repackaged vendor binaries part of the lab control path.
+Cloudflare One Agent is the only Android VPN/VpnService owner. MISH PRODUCT runs its current proxy dataplane in-process in Rust and has no Android sing-box compatibility/process-management runtime.
+
+Historical `/data/adb/mobile-proxy-node` or similar root residue is LAB hygiene only. It is never a reason to grant PRODUCT a generic process-scan/kill/control capability.
+
+PRODUCT root authority uses one persistent Magisk `su` transport beneath narrow typed effects. Do not replace this with a generic privileged daemon/RPC service merely for lab convenience.
 
 ## No remote-control daemon
 
-Do not deploy an always-on custom command agent to the lab host merely so ChatGPT can trigger arbitrary local actions. The supported command path is GitHub Actions -> self-hosted runner -> versioned stateless `labctl`.
+Do not deploy an always-on custom command agent to the lab host merely so ChatGPT can trigger arbitrary actions. The supported durable path is GitHub Actions -> protected control workflow -> self-hosted runner -> versioned bounded scripts.
 
-If a future operation cannot be expressed through that bounded path, treat it as a concrete architecture finding and decide its natural owner before adding another service.
+A local interactive agent may perform one explicitly bounded diagnostic when current repository tooling cannot establish a required physical fact. It is not a persistent control plane or source of truth; sanitized conclusions return to GitHub evidence/#135.

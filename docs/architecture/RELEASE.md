@@ -1,6 +1,6 @@
 # Build, release, and GitHub delivery
 
-This document owns formal Android release identity and promotion. Development CI and DEVICE-1 diagnostic candidates are governed separately by `docs/architecture/DEVELOPMENT_PIPELINE.md`.
+This document owns **formal Android release identity and promotion**. Development exact-head CI / DEVICE-1 candidates are governed by `DEVELOPMENT_PIPELINE.md` and Issue #135.
 
 ## Supply-chain law
 
@@ -41,10 +41,10 @@ Release-signing private material belongs only to the restricted GitHub release e
 
 ## Android release-candidate path
 
-The formal RC path is owned by `.github/workflows/android-release.yml` and its natural-owner issue:
+The formal RC path is owned by `.github/workflows/android-release.yml` and the current release contract:
 
 ```text
-accepted source commit
+accepted release source commit
  -> immutable RC tag vMAJOR.MINOR.PATCH-rc.N
  -> restricted hosted build/sign
  -> final signed APK verification
@@ -76,41 +76,54 @@ Rollback selects a previously accepted exact artifact digest after compatibility
 
 ## Development candidate boundary
 
-Ordinary integration CI may produce an isolated debug/test candidate for a real-device engineering diagnostic:
+Development physical evidence is intentionally separate from release identity:
 
 ```text
-ready integration PR exact head
- -> hosted full gate PASS
- -> device-candidate-pr-<PR>-<source SHA>
- -> protected-main Device Candidate Physical consumer
- -> exact run/artifact/digest verification
- -> LAB-only debug signing
- -> com.mobileproxymish.app.debug
- -> bounded DEVICE-1 diagnostic
+ready integration PR exact PRODUCT head
+ -> Integration Android Preflight PASS
+ -> device-candidate-pr-<PR>-<PRODUCT_SHA>
+ -> explicit protected-main Device Cycle request
+ -> CONTROL_SHA resolves/verifies exact producer/artifact provenance
+ -> Windows LAB consumes exact artifact; no local Android rebuild
+ -> adb install -r when requested
+ -> installed-byte/signature verification
+ -> bounded current-PRODUCT diagnostics / requested current-function probe
+ -> immutable evidence
+ -> STOP_FOR_ANALYSIS
 ```
 
-This path exists to shorten engineering feedback when Issue #135 requires a physical fact for the next decision. It is intentionally **not** release identity.
+This path exists so the active roadmap stage can obtain a real physical fact without merging PRODUCT solely to manufacture APK bytes or pretending a development build is a release.
 
 A development candidate:
 
-- may originate from the current canonical integration PR exact head;
-- must remain bound to exact source SHA, workflow run, artifact identity and SHA-256;
-- must use the isolated debug package identity;
-- must not expose release-signing material;
-- must not be promoted or relabeled as RC/stable;
-- must not satisfy a formal release-signing or promotion claim;
-- must not silently fall back to a different commit or a local rebuild.
+- originates from the exact current integration PR/head allowed by Issue #135;
+- remains bound to `PRODUCT_SHA`, hosted run/artifact identity and digest;
+- is executed by an explicit `CONTROL_SHA` from protected main;
+- uses the isolated debug package identity;
+- never receives release-signing material;
+- cannot be promoted or relabeled as RC/stable;
+- cannot satisfy a formal release-signing or promotion claim;
+- cannot silently fall back to another commit or local rebuild.
 
-The Windows LAB is a consumer by default. Local builds remain an explicit diagnostic fallback only and never substitute for the selected hosted bytes without a separate engineering decision.
+The Windows LAB is a consumer by default.
 
 ## Development and merge policy
 
-Live execution state belongs to Issue #135; the master hardening/product plan belongs to Issue #134. Stable implementation policy is versioned in `AGENTS.md`, `docs/architecture/EXECUTION.md`, and `docs/architecture/DEVELOPMENT_PIPELINE.md`.
+Live execution state belongs only to Issue #135. Ordered stage/product direction belongs to `PRODUCT_ROADMAP.md`. Issue #134 is historical research/rationale.
 
-`main` is an accepted integration/evidence boundary, not a progress ledger. A development physical diagnostic does not by itself force the integration lineage to merge to `main`; exact-head hosted debug candidates exist specifically so physical attribution can happen without manufacturing a release or merging solely to obtain APK bytes.
+`main` is the protected control/process/canonical-documentation and milestone boundary, not a progress ledger. During an active stage the current PRODUCT implementation may be newer on the working/integration lineage named by #135.
+
+A development physical fact does not by itself force PRODUCT integration to `main`. Exact-head hosted debug candidates exist specifically to keep physical attribution exact without creating release identity or a premature merge boundary.
 
 ## Provider and control-plane constraints
 
-Do not create an Issue-command router, deployment controller, environment branches, mutable release-status database, custom artifact registry, or always-on remote-control daemon merely to bridge delivery steps.
+Do not create an Issue-command deployment controller, environment-branch control plane, mutable release-status database, custom artifact registry, or always-on remote-control daemon merely to bridge delivery steps.
 
 Supported provider desired configuration should use one declarative Git-reviewed path where the provider exposes a stable resource/API. Terraform state is deployment machinery, not PRODUCT/runtime truth.
+
+## Conflict rule
+
+- `DEVELOPMENT_PIPELINE.md` + executable workflows own development candidate/Device Cycle mechanics.
+- This file owns only formal RC/release identity/promotion.
+- `ACCEPTANCE.md` owns evidence-strength boundaries.
+- Issue #135 owns current stage/exact pointers, never release semantics themselves.
