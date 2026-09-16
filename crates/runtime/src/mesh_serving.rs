@@ -173,12 +173,14 @@ impl MeshExecutionOwner {
 
         generation.sessions.revoke();
         let _ = generation.stop.send(true);
-        generation.listeners.abort_all();
 
         let Some(runtime) = runtime else {
             return Err(MeshIngressError::ExecutorUnavailable);
         };
 
+        // Let each retained listener observe the stop signal and drain its own retained session
+        // JoinSet. Aborting the outer listener first would drop that nested JoinSet before its
+        // explicit abort+join path can run, making active-session cleanup scheduler-dependent.
         let drained = runtime.block_on(async {
             timeout(MESH_SHUTDOWN_TIMEOUT, async {
                 while generation.listeners.join_next().await.is_some() {}
@@ -188,7 +190,7 @@ impl MeshExecutionOwner {
         });
 
         if !drained {
-            // Keep aborted handles retained rather than silently detaching them. The enclosing
+            // Keep listener handles retained rather than silently detaching them. The enclosing
             // process runtime may retry drain or destroy the Tokio generation fail-closed.
             let mut state = self
                 .generation
