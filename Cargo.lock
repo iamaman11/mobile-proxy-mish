@@ -397,6 +397,7 @@ dependencies = [
  "mish-cellular",
  "mish-configuration",
  "mish-proxy",
+ "mish-transport",
  "tokio",
 ]
 

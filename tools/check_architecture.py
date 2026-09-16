@@ -16,14 +16,29 @@ def read(path: str) -> str:
     return target.read_text(encoding="utf-8")
 
 
+def product_source(path: str) -> str:
+    """Return production Rust source only, excluding in-file #[cfg(test)] modules."""
+    return read(path).split("#[cfg(test)]", maxsplit=1)[0]
+
+
 def require(path: str, needle: str, reason: str) -> None:
     if needle not in read(path):
         raise SystemExit(f"architecture guard: {reason}: {path} lacks {needle!r}")
 
 
+def require_product(path: str, needle: str, reason: str) -> None:
+    if needle not in product_source(path):
+        raise SystemExit(f"architecture guard: {reason}: PRODUCT {path} lacks {needle!r}")
+
+
 def forbid(path: str, needle: str, reason: str) -> None:
     if needle in read(path):
         raise SystemExit(f"architecture guard: {reason}: {path} contains {needle!r}")
+
+
+def forbid_product(path: str, needle: str, reason: str) -> None:
+    if needle in product_source(path):
+        raise SystemExit(f"architecture guard: {reason}: PRODUCT {path} contains {needle!r}")
 
 
 def forbid_regex(path: str, pattern: str, reason: str) -> None:
@@ -98,6 +113,75 @@ def main() -> None:
         "owner_mesh_ingress_serving_allowed",
         "Mesh serving composition FFI must remain a thin Rust delegation",
     )
+
+    # U2 Mesh execution law: Transport owns admission/capacity; one existing Runtime Tokio tree
+    # executes listeners/sessions/relay; Android observes the Transport-owned counter only.
+    for required in (
+        "MeshExecutionOwner",
+        "mpsc::sync_channel(expected_listeners)",
+        "startup_rx.recv_timeout(remaining)",
+        "sessions.try_admit()",
+        "JoinSet",
+        "copy_bidirectional",
+        "runtime.handle()",
+    ):
+        require_product(mesh_serving, required, "Mesh must execute deterministically on existing Tokio")
+    for forbidden in (
+        "std::thread::sleep",
+        "std::thread::spawn",
+        "tokio::runtime::Builder",
+        "MeshSessionOwner::product_generation()",
+    ):
+        forbid_product(
+            mesh_serving,
+            forbidden,
+            "Mesh runtime mechanism must not poll, create OS workers/second Tokio, or mint capacity",
+        )
+
+    transport = "crates/transport/src/lib.rs"
+    for required in ("MeshSessionOwner", "MeshSessionLease", "MeshIngressExecutor"):
+        require_product(transport, required, "Transport must own Mesh admission/capacity contracts")
+    for forbidden in (
+        "MeshIngressRuntime",
+        "std::thread",
+        "thread::",
+        "std::io::copy",
+        "io::copy(",
+        "tokio::runtime::Builder",
+    ):
+        forbid_product(
+            transport,
+            forbidden,
+            "Transport must not regain listener/session execution or thread-per-session relay",
+        )
+
+    transport_runtime_owner = "crates/transport/src/runtime_owner.rs"
+    require(
+        transport_runtime_owner,
+        "let sessions = MeshSessionOwner::product_generation();",
+        "Transport coordinator must mint the one external Mesh session owner",
+    )
+    require(
+        transport_runtime_owner,
+        ".start_ingress(endpoint, mappings, Arc::clone(&sessions))",
+        "Runtime must consume the exact Transport-owned session generation",
+    )
+    require(
+        "crates/runtime/Cargo.toml",
+        "mish-transport",
+        "Runtime must consume Transport-owned Mesh contracts through the typed seam",
+    )
+    require(
+        mesh_android,
+        "activeController.admissionSnapshot().activeSessions",
+        "Android diagnostics must project the natural Transport-owned Mesh session counter",
+    )
+    for duplicate_counter in ("AtomicInteger", "AtomicLong", "LongAdder"):
+        forbid(
+            mesh_android,
+            duplicate_counter,
+            "Android must not acquire a duplicate Mesh active-session counter",
+        )
 
     # Proxy-target DNS/public egress has exactly one Cellular Egress path and no default fallback.
     runtime_dns = "crates/runtime/src/cellular_connector.rs"
@@ -326,12 +410,22 @@ def main() -> None:
         "error.lifecycle_failure()",
         "runtime owner must classify native startup mechanism failures before FFI",
     )
+    require(
+        proxy_serving_ffi,
+        "pub(crate) fn runtime_handle(&self) -> Arc<ProxyServingRuntime>",
+        "FFI must expose only a Rust-private opaque handle to the existing process runtime",
+    )
 
     mesh_ffi = "crates/android-ffi/src/transport_ffi.rs"
     require(
         mesh_ffi,
         "MeshTransportCoordinator",
         "Mesh FFI must delegate runtime coordination to the Transport owner",
+    )
+    require(
+        mesh_ffi,
+        "process_runtime: Arc<NativeProxyRuntime>",
+        "Mesh FFI composition must receive the existing opaque native runtime",
     )
     for symbol in (
         "struct MeshTransportState",
@@ -349,7 +443,6 @@ def main() -> None:
         "pub const fn canonical_listeners",
         "Proxy Serving must expose its canonical listener contract",
     )
-    transport = "crates/transport/src/lib.rs"
     forbid(transport, "PRODUCT_PROXY_PORTS", "Transport must not own product proxy ports")
     forbid_regex(
         transport,

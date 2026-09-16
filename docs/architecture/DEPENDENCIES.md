@@ -20,6 +20,26 @@ Special cases:
 - `android-network` implements the exact-network resolver mechanism only.
 - `android-ffi` is the narrow typed platform/FFI seam, not a business layer and not an alternate network-execution API.
 
+For U2 Mesh/Tokio convergence specifically, the dependency direction is intentional:
+
+```text
+mish-transport
+  Mesh endpoint / admission / epoch
+  MeshSessionOwner / MeshSessionLease
+  MeshIngressExecutor contract
+        |
+        v
+mish-runtime
+  implements MeshIngressExecutor
+  executes admitted Mesh listener/session/relay work
+  on the already-existing process Tokio runtime
+        |
+        v
+loopback mish-proxy listener
+```
+
+`mish-runtime -> mish-transport` is an execution-contract dependency, not a policy transfer. `mish-transport` creates the external session generation and remains the only owner of the 64-session admission limit and `mesh.active_sessions`. Runtime consumes Transport-issued leases and may not mint a second external Mesh capacity owner. There is no reverse `mish-transport -> mish-runtime` dependency, second Tokio runtime, thread-per-session executor or Android-owned session counter.
+
 Cycles, service locators, global registries and shared mutable semantic state are architecture failures.
 
 ## Runtime language boundary

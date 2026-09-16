@@ -1,27 +1,21 @@
 //! Transport Reachability natural-owner capability.
 //!
-//! Owns exact admitted Mesh endpoint facts and the deliberately small TCP ingress that exposes
-//! only those exact endpoints to an explicitly supplied loopback backend mapping. It does not own
-//! proxy protocols, proxy listener ports, authentication, Cloudflare/VPN configuration, DNS, or
-//! public Internet egress.
+//! Owns exact admitted Mesh endpoint facts, admission epochs, the external session budget and the
+//! active external-session fact. Long-lived listener/session/relay execution is deliberately not
+//! implemented here: `mish-runtime` consumes the typed execution seam below on its one Tokio
+//! runtime. Transport does not own proxy protocols, authentication, DNS or public egress.
 
 use mish_configuration::EXTERNAL_TCP_SESSION_BUDGET;
-use std::collections::{BTreeSet, HashMap};
-use std::io;
-use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, SocketAddrV4, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::collections::BTreeSet;
+use std::net::Ipv4Addr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-/// One external generation may accept only the same bounded number of sessions as the private
-/// bridge. Over-capacity Mesh clients are rejected at the edge instead of accumulating threads
-/// and eventually timing out behind sing-box.
+/// One external Mesh generation admits exactly the repository-owned external session budget.
+/// Capacity remains a Transport Reachability fact even though admitted work executes in
+/// `mish-runtime`.
 pub const MAX_MESH_SESSIONS: usize = EXTERNAL_TCP_SESSION_BUDGET;
 
-const ACCEPT_POLL: Duration = Duration::from_millis(20);
-const BACKEND_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
-const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const MIN_ACCEPTED_PREFIX: u8 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -201,20 +195,19 @@ impl MeshEndpointOwner {
     }
 }
 
+/// Runtime-mechanism failures crossing the typed Transport -> Runtime execution seam.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MeshIngressError {
     InvalidEndpoint,
     InvalidPortMapping,
     BindFailed,
     ListenerConfigurationFailed,
-    ThreadUnavailable,
+    ExecutorUnavailable,
     ShutdownTimedOut,
 }
 
-/// One explicit transport-only ingress/backend mapping supplied by a composition adapter.
-///
-/// Transport does not know which product protocol owns the port; it only validates non-zero
-/// endpoints and forwards TCP bytes between the exact Mesh listener and loopback backend.
+/// One explicit transport-only ingress/backend mapping supplied by the composition adapter.
+/// Transport does not know which proxy protocol owns the port.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MeshPortForward {
     ingress_port: u16,
@@ -242,312 +235,104 @@ impl MeshPortForward {
     }
 }
 
-struct SessionSockets {
-    client: TcpStream,
-    backend: TcpStream,
-}
-
-struct SessionState {
-    next_id: u64,
-    sockets: HashMap<u64, SessionSockets>,
-}
-
-struct SessionRegistry {
-    max_sessions: usize,
-    state: Mutex<SessionState>,
-}
-
-impl SessionRegistry {
-    fn new(max_sessions: usize) -> Self {
-        Self {
-            max_sessions,
-            state: Mutex::new(SessionState {
-                next_id: 0,
-                sockets: HashMap::new(),
-            }),
-        }
-    }
-
-    fn at_capacity(&self) -> bool {
-        self.state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .sockets
-            .len()
-            >= self.max_sessions
-    }
-
-    fn register(&self, client: &TcpStream, backend: &TcpStream) -> Option<u64> {
-        let client_control = client.try_clone().ok()?;
-        let backend_control = backend.try_clone().ok()?;
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if state.sockets.len() >= self.max_sessions {
-            return None;
-        }
-        state.next_id = state.next_id.wrapping_add(1);
-        if state.next_id == 0 {
-            state.next_id = 1;
-        }
-        let id = state.next_id;
-        if state.sockets.contains_key(&id) {
-            return None;
-        }
-        state.sockets.insert(
-            id,
-            SessionSockets {
-                client: client_control,
-                backend: backend_control,
-            },
-        );
-        Some(id)
-    }
-
-    fn finish(&self, id: u64) {
-        self.state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .sockets
-            .remove(&id);
-    }
-
-    fn shutdown_all(&self) {
-        let state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        for session in state.sockets.values() {
-            let _ = session.client.shutdown(Shutdown::Both);
-            let _ = session.backend.shutdown(Shutdown::Both);
-        }
-    }
-
-    fn active_count(&self) -> usize {
-        self.state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .sockets
-            .len()
-    }
-}
-
-/// Exact-address TCP ingress for one owner admission epoch.
+/// Canonical owner of the admitted external-session fact for one Mesh ingress generation.
 ///
-/// The runtime binds only the exact admitted endpoint. Every accepted stream is forwarded to the
-/// explicitly supplied loopback backend mapping. There is no protocol parsing, authentication,
-/// UDP, wildcard bind, route mutation, VPN ownership, or proxy-port policy here.
-pub struct MeshIngressRuntime {
-    endpoint: Ipv4Addr,
-    stop: Arc<AtomicBool>,
-    sessions: Arc<SessionRegistry>,
-    listeners: Vec<JoinHandle<()>>,
+/// The runtime may execute a lease but cannot mint capacity independently. Revocation prevents
+/// fresh leases immediately; dropping a lease decrements the owner fact exactly once.
+pub struct MeshSessionOwner {
+    accepting: AtomicBool,
+    active: AtomicUsize,
 }
 
-impl MeshIngressRuntime {
-    pub fn start(
-        endpoint: Ipv4Addr,
-        mappings: &[MeshPortForward],
-    ) -> Result<Self, MeshIngressError> {
-        Self::start_mapped(endpoint, mappings, MAX_MESH_SESSIONS)
+impl MeshSessionOwner {
+    pub fn product_generation() -> Arc<Self> {
+        Arc::new(Self {
+            accepting: AtomicBool::new(true),
+            active: AtomicUsize::new(0),
+        })
     }
 
-    pub fn endpoint(&self) -> Ipv4Addr {
-        self.endpoint
+    pub fn try_admit(self: &Arc<Self>) -> Option<MeshSessionLease> {
+        if !self.accepting.load(Ordering::Acquire) {
+            return None;
+        }
+
+        let mut current = self.active.load(Ordering::Acquire);
+        loop {
+            if current >= MAX_MESH_SESSIONS {
+                return None;
+            }
+            match self.active.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(observed) => current = observed,
+            }
+        }
+
+        if !self.accepting.load(Ordering::Acquire) {
+            self.active.fetch_sub(1, Ordering::AcqRel);
+            return None;
+        }
+
+        Some(MeshSessionLease {
+            owner: Arc::clone(self),
+        })
     }
 
-    pub fn is_healthy(&self) -> bool {
-        !self.stop.load(Ordering::Acquire)
-            && !self.listeners.is_empty()
-            && self
-                .listeners
-                .iter()
-                .all(|listener| !listener.is_finished())
+    pub fn revoke(&self) {
+        self.accepting.store(false, Ordering::Release);
+    }
+
+    pub fn is_accepting(&self) -> bool {
+        self.accepting.load(Ordering::Acquire)
     }
 
     pub fn active_sessions(&self) -> usize {
-        self.sessions.active_count()
+        self.active.load(Ordering::Acquire)
     }
+}
 
-    pub fn stop(&mut self) -> Result<(), MeshIngressError> {
-        self.stop.store(true, Ordering::Release);
-        self.sessions.shutdown_all();
-        for listener in self.listeners.drain(..) {
-            let _ = listener.join();
-        }
-        self.sessions.shutdown_all();
+/// One admitted external Mesh session. Runtime task ownership may move this value freely; its Drop
+/// is the single decrement path for `mesh.active_sessions`.
+pub struct MeshSessionLease {
+    owner: Arc<MeshSessionOwner>,
+}
 
-        let deadline = Instant::now() + SHUTDOWN_TIMEOUT;
-        while self.sessions.active_count() != 0 && Instant::now() < deadline {
-            thread::sleep(ACCEPT_POLL);
-        }
-        if self.sessions.active_count() == 0 {
-            Ok(())
-        } else {
-            Err(MeshIngressError::ShutdownTimedOut)
-        }
+impl MeshSessionLease {
+    pub fn is_current(&self) -> bool {
+        self.owner.is_accepting()
     }
+}
 
-    fn start_mapped(
+impl Drop for MeshSessionLease {
+    fn drop(&mut self) {
+        let previous = self.owner.active.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0, "Mesh session owner underflow");
+    }
+}
+
+/// Minimal typed seam: Transport owns whether work is admitted; Runtime owns how it executes.
+/// Implementations must retain every listener/session task and stop them deterministically.
+pub trait MeshIngressExecutor: Send + Sync {
+    fn start_ingress(
+        &self,
         endpoint: Ipv4Addr,
         mappings: &[MeshPortForward],
-        max_sessions: usize,
-    ) -> Result<Self, MeshIngressError> {
-        if endpoint.is_unspecified() || endpoint.is_multicast() || endpoint == Ipv4Addr::BROADCAST {
-            return Err(MeshIngressError::InvalidEndpoint);
-        }
-        if mappings.is_empty()
-            || max_sessions == 0
-            || mappings
-                .iter()
-                .any(|mapping| mapping.ingress_port == 0 || mapping.backend_port == 0)
-        {
-            return Err(MeshIngressError::InvalidPortMapping);
-        }
+        sessions: Arc<MeshSessionOwner>,
+    ) -> Result<(), MeshIngressError>;
 
-        let mut bound = Vec::with_capacity(mappings.len());
-        for mapping in mappings.iter().copied() {
-            let listener = TcpListener::bind(SocketAddr::V4(SocketAddrV4::new(
-                endpoint,
-                mapping.ingress_port,
-            )))
-            .map_err(|_| MeshIngressError::BindFailed)?;
-            listener
-                .set_nonblocking(true)
-                .map_err(|_| MeshIngressError::ListenerConfigurationFailed)?;
-            bound.push((listener, mapping));
-        }
+    fn stop_ingress(&self) -> Result<(), MeshIngressError>;
 
-        let stop = Arc::new(AtomicBool::new(false));
-        let sessions = Arc::new(SessionRegistry::new(max_sessions));
-        let mut listeners = Vec::with_capacity(bound.len());
-
-        for (listener, mapping) in bound {
-            let worker_stop = Arc::clone(&stop);
-            let worker_sessions = Arc::clone(&sessions);
-            let name = format!("mish-mesh-listener-{}", mapping.ingress_port);
-            match thread::Builder::new()
-                .name(name)
-                .spawn(move || listener_loop(listener, mapping, worker_stop, worker_sessions))
-            {
-                Ok(worker) => listeners.push(worker),
-                Err(_) => {
-                    stop.store(true, Ordering::Release);
-                    sessions.shutdown_all();
-                    for worker in listeners {
-                        let _ = worker.join();
-                    }
-                    return Err(MeshIngressError::ThreadUnavailable);
-                }
-            }
-        }
-
-        Ok(Self {
-            endpoint,
-            stop,
-            sessions,
-            listeners,
-        })
-    }
-}
-
-impl Drop for MeshIngressRuntime {
-    fn drop(&mut self) {
-        let _ = self.stop();
-    }
-}
-
-fn listener_loop(
-    listener: TcpListener,
-    mapping: MeshPortForward,
-    stop: Arc<AtomicBool>,
-    sessions: Arc<SessionRegistry>,
-) {
-    while !stop.load(Ordering::Acquire) {
-        match listener.accept() {
-            Ok((client, _peer)) => {
-                if stop.load(Ordering::Acquire) || sessions.at_capacity() {
-                    let _ = client.shutdown(Shutdown::Both);
-                    continue;
-                }
-                let backend_address =
-                    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), mapping.backend_port);
-                let backend =
-                    match TcpStream::connect_timeout(&backend_address, BACKEND_CONNECT_TIMEOUT) {
-                        Ok(stream) => stream,
-                        Err(_) => {
-                            let _ = client.shutdown(Shutdown::Both);
-                            continue;
-                        }
-                    };
-                let _ = client.set_nodelay(true);
-                let _ = backend.set_nodelay(true);
-                let Some(session_id) = sessions.register(&client, &backend) else {
-                    let _ = client.shutdown(Shutdown::Both);
-                    let _ = backend.shutdown(Shutdown::Both);
-                    continue;
-                };
-                let session_registry = Arc::clone(&sessions);
-                let name = format!("mish-mesh-session-{}", mapping.ingress_port);
-                if thread::Builder::new()
-                    .name(name)
-                    .spawn(move || run_session(session_id, client, backend, session_registry))
-                    .is_err()
-                {
-                    sessions.finish(session_id);
-                }
-            }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                thread::sleep(ACCEPT_POLL);
-            }
-            Err(_) => return,
-        }
-    }
-}
-
-fn run_session(
-    session_id: u64,
-    mut client: TcpStream,
-    mut backend: TcpStream,
-    sessions: Arc<SessionRegistry>,
-) {
-    let mut client_reader = match client.try_clone() {
-        Ok(stream) => stream,
-        Err(_) => {
-            sessions.finish(session_id);
-            return;
-        }
-    };
-    let mut backend_writer = match backend.try_clone() {
-        Ok(stream) => stream,
-        Err(_) => {
-            sessions.finish(session_id);
-            return;
-        }
-    };
-
-    let upstream = thread::Builder::new()
-        .name("mish-mesh-copy-upstream".to_owned())
-        .spawn(move || {
-            let _ = io::copy(&mut client_reader, &mut backend_writer);
-            let _ = backend_writer.shutdown(Shutdown::Write);
-        });
-
-    if let Ok(upstream) = upstream {
-        let _ = io::copy(&mut backend, &mut client);
-        let _ = client.shutdown(Shutdown::Write);
-        let _ = upstream.join();
-    }
-    let _ = client.shutdown(Shutdown::Both);
-    let _ = backend.shutdown(Shutdown::Both);
-    sessions.finish(session_id);
+    fn ingress_healthy(&self) -> bool;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
 
     fn owner() -> MeshEndpointOwner {
         MeshEndpointOwner::new(Ipv4Addr::new(100, 96, 0, 0), 12).expect("valid Mesh range")
@@ -650,35 +435,28 @@ mod tests {
     }
 
     #[test]
-    fn mapped_ingress_forwards_bidirectionally_and_stops_cleanly() {
-        let backend = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("backend bind");
-        let backend_port = backend.local_addr().expect("backend address").port();
-        let reserve = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("reserve ingress");
-        let ingress_port = reserve.local_addr().expect("ingress address").port();
-        drop(reserve);
+    fn transport_budget_is_exact_and_lease_drop_is_the_only_decrement() {
+        let sessions = MeshSessionOwner::product_generation();
+        let mut leases = Vec::with_capacity(MAX_MESH_SESSIONS);
+        for _ in 0..MAX_MESH_SESSIONS {
+            leases.push(sessions.try_admit().expect("within Mesh budget"));
+        }
+        assert_eq!(sessions.active_sessions(), MAX_MESH_SESSIONS);
+        assert!(
+            sessions.try_admit().is_none(),
+            "65th session must be rejected"
+        );
 
-        let backend_worker = thread::spawn(move || {
-            let (mut stream, _) = backend.accept().expect("backend accept");
-            let mut payload = [0_u8; 4];
-            stream.read_exact(&mut payload).expect("backend read");
-            assert_eq!(&payload, b"ping");
-            stream.write_all(b"pong").expect("backend write");
-        });
+        drop(leases.pop());
+        assert_eq!(sessions.active_sessions(), MAX_MESH_SESSIONS - 1);
+        leases.push(sessions.try_admit().expect("released capacity is reusable"));
+        assert_eq!(sessions.active_sessions(), MAX_MESH_SESSIONS);
 
-        let mapping = [MeshPortForward::new(ingress_port, backend_port)];
-        let mut runtime = MeshIngressRuntime::start_mapped(Ipv4Addr::LOCALHOST, &mapping, 4)
-            .expect("start mapped ingress");
-        assert!(runtime.is_healthy());
-
-        let mut client =
-            TcpStream::connect((Ipv4Addr::LOCALHOST, ingress_port)).expect("connect ingress");
-        client.write_all(b"ping").expect("client write");
-        let mut response = [0_u8; 4];
-        client.read_exact(&mut response).expect("client read");
-        assert_eq!(&response, b"pong");
-        drop(client);
-        backend_worker.join().expect("backend worker");
-        runtime.stop().expect("clean stop");
+        sessions.revoke();
+        assert!(!sessions.is_accepting());
+        assert!(sessions.try_admit().is_none());
+        drop(leases);
+        assert_eq!(sessions.active_sessions(), 0);
     }
 
     #[test]
