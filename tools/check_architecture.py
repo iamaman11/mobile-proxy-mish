@@ -99,7 +99,7 @@ def main() -> None:
     )
 
     # Proxy-target DNS/public egress has exactly one Cellular Egress path and no default fallback.
-    runtime_dns = "crates/runtime/src/lib.rs"
+    runtime_dns = "crates/runtime/src/cellular_connector.rs"
     require(
         runtime_dns,
         "pub trait CellularDnsResolver",
@@ -111,7 +111,7 @@ def main() -> None:
         "android_getaddrinfofornetwork(",
         "Android target DNS must remain scoped to the owner-issued network handle",
     )
-    for product_path in (runtime_dns, "crates/android-ffi/src/lib.rs"):
+    for product_path in (runtime_dns, "crates/android-ffi/src/runtime_boundary.rs"):
         for fallback in ("ToSocketAddrs", "lookup_host("):
             forbid(
                 product_path,
@@ -281,7 +281,7 @@ def main() -> None:
         )
 
     # Stateful runtime coordination must not drift into the FFI seam.
-    ffi = "crates/android-ffi/src/lib.rs"
+    ffi = "crates/android-ffi/src/runtime_boundary.rs"
     for symbol in (
         "struct RootPolicyEffectGate",
         "struct RootPolicyGatedConnector",
@@ -296,6 +296,17 @@ def main() -> None:
         "UniFFI must project native Proxy Serving lifecycle",
     )
     forbid(lifecycle_ffi, "RuntimeProcessLifecycle", "child-process lifecycle must not return to FFI")
+    proxy_serving_ffi = "crates/android-ffi/src/proxy_serving_ffi.rs"
+    require(
+        proxy_serving_ffi,
+        "NativeProxyStartAttempt",
+        "expected native proxy startup failures must cross FFI as typed data",
+    )
+    require(
+        proxy_serving_ffi,
+        "error.lifecycle_failure()",
+        "runtime owner must classify native startup mechanism failures before FFI",
+    )
 
     mesh_ffi = "crates/android-ffi/src/transport_ffi.rs"
     require(
@@ -340,13 +351,35 @@ def main() -> None:
     proxy_android = "android/app/src/main/java/com/mobileproxymish/app/ProxyRuntimeSupervisor.kt"
     for obsolete in ("privateBridge", "childAlive", "RuntimeProcess"):
         forbid(proxy_android, obsolete, "Android proxy supervisor must describe native serving only")
+    require(
+        proxy_android,
+        "val startFailure = attempt.failure()",
+        "Android proxy adapter must publish Rust-owned typed startup failures",
+    )
 
-    # Diagnostics v2 must describe native product facts without a fake bridge projection.
+    # Diagnostics v2 observes current owner facts only. It must never become a repair/control path.
     diagnostics = "android/app/src/main/java/com/mobileproxymish/app/MishDiagnosticsProvider.kt"
     require(diagnostics, 'MISH_DIAGNOSTICS_SCHEMA_V2 = "mish.diagnostics/v2"', "diagnostics must be versioned v2")
     require(diagnostics, 'MISH_DIAGNOSTICS_METHOD_SNAPSHOT_V2 = "snapshot_v2"', "diagnostics method must be v2")
     for obsolete in ("MISH_DIAGNOSTICS_SCHEMA_V1", "snapshot_v1", 'put("bridge"', "private_healthy", "privateBridge"):
         forbid(diagnostics, obsolete, "diagnostics must not retain deleted private-bridge semantics")
+    for mutation in (
+        "startNativeProxyRuntime(",
+        ".start()",
+        ".stop()",
+        "proxyServingFailureRecoverable(",
+        "proxyRecoveryDelayMs(",
+        "RootCommandTransport",
+        "MagiskRootAuthority",
+        "SuProcess",
+        "ProcessBuilder",
+        "rotateExternalCredential",
+        "revokeExternalCredential",
+        "authorizeRootPolicy(",
+        "closeRootPolicyGate(",
+        "observeNetwork(",
+    ):
+        forbid(diagnostics, mutation, "diagnostics must remain observation-only")
 
     # Root authority proof and root-shell transport are separate responsibilities.
     authority = "android/app/src/main/java/com/mobileproxymish/app/cellular/MagiskRootAuthority.kt"
