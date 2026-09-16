@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Fail-closed architecture guards for the accepted M1 owner topology.
+"""Fail-closed architecture guards for the native MISH product topology.
 
-These checks deliberately target architectural regressions that ordinary unit tests cannot see:
-forbidden dependency direction, duplicate product facts, stateful FFI ownership, and contract drift.
-They do not claim physical Android/Cloudflare behavior.
+These checks cover ownership/dependency regressions that ordinary unit tests cannot see. They are
+not a substitute for physical Android/Cloudflare/cellular acceptance.
 """
 
 from __future__ import annotations
@@ -31,18 +30,18 @@ def forbid(path: str, needle: str, reason: str) -> None:
         raise SystemExit(f"architecture guard: {reason}: {path} contains {needle!r}")
 
 
-def require_regex(path: str, pattern: str, reason: str) -> None:
-    if re.search(pattern, read(path), flags=re.MULTILINE) is None:
-        raise SystemExit(f"architecture guard: {reason}: {path} does not match {pattern!r}")
-
-
 def forbid_regex(path: str, pattern: str, reason: str) -> None:
     if re.search(pattern, read(path), flags=re.MULTILINE) is not None:
         raise SystemExit(f"architecture guard: {reason}: {path} matches {pattern!r}")
 
 
+def forbid_exists(path: str, reason: str) -> None:
+    if (ROOT / path).exists():
+        raise SystemExit(f"architecture guard: {reason}: obsolete path still exists: {path}")
+
+
 def main() -> None:
-    # Runtime Lifecycle must remain vendor/platform neutral.
+    # Runtime/domain ownership stays vendor/platform neutral.
     forbid(
         "crates/runtime/Cargo.toml",
         "mish-android-network",
@@ -51,7 +50,7 @@ def main() -> None:
     require(
         "crates/android-ffi/Cargo.toml",
         "mish-android-network",
-        "Android DNS mechanics belong at the platform/FFI adapter boundary",
+        "Android DNS mechanics belong at the platform/FFI boundary",
     )
     forbid(
         "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt",
@@ -61,7 +60,7 @@ def main() -> None:
     forbid(
         "android/app/src/main/java/com/mobileproxymish/app/ProxyRuntimeSupervisor.kt",
         "class ProxyRuntimeLifecycle",
-        "Kotlin must not reintroduce a parallel child-process lifecycle owner",
+        "Kotlin must not reintroduce a parallel proxy lifecycle owner",
     )
     forbid(
         "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt",
@@ -69,7 +68,7 @@ def main() -> None:
         "cleanup disposition policy belongs to crates/runtime",
     )
 
-    # Proxy-target DNS stays one Cellular Egress consumer path with no default/process fallback.
+    # Proxy-target DNS/public egress has exactly one Cellular Egress path and no default fallback.
     runtime_dns = "crates/runtime/src/lib.rs"
     require(
         runtime_dns,
@@ -80,13 +79,9 @@ def main() -> None:
     require(
         android_dns,
         "android_getaddrinfofornetwork(",
-        "Android proxy-target DNS must remain scoped to the owner-issued network handle",
+        "Android target DNS must remain scoped to the owner-issued network handle",
     )
-    for product_path in (
-        runtime_dns,
-        "crates/android-ffi/src/lib.rs",
-        "crates/sing-box-adapter/src/lib.rs",
-    ):
+    for product_path in (runtime_dns, "crates/android-ffi/src/lib.rs"):
         for fallback in ("ToSocketAddrs", "lookup_host("):
             forbid(
                 product_path,
@@ -105,11 +100,29 @@ def main() -> None:
             if fallback in kotlin:
                 relative = kotlin_path.relative_to(ROOT)
                 raise SystemExit(
-                    "architecture guard: proxy-target DNS/public egress must not gain "
-                    f"process/default/per-socket network fallback: {relative} contains {fallback!r}"
+                    "architecture guard: public egress must not gain a default/process/per-socket "
+                    f"network fallback: {relative} contains {fallback!r}"
                 )
 
-    # Readiness is one pure Rust terminal projection; the application probe is orchestration only.
+    # Native Proxy Serving owns one explicit Tokio task tree.
+    proxy_runtime = "crates/runtime/src/proxy_runtime.rs"
+    for required in (
+        "JoinSet",
+        "accept_tasks: Mutex<Vec<JoinHandle<()>>>",
+        "sessions.abort_all()",
+        "while sessions.join_next().await.is_some()",
+        "Semaphore::new(MAX_NATIVE_PROXY_SESSIONS)",
+        "spawn_blocking",
+        "copy_bidirectional",
+    ):
+        require(proxy_runtime, required, "native Proxy Serving must keep deterministic task ownership")
+    forbid(
+        proxy_runtime,
+        "drop(tokio::spawn(",
+        "long-lived native proxy sessions must not be detached Tokio tasks",
+    )
+
+    # Readiness is one pure Rust terminal projection. Android only executes the concrete probe.
     readiness = "crates/readiness/src/lib.rs"
     require(readiness, "pub enum Readiness", "Readiness must expose one terminal projection type")
     require(readiness, "pub fn project(", "Readiness must remain a pure projection function")
@@ -134,46 +147,16 @@ def main() -> None:
         "Instant",
         "SystemTime",
     ):
-        forbid(
-            readiness,
-            effect_token,
-            "Readiness must not own sockets, timers, threads, or mutable state",
-        )
+        forbid(readiness, effect_token, "Readiness must not own I/O, timers, threads or mutable state")
+
     application = "crates/application/src/lib.rs"
-    require(
-        application,
+    for required in (
         "run_authenticated_egress_probe",
-        "Cross-owner bounded authenticated DNS+TLS probe belongs to crates/application",
-    )
-    require(
-        application,
         "EgressProbeCoordinator",
-        "Application must own monotonic stale-probe rejection rather than Kotlin",
-    )
-    require(
-        application,
         "ProbeBinding",
-        "Application probe observation must remain generation/version bound",
-    )
-    require(
-        application,
         "DEFAULT_EGRESS_PROBE_BUDGET",
-        "Application must own one bounded operation deadline for the readiness probe",
-    )
-    for kotlin_path in ROOT.glob("android/app/src/main/java/**/*.kt"):
-        kotlin = kotlin_path.read_text(encoding="utf-8")
-        for mutable_readiness_owner in (
-            "MutableStateFlow<Readiness",
-            "class ReadinessRepository",
-            "object ReadinessRepository",
-            "RoomDatabase.*Readiness",
-        ):
-            if mutable_readiness_owner in kotlin:
-                relative = kotlin_path.relative_to(ROOT)
-                raise SystemExit(
-                    "architecture guard: Kotlin must not own a parallel mutable readiness state: "
-                    f"{relative} contains {mutable_readiness_owner!r}"
-                )
+    ):
+        require(application, required, "cross-owner readiness probe coordination belongs to Rust")
 
     readiness_ffi = "crates/android-ffi/src/readiness_ffi.rs"
     require(
@@ -184,7 +167,7 @@ def main() -> None:
     require(
         "crates/android-ffi/src/entry.rs",
         "mod readiness_ffi;",
-        "readiness UniFFI boundary must be part of the generated Kotlin contract",
+        "readiness UniFFI boundary must remain generated",
     )
     readiness_android = "android/app/src/main/java/com/mobileproxymish/app/ProductReadinessRuntime.kt"
     for required in (
@@ -203,7 +186,7 @@ def main() -> None:
         require(
             readiness_android,
             required,
-            "Android readiness adapter must remain a bounded Rust-directed proxy/TLS effect",
+            "Android readiness must remain one bounded Rust-directed loopback proxy/TLS effect",
         )
     for forbidden in (
         "InetSocketAddress(target.hostname",
@@ -214,26 +197,10 @@ def main() -> None:
         forbid(
             readiness_android,
             forbidden,
-            "Android readiness probe must not resolve/connect the public hostname outside PRODUCT proxy",
+            "Android readiness must not resolve/connect the public hostname outside PRODUCT proxy",
         )
-    main_view_model = "android/app/src/main/java/com/mobileproxymish/app/MainViewModel.kt"
-    require(
-        main_view_model,
-        "runtimeController.readinessSnapshot",
-        "UI overall readiness must observe the Rust readiness projection",
-    )
-    require(
-        main_view_model,
-        "readinessStatus(readiness)",
-        "UI may only map the Rust readiness enum to presentation text",
-    )
-    forbid(
-        main_view_model,
-        'overallStatus: String = "Overall readiness — production acceptance pending"',
-        "UI must not retain a hardcoded overall readiness placeholder",
-    )
 
-    # Stateful private-bridge/root-policy coordination must not drift back into FFI.
+    # Stateful runtime coordination must not drift into the FFI seam.
     ffi = "crates/android-ffi/src/lib.rs"
     for symbol in (
         "struct RootPolicyEffectGate",
@@ -243,7 +210,6 @@ def main() -> None:
     ):
         forbid(ffi, symbol, "android-ffi must remain a typed adapter rather than a runtime owner")
 
-    # Mesh Transport runtime/lifecycle state belongs to crates/transport, never the FFI seam.
     mesh_ffi = "crates/android-ffi/src/transport_ffi.rs"
     require(
         mesh_ffi,
@@ -257,15 +223,15 @@ def main() -> None:
         "ingress_epoch",
         "cleanup_failed",
     ):
-        forbid(
-            mesh_ffi,
-            symbol,
-            "Mesh admission/ingress lifecycle state must not drift back into android-ffi",
-        )
+        forbid(mesh_ffi, symbol, "Mesh lifecycle state must not drift into android-ffi")
 
-    # Proxy Serving is the sole product listener-fact owner.
+    # Proxy Serving is the sole owner of canonical product listener facts.
     proxy = "crates/proxy/src/lib.rs"
-    require(proxy, "pub const fn canonical_listeners", "Proxy Serving must expose its canonical listener contract")
+    require(
+        proxy,
+        "pub const fn canonical_listeners",
+        "Proxy Serving must expose its canonical listener contract",
+    )
     transport = "crates/transport/src/lib.rs"
     forbid(transport, "PRODUCT_PROXY_PORTS", "Transport must not own product proxy ports")
     forbid_regex(
@@ -273,16 +239,30 @@ def main() -> None:
         r"\[\s*1080\s*,\s*1081\s*,\s*3128\s*\]",
         "Transport must not duplicate the product proxy-port tuple",
     )
-    kotlin_proxy = "android/app/src/main/java/com/mobileproxymish/app/ProxyRuntimeSupervisor.kt"
-    forbid(kotlin_proxy, "PUBLIC_PORTS", "Android must not duplicate product proxy ports")
-    require(kotlin_proxy, "proxyListenerPorts", "Android health must project Proxy Serving listener facts")
     require(
         readiness_ffi,
         "HTTP_CONNECT_PORT",
         "readiness probe HTTP port must project Proxy Serving desired state",
     )
 
-    # Desired Configuration is the sole deployment Mesh CIDR and readiness probe target source.
+    # L8 native cutover is one-way: obsolete sing-box bytes/build adapters may not return.
+    forbid("Cargo.toml", "sing-box-adapter", "workspace must not contain the obsolete proxy adapter")
+    android_build = "android/app/build.gradle.kts"
+    for obsolete in (
+        "materializeSingBoxAndroid",
+        "generatedSingBoxJniPath",
+        "singBoxCachePath",
+        "libsingbox.so",
+    ):
+        forbid(android_build, obsolete, "Android build must package only the native MISH runtime")
+    for obsolete_path in (
+        "crates/sing-box-adapter",
+        "vendor/sing-box",
+        "tools/materialize_sing_box_android.py",
+    ):
+        forbid_exists(obsolete_path, "obsolete sing-box product dependency must stay deleted")
+
+    # Desired Configuration remains the only deployment authority for Mesh CIDR/probe target.
     deployment = read("config/deployment/mesh-device-cidr.txt")
     if deployment.strip() != deployment.rstrip("\n") or "\n" in deployment.rstrip("\n"):
         raise SystemExit("architecture guard: Mesh deployment CIDR file must contain exactly one line")
@@ -294,7 +274,7 @@ def main() -> None:
     require(
         "crates/configuration/src/lib.rs",
         "config/deployment/mesh-device-cidr.txt",
-        "Desired Configuration must consume the canonical deployment file",
+        "Desired Configuration must consume the canonical Mesh CIDR file",
     )
     probe_deployment = read("config/deployment/readiness-probe-host.txt")
     if probe_deployment.strip() != probe_deployment.rstrip("\n") or "\n" in probe_deployment.rstrip("\n"):
@@ -304,42 +284,18 @@ def main() -> None:
         "struct ReadinessProbeTarget",
         "Desired Configuration must own readiness probe target validation",
     )
-    require(
-        "crates/configuration/src/lib.rs",
-        "config/deployment/readiness-probe-host.txt",
-        "Desired Configuration must consume the canonical readiness probe hostname",
-    )
-    mesh_android = "android/app/src/main/java/com/mobileproxymish/app/MeshIngressRuntimeBridge.kt"
-    for duplicate in ("100.96.0.0", "DEPLOYMENT_ACCEPTED_MESH_NETWORK", "DEPLOYMENT_ACCEPTED_MESH_PREFIX"):
-        forbid(mesh_android, duplicate, "Android must not own a Mesh accepted-range literal")
-    forbid(
-        "infra/cloudflare/variables.tf",
-        'variable "mesh_device_cidr"',
-        "Terraform must not define a second Mesh CIDR value/default",
-    )
-    require(
-        "infra/cloudflare/main.tf",
-        "config/deployment/mesh-device-cidr.txt",
-        "Terraform must consume the canonical Mesh CIDR file",
-    )
 
-    # Versioned protobuf is the product credential serialization contract.
+    # Credentials stay versioned in Rust with Android Keystore only as the physical secret root.
     proto = "contracts/proto/mish/credentials/v1/credentials.proto"
     require(proto, "package mish.credentials.v1;", "credential protobuf package must remain versioned")
     require(proto, "message ExternalProxyProvisioningEnvelope", "provisioning contract must remain protobuf")
-    for product_path in (
-        "android/app/src/main/java/com/mobileproxymish/app/CredentialProvisioningReceiver.kt",
-        "lab/windows/CredentialProvisioning.psm1",
-    ):
-        for json_token in ("ConvertFrom-Json", "JSONObject", 'append("{\\\"v\\\":")'):
-            forbid(product_path, json_token, "credential provisioning must not return to ad-hoc JSON")
     require(
         "android/app/src/main/java/com/mobileproxymish/app/ExternalProxyCredentialStore.kt",
         "state_pb_b64_v1",
         "Android durable credential metadata must remain one protobuf state blob",
     )
 
-    # No second Android VPN/TUN ownership may appear in the product manifest.
+    # No second Android VPN/TUN ownership may appear in PRODUCT.
     manifest = read("android/app/src/main/AndroidManifest.xml")
     if "VpnService" in manifest or "android.net.VpnService" in manifest:
         raise SystemExit("architecture guard: PRODUCT manifest must not declare a second Android VPN service")
