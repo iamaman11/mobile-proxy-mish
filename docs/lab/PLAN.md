@@ -1,6 +1,6 @@
 # Managed physical lab plan
 
-This document defines the stable physical-execution boundary. It does not own live stage status; Issue #135 does.
+This document defines the stable physical-execution boundary. Protected `main` is the latest accepted PRODUCT + CONTROL source. Live stage status belongs to Issue #135.
 
 ## Purpose
 
@@ -17,12 +17,12 @@ They share trust/evidence discipline but not artifact identity or promotion auth
 
 ## Development Device Cycle
 
-Use this path when the active roadmap stage needs a physical fact before formal release.
+Use this path when the active roadmap stage needs a physical fact before merging a candidate to `main`.
 
 Canonical shape:
 
 ```text
-exact PRODUCT head on the working lineage
+open ready PR to main, exact PRODUCT head
  -> successful Integration Android Preflight
  -> immutable debug candidate artifact + digest
  -> explicit owner /mish-cycle command after analysis
@@ -36,6 +36,7 @@ exact PRODUCT head on the working lineage
  -> launch/read-only diagnostics/current-function probe as explicitly requested
  -> bounded sanitized evidence
  -> STOP_FOR_ANALYSIS
+ -> merge accepted change to main
 ```
 
 A successful hosted build, merge, artifact publication or workflow completion never starts DEVICE-1 automatically.
@@ -64,7 +65,7 @@ Development debug candidate evidence may close the exact stage-specific physical
 Formal release uses the immutable release path in `RELEASE.md`:
 
 ```text
-accepted release source/version
+accepted release source/version from main
  -> restricted hosted build/sign authority
  -> immutable manifest + digest
  -> exact RC/release asset
@@ -78,8 +79,8 @@ No debug candidate is relabeled as RC/release. No release-signing secret belongs
 ## Physical ownership
 
 ```text
-GitHub
-  source, review, workflow definitions, exact run/evidence records
+GitHub protected main
+  accepted PRODUCT + CONTROL source, review, workflow definitions
 
 hosted candidate/release producers
   Android build/package authority for their respective artifact class
@@ -124,16 +125,18 @@ Historical `/data/adb/mobile-proxy-node`, Android sing-box binaries, watchdog/su
 
 ## PRODUCT / CONTROL provenance
 
-Every development physical run keeps these identities separate:
+Accepted repository state is protected `main`. A development physical run may temporarily separate:
 
 ```text
-PRODUCT_SHA
-CONTROL_SHA
+PRODUCT_SHA = exact open PR head under test
+CONTROL_SHA = exact protected-main Device Cycle/control implementation
 HOSTED_RUN_ID when consuming a hosted artifact
 DEVICE_CYCLE_RUN_ID
 ```
 
-Do not infer PRODUCT source composition from CONTROL_SHA. Do not infer architecture from stale device processes. Do not infer physical state from source.
+That split is provenance only, not a second accepted source. After acceptance/merge, PRODUCT and CONTROL are together on `main` again.
+
+Do not infer architecture from stale device processes. Do not infer physical state from source.
 
 ## Local-agent diagnostics
 
