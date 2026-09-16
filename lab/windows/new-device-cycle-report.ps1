@@ -29,15 +29,12 @@ function Read-OptionalJson {
 function Get-MishTargetedAcceptance {
     param($Evidence)
     if ($null -eq $Evidence) { return 'MISSING' }
-
     if ($Evidence.PSObject.Properties.Name -contains 'acceptance_result') {
         $value = [string]$Evidence.acceptance_result
         if ($value -in @('PASS', 'FAIL')) { return $value }
         return 'INVALID'
     }
-
-    # Compatibility with the already accepted loopback protocol evidence schema. A collected JSON
-    # file is not success by itself: every functional field that made #207 acceptable must agree.
+    # Compatibility with the accepted #207 loopback schema. File existence is not success.
     if (
         [string]$Evidence.schema -ceq 'mish.lab.loopback-connect-diagnostic/v1' -and
         $Evidence.PSObject.Properties.Name -contains 'protocol_matrix_pass' -and
@@ -49,12 +46,9 @@ function Get-MishTargetedAcceptance {
             [bool]$Evidence.protocol_matrix_pass -and
             [string]$Evidence.connect_probe.result -ceq 'PASS' -and
             [string]$Evidence.classification -ceq 'U2_PROXY_PROTOCOL_MATRIX_PASS'
-        ) {
-            return 'PASS'
-        }
+        ) { return 'PASS' }
         return 'FAIL'
     }
-
     return 'INVALID'
 }
 
@@ -75,9 +69,7 @@ function Get-MishCycleFailureKind {
         $Classification -like 'WINDOWS_*' -or
         $Classification -like 'INVALID_*' -or
         $Classification -eq 'DIAGNOSTIC_COLLECTION_FAILED'
-    ) {
-        return 'LAB_FAIL'
-    }
+    ) { return 'LAB_FAIL' }
     return 'PRODUCT_FAIL'
 }
 
@@ -89,117 +81,63 @@ $targetedClassification = Get-MishTargetedClassification -Evidence $targeted
 
 $launchFailed = $null -ne $launch -and [string]$launch.result -ceq 'FAIL'
 $launchFailureCategory = if ($launchFailed) { [string]$launch.failure_category } else { '' }
-if ($launchFailed -and $launchFailureCategory -notmatch '^[A-Z0-9_]+$') {
-    $launchFailureCategory = 'UNKNOWN'
-}
+if ($launchFailed -and $launchFailureCategory -notmatch '^[A-Z0-9_]+$') { $launchFailureCategory = 'UNKNOWN' }
 
 $classification = switch ($Mode) {
     'install_only' { 'INSTALL_ONLY_PASS'; break }
     'probe_only' {
-        if ($RequestedProbe -cne 'loopback_connect') {
-            'LAB_PROBE_NOT_EXPLICIT'
-        }
-        elseif ($targetedAcceptance -eq 'MISSING') {
-            'LAB_TARGETED_PROBE_COLLECTION_FAILED'
-        }
-        elseif ($targetedAcceptance -eq 'INVALID') {
-            'LAB_TARGETED_PROBE_SCHEMA_INVALID'
-        }
-        else {
-            $targetedClassification
-        }
+        if ($RequestedProbe -cne 'loopback_connect') { 'LAB_PROBE_NOT_EXPLICIT' }
+        elseif ($targetedAcceptance -eq 'MISSING') { 'LAB_TARGETED_PROBE_COLLECTION_FAILED' }
+        elseif ($targetedAcceptance -eq 'INVALID') { 'LAB_TARGETED_PROBE_SCHEMA_INVALID' }
+        else { $targetedClassification }
         break
     }
     'full' {
-        if ($launchFailed) {
-            "LAB_LAUNCH_$launchFailureCategory"
-        }
-        elseif ($null -eq $diagnostic) {
-            'DIAGNOSTIC_COLLECTION_FAILED'
-        }
-        elseif ([string]$diagnostic.classification -cne 'PASS') {
-            [string]$diagnostic.classification
-        }
-        elseif ($RequestedProbe -ceq 'none') {
-            'PASS'
-        }
-        elseif ($RequestedProbe -cne 'capacity_resources') {
-            'LAB_PROBE_NOT_EXPLICIT'
-        }
-        elseif ($targetedAcceptance -eq 'MISSING') {
-            'LAB_TARGETED_PROBE_COLLECTION_FAILED'
-        }
-        elseif ($targetedAcceptance -eq 'INVALID') {
-            'LAB_TARGETED_PROBE_SCHEMA_INVALID'
-        }
-        else {
-            $targetedClassification
-        }
+        if ($launchFailed) { "LAB_LAUNCH_$launchFailureCategory" }
+        elseif ($null -eq $diagnostic) { 'DIAGNOSTIC_COLLECTION_FAILED' }
+        elseif ([string]$diagnostic.classification -cne 'PASS') { [string]$diagnostic.classification }
+        elseif ($RequestedProbe -ceq 'none') { 'PASS' }
+        elseif ($RequestedProbe -cne 'capacity_resources') { 'LAB_PROBE_NOT_EXPLICIT' }
+        elseif ($targetedAcceptance -eq 'MISSING') { 'LAB_TARGETED_PROBE_COLLECTION_FAILED' }
+        elseif ($targetedAcceptance -eq 'INVALID') { 'LAB_TARGETED_PROBE_SCHEMA_INVALID' }
+        else { $targetedClassification }
         break
     }
     default {
-        if ($launchFailed) {
-            "LAB_LAUNCH_$launchFailureCategory"
-        }
-        elseif ($null -eq $diagnostic) {
-            'DIAGNOSTIC_COLLECTION_FAILED'
-        }
-        else {
-            [string]$diagnostic.classification
-        }
+        if ($launchFailed) { "LAB_LAUNCH_$launchFailureCategory" }
+        elseif ($null -eq $diagnostic) { 'DIAGNOSTIC_COLLECTION_FAILED' }
+        else { [string]$diagnostic.classification }
     }
 }
 
 $cycleResult = switch ($Mode) {
     'install_only' { 'PASS'; break }
     'probe_only' {
-        if ($classification -eq 'LAB_PROBE_NOT_EXPLICIT' -or $targetedAcceptance -in @('MISSING', 'INVALID')) {
-            'LAB_FAIL'
-        }
-        elseif ($targetedAcceptance -ceq 'PASS') {
-            'PASS'
-        }
-        else {
-            Get-MishCycleFailureKind -Classification $classification
-        }
+        if ($classification -eq 'LAB_PROBE_NOT_EXPLICIT' -or $targetedAcceptance -in @('MISSING', 'INVALID')) { 'LAB_FAIL' }
+        elseif ($targetedAcceptance -ceq 'PASS') { 'PASS' }
+        else { Get-MishCycleFailureKind -Classification $classification }
         break
     }
     'full' {
-        if ($classification -ceq 'PASS') {
-            'PASS'
+        # Baseline facts outrank targeted-probe absence/failure. A baseline PRODUCT failure must not
+        # be reclassified as LAB failure merely because capacity execution was not meaningful.
+        if ($launchFailed -or $null -eq $diagnostic) { 'LAB_FAIL' }
+        elseif ([string]$diagnostic.classification -cne 'PASS') {
+            Get-MishCycleFailureKind -Classification ([string]$diagnostic.classification)
         }
-        elseif (
-            $null -eq $diagnostic -or
-            $classification -eq 'LAB_PROBE_NOT_EXPLICIT' -or
-            $targetedAcceptance -in @('MISSING', 'INVALID') -and $RequestedProbe -cne 'none'
-        ) {
-            'LAB_FAIL'
-        }
-        elseif (
-            [string]$diagnostic.classification -ceq 'PASS' -and
-            $RequestedProbe -ceq 'capacity_resources' -and
-            $targetedAcceptance -ceq 'PASS'
-        ) {
-            'PASS'
-        }
-        else {
-            Get-MishCycleFailureKind -Classification $classification
-        }
+        elseif ($RequestedProbe -ceq 'none') { 'PASS' }
+        elseif ($RequestedProbe -cne 'capacity_resources') { 'LAB_FAIL' }
+        elseif ($targetedAcceptance -in @('MISSING', 'INVALID')) { 'LAB_FAIL' }
+        elseif ($targetedAcceptance -ceq 'PASS') { 'PASS' }
+        else { Get-MishCycleFailureKind -Classification $classification }
         break
     }
     default {
-        if ($classification -ceq 'PASS') {
-            'PASS'
-        }
-        else {
-            Get-MishCycleFailureKind -Classification $classification
-        }
+        if ($classification -ceq 'PASS') { 'PASS' }
+        else { Get-MishCycleFailureKind -Classification $classification }
     }
 }
 
-# `cycle_result` reports the executed scope. Only full mode installs/verifies the exact candidate and
-# then executes the canonical baseline; an explicitly requested capacity probe becomes part of that
-# same exact-candidate acceptance. LAB/control failure leaves PRODUCT acceptance unevaluated.
 $exactCandidateAcceptance = if ($Mode -cne 'full') {
     'NOT_EVALUATED'
 }
@@ -213,12 +151,7 @@ else {
     'NOT_EVALUATED'
 }
 
-$sourceIdentityClaim = if ($Mode -in @('full', 'install_only')) {
-    'EXACT_INSTALLED_CANDIDATE'
-}
-else {
-    'REQUEST_CONTEXT_ONLY'
-}
+$sourceIdentityClaim = if ($Mode -in @('full', 'install_only')) { 'EXACT_INSTALLED_CANDIDATE' } else { 'REQUEST_CONTEXT_ONLY' }
 
 $report = [ordered]@{
     schema = $schema
@@ -263,5 +196,4 @@ Write-Host "MISH_DEVICE_CYCLE_EXACT_CANDIDATE_ACCEPTANCE=$exactCandidateAcceptan
 Write-Host "MISH_DEVICE_CYCLE_SOURCE_IDENTITY=$sourceIdentityClaim"
 Write-Host "MISH_DEVICE_CYCLE_CONTROL_SHA=$ControlSha"
 Write-Host "MISH_DEVICE_CYCLE_REPORT=$fullOutputPath"
-
 $report | ConvertTo-Json -Depth 16 -Compress
