@@ -2,7 +2,7 @@
 
 This document explains how implementation work is batched between accepted `main` boundaries. It is a stable execution-policy companion to `AGENTS.md`; live stage status remains in the active execution checkpoint — currently Issue #135 — plus the relevant natural-owner issues.
 
-Issue #134 is the current master PRODUCT/architecture/research plan for the hardening milestone. Issue #86 is historical M1 / E3-E4 / release-acceptance context and is read only when a concrete acceptance or release-lineage fact requires it.
+`docs/architecture/PRODUCT_ROADMAP.md` is the canonical ordered PRODUCT/architecture plan. Issue #134 is the historical research/rationale archive and roadmap discussion surface; it is not a competing stage order. Issue #86 is historical M1 / E3-E4 / release-acceptance context and is read only when a concrete acceptance or release-lineage fact requires it.
 
 ## Core distinction
 
@@ -34,7 +34,9 @@ Do not turn `main` into a progress ledger and do not turn the milestone PR into 
 
 ## Current product milestone
 
-The active execution checkpoint defines the current stage and current integration pointer. At present #135 implements the #134 P0-P11 hardening/product plan and starts with bounded P0 recovery attribution.
+The active execution checkpoint defines exactly one current roadmap stage and current integration pointer. The ordered product stages are `U1 -> U8` in `PRODUCT_ROADMAP.md`; #135 only points to the currently active stage and exact implementation/evidence boundary.
+
+At the time of this policy update the active stage is U1 L8 Architecture Closure. Old `P0-P11` or L1-L8 ordering embedded in issue comments remains historical rationale/evidence where useful, but must not compete with the canonical roadmap after architecture has changed.
 
 The checkpoint is intentionally compact. Detailed semantic contracts stay in natural-owner issues and architecture docs; detailed code-review history stays in slice PRs.
 
@@ -69,9 +71,9 @@ After review, squash-merge the slice into the current integration branch. That s
 During slice work, an executor should load only:
 
 ```text
-active execution checkpoint (currently #135)
+active execution checkpoint (#135)
 current slice PR/branch
-only the referenced #134 finding/stage when needed
+current PRODUCT_ROADMAP stage
 relevant natural-owner issue/contracts
 one required adapter boundary
 corresponding direct tests
