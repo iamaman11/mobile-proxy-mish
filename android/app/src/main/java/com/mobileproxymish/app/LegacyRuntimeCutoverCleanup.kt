@@ -334,17 +334,23 @@ internal class LegacyRuntimeCutoverCleanup internal constructor(
         const val MAX_OBSERVED_FIELDS = 17
         val GENERATION_CONFIG = Regex("""sing-box-[A-Za-z0-9_-]{24}\.json""")
 
-        // Read-only first pass. Kotlin performs the strict full-argv/config ownership check; every
-        // stop effect revalidates root UID + complete argv immediately before signalling.
+        // Read-only first pass. Use one bounded process-table shortlist so the shared root transport
+        // does not fork one status parser per Android process. Complete argv + root UID are still
+        // read from /proc for each shortlisted PID, and every stop effect revalidates both again.
         const val SCAN_COMMAND =
-            "set -eu; count=0; for proc in /proc/[0-9]*; do " +
+            "set -eu; count=0; " +
+                "candidate_pids=\$(ps -A 2>/dev/null | " +
+                "awk 'NR > 1 && (\$0 ~ /libsingbox[.]so/ || \$0 ~ /sing-box/) { " +
+                "if (\$2 ~ /^[0-9]+\$/) print \$2 }'); " +
+                "for pid in \$candidate_pids; do " +
+                "proc=/proc/\$pid; " +
                 "[ -r \"\$proc/status\" ] || continue; " +
+                "[ -r \"\$proc/cmdline\" ] || continue; " +
                 "uid=\$(awk '/^Uid:/{print \$2; exit}' \"\$proc/status\" 2>/dev/null || true); " +
                 "[ \"\$uid\" = 0 ] || continue; " +
-                "[ -r \"\$proc/cmdline\" ] || continue; " +
                 "actual=\$(tr '\\000' '\\t' < \"\$proc/cmdline\" 2>/dev/null || true); " +
                 "case \"\$actual\" in *libsingbox.so*) " +
                 "count=\$((count+1)); [ \"\$count\" -le 32 ] || exit 65; " +
-                "printf '%s\\t%s\\n' \"\${proc##*/}\" \"\$actual\";; esac; done"
+                "printf '%s\\t%s\\n' \"\$pid\" \"\$actual\";; esac; done"
     }
 }
