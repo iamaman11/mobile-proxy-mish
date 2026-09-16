@@ -11,7 +11,7 @@ Android 11 / API 30
 armeabi-v7a
 ```
 
-Canonical build authority remains the Android/Rust build graph. Do not add lower-API compatibility shims unless a new accepted PRODUCT requirement explicitly reopens support below API 30.
+Canonical build authority remains the Android/Rust build graph. Android 23 and Android 26 are not supported PRODUCT compatibility floors. Do not add lower-API compatibility shims unless a new accepted PRODUCT requirement explicitly reopens support below API 30.
 
 ## Integration Android Preflight
 
