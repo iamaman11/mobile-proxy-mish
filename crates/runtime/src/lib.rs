@@ -280,13 +280,19 @@ mod tests {
     fn deadline() -> Instant {
         Instant::now() + Duration::from_secs(2)
     }
+    fn empty_dns(
+        _authority: CellularNetworkAuthority,
+        _hostname: &str,
+    ) -> Result<Vec<IpAddr>, ProxyOutboundConnectError> {
+        Ok(Vec::new())
+    }
 
     #[test]
     fn zero_timeout_is_rejected() {
         let result = CellularOutboundRuntimeConnector::new(
             admitted_owner(),
             Duration::ZERO,
-            Arc::new(|_, _| -> Result<Vec<IpAddr>, ProxyOutboundConnectError> { Ok(Vec::new()) }),
+            Arc::new(empty_dns),
         );
         assert!(matches!(
             result,
