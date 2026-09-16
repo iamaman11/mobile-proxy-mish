@@ -11,7 +11,6 @@ on:
       - 'lab/windows/start-device-app.ps1'
       - 'lab/windows/collect-device-diagnostic.ps1'
       - 'lab/windows/DeviceDiagnosticClassification.psm1'
-      - 'lab/windows/collect-runtime-identity.ps1'
       - 'lab/windows/diagnose-loopback-connect.ps1'
       - 'lab/windows/new-device-cycle-report.ps1'
       - 'lab/windows/test-device-cycle.ps1'
@@ -97,8 +96,8 @@ jobs:
           if not re.fullmatch(r'[0-9a-f]{40}', source):
               raise SystemExit('device-cycle requires an explicit exact 40-hex PRODUCT SHA')
           if mode == 'probe_only':
-              if len(parts) != 4 or parts[3] not in {'runtime_identity', 'loopback_connect'}:
-                  raise SystemExit('probe_only requires exactly one explicit read-only probe')
+              if len(parts) != 4 or parts[3] != 'loopback_connect':
+                  raise SystemExit('probe_only supports only the current-function loopback_connect probe')
               probe = parts[3]
           else:
               if len(parts) != 3:
@@ -439,7 +438,7 @@ jobs:
             -ComponentName "$env:PACKAGE_NAME/com.mobileproxymish.app.MainActivity" `
             -ReceiptPath "$env:RUNNER_TEMP\mish-device-start-v1.json"
 
-      - name: Collect one canonical diagnostic snapshot
+      - name: Collect one canonical current-L8 diagnostic snapshot
         if: ${{ needs.resolve.outputs.mode != 'probe_only' }}
         continue-on-error: true
         shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
@@ -450,18 +449,7 @@ jobs:
             -PackageName $env:PACKAGE_NAME `
             -EvidencePath "$env:RUNNER_TEMP\mish-device-diagnostic-v2.json"
 
-      - name: Explicit probe only - runtime identity
-        if: ${{ needs.resolve.outputs.mode == 'probe_only' && needs.resolve.outputs.probe == 'runtime_identity' }}
-        continue-on-error: true
-        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
-        run: |
-          $ErrorActionPreference = 'Stop'
-          .\lab\windows\collect-runtime-identity.ps1 `
-            -AdbPath $env:ADB_EXE `
-            -PackageName $env:PACKAGE_NAME `
-            -EvidencePath "$env:RUNNER_TEMP\mish-targeted-probe-v1.json"
-
-      - name: Explicit probe only - loopback CONNECT
+      - name: Explicit current-function probe only - loopback CONNECT
         if: ${{ needs.resolve.outputs.mode == 'probe_only' && needs.resolve.outputs.probe == 'loopback_connect' }}
         continue-on-error: true
         shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'

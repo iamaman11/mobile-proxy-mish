@@ -38,13 +38,10 @@ function Get-MishDeviceDiagnosticClassification {
     if (-not $PidStable) { return 'INVALID_PROCESS_CHANGED_DURING_CAPTURE' }
     if (-not $AndroidConsistent) { return 'INVALID_ANDROID_SNAPSHOT_CHANGED_DURING_CAPTURE' }
 
-    # A terminal owner failure is the strongest causal fact. Downstream owners may legitimately
-    # have no observation because startup stopped before they ran; never misattribute that absence.
+    # A terminal current-owner failure is the strongest causal fact. Downstream owners may have no
+    # observation because startup stopped before they ran; never invent a historical failure class.
     if ($ProxyState -ceq 'FAILED') {
         $reason = if ([string]::IsNullOrWhiteSpace($ProxyFailure)) { 'UNKNOWN' } else { $ProxyFailure }
-        if ($reason -ceq 'LEGACY_MIGRATION_BLOCKED') {
-            return 'PRODUCT_PROXY_LEGACY_CUTOVER_CLEANUP_BLOCKED'
-        }
         return "PRODUCT_PROXY_$reason"
     }
 
