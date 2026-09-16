@@ -66,12 +66,6 @@ function Get-MishListenerStateObservation {
         -Text $procTcp6.Text `
         -Pattern '^\s*\d+:\s+[0-9A-Fa-f]+:(0438|0439|0C38)\s'
 
-    $processes = Invoke-MishAdbCapture -Arguments @('shell', 'ps', '-A')
-    $processRows = Get-MishTargetLines `
-        -Text $processes.Text `
-        -Pattern '(?i)(sing-box|mobileproxymish)'
-
-    $singBox = Invoke-MishAdbCapture -Arguments @('shell', 'pidof', 'sing-box')
     $source = if ($ss.ExitCode -eq 0) {
         'ss'
     }
@@ -84,15 +78,13 @@ function Get-MishListenerStateObservation {
 
     return [ordered]@{
         source = $source
+        canonical_ports = @(1080, 1081, 3128)
         ss_exit_code = $ss.ExitCode
         ss_target_rows = @($ssRows)
         proc_tcp_exit_code = $procTcp.ExitCode
         proc_tcp_target_rows = @($procTcpRows)
         proc_tcp6_exit_code = $procTcp6.ExitCode
         proc_tcp6_target_rows = @($procTcp6Rows)
-        process_exit_code = $processes.ExitCode
-        process_target_rows = @($processRows)
-        sing_box_pid = if ($singBox.ExitCode -eq 0) { [string]$singBox.Text } else { '' }
     }
 }
 
@@ -108,8 +100,9 @@ if ([string]::IsNullOrWhiteSpace($pidBefore) -or $pidBefore -match '\s') {
     Stop-MishLoopbackDiagnostic 'PRODUCT_PROCESS_NOT_RUNNING' 'Exactly one already-running PRODUCT process is required.'
 }
 
-# Read-only mechanism evidence collected before the CONNECT probe. This never uses su, kills a
-# process, changes a socket, or attempts repair. It exists only to explain a typed listener failure.
+# Read-only mechanism evidence collected before the CONNECT probe. It is deliberately product-
+# agnostic: observe only canonical socket rows and whatever owner metadata the OS exposes there.
+# Never infer current PRODUCT composition from historical process names.
 $listenerState = Get-MishListenerStateObservation
 
 $tempRoot = if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) { $env:RUNNER_TEMP } else { $env:TEMP }
@@ -200,5 +193,4 @@ Write-Host "MISH_LOOPBACK_DIAGNOSTIC_RESULT=$([string]$probe.result)"
 Write-Host "MISH_LOOPBACK_DIAGNOSTIC_REASON=$([string]$probe.reason)"
 Write-Host "MISH_LOOPBACK_DIAGNOSTIC_LISTENER_SOURCE=$([string]$listenerState.source)"
 Write-Host "MISH_LOOPBACK_DIAGNOSTIC_TARGET_SOCKET_ROWS=$(@($listenerState.ss_target_rows).Count + @($listenerState.proc_tcp_target_rows).Count + @($listenerState.proc_tcp6_target_rows).Count)"
-Write-Host "MISH_LOOPBACK_DIAGNOSTIC_SING_BOX_PID=$([string]$listenerState.sing_box_pid)"
 Write-Host "MISH_LOOPBACK_DIAGNOSTIC_EVIDENCE=$fullEvidencePath"
