@@ -26,6 +26,76 @@ function Invoke-MishAdbText {
     return ($output -join "`n").Trim()
 }
 
+function Invoke-MishAdbCapture {
+    param([Parameter(Mandatory)][string[]] $Arguments)
+    $lines = @(& $AdbPath @Arguments 2>&1 | ForEach-Object { [string]$_ })
+    $exitCode = if ($null -eq $LASTEXITCODE) { -1 } else { [int]$LASTEXITCODE }
+    return [pscustomobject]@{
+        ExitCode = $exitCode
+        Text = ($lines -join "`n").Trim()
+    }
+}
+
+function Get-MishTargetLines {
+    param(
+        [string] $Text,
+        [Parameter(Mandatory)][string] $Pattern,
+        [int] $Limit = 40
+    )
+    if ([string]::IsNullOrWhiteSpace($Text)) { return @() }
+    return @(
+        $Text -split "`r?`n" |
+            Where-Object { $_ -match $Pattern } |
+            Select-Object -First $Limit
+    )
+}
+
+function Get-MishListenerStateObservation {
+    $ss = Invoke-MishAdbCapture -Arguments @('shell', 'ss', '-H', '-tanp')
+    $ssRows = Get-MishTargetLines `
+        -Text $ss.Text `
+        -Pattern '(^|[\s:])(1080|1081|3128)(?=\s|$)'
+
+    $procTcp = Invoke-MishAdbCapture -Arguments @('shell', 'cat', '/proc/net/tcp')
+    $procTcpRows = Get-MishTargetLines `
+        -Text $procTcp.Text `
+        -Pattern '^\s*\d+:\s+[0-9A-Fa-f]+:(0438|0439|0C38)\s'
+
+    $procTcp6 = Invoke-MishAdbCapture -Arguments @('shell', 'cat', '/proc/net/tcp6')
+    $procTcp6Rows = Get-MishTargetLines `
+        -Text $procTcp6.Text `
+        -Pattern '^\s*\d+:\s+[0-9A-Fa-f]+:(0438|0439|0C38)\s'
+
+    $processes = Invoke-MishAdbCapture -Arguments @('shell', 'ps', '-A')
+    $processRows = Get-MishTargetLines `
+        -Text $processes.Text `
+        -Pattern '(?i)(sing-box|mobileproxymish)'
+
+    $singBox = Invoke-MishAdbCapture -Arguments @('shell', 'pidof', 'sing-box')
+    $source = if ($ss.ExitCode -eq 0) {
+        'ss'
+    }
+    elseif ($procTcp.ExitCode -eq 0 -or $procTcp6.ExitCode -eq 0) {
+        'proc_net_tcp'
+    }
+    else {
+        'unavailable'
+    }
+
+    return [ordered]@{
+        source = $source
+        ss_exit_code = $ss.ExitCode
+        ss_target_rows = @($ssRows)
+        proc_tcp_exit_code = $procTcp.ExitCode
+        proc_tcp_target_rows = @($procTcpRows)
+        proc_tcp6_exit_code = $procTcp6.ExitCode
+        proc_tcp6_target_rows = @($procTcp6Rows)
+        process_exit_code = $processes.ExitCode
+        process_target_rows = @($processRows)
+        sing_box_pid = if ($singBox.ExitCode -eq 0) { [string]$singBox.Text } else { '' }
+    }
+}
+
 if (-not (Test-Path -LiteralPath $AdbPath -PathType Leaf)) {
     Stop-MishLoopbackDiagnostic 'ADB_MISSING' 'Canonical ADB executable is missing.'
 }
@@ -37,6 +107,10 @@ $pidBefore = Invoke-MishAdbText -Arguments @('shell', 'pidof', $PackageName)
 if ([string]::IsNullOrWhiteSpace($pidBefore) -or $pidBefore -match '\s') {
     Stop-MishLoopbackDiagnostic 'PRODUCT_PROCESS_NOT_RUNNING' 'Exactly one already-running PRODUCT process is required.'
 }
+
+# Read-only mechanism evidence collected before the CONNECT probe. This never uses su, kills a
+# process, changes a socket, or attempts repair. It exists only to explain a typed listener failure.
+$listenerState = Get-MishListenerStateObservation
 
 $tempRoot = if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) { $env:RUNNER_TEMP } else { $env:TEMP }
 if ([string]::IsNullOrWhiteSpace($tempRoot)) {
@@ -103,6 +177,8 @@ $evidence = [ordered]@{
     collection_result = 'PASS'
     package = $PackageName
     pid_stable = $pidStable
+    product_pid = [string]$pidBefore
+    listener_state = $listenerState
     credential_lease_available = $credentialLeaseAvailable
     connect_probe = $probe
     classification = $classification
@@ -113,7 +189,7 @@ $parent = Split-Path -Parent $fullEvidencePath
 if ($parent) { [IO.Directory]::CreateDirectory($parent) | Out-Null }
 [IO.File]::WriteAllText(
     $fullEvidencePath,
-    (($evidence | ConvertTo-Json -Depth 6) + [Environment]::NewLine),
+    (($evidence | ConvertTo-Json -Depth 8) + [Environment]::NewLine),
     [Text.UTF8Encoding]::new($false)
 )
 
@@ -122,4 +198,7 @@ Write-Host "MISH_LOOPBACK_DIAGNOSTIC_CLASSIFICATION=$classification"
 Write-Host "MISH_LOOPBACK_DIAGNOSTIC_PID_STABLE=$pidStable"
 Write-Host "MISH_LOOPBACK_DIAGNOSTIC_RESULT=$([string]$probe.result)"
 Write-Host "MISH_LOOPBACK_DIAGNOSTIC_REASON=$([string]$probe.reason)"
+Write-Host "MISH_LOOPBACK_DIAGNOSTIC_LISTENER_SOURCE=$([string]$listenerState.source)"
+Write-Host "MISH_LOOPBACK_DIAGNOSTIC_TARGET_SOCKET_ROWS=$(@($listenerState.ss_target_rows).Count + @($listenerState.proc_tcp_target_rows).Count + @($listenerState.proc_tcp6_target_rows).Count)"
+Write-Host "MISH_LOOPBACK_DIAGNOSTIC_SING_BOX_PID=$([string]$listenerState.sing_box_pid)"
 Write-Host "MISH_LOOPBACK_DIAGNOSTIC_EVIDENCE=$fullEvidencePath"
