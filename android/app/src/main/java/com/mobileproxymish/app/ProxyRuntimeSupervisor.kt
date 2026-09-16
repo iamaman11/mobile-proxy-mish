@@ -69,7 +69,7 @@ internal fun interface ProxyCredentialProvider {
 class ProxyRuntimeSupervisor internal constructor(
     private val cellularRuntime: CellularRuntimeBridge,
     private val publicCredentials: ProxyCredentialProvider,
-    private val onUnexpectedFailure: (ProxyServingFailure) -> Unit = {},
+    private val onFailureObserved: (ProxyServingFailure) -> Unit = {},
 ) : Closeable {
     private val lifecycle = ProxyServingLifecycleController()
     private val mutableSnapshot = MutableStateFlow(projectLifecycle(lifecycle.snapshot()))
@@ -173,13 +173,13 @@ class ProxyRuntimeSupervisor internal constructor(
                 synchronized(lock) {
                     if (!stopping && nativeRuntime === expectedRuntime) {
                         val clean = cleanupCurrentLocked(cancelMonitor = false)
-                        val published = if (clean) {
-                            ProxyServingFailure.SERVING_UNHEALTHY
-                        } else {
-                            ProxyServingFailure.SHUTDOWN_FAILED
-                        }
-                        failLifecycle(published)
-                        onUnexpectedFailure(published)
+                        failLifecycle(
+                            if (clean) {
+                                ProxyServingFailure.SERVING_UNHEALTHY
+                            } else {
+                                ProxyServingFailure.SHUTDOWN_FAILED
+                            },
+                        )
                     }
                 }
                 return@launch
@@ -216,9 +216,11 @@ class ProxyRuntimeSupervisor internal constructor(
         mutableSnapshot.value = projectLifecycle(lifecycle.snapshot())
     }
 
+    /** Publish one typed owner fact; outer runtime decides recovery through Rust policy only. */
     private fun failLifecycle(reason: ProxyServingFailure) {
         lifecycle.markFailed(reason)
         publishLifecycle()
+        onFailureObserved(reason)
     }
 
     private fun stopLifecycle() {
