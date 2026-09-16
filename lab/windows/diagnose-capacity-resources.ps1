@@ -71,6 +71,7 @@ function Get-MishAndroidSnapshot {
     if (-not $match.Success) {
         Stop-MishCapacityProbe 'SNAPSHOT_INVALID' 'Android diagnostics returned no payload.'
     }
+    $bytes = $null
     try {
         $bytes = [Convert]::FromBase64String($match.Groups['payload'].Value)
         $json = [Text.Encoding]::UTF8.GetString($bytes)
@@ -102,14 +103,14 @@ function Wait-MishOwnerCounts {
         $last = Get-MishAndroidSnapshot
         $mesh = [int64]$last.mesh.active_sessions
         $proxy = [int64]$last.proxy.active_sessions
-        if ($mesh -eq $ExpectedMesh -and $proxy -eq $ExpectedProxy) {
+        if ([bool]$last.consistent -and $mesh -eq $ExpectedMesh -and $proxy -eq $ExpectedProxy) {
             $watch.Stop()
             return [ordered]@{
                 result = 'PASS'
                 elapsed_ms = [int64]$watch.ElapsedMilliseconds
                 mesh_active_sessions = $mesh
                 proxy_active_sessions = $proxy
-                android_consistent = [bool]$last.consistent
+                android_consistent = $true
             }
         }
         Start-Sleep -Milliseconds 100
@@ -250,12 +251,13 @@ function Get-MishProcessResources {
     if (-not $threadsMatch.Success -or -not $rssMatch.Success) {
         Stop-MishCapacityProbe 'PROCESS_RESOURCE_PARSE_FAILED' 'Threads/VmRSS are unavailable from app-owned /proc status.'
     }
-    $fdText = Invoke-MishAdbText -Arguments @('shell', 'run-as', $PackageName, 'sh', '-c', "ls -1 /proc/$PidText/fd | wc -l")
-    if ($fdText -notmatch '^\d+$') {
+    $fdListing = Invoke-MishAdbText -Arguments @('shell', 'run-as', $PackageName, 'ls', '-1', "/proc/$PidText/fd")
+    $fdCount = @($fdListing -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+    if ($fdCount -le 0) {
         Stop-MishCapacityProbe 'FD_COUNT_PARSE_FAILED' 'FD count is unavailable from app-owned /proc.'
     }
     $meminfo = Invoke-MishAdbText -Arguments @('shell', 'dumpsys', 'meminfo', '-s', $PidText)
-    $pssMatch = [regex]::Match($meminfo, '(?m)^\s*TOTAL PSS:\s*(?<value>\d+)\s*$')
+    $pssMatch = [regex]::Match($meminfo, '(?m)^\s*TOTAL PSS:\s*(?<value>\d+)\b')
     if (-not $pssMatch.Success) {
         $pssMatch = [regex]::Match($meminfo, '(?m)^\s*TOTAL\s+(?<value>\d+)\s+')
     }
@@ -264,7 +266,7 @@ function Get-MishProcessResources {
     }
     return [ordered]@{
         threads = [int]$threadsMatch.Groups['value'].Value
-        fd_count = [int]$fdText
+        fd_count = [int]$fdCount
         rss_kb = [int64]$rssMatch.Groups['value'].Value
         pss_kb = [int64]$pssMatch.Groups['value'].Value
     }
@@ -353,11 +355,11 @@ try {
     }
     else {
         $acceptanceResult = 'PASS'
-        $classification = 'U2_CAPACITY_RESOURCE_PASS'
+        $classification = 'U2_CAPACITY_AND_RESOURCE_MEASUREMENTS_PASS'
     }
 }
 finally {
-    foreach ($session in @($held)) {
+    foreach ($session in $held) {
         try { if ($null -ne $session.Stream) { $session.Stream.Dispose() } } catch {}
         try { if ($null -ne $session.Client) { $session.Client.Dispose() } } catch {}
     }
@@ -385,6 +387,31 @@ elseif ($null -eq $postCleanupResources) {
     $classification = 'LAB_RESOURCE_POST_CLEANUP_UNAVAILABLE'
 }
 
+$resourceSummary = $null
+if ($stages.Count -ge 1 -and $null -ne $postCleanupResources) {
+    $idle = $stages[0].resources
+    $peakThreads = ($stages | ForEach-Object { [int]$_.resources.threads } | Measure-Object -Maximum).Maximum
+    $peakFd = ($stages | ForEach-Object { [int]$_.resources.fd_count } | Measure-Object -Maximum).Maximum
+    $peakRss = ($stages | ForEach-Object { [int64]$_.resources.rss_kb } | Measure-Object -Maximum).Maximum
+    $peakPss = ($stages | ForEach-Object { [int64]$_.resources.pss_kb } | Measure-Object -Maximum).Maximum
+    $resourceSummary = [ordered]@{
+        idle = $idle
+        peak = [ordered]@{
+            threads = [int]$peakThreads
+            fd_count = [int]$peakFd
+            rss_kb = [int64]$peakRss
+            pss_kb = [int64]$peakPss
+        }
+        post_cleanup = $postCleanupResources
+        post_cleanup_delta_from_idle = [ordered]@{
+            threads = [int]$postCleanupResources.threads - [int]$idle.threads
+            fd_count = [int]$postCleanupResources.fd_count - [int]$idle.fd_count
+            rss_kb = [int64]$postCleanupResources.rss_kb - [int64]$idle.rss_kb
+            pss_kb = [int64]$postCleanupResources.pss_kb - [int64]$idle.pss_kb
+        }
+    }
+}
+
 $evidence = [ordered]@{
     schema = 'mish.lab.capacity-resources/v1'
     collected_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
@@ -400,7 +427,7 @@ $evidence = [ordered]@{
     overflow_65th = $overflow
     overflow_owner_counts = $overflowCounts
     cleanup_owner_counts = $cleanupCounts
-    post_cleanup_resources = $postCleanupResources
+    resource_summary = $resourceSummary
 }
 
 $fullEvidencePath = [IO.Path]::GetFullPath($EvidencePath)
