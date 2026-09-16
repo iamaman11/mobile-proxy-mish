@@ -161,26 +161,55 @@ def main() -> None:
         "mish.lab.diagnostic/v2",
         "snapshot_v2",
         "DeviceDiagnosticClassification.psm1",
+        "android.runtime.running",
+        "android.cellular.admitted",
+        "android.cellular.boundary_failure",
         "android.root.authority_observation",
         "android.root.policy_authorized",
-        "android.cellular.admitted",
+        "android.proxy.healthy",
+        "android.mesh.state",
+        "android.mesh.admitted",
+        "android.mesh.epoch_present",
+        "android.mesh.ingress_running",
+        "android.readiness.binding_eligible",
+        "android.readiness.probe_state",
         "android.proxy.state -ceq 'RUNNING' -and [bool]$android.credential.active",
         "credential_lease_status = $credentialLeaseStatus",
         "Get-MishDeviceDiagnosticClassification",
     ):
-        require(diagnostic, required, "native L8 diagnostic attribution must remain fact-first")
-    forbid(diagnostic, "snapshot_v1", "obsolete pre-L8 diagnostic method must not return")
-    forbid(diagnostic, "mish.diagnostics/v1", "obsolete pre-L8 diagnostic schema must not return")
-    forbid(diagnostic, "CREDENTIAL_LEASE_UNAVAILABLE", "ambiguous LAB/Product credential classification must not return")
+        require(diagnostic, required, "native L8 diagnostic attribution must remain complete and fact-first")
+    for obsolete in (
+        "snapshot_v1",
+        "mish.diagnostics/v1",
+        "CREDENTIAL_LEASE_UNAVAILABLE",
+        "privateBridge",
+        "RuntimeProcessLifecycle",
+    ):
+        forbid(diagnostic, obsolete, "obsolete pre-L8 diagnostic semantics must not return")
 
     classification = "lab/windows/DeviceDiagnosticClassification.psm1"
     for required in (
+        "PRODUCT_RUNTIME_NOT_RUNNING",
         "PRODUCT_ROOT_AUTHORITY_UNAVAILABLE",
         "PRODUCT_ROOT_POLICY_NOT_AUTHORIZED",
+        "PRODUCT_CELLULAR_BOUNDARY_",
         "PRODUCT_CELLULAR_",
-        "PRODUCT_PROXY_",
+        "PRODUCT_PROXY_LEGACY_CUTOVER_CLEANUP_BLOCKED",
+        "PRODUCT_PROXY_SERVING_UNHEALTHY",
+        "PRODUCT_MESH_ADMISSION_EPOCH_MISSING",
+        "READINESS_BINDING_INELIGIBLE",
+        "READINESS_PROBE_",
     ):
-        require(classification, required, "L8 diagnostics must preserve owner-aligned failure attribution")
+        require(classification, required, "L8 diagnostics must preserve current owner-aligned failure attribution")
+    classification_text = read(classification)
+    terminal_proxy = classification_text.find("if ($ProxyState -ceq 'FAILED')")
+    root_authority = classification_text.find("if ($RootAuthorityObservation -ceq 'UNAVAILABLE')")
+    if terminal_proxy < 0 or root_authority < 0 or terminal_proxy > root_authority:
+        raise SystemExit(
+            "device cycle contract: terminal Proxy Serving failure must outrank downstream root/cellular non-observation"
+        )
+    forbid(classification, "STALE_PROCESS_IDENTITY_MISMATCH", "pre-L8 process identity must not classify current PRODUCT steady state")
+    forbid(classification, "privateBridge", "deleted private-bridge semantics must not classify current PRODUCT steady state")
 
     report = "lab/windows/new-device-cycle-report.ps1"
     for required in (
@@ -198,12 +227,17 @@ def main() -> None:
     test = "lab/windows/test-device-cycle.ps1"
     for required in (
         "DEVICE_CYCLE_CONTRACT=PASS",
-        "Primary PRODUCT proxy failure was masked",
+        "Terminal L8 Proxy Serving failure was masked by a downstream non-observation",
+        "Current Cellular admission failure was not attributed to Cellular Egress",
+        "Missing Mesh admission epoch was not distinguished from external Mesh reachability",
+        "Current readiness probe state was not preserved",
+        "Healthy current L8 fact set did not classify PASS",
         "Inactive PRODUCT credential was not distinguished from a LAB lease failure",
-        "Full PASS report must accept the exact candidate and contain no automatic probe decision",
+        "Full PASS report must accept the exact current candidate and contain no automatic probe decision",
         "Explicit probe-only evidence may pass collection but must never claim exact PRODUCT candidate acceptance",
     ):
-        require(test, required, "executable regression coverage drifted")
+        require(test, required, "current L8 executable regression coverage drifted")
+    forbid(test, "STALE_PROCESS_IDENTITY_MISMATCH", "pre-L8 process identity fixture must not return to canonical PRODUCT diagnostics tests")
 
     docs = "docs/architecture/DEVELOPMENT_PIPELINE.md"
     for required in (
