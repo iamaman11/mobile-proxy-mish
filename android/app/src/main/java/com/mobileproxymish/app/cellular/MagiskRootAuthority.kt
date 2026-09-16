@@ -1,53 +1,54 @@
 package com.mobileproxymish.app.cellular
 
 /**
- * Bounded Magisk authority boundary for cellular policy routing.
+ * Bounded process-wide Magisk authority boundary for PRODUCT root effects.
  *
- * Root authority is acquired once per live root-shell generation and then cached. An explicit
- * denial or unanswered interactive grant is terminal for the current app process so recovery
- * cannot keep reopening Magisk prompts. After permanent grant, one app restart establishes the
- * cached session and normal network recovery does not ask Magisk again.
+ * Every production client shares the same authority state and the same process-wide `SuProcess`
+ * shell generation. Authority is therefore acquired once per live root-shell generation and then
+ * cached across typed root clients. An explicit denial or unanswered interactive grant is terminal
+ * for the current app process so another subsystem cannot reopen the Magisk prompt.
  *
  * Root command framing/process I/O lives in `RootCommandTransport.kt`; this class owns only the
- * process-generation privilege proof. RPDB/mangle policy remains owned by `CellularRootPolicy`.
+ * process-generation privilege proof. RPDB/mangle policy remains owned by `CellularRootPolicy` and
+ * one-shot upgrade cleanup remains owned by its narrow cutover adapter.
  */
 class MagiskRootAuthority private constructor(
-    private val process: RootProcess = SuProcess(),
-    private val bootstrap: RootSessionBootstrap = RootSessionBootstrap.None,
+    private val process: RootProcess,
+    private val bootstrap: RootSessionBootstrap,
+    private val state: AuthorityState,
 ) {
     constructor() : this(
         process = SuProcess(),
         bootstrap = RootSessionBootstrap.currentProcess(),
+        state = CURRENT_PROCESS_STATE,
     )
 
-    private var readyGeneration: Long? = null
-    private var terminalStatus: RootAuthorityStatus? = null
-
-    @Synchronized
-    fun probe(): RootAuthorityStatus {
-        terminalStatus?.let { return it }
+    fun probe(): RootAuthorityStatus = synchronized(state) {
+        state.terminalStatus?.let { return@synchronized it }
 
         val currentGeneration = process.sessionGeneration()
-        if (currentGeneration != null && currentGeneration == readyGeneration) {
-            return RootAuthorityStatus.Ready
+        if (currentGeneration != null && currentGeneration == state.readyGeneration) {
+            return@synchronized RootAuthorityStatus.Ready
         }
-        readyGeneration = null
+        state.readyGeneration = null
 
         val identity = process.run(listOf("su", "-c", "id -u"))
         if (identity.timedOut) {
-            return RootAuthorityStatus.InteractiveGrantRequired.also { terminalStatus = it }
+            return@synchronized RootAuthorityStatus.InteractiveGrantRequired.also {
+                state.terminalStatus = it
+            }
         }
         if (identity.exitCode == 126 || identity.exitCode == 127) {
-            return RootAuthorityStatus.Unavailable
+            return@synchronized RootAuthorityStatus.Unavailable
         }
         if (identity.exitCode > 0) {
-            return RootAuthorityStatus.Denied.also { terminalStatus = it }
+            return@synchronized RootAuthorityStatus.Denied.also { state.terminalStatus = it }
         }
         if (!identity.outputComplete || identity.exitCode != 0) {
-            return RootAuthorityStatus.Incomplete
+            return@synchronized RootAuthorityStatus.Incomplete
         }
         if (identity.stdout.trim() != "0") {
-            return RootAuthorityStatus.Denied.also { terminalStatus = it }
+            return@synchronized RootAuthorityStatus.Denied.also { state.terminalStatus = it }
         }
 
         // uid=0 alone is insufficient. The typed policy adapter must be able to inspect a complete
@@ -59,23 +60,32 @@ class MagiskRootAuthority private constructor(
             rules.exitCode != 0 ||
             rules.stdout.isBlank()
         ) {
-            return RootAuthorityStatus.Incomplete
+            return@synchronized RootAuthorityStatus.Incomplete
         }
 
         // One process-generation bootstrap may remove only exact stale PRODUCT owner jumps left by
         // a legitimate package UID change. Unknown/malformed policy stays untouched/fail-closed.
         if (!bootstrap.reconcile(process)) {
-            return RootAuthorityStatus.Incomplete
+            return@synchronized RootAuthorityStatus.Incomplete
         }
 
-        readyGeneration = process.sessionGeneration()
-        return RootAuthorityStatus.Ready
+        state.readyGeneration = process.sessionGeneration()
+        RootAuthorityStatus.Ready
+    }
+
+    private class AuthorityState {
+        var readyGeneration: Long? = null
+        var terminalStatus: RootAuthorityStatus? = null
     }
 
     internal companion object {
+        /** One PRODUCT privilege fact per app process; process restart intentionally resets it. */
+        private val CURRENT_PROCESS_STATE = AuthorityState()
+
         fun forTesting(process: RootProcess): MagiskRootAuthority = MagiskRootAuthority(
             process = process,
             bootstrap = RootSessionBootstrap.None,
+            state = AuthorityState(),
         )
     }
 }
