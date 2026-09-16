@@ -11,7 +11,6 @@ members = [
     "crates/credentials",
     "crates/readiness",
     "crates/application",
-    "crates/sing-box-adapter",
     "crates/android-network",
     "crates/android-ffi",
 ]
