@@ -1,10 +1,11 @@
 use mish_runtime::{
+    ProxyServingFailure as OwnerProxyServingFailure,
+    ProxyServingLifecycle as OwnerProxyServingLifecycle,
+    ProxyServingSnapshot as OwnerProxyServingSnapshot,
+    ProxyServingState as OwnerProxyServingState,
     RuntimeCleanupDisposition as OwnerCleanupDisposition,
     RuntimeLifecycle as OwnerRuntimeLifecycle, RuntimeLifecycleState as OwnerRuntimeLifecycleState,
-    RuntimeProcessFailure as OwnerRuntimeProcessFailure,
-    RuntimeProcessLifecycle as OwnerRuntimeProcessLifecycle,
-    RuntimeProcessSnapshot as OwnerRuntimeProcessSnapshot,
-    RuntimeProcessState as OwnerRuntimeProcessState, RuntimeStartAction as OwnerRuntimeStartAction,
+    RuntimeStartAction as OwnerRuntimeStartAction,
     RuntimeStartCompletion as OwnerRuntimeStartCompletion,
     RuntimeStopAction as OwnerRuntimeStopAction,
 };
@@ -63,7 +64,6 @@ impl RuntimeLifecycleController {
         map_lifecycle_state(self.owner().state())
     }
 
-    /// Exact monotonic key of the currently installed Android runtime effect generation.
     pub fn generation(&self) -> u64 {
         self.owner().generation()
     }
@@ -133,7 +133,7 @@ impl RuntimeLifecycleController {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
-pub enum RuntimeProcessState {
+pub enum ProxyServingState {
     Stopped,
     Starting,
     Running,
@@ -141,47 +141,38 @@ pub enum RuntimeProcessState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
-pub enum RuntimeProcessFailure {
+pub enum ProxyServingFailure {
     NativeRuntimeMissing,
-    StaleProcessIdentityMismatch,
+    LegacyMigrationBlocked,
     ExternalCredentialUnavailable,
-    PrivateBridgeUnavailable,
-    ConfigurationRejected,
-    ChildLaunchFailed,
-    ChildExecutorRejected,
-    ChildProcessStartFailed,
-    ChildPidOrPersistenceFailed,
-    HealthCheckFailed,
-    ListenerContractUnavailable,
-    LoopbackListenerUnavailable,
-    ChildExited,
-    PrivateBridgeUnhealthy,
-    CleanupFailed,
+    ListenerUnavailable,
+    ServingUnhealthy,
+    ShutdownFailed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
-pub struct RuntimeProcessSnapshotView {
-    pub state: RuntimeProcessState,
-    pub failure: Option<RuntimeProcessFailure>,
+pub struct ProxyServingSnapshotView {
+    pub state: ProxyServingState,
+    pub failure: Option<ProxyServingFailure>,
 }
 
-/// Thin typed UniFFI projection of one owned child-process lifecycle state machine.
+/// Thin typed UniFFI projection of the native in-process Proxy Serving lifecycle owner.
 #[derive(uniffi::Object)]
-pub struct RuntimeProcessLifecycleController {
-    owner: Mutex<OwnerRuntimeProcessLifecycle>,
+pub struct ProxyServingLifecycleController {
+    owner: Mutex<OwnerProxyServingLifecycle>,
 }
 
 #[uniffi::export]
-impl RuntimeProcessLifecycleController {
+impl ProxyServingLifecycleController {
     #[uniffi::constructor]
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
-            owner: Mutex::new(OwnerRuntimeProcessLifecycle::new()),
+            owner: Mutex::new(OwnerProxyServingLifecycle::new()),
         })
     }
 
-    pub fn snapshot(&self) -> RuntimeProcessSnapshotView {
-        map_process_snapshot(self.owner().snapshot())
+    pub fn snapshot(&self) -> ProxyServingSnapshotView {
+        map_proxy_snapshot(self.owner().snapshot())
     }
 
     pub fn request_start(&self) -> bool {
@@ -192,9 +183,8 @@ impl RuntimeProcessLifecycleController {
         self.owner_mut().mark_running()
     }
 
-    pub fn mark_failed(&self, failure: RuntimeProcessFailure) {
-        self.owner_mut()
-            .mark_failed(map_process_failure_in(failure));
+    pub fn mark_failed(&self, failure: ProxyServingFailure) {
+        self.owner_mut().mark_failed(map_proxy_failure_in(failure));
     }
 
     pub fn mark_stopped(&self) {
@@ -202,14 +192,14 @@ impl RuntimeProcessLifecycleController {
     }
 }
 
-impl RuntimeProcessLifecycleController {
-    fn owner(&self) -> MutexGuard<'_, OwnerRuntimeProcessLifecycle> {
+impl ProxyServingLifecycleController {
+    fn owner(&self) -> MutexGuard<'_, OwnerProxyServingLifecycle> {
         self.owner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn owner_mut(&self) -> MutexGuard<'_, OwnerRuntimeProcessLifecycle> {
+    fn owner_mut(&self) -> MutexGuard<'_, OwnerProxyServingLifecycle> {
         self.owner()
     }
 }
@@ -254,99 +244,45 @@ fn map_cleanup_disposition(disposition: OwnerCleanupDisposition) -> RuntimeClean
     }
 }
 
-fn map_process_snapshot(snapshot: OwnerRuntimeProcessSnapshot) -> RuntimeProcessSnapshotView {
-    RuntimeProcessSnapshotView {
+fn map_proxy_snapshot(snapshot: OwnerProxyServingSnapshot) -> ProxyServingSnapshotView {
+    ProxyServingSnapshotView {
         state: match snapshot.state() {
-            OwnerRuntimeProcessState::Stopped => RuntimeProcessState::Stopped,
-            OwnerRuntimeProcessState::Starting => RuntimeProcessState::Starting,
-            OwnerRuntimeProcessState::Running => RuntimeProcessState::Running,
-            OwnerRuntimeProcessState::Failed => RuntimeProcessState::Failed,
+            OwnerProxyServingState::Stopped => ProxyServingState::Stopped,
+            OwnerProxyServingState::Starting => ProxyServingState::Starting,
+            OwnerProxyServingState::Running => ProxyServingState::Running,
+            OwnerProxyServingState::Failed => ProxyServingState::Failed,
         },
-        failure: snapshot.failure().map(map_process_failure_out),
+        failure: snapshot.failure().map(map_proxy_failure_out),
     }
 }
 
-fn map_process_failure_out(failure: OwnerRuntimeProcessFailure) -> RuntimeProcessFailure {
+fn map_proxy_failure_out(failure: OwnerProxyServingFailure) -> ProxyServingFailure {
     match failure {
-        OwnerRuntimeProcessFailure::NativeRuntimeMissing => {
-            RuntimeProcessFailure::NativeRuntimeMissing
+        OwnerProxyServingFailure::NativeRuntimeMissing => ProxyServingFailure::NativeRuntimeMissing,
+        OwnerProxyServingFailure::LegacyMigrationBlocked => {
+            ProxyServingFailure::LegacyMigrationBlocked
         }
-        OwnerRuntimeProcessFailure::StaleProcessIdentityMismatch => {
-            RuntimeProcessFailure::StaleProcessIdentityMismatch
+        OwnerProxyServingFailure::ExternalCredentialUnavailable => {
+            ProxyServingFailure::ExternalCredentialUnavailable
         }
-        OwnerRuntimeProcessFailure::ExternalCredentialUnavailable => {
-            RuntimeProcessFailure::ExternalCredentialUnavailable
-        }
-        OwnerRuntimeProcessFailure::PrivateBridgeUnavailable => {
-            RuntimeProcessFailure::PrivateBridgeUnavailable
-        }
-        OwnerRuntimeProcessFailure::ConfigurationRejected => {
-            RuntimeProcessFailure::ConfigurationRejected
-        }
-        OwnerRuntimeProcessFailure::ChildLaunchFailed => RuntimeProcessFailure::ChildLaunchFailed,
-        OwnerRuntimeProcessFailure::ChildExecutorRejected => {
-            RuntimeProcessFailure::ChildExecutorRejected
-        }
-        OwnerRuntimeProcessFailure::ChildProcessStartFailed => {
-            RuntimeProcessFailure::ChildProcessStartFailed
-        }
-        OwnerRuntimeProcessFailure::ChildPidOrPersistenceFailed => {
-            RuntimeProcessFailure::ChildPidOrPersistenceFailed
-        }
-        OwnerRuntimeProcessFailure::HealthCheckFailed => RuntimeProcessFailure::HealthCheckFailed,
-        OwnerRuntimeProcessFailure::ListenerContractUnavailable => {
-            RuntimeProcessFailure::ListenerContractUnavailable
-        }
-        OwnerRuntimeProcessFailure::LoopbackListenerUnavailable => {
-            RuntimeProcessFailure::LoopbackListenerUnavailable
-        }
-        OwnerRuntimeProcessFailure::ChildExited => RuntimeProcessFailure::ChildExited,
-        OwnerRuntimeProcessFailure::PrivateBridgeUnhealthy => {
-            RuntimeProcessFailure::PrivateBridgeUnhealthy
-        }
-        OwnerRuntimeProcessFailure::CleanupFailed => RuntimeProcessFailure::CleanupFailed,
+        OwnerProxyServingFailure::ListenerUnavailable => ProxyServingFailure::ListenerUnavailable,
+        OwnerProxyServingFailure::ServingUnhealthy => ProxyServingFailure::ServingUnhealthy,
+        OwnerProxyServingFailure::ShutdownFailed => ProxyServingFailure::ShutdownFailed,
     }
 }
 
-fn map_process_failure_in(failure: RuntimeProcessFailure) -> OwnerRuntimeProcessFailure {
+fn map_proxy_failure_in(failure: ProxyServingFailure) -> OwnerProxyServingFailure {
     match failure {
-        RuntimeProcessFailure::NativeRuntimeMissing => {
-            OwnerRuntimeProcessFailure::NativeRuntimeMissing
+        ProxyServingFailure::NativeRuntimeMissing => OwnerProxyServingFailure::NativeRuntimeMissing,
+        ProxyServingFailure::LegacyMigrationBlocked => {
+            OwnerProxyServingFailure::LegacyMigrationBlocked
         }
-        RuntimeProcessFailure::StaleProcessIdentityMismatch => {
-            OwnerRuntimeProcessFailure::StaleProcessIdentityMismatch
+        ProxyServingFailure::ExternalCredentialUnavailable => {
+            OwnerProxyServingFailure::ExternalCredentialUnavailable
         }
-        RuntimeProcessFailure::ExternalCredentialUnavailable => {
-            OwnerRuntimeProcessFailure::ExternalCredentialUnavailable
-        }
-        RuntimeProcessFailure::PrivateBridgeUnavailable => {
-            OwnerRuntimeProcessFailure::PrivateBridgeUnavailable
-        }
-        RuntimeProcessFailure::ConfigurationRejected => {
-            OwnerRuntimeProcessFailure::ConfigurationRejected
-        }
-        RuntimeProcessFailure::ChildLaunchFailed => OwnerRuntimeProcessFailure::ChildLaunchFailed,
-        RuntimeProcessFailure::ChildExecutorRejected => {
-            OwnerRuntimeProcessFailure::ChildExecutorRejected
-        }
-        RuntimeProcessFailure::ChildProcessStartFailed => {
-            OwnerRuntimeProcessFailure::ChildProcessStartFailed
-        }
-        RuntimeProcessFailure::ChildPidOrPersistenceFailed => {
-            OwnerRuntimeProcessFailure::ChildPidOrPersistenceFailed
-        }
-        RuntimeProcessFailure::HealthCheckFailed => OwnerRuntimeProcessFailure::HealthCheckFailed,
-        RuntimeProcessFailure::ListenerContractUnavailable => {
-            OwnerRuntimeProcessFailure::ListenerContractUnavailable
-        }
-        RuntimeProcessFailure::LoopbackListenerUnavailable => {
-            OwnerRuntimeProcessFailure::LoopbackListenerUnavailable
-        }
-        RuntimeProcessFailure::ChildExited => OwnerRuntimeProcessFailure::ChildExited,
-        RuntimeProcessFailure::PrivateBridgeUnhealthy => {
-            OwnerRuntimeProcessFailure::PrivateBridgeUnhealthy
-        }
-        RuntimeProcessFailure::CleanupFailed => OwnerRuntimeProcessFailure::CleanupFailed,
+        ProxyServingFailure::ListenerUnavailable => OwnerProxyServingFailure::ListenerUnavailable,
+        ProxyServingFailure::ServingUnhealthy => OwnerProxyServingFailure::ServingUnhealthy,
+        ProxyServingFailure::ShutdownFailed => OwnerProxyServingFailure::ShutdownFailed,
     }
 }
 
@@ -385,21 +321,23 @@ mod tests {
     }
 
     #[test]
-    fn ffi_process_projection_preserves_failure_reason() {
+    fn ffi_proxy_projection_preserves_native_failure_reason() {
         for failure in [
-            RuntimeProcessFailure::ChildExited,
-            RuntimeProcessFailure::ChildExecutorRejected,
-            RuntimeProcessFailure::ChildProcessStartFailed,
-            RuntimeProcessFailure::ChildPidOrPersistenceFailed,
+            ProxyServingFailure::NativeRuntimeMissing,
+            ProxyServingFailure::LegacyMigrationBlocked,
+            ProxyServingFailure::ExternalCredentialUnavailable,
+            ProxyServingFailure::ListenerUnavailable,
+            ProxyServingFailure::ServingUnhealthy,
+            ProxyServingFailure::ShutdownFailed,
         ] {
-            let controller = RuntimeProcessLifecycleController::new();
+            let controller = ProxyServingLifecycleController::new();
             assert!(controller.request_start());
             assert!(controller.mark_running());
             controller.mark_failed(failure);
             assert_eq!(
                 controller.snapshot(),
-                RuntimeProcessSnapshotView {
-                    state: RuntimeProcessState::Failed,
+                ProxyServingSnapshotView {
+                    state: ProxyServingState::Failed,
                     failure: Some(failure),
                 }
             );
