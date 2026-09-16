@@ -72,6 +72,7 @@ fn proxy_transport_mappings() -> Vec<MeshPortForward> {
         .collect()
 }
 
+/// Narrow UniFFI handle over the Transport Reachability natural-owner coordinator.
 #[derive(uniffi::Object)]
 pub struct MeshTransportController {
     runtime: Arc<MeshTransportCoordinator>,
@@ -79,6 +80,8 @@ pub struct MeshTransportController {
 
 #[uniffi::export]
 impl MeshTransportController {
+    /// Creates one Transport controller from the repository-owned, owner-validated desired Mesh
+    /// CIDR. Android does not carry a second literal or choose a provider range at runtime.
     #[uniffi::constructor]
     pub fn new() -> Result<Arc<Self>, MeshTransportBoundaryError> {
         let accepted = MeshAcceptedCidr::deployment()
@@ -94,6 +97,7 @@ impl MeshTransportController {
             .map_err(map_transport_error)
     }
 
+    /// Publishes a complete snapshot proving that no current VPN Network exists.
     pub fn observe_vpn_absent(
         &self,
         sequence: u64,
@@ -104,6 +108,8 @@ impl MeshTransportController {
             .map_err(map_transport_error)
     }
 
+    /// Publishes one complete current-VPN snapshot. Android supplies only raw current VPN-local
+    /// IPv4 values; CIDR filtering, 0/1/>1 acceptance, endpoint identity and epoch remain in Rust.
     pub fn observe_unique_vpn(
         &self,
         sequence: u64,
@@ -127,6 +133,7 @@ impl MeshTransportController {
             .map_err(map_transport_error)
     }
 
+    /// Publishes a complete snapshot proving that more than one current VPN Network exists.
     pub fn observe_vpn_ambiguous(
         &self,
         sequence: u64,
@@ -137,6 +144,8 @@ impl MeshTransportController {
             .map_err(map_transport_error)
     }
 
+    /// Starts exact-address Mesh ingress only for the caller's still-current admission epoch and
+    /// executes it on the already-live process runtime supplied as an opaque composition handle.
     pub fn start_ingress(
         &self,
         admission_epoch: u64,
