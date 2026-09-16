@@ -61,12 +61,41 @@ def main() -> None:
     require(
         "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt",
         "proxyServingFailureRecoverable(reason)",
-        "proxy recovery policy must remain delegated to the Rust runtime owner",
+        "proxy recovery classification must remain delegated to the Rust runtime owner",
     )
     require(
         "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt",
         "proxyRecoveryDelayMs(attempt)",
         "proxy recovery backoff must remain delegated to the Rust runtime owner",
+    )
+    forbid(
+        "android/app/src/main/java/com/mobileproxymish/app/ProxyRuntimeSupervisor.kt",
+        "RECOVERABLE_UNEXPECTED_FAILURES",
+        "Android proxy adapter must report typed failures without owning recovery classification",
+    )
+
+    # Cross-owner runtime composition decisions belong to Rust, not Android adapters.
+    mesh_serving = "crates/runtime/src/mesh_serving.rs"
+    require(
+        mesh_serving,
+        "pub const fn mesh_ingress_serving_allowed",
+        "Rust runtime must own Mesh ingress serving eligibility",
+    )
+    mesh_android = "android/app/src/main/java/com/mobileproxymish/app/MeshIngressRuntimeBridge.kt"
+    require(
+        mesh_android,
+        "meshIngressServingAllowed(",
+        "Android Mesh adapter must delegate serving eligibility to Rust",
+    )
+    forbid(
+        mesh_android,
+        "internal fun meshIngressServingAllowed",
+        "Android Mesh adapter must not duplicate cross-owner serving policy",
+    )
+    require(
+        "crates/android-ffi/src/runtime_composition_ffi.rs",
+        "owner_mesh_ingress_serving_allowed",
+        "Mesh serving composition FFI must remain a thin Rust delegation",
     )
 
     # Proxy-target DNS/public egress has exactly one Cellular Egress path and no default fallback.
@@ -140,7 +169,7 @@ def main() -> None:
     ):
         forbid(lifecycle, obsolete, "external-child/private-bridge lifecycle semantics are obsolete")
 
-    # Readiness is one pure Rust terminal projection. Android only executes the concrete probe.
+    # Readiness is one pure Rust terminal projection. Android only assembles facts and executes probe effects.
     readiness = "crates/readiness/src/lib.rs"
     require(readiness, "pub enum Readiness", "Readiness must expose one terminal projection type")
     require(readiness, "pub fn project(", "Readiness must remain a pure projection function")
@@ -148,6 +177,16 @@ def main() -> None:
         readiness,
         "pub struct EgressProbeObservation",
         "Readiness must consume one typed generation-bound probe observation",
+    )
+    require(
+        readiness,
+        "pub enum ProbeEligibility",
+        "Readiness must own structural probe eligibility semantics",
+    )
+    require(
+        readiness,
+        "pub fn probe_eligibility(",
+        "Readiness must expose one structural eligibility predicate",
     )
     forbid(
         readiness,
@@ -188,10 +227,16 @@ def main() -> None:
         "Android readiness must delegate freshness/projection decisions to Rust",
     )
     forbid(readiness_ffi, "private_bridge", "readiness FFI must expose native facts only")
+    readiness_eligibility_ffi = "crates/android-ffi/src/readiness_eligibility_ffi.rs"
+    require(
+        readiness_eligibility_ffi,
+        "probe_eligibility(input)",
+        "readiness eligibility FFI must delegate to the Rust predicate",
+    )
     require(
         "crates/android-ffi/src/entry.rs",
-        "mod readiness_ffi;",
-        "readiness UniFFI boundary must remain generated",
+        "mod readiness_eligibility_ffi;",
+        "readiness eligibility UniFFI boundary must remain generated",
     )
     readiness_android = "android/app/src/main/java/com/mobileproxymish/app/ProductReadinessRuntime.kt"
     for required in (
@@ -200,6 +245,7 @@ def main() -> None:
         "controller.beginProbe(binding)",
         "controller.completeProbe(ticket, outcome, elapsedMs)",
         "controller.project(facts, observation)",
+        "readinessProbeBindingIfEligible(facts)",
         "readinessProbeTarget()",
         "egressProbeBudgetMs()",
         "AuthenticatedEgressProbe",
@@ -209,6 +255,11 @@ def main() -> None:
             required,
             "Android readiness adapter must remain Rust-directed and effect-only",
         )
+    forbid(
+        readiness_android,
+        "candidateBinding(",
+        "Android readiness adapter must not duplicate structural eligibility policy",
+    )
     probe_effect = "android/app/src/main/java/com/mobileproxymish/app/AuthenticatedEgressProbe.kt"
     for required in (
         "InetSocketAddress(LOOPBACK, proxyHttpConnectPort().toInt())",
@@ -274,6 +325,11 @@ def main() -> None:
         transport,
         r"\[\s*1080\s*,\s*1081\s*,\s*3128\s*\]",
         "Transport must not duplicate the product proxy-port tuple",
+    )
+    forbid(
+        mesh_ffi,
+        "pub fn proxy_listener_ports",
+        "Transport FFI must not duplicate the Proxy Serving listener projection",
     )
     require(
         readiness_ffi,
