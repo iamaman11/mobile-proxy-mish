@@ -1,170 +1,145 @@
 # Development execution and integration policy
 
-This document explains how implementation work is batched between accepted `main` boundaries. It is a stable execution-policy companion to `AGENTS.md`; live stage status remains in the active execution checkpoint — currently Issue #135 — plus the relevant natural-owner issues.
+This document defines stable execution policy. Live stage status belongs only to Issue #135. Ordered product direction belongs only to `PRODUCT_ROADMAP.md`.
 
-`docs/architecture/PRODUCT_ROADMAP.md` is the canonical ordered PRODUCT/architecture plan. Issue #134 is the historical research/rationale archive and roadmap discussion surface; it is not a competing stage order. Issue #86 is historical M1 / E3-E4 / release-acceptance context and is read only when a concrete acceptance or release-lineage fact requires it.
-
-## Core distinction
-
-Three units are intentionally different:
+## Authority model
 
 ```text
-commit batch != review slice != main evidence milestone
+protected main
+  -> stable process/control/canonical docs boundary
+
+Issue #135
+  -> CURRENT_STAGE
+  -> WORKING_LINEAGE
+  -> ACCEPTED_INTEGRATION_HEAD
+  -> OPEN_IMPLEMENTATION_PR
+  -> immutable evidence ids
+
+working lineage / current slice PR
+  -> current PRODUCT implementation while the stage is active
 ```
 
-A small implementation stage is not automatically a PR, and a review PR is not automatically a `main` merge boundary.
+`main` may intentionally lag the current PRODUCT implementation during an active stage. Do not infer PRODUCT composition from `main` when #135 points to a newer accepted integration head.
 
-Canonical flow:
+## Single-pass roadmap rule
+
+Development proceeds linearly through the current `PRODUCT_ROADMAP.md` stage order. Exactly one roadmap stage is current.
+
+Within a stage:
 
 ```text
-accepted main
- -> milestone integration branch / PR named by the active checkpoint
- -> short-lived slice branch
- -> coherent commit batch(es)
- -> slice PR -> current integration branch
- -> repeat bounded slices
- -> exact-head integration preflight on synchronization when configured for that milestone
- -> final milestone ready-for-review exact-head CI
- -> one milestone merge to main
- -> accepted green main
- -> main-only LAB/provider/release boundary when actually required
+fresh exact baseline
+ -> complete independent hosted/code work
+ -> exact-head hosted gate when configured/required
+ -> physical fact only when source/hosted evidence cannot establish it
+ -> record immutable evidence in #135
+ -> fix only surfaced defects on the same stage
+ -> advance #135 only when stage exit criteria are complete
 ```
 
-Do not turn `main` into a progress ledger and do not turn the milestone PR into the everyday working diff.
+A failed gate does not create a new roadmap stage.
 
-## Current product milestone
+## Work units
 
-The active execution checkpoint defines exactly one current roadmap stage and current integration pointer. The ordered product stages are `U1 -> U8` in `PRODUCT_ROADMAP.md`; #135 only points to the currently active stage and exact implementation/evidence boundary.
+Keep these distinct:
 
-At the time of this policy update the active stage is U1 L8 Architecture Closure. Old `P0-P11` or L1-L8 ordering embedded in issue comments remains historical rationale/evidence where useful, but must not compete with the canonical roadmap after architecture has changed.
+```text
+commit batch != slice PR != milestone/main boundary
+```
 
-The checkpoint is intentionally compact. Detailed semantic contracts stay in natural-owner issues and architecture docs; detailed code-review history stays in slice PRs.
+A slice branch starts from the exact current working/integration head in #135.
 
-## Commit-only phase
-
-A slice begins as a short-lived branch from the exact current integration/working head named by the active checkpoint.
-
-While implementation is incomplete, use coherent commits without opening a PR for every edit. A remote push should represent a reviewable batch, not an editor save point.
-
-When GitHub APIs are used for several files, prefer one Git tree, one commit and one ref update.
-
-## Slice PR boundary
-
-Create a slice PR when the change is coherent enough to review independently. Its base is the current integration branch named by the active checkpoint, not `main`, unless the checkpoint explicitly records a different boundary.
-
-Default slice budget:
+Default slice shape:
 
 - one natural owner;
-- at most one required adapter/composition boundary;
-- direct tests for those semantics.
+- at most one necessary platform/vendor/composition adapter;
+- direct tests for that owner/adapter boundary.
 
-A slice that crosses more than two semantic owners or grows beyond roughly eight implementation/test files should be split unless the coupling is inseparable and documented.
+Open a slice PR when the change is coherent enough to review. Its base is the current integration branch from #135 unless #135 explicitly records another boundary.
 
-Only one slice is active by default. The active checkpoint records any explicit dependency reason for parallel slices.
+After review, merge the slice into the integration lineage. Updating the integration lineage does not automatically justify a `main` merge, physical run or release build.
 
-Slice PRs provide durable context checkpoints and must state owner, goal, base SHA, invariants, touched boundaries, tests/evidence, what remains unproven and follow-up work.
+## Protected-main boundary
 
-After review, squash-merge the slice into the current integration branch. That synchronization does not trigger a `main` merge or LAB run. Whether it triggers hosted CI is defined by the actual workflow for that milestone; policy text must not contradict the executable workflow trigger.
+`main` is not a progress ledger. Merge PRODUCT implementation to `main` only at a coherent milestone/evidence boundary defined by the active process.
 
-## Context budget
+A docs/control-only PR may update protected `main` earlier when its purpose is to keep source-of-truth, workflow or evidence mechanics accurate. Such a merge must not claim that newer PRODUCT code on the working lineage has already landed on `main`.
 
-During slice work, an executor should load only:
+## CI law
 
-```text
-active execution checkpoint (#135)
-current slice PR/branch
-current PRODUCT_ROADMAP stage
-relevant natural-owner issue/contracts
-one required adapter boundary
-corresponding direct tests
-```
+Executable workflow configuration is the mechanical authority. Prose must follow YAML, never the reverse.
 
-Do not load by default:
+For the current Android/Rust development line, `Integration Android Preflight` is the exact-head hosted candidate producer. Read `.github/workflows/integration-android-preflight.yml` for exact trigger conditions and steps.
+
+General law:
 
 ```text
-entire #86 history
-entire #134 comment history
-entire milestone diff
-unrelated owner issues
-all architecture documents
-all CI history
-```
-
-Fetch older history only when a concrete claim depends on it.
-
-After each slice merge, the active checkpoint records the completed slice, next/current slice, current integration pointer, evidence, blocker and next decision. This prevents chat/session memory from becoming a hidden source of truth.
-
-## CI granularity
-
-CI cadence is executable workflow policy, not prose-only intent.
-
-For the active U1 milestone, `Integration Android Preflight` and the release/harness contract are intentionally triggered by milestone-PR `synchronize` events on the configured integration base. This gives each pushed exact head one deterministic diagnosis and cancels superseded in-progress runs through workflow concurrency.
-
-General milestone law:
-
-```text
-coherent pushed exact head
- -> workflow trigger defined for that milestone
- -> first failing gate is the current hosted diagnosis
+coherent exact PRODUCT head
+ -> configured complete hosted gate
+ -> first failing gate is current hosted diagnosis
  -> smallest owner-aligned correction
  -> new exact SHA
- -> same complete gate from the beginning
+ -> full required evidence re-established for that SHA
 ```
 
-A weaker prior PASS is never promoted across a changed SHA. A failed later gate does not erase the already established meaning of earlier steps, but acceptance is granted only when the complete required gate passes on one exact head.
+Do not carry a PASS across a changed SHA.
 
-Before the milestone merge, the milestone PR must be ready for review and complete required CI must pass on the exact head. If that head later changes, all required exact-head evidence must be re-established.
+## Physical development loop
 
-`main` remains a separate acceptance boundary. After merge, the native `CI` workflow on protected `main` must pass using the same current architecture contract; PR-only success is insufficient if main CI still encodes obsolete topology.
+A successful build is never a phone-mutation trigger.
 
-## Diagnostic / local-agent escalation
+When #135 requires a physical fact:
 
-When a material implementation decision depends on a DEVICE-1, Windows, Cloudflare One Client/Mesh, ADB, Magisk/root, real network, timing, resource or other runtime fact that source code and hosted CI cannot establish correctly, do not guess.
+```text
+exact hosted candidate already exists
+ -> analysis decides one explicit Device Cycle action
+ -> /mish-cycle command against exact PRODUCT SHA
+ -> protected-main CONTROL_SHA resolves/verifies provenance
+ -> physical runner consumes exact artifact; no local rebuild
+ -> bounded install/launch/diagnostic/probe as requested
+ -> immutable typed evidence
+ -> STOP_FOR_ANALYSIS
+```
 
-Use the smallest experiment that resolves the exact missing fact:
+The current supported modes/probes are defined by `.github/workflows/device-cycle.yml` and `DEVELOPMENT_PIPELINE.md`.
+
+No workflow automatically chooses a repair, starts a follow-up probe, rotates credentials, changes PRODUCT policy or starts a second cycle.
+
+## PRODUCT / CONTROL / DEVICE provenance
+
+Every physical conclusion must keep separate:
+
+```text
+PRODUCT_SHA
+CONTROL_SHA
+HOSTED_RUN_ID when an artifact is consumed
+DEVICE_CYCLE_RUN_ID or equivalent immutable physical evidence id
+```
+
+Do not mix a stale APK, different control scripts, prior device state or local rebuild into one acceptance claim.
+
+## Diagnostic/local-agent escalation
+
+Use a local agent only when the exact physical fact cannot be established correctly from source, hosted CI or current Device Cycle capabilities.
 
 ```text
 material ambiguity
- -> identify exact missing fact
- -> bounded read-only/diagnostic local-agent experiment
- -> exact baseline + sanitized evidence
+ -> exact missing fact
+ -> smallest bounded read-only diagnostic by default
+ -> sanitized evidence
  -> implementation decision
 ```
 
-The local/Windows agent is a diagnostic/physical executor, not a second state authority. Its diagnostic results do not become E3/E4 acceptance unless they are produced through the formal immutable-artifact acceptance path. Relevant sanitized conclusions must be recorded back in the active checkpoint or appropriate owner/master-plan issue.
+The local agent does not own architecture or current product state. Record relevant conclusions back to #135 or a natural-owner/evidence contract.
 
-## Main and LAB
+## Evidence boundary
 
-Formal Development LAB accepts only an exact accepted green PRODUCT `main` SHA. PR and integration branches are not LAB/E3/E4 source identity.
+Development exact-head debug candidates may establish stage-specific physical facts when #135 records them with exact provenance. They are not formal release identity.
 
-A bounded diagnostic local-agent run may still be used earlier when the active checkpoint requires a physical/runtime fact for an implementation decision; such a run is diagnostic only and must not be promoted to formal acceptance.
+Formal RC/release acceptance and promotion continue to follow `RELEASE.md` and build-once/hash/sign/attest/test/promote semantics.
 
-Therefore the merge decision is:
+## Stop rule
 
-```text
-Can the next required fact be established correctly at E1/E2?
-  YES -> keep working through bounded slices on the current integration branch.
-  NO, but a diagnostic fact is enough -> request the smallest bounded local-agent diagnostic and record it as diagnostic evidence only.
-  NO, formal accepted-main evidence is required -> finish all independent E1/E2 slices,
-       validate the final exact milestone head, merge once, verify main,
-       then request the bounded main-only LAB/provider/release fact.
-```
+If the accepted requirement is already met, NO CHANGE is preferred.
 
-A LAB run is not triggered merely because a PR merged. The active checkpoint must identify the physical fact and why it is required.
-
-## Physical correction loop
-
-When a main-only physical run or bounded diagnostic run reveals a defect:
-
-```text
-typed/redacted physical finding
- -> identify one natural owner and exact violated contract
- -> bounded correction on the current implementation line
- -> exact-head hosted re-proof from the beginning
- -> one milestone/main acceptance boundary when required
- -> physical re-proof only when the stronger fact must be re-established
-```
-
-The diagnosis and the correction must refer to the same exact source/artifact lineage. Do not mix stale issue checkpoints, prior APKs, local rebuilds or weaker evidence into the acceptance result.
-
-Never choose fwmarks, RPDB priorities, Mesh identity behavior, DNS ownership, Android/VPN interaction, timeout values, capacity changes or recovery policy by guess merely to avoid a physical checkpoint.
+Do not add retries, larger timeouts, compatibility code, a new framework, second owner, root daemon/helper, status DB or fallback path until exact evidence demonstrates a product requirement for it.

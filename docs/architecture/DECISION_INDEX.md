@@ -1,58 +1,94 @@
 # Architecture decision index
 
-This file is a navigation index, not a second source of truth. Durable architecture decisions and stage acceptance live in GitHub Issues/PRs; code and versioned contracts live in Git.
+This file is navigation only. It is not a second live-status system.
 
-## Planning and architecture authority
+## Current authorities
 
-- Issue #1 — planning baseline for VM-free Android mobile proxy via Cloudflare Mesh.
-- Issue #2 — completed architecture owner containing A1-A14 and A13.5 decision history.
-- Issue #5 — completed ADR locking Rust-first core, Protobuf policy, Kotlin/Jetpack Compose/Material 3/StateFlow, UniFFI direction and related technology decisions.
-- Issue #4 — vendor facts that must be revalidated when implementation reaches the relevant external boundary.
-- Issue #22 — managed physical-lab prerequisite index; it is not a second CURRENT/product-stage pointer.
-- Issue #24 — Cloudflare IaC/bootstrap authority for supported provider desired configuration.
-- Issue #27 — Windows pre-Android Cloudflare/sing-box routing ownership contract and validation boundary.
+- `docs/architecture/SOURCE_OF_TRUTH.md` — stable reconstruction and conflict-resolution entrypoint.
+- Issue #135 — single live execution/checkpoint pointer: current roadmap stage, working lineage, exact implementation pointer and immutable evidence ids.
+- `docs/architecture/PRODUCT_ROADMAP.md` — canonical ordered PRODUCT/architecture plan.
+- `AGENTS.md` — executor startup and bounded-work policy.
+- `docs/architecture/SYSTEM.md` — canonical current system topology.
+- `docs/architecture/OWNERSHIP.md` — natural-owner map.
+- `docs/architecture/DEPENDENCIES.md` — dependency direction and minimal-layer invariant.
+- `docs/architecture/CONTRACTS.md` — serialization/interface boundary rules.
+- `docs/architecture/EXECUTION.md` — stable implementation/integration policy.
+- `docs/architecture/DEVELOPMENT_PIPELINE.md` — hosted exact-head candidate + explicit Device Cycle contract.
+- `docs/architecture/ACCEPTANCE.md` — evidence levels and development-vs-formal acceptance.
+- `docs/architecture/RELEASE.md` — immutable RC/release identity and promotion.
+- `docs/lab/PLAN.md` — physical LAB execution boundary.
 
-## Physical repository derivation and governance
+Issue #134 is historical research/rationale. It does not own current stage order after `PRODUCT_ROADMAP.md` superseded that role.
 
-- Issue #6 — completed B0 physical-tree derivation from capability ownership/dependency rules.
-- Issue #7 / PR #8 — completed B1 repository/bootstrap implementation.
-- Issue #9 — completed main protection/ruleset blocker.
-- PR #73 — application-wide minimal-layer extension invariant: existing natural owner + one narrow adapter before any new architectural layer.
-- `AGENTS.md` — executor rules for baselining, batching, draft PRs, CI, `main` and LAB boundaries.
-- `docs/architecture/EXECUTION.md` — stable evidence-milestone integration policy; live status remains in Issues.
-- `docs/lab/PLAN.md` — stable managed-lab execution sequence and ownership boundaries; live stage status remains in Issues.
-
-## Current implementation line
-
-- Issue #86 — current cross-component execution tracker to `PROXY_ON_PHONE_WORKING=YES`; it owns execution order and milestone gates only, not component semantics.
-- Issue #10 — single owner for B2 Cellular Egress implementation and E3 acceptance.
-- Issue #63 — physical Android/device behavior and root-policy characterization evidence owner.
-- Issue #75 — bounded PRODUCT root-policy mechanism/correction owner.
-- Issue #64 — final proxy-destination DNS ownership / anti-leak acceptance owner; early E1/E2 implementation work may be prepared before its final physical acceptance gate.
-- PR #11 — B2a cellular natural-owner semantics and Android observation seam.
-- PR #12 — B2b-1 stable UniFFI typed cellular contract.
-- PR #13 — B2b-2 Android native packaging/runtime bridge + owner-derived Compose projection.
-- PR #14 — historical B2c-1 exact-network lease/NDK bind seam. Physical target-topology evidence later showed the bind mechanism fails with `EPERM`; Issue #10 owns its replacement by the accepted root-policy path while preserving the existing Cellular Egress owner.
-
-Read live cross-component order from Issue #86. Read semantic/acceptance status from the relevant natural-owner issue. Device-specific findings live in Issue #63. Historical PRs and older closure plans remain implementation/evidence history and do not override later accepted execution disposition.
-
-## Windows / Mesh contract navigation
-
-- `docs/architecture/SYSTEM.md` — canonical product path and destination-based Windows route ownership: ordinary Internet via sing-box TUN, Mesh/device destinations via Cloudflare One Traffic only; Android public proxy egress is independently cellular-owned and fail-closed.
-- Issue #27 — bounded pre-Android Windows acceptance; MASQUE is primary and Cloudflare One WireGuard is only a concrete-defect fallback.
-- `docs/testing/E4_FULL_STACK.md` — later physical proof for the real Android Mesh proxy endpoint, cellular DNS/egress, browser compatibility and selected-app fail-closed behavior.
-
-## Test/evidence navigation
-
-- `docs/architecture/ACCEPTANCE.md` — E1/E2/E3/E4 evidence domains and readiness/acceptance separation.
-- `docs/testing/E3_PHYSICAL_CELLULAR.md` — executable physical Cellular Egress acceptance protocol for the current PRODUCT mechanism; old bind-based RC/harness evidence cannot satisfy the revised root-policy acceptance path.
-- `docs/testing/E4_FULL_STACK.md` — future Windows/Cloudflare/Mesh/Kameleo/Camoufox full-stack contract.
-- `.github/workflows/e3-physical-cellular.yml` — manual self-hosted E3 runner workflow; the workflow/harness must match the accepted PRODUCT mechanism before a future run may claim E3 PASS.
-
-## Non-authority rule
-
-Do not turn this index, README text, CI logs, test summaries, generated artifacts or chat handoffs into a mutable product-state authority. The project law remains:
+## Current architecture law
 
 ```text
 one fact -> one natural owner -> one write path -> one observation path
 ```
+
+Current Android PRODUCT is one in-process Rust proxy data plane. Android/Kotlin is the thin platform/effect/projection boundary. `mish-runtime` owns Tokio runtime execution/lifecycle; `mish-proxy` owns protocol/auth/target semantics; Cellular Egress owns cellular admission/currentness/exact-network DNS/socket authority.
+
+Cloudflare One Agent is the only Android VPN/VpnService owner. Android PRODUCT has no sing-box runtime/compatibility/migration/process-management path. Historical phone residue is LAB hygiene only.
+
+## PRODUCT vs CONTROL vs DEVICE
+
+```text
+PRODUCT_SHA
+  exact current application implementation/build identity
+
+CONTROL_SHA
+  protected-main workflow/LAB/diagnostic identity
+
+DEVICE_EVIDENCE
+  immutable physical observation tied to explicit provenance
+```
+
+Protected `main` may lag current PRODUCT implementation during an active roadmap stage. Use Issue #135 to resolve the accepted working-lineage/current PRODUCT head before reasoning about application composition.
+
+## Android development delivery
+
+Supported floor:
+
+```text
+Android 11 / API 30
+armeabi-v7a
+```
+
+Stable mechanics:
+
+```text
+Integration Android Preflight
+  -> exact-head hosted build/test/candidate producer
+
+Device Cycle
+  -> explicit protected-main physical consumer/orchestrator
+  -> exact artifact/provenance verification
+  -> adb install -r when requested
+  -> installed-byte/signature verification
+  -> launch/current-L8 diagnostics/current-function probe
+  -> STOP_FOR_ANALYSIS
+```
+
+The executable workflow `.github/workflows/device-cycle.yml` owns the supported Device Cycle command/mode/probe vocabulary. There is no separate `device-candidate-physical.yml` normal path.
+
+No successful build/merge/artifact automatically starts the phone.
+
+## Development physical evidence vs release acceptance
+
+Exact-head debug candidates may establish stage-specific physical facts when #135 records the exact provenance. They are not release identity and cannot be promoted.
+
+Formal release acceptance remains:
+
+```text
+PIN -> BUILD ONCE -> HASH -> SIGN -> ATTEST -> TEST EXACT BYTES -> PROMOTE EXACT BYTES
+```
+
+under `RELEASE.md`.
+
+## Historical material
+
+Older issues, branches, E3/E4 protocols and comments remain useful history/evidence, but they do not override the current authority map. Before reusing an older physical/test protocol, verify that it matches the current native topology and active roadmap stage.
+
+## Non-authority rule
+
+Chat handoffs, copied CI summaries, README prose, generated artifacts and this index never own mutable live stage status. Always reconstruct from fresh GitHub using `SOURCE_OF_TRUTH.md` and #135.

@@ -1,19 +1,26 @@
 # Cellular root-policy execution contract
 
-This document records the concrete infrastructure contract below the existing Cellular Egress natural owner. It does not create another owner or readiness state.
+This document records the concrete privileged infrastructure contract underneath the **Cellular Egress** natural owner. It does not create another admission, lifecycle or readiness owner.
 
 ## Ownership
 
 ```text
-ConnectivityManager observations
- -> Rust `crates/cellular`
-    = sole owner of admission + generation/currentness
- -> Kotlin `CellularRootPolicy`
-    = one typed PRODUCT root adapter
+Android ConnectivityManager observations
+ -> Rust crates/cellular
+    = sole owner of cellular admission + generation/currentness
+ -> Kotlin CellularRootPolicy / narrow typed root effects
+    = realization of an already owner-issued decision
  -> kernel mangle/RPDB mechanics
+
+Proxy Serving
+ -> Rust mish-runtime direct Cellular connector
+ -> current Cellular Egress authority
+ -> exact-network DNS adapter
+ -> ordinary PRODUCT-UID public socket
+ -> root policy forces that socket onto current cellular egress
 ```
 
-The adapter exposes no arbitrary shell API. Root commands are private implementation details behind typed results and typed failures.
+There is no private Cellular SOCKS bridge, Android external proxy child or second Cellular owner in the current L8 topology.
 
 ## Admission and fail-closed base
 
@@ -23,23 +30,23 @@ The semantic admission predicate is exactly:
 CELLULAR + INTERNET + VALIDATED + NOT_VPN
 ```
 
-Before that predicate is true, PRODUCT may establish only the fail-closed base after verifying PRODUCT root authority. A permitting IPv4 cellular lookup is installed only for the exact current ADMITTED owner generation.
+Before that predicate is true, PRODUCT may establish only the fail-closed base after verifying PRODUCT root authority. A permitting IPv4 cellular lookup exists only for the exact current ADMITTED owner generation.
 
-For every new owner generation the adapter:
+For every owner generation the adapter:
 
 1. snapshots live IPv4/IPv6 RPDB and mangle state;
 2. resolves exactly one PRODUCT policy identity from the bounded candidate set or fails closed;
-3. ensures the matching fail-closed guards;
-4. revokes any stale PRODUCT IPv4 cellular lookup for that identity;
+3. ensures matching fail-closed guards;
+4. revokes stale PRODUCT IPv4 cellular lookup for that identity;
 5. reconciles the exact MISH flow-mark policy;
 6. only for ADMITTED, rediscovers and validates the current cellular route table;
 7. installs exactly one current IPv4 lookup and verifies the resulting marked route.
 
-Loss/recovery therefore cannot reuse a stale route-table decision.
+Loss/recovery never reuses a stale route-table decision.
 
 ## Flow identity and continuity
 
-PRODUCT does not assume that one globally fixed mark/priority tuple is available on every supported target topology. The DEVICE-1 QA finding proved that the original `0x200000 / 9500 / 9501` tuple can collide with pre-existing foreign policy state. The accepted infrastructure contract is therefore one **small deterministic candidate set**, currently ordered as:
+PRODUCT does not assume one globally fixed mark/priority tuple is available on every supported Android topology. The bounded candidate set is versioned PRODUCT code, currently:
 
 ```text
 mark 0x200000  -> IPv4 lookup 9500 -> guard 9501
@@ -48,9 +55,13 @@ mark 0x800000  -> IPv4 lookup 9540 -> guard 9541
 mark 0x1000000 -> IPv4 lookup 9560 -> guard 9561
 ```
 
-The adapter snapshots the complete IPv4/IPv6 RPDB plus complete mangle text. It audits the full RPDB independently, builds the user-chain graph from the mangle snapshot, and treats only `OUTPUT` plus user-defined chains transitively reachable from `OUTPUT` as foreign mangle collision authority. It then selects the first candidate whose mark bit and priority pair do not overlap that accepted collision space. The selected identity is retained for the live policy lifecycle and can be rediscovered from the exact materialized `MISH_EGRESS_V1` rules after process restart. If no candidate is clean, reachability/mark parsing is relevantly ambiguous, or materialized PRODUCT state is ambiguous, reconciliation returns typed `ReservedPolicyCollision` and publishes nothing new.
+The adapter audits complete IPv4/IPv6 RPDB state plus mangle OUTPUT and user-defined mangle chains transitively reachable from OUTPUT. It selects the first candidate whose bit/priorities do not overlap accepted foreign state.
 
-This is intentionally **not** a generic mark allocator or registry. Candidate count/order is versioned product code; there is no durable mutable allocation database and no search outside the bounded set.
+This is intentionally **not** a generic mark allocator/registry. There is no mutable allocation database and no unbounded search.
+
+If no candidate is clean, relevant parsing/reachability is ambiguous, or materialized PRODUCT state is contradictory, reconciliation returns a typed failure and publishes no permitting state.
+
+## MISH flow classification
 
 PRODUCT owns one dedicated mangle chain:
 
@@ -58,7 +69,7 @@ PRODUCT owns one dedicated mangle chain:
 MISH_EGRESS_V1
 ```
 
-For PRODUCT-owned OUTPUT traffic the chain is ordered as:
+For PRODUCT-owned OUTPUT traffic the chain is ordered around these semantics:
 
 ```text
 loopback -> RETURN
@@ -69,38 +80,36 @@ NEW + selected bit -> save selected bit to conntrack
 
 Consequences:
 
-- loopback (`127.0.0.0/8`, `::1/128`) is explicitly outside cellular routing;
-- an already selected public proxy connection restores the same MISH bit on later packets;
-- when cellular is lost, both new and already-marked proxy flows meet the unreachable guard rather than falling through to Android default/Wi-Fi/WARP;
-- an inbound Mesh connection does not acquire the MISH connmark: its PRODUCT-side reply is ESTABLISHED, not a NEW PRODUCT public flow;
-- unrelated Android/netd mark bits are preserved because one audited bit is read/written through an exact mask.
+- loopback (`127.0.0.0/8`, `::1/128`) is outside public cellular routing;
+- an already selected public PRODUCT connection restores the same MISH bit on later packets;
+- when cellular authority is lost, new and already-marked public flows meet the fail-closed guard rather than falling through to Android default/Wi-Fi/WARP;
+- inbound Mesh transport does not acquire the MISH public-egress connmark merely because it is handled by PRODUCT;
+- unrelated Android/netd bits are preserved through the exact reserved mask.
 
-The established-flow guarantee remains physical evidence: E3 keeps a real HTTPS connection open across a newer NOT_ADMITTED generation and requires new application data to fail.
+## Publication and reconciliation law
 
-### Publication and reconciliation law
+`MISH_EGRESS_V1` is a versioned live contract. Reconciliation must not destructively rewrite a referenced chain merely to make current state fit expectations.
 
-`MISH_EGRESS_V1` is a versioned immutable live contract. Reconciliation must never flush or rewrite that chain while an OUTPUT jump references it.
-
-The only permitted repair/build sequence is:
+Safe publication shape:
 
 ```text
-live policy-space snapshot + bounded identity selection
--> fail-closed RPDB guards
--> stale IPv4 lookup revoked
--> create/rebuild MISH_EGRESS_V1 only while detached
--> verify every expected chain rule
--> attach exactly one OUTPUT jump
--> verify published chain + jump
--> remove the preceding legacy selector
+fresh live policy-space snapshot + bounded identity selection
+ -> fail-closed RPDB guards
+ -> stale permitting lookup revoked
+ -> create/rebuild expected MISH chain only while detached
+ -> verify expected rules
+ -> attach exactly one OUTPUT jump
+ -> verify published chain + jump
+ -> remove only a separately proven PRODUCT-owned superseded selector, when such a migration is explicitly supported
 ```
 
-If a referenced `MISH_EGRESS_V1` is incomplete or differs from every exact candidate-specific V1 contract, reconciliation fails closed and leaves it untouched. A future rule-layout change must use a new versioned chain and an explicit migration; it must not mutate V1 in place.
+A referenced malformed/mismatched PRODUCT chain fails closed and is not guessed into correctness. A future rule-layout change uses a new versioned chain/explicit migration rather than mutating V1 semantics in place.
 
-This avoids relying on unproven Android-specific `iptables-restore` transaction semantics. Deterministic tests require that a failed detached build never publishes a jump and that a referenced malformed chain is never flushed or rewritten.
+PRODUCT never deletes, rewrites, reorders or repurposes foreign RPDB/mangle objects to make a candidate fit.
 
 ## Reserved-space collision law
 
-For each candidate, both its mark bit and its lookup/guard priorities are reserved only after a fresh complete snapshot and bounded audit. Collision authority is exactly:
+Collision authority for each candidate is exactly:
 
 ```text
 complete IPv4/IPv6 RPDB
@@ -112,39 +121,85 @@ all user-defined mangle chains transitively reachable from OUTPUT
 
 Collision includes:
 
-- a foreign RPDB object at either candidate priority;
-- any foreign RPDB `fwmark` whose mask overlaps the candidate bit;
-- any foreign mangle MARK/CONNMARK read/write on `OUTPUT` or an OUTPUT-reachable user chain whose mask overlaps the candidate bit, even if the foreign value for that bit is zero;
-- malformed or ambiguous mark/reachability semantics on that relevant path;
-- foreign or mismatched content under `MISH_EGRESS_V1`;
+- foreign RPDB objects at either candidate priority;
+- foreign RPDB `fwmark` masks overlapping the candidate bit;
+- foreign MARK/CONNMARK read/write on OUTPUT or an OUTPUT-reachable user chain overlapping the candidate bit;
+- malformed/ambiguous relevant mark or reachability semantics;
+- foreign/mismatched content under the PRODUCT chain;
 - contradictory candidate-specific materialized state.
 
-A foreign MARK/CONNMARK rule that is proven reachable only from `INPUT`, `FORWARD`, or another chain not reachable from `OUTPUT` is **not** a PRODUCT public-egress collision merely because its mask overlaps the candidate bit. This does not grant ownership of that foreign state: PRODUCT still never deletes, rewrites, reorders or repurposes it.
-
-PRODUCT never deletes, rewrites, reorders or repurposes a foreign object merely to make a candidate fit. Collision of one candidate advances only to the next bounded candidate. Collision/ambiguity of all candidates fails closed without publication.
-
-The original NEW-only `0x200000` selector is recognized only as a narrow one-way migration signature and is removed after the named flow policy is safely established. It does not grant ownership over arbitrary foreign `0x200000` state.
+State reachable only from unrelated INPUT/FORWARD paths is not automatically a PRODUCT public-egress collision, but PRODUCT never claims ownership of that foreign state.
 
 ## IPv6
 
-Until a direct-cellular IPv6 path is separately accepted, IPv6 uses the same selected MISH flow classification but has no permitting lookup. The matching IPv6 unreachable guard therefore fails closed.
+Until a direct-cellular IPv6 public path is separately accepted, IPv6 has no permitting public lookup. Matching fail-closed policy prevents silent IPv6 escape through another network.
 
-## Lifecycle
+## Direct L8 outbound data path
 
-Each PRODUCT process generation creates one `CellularRuntimeBridge`. Startup first verifies PRODUCT root authority and reconciles the fail-closed base, then starts Android network observation. A permitting lookup appears only after a fresh owner ADMITTED observation.
+Current Proxy Serving is in-process Rust. `mish-runtime` obtains the exact `CellularController`/`CellularEgress` owner handle; no admission/currentness state is copied into a second proxy-specific owner.
 
-The same `CellularController` / `CellularEgress` instance is also supplied to the private loopback egress bridge used by the Android proxy runtime. Starting the proxy bridge must not instantiate a second Cellular Egress owner or a second admission/generation state machine.
+For one public target operation:
 
-Ordinary PRODUCT-UID outbound socket effects are additionally protected by a process-local infrastructure gate. The gate is default-closed. The same Rust `CellularController` mutex that serializes owner observations also closes the gate before an observation/loss mutates the owner and authorizes reopening only when the expected sequence/network handle is still the exact current ADMITTED generation. A connect transaction holds a bounded RAII permit; the Kotlin policy executor must observe permit quiescence before mutating or revoking kernel routing state. This gate is not admission/readiness state and cannot make a network admissible; it only prevents the runtime adapter from issuing a new ordinary socket effect while root-policy realization is unproven or changing.
+```text
+issue current CellularNetworkAuthority
+ -> if domain: resolve only with exact-network DNS adapter
+ -> validate the same authority after DNS
+ -> bound IPv4 candidates
+ -> before each connect: validate authority
+ -> ordinary PRODUCT-UID TcpStream connect
+ -> kernel root policy routes marked flow via current cellular table
+ -> validate authority again after external effect
+```
 
-On owner loss or generation change, currentness advances independently of slow root effects. Every root transaction checks the captured owner generation before and after the effect. On intentional close, exact PRODUCT objects are removed and absence is post-verified.
+If no admitted authority exists or the generation/network changes, the connector returns unavailable/fail-closed. It never retries through Android default routing, Wi-Fi or WARP.
 
-A reboot/process restart never treats persisted kernel objects as admission truth: they are audited/reconciled under fresh PRODUCT root authority and fresh Cellular Egress observations.
+The runtime owner provides the bounded blocking seam for DNS/connect setup; Cellular Egress remains the natural owner of network authority.
 
-## DNS transition
+## Exact-network DNS
 
-The physically rejected socket-binding path is retired. `android_setsocknetwork` is forbidden by CI.
+Android socket binding (`Network.bindSocket` / `android_setsocknetwork`) is not the PRODUCT mechanism and remains forbidden by the accepted architecture.
 
-Until Issue #64 establishes the final resolver/anti-leak mechanism, the private loopback egress bridge retains the narrow read-only `android_getaddrinfofornetwork` DNS adapter bound to the exact owner authority. Public target sockets themselves are ordinary PRODUCT-UID sockets and are routed only by the root policy above.
+The narrow `crates/android-network` adapter exposes only network-scoped DNS through `android_getaddrinfofornetwork` using an already owner-issued `CellularNetworkAuthority`.
 
-This transitional DNS adapter is not a second Cellular Egress owner and must disappear or be superseded only under #64's resolver contract.
+It cannot select/bind/connect a public socket and owns no lifecycle/admission policy. Runtime validates the authority before/after the DNS effect. The public socket itself is an ordinary PRODUCT-UID socket governed by the root policy above.
+
+This exact-network DNS mechanic remains subject to later resolver/anti-leak hardening only where the roadmap/current evidence demonstrates a concrete need; it is **not** a private bridge and must not recreate one.
+
+## Generation / mutation sequencing
+
+`CellularRuntimeBridge` is a process-generation adapter between Android observations, Rust Cellular ownership and typed root-policy effects. It owns no cellular admission policy.
+
+Owner currentness advances independently of slow privileged effects. Root-policy work validates the captured generation around the effect, and permitting state is published only for the still-current admitted generation.
+
+The Rust cellular/runtime gate quiesces in-flight outbound setup before root-policy mutation/revocation where required. That mechanism is infrastructure serialization, not a second readiness/admission owner.
+
+Process restart/reboot never treats persisted kernel objects as admission truth: they are audited/reconciled under fresh process/root authority and fresh Cellular Egress observations.
+
+## Magisk/root transport
+
+Current architecture has one process-wide persistent Magisk `su` transport underneath typed root-policy adapters:
+
+```text
+ProcessBuilder("su")
+ -> one serialized live shell generation
+ -> bounded framed commands/results
+ -> authority proof cached only for that live shell generation
+```
+
+Transport/session generation change invalidates cached authority. Transport failure invalidates the shared shell and **does not automatically replay a mutating command**, because the kernel effect may already have occurred.
+
+Higher layers must not gain a generic privileged RPC/control API, root daemon/helper or whole-app-root execution merely to simplify this boundary.
+
+The remaining shell-shaped internal transport form is an implementation-cleanup target after U2 physical proof; changing that API must preserve exactly one persistent `su` transport, serialization, bounded output/deadlines, generation invalidation and fail-closed uncertainty semantics.
+
+## Acceptance status
+
+Architecture/code semantics do not substitute for required U2 physical proof. Issue #135 / `PRODUCT_ROADMAP.md` own the remaining evidence requirements, including:
+
+- exact Cellular DNS/public egress and no Wi-Fi/default/WARP fallback;
+- cellular loss/recovery fail-closed behavior;
+- replace-install/process-restart/repeated-recovery Magisk grant persistence;
+- one bounded persistent `su` transport without unbounded process growth;
+- required resource/timing baseline.
+
+Historical private-bridge or Android sing-box evidence is not current PRODUCT acceptance evidence.

@@ -1,0 +1,100 @@
+name: MISH LAB Diagnostic
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mish-lab-diagnostic
+  cancel-in-progress: false
+
+env:
+  DIAGNOSTIC_PWSH_VERSION: '7.6.6'
+
+jobs:
+  snapshot:
+    name: Read-only DEVICE-1 snapshot
+    if: >-
+      github.event.issue.number == 163 &&
+      github.event.comment.user.login == 'iamaman11' &&
+      github.event.comment.body == '/mish-diag snapshot'
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 10
+    env:
+      ADB_EXE: C:\\mish-lab\\tools\\android-sdk\\platform-tools\\adb.exe
+    steps:
+      - name: Checkout protected main diagnostics bridge
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+          clean: true
+
+      - name: Verify pinned PowerShell 7 runtime
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($PSVersionTable.PSEdition -cne 'Core' -or $PSVersionTable.PSVersion.ToString() -cne $env:DIAGNOSTIC_PWSH_VERSION) {
+            throw "MISH_DIAGNOSTIC_FAILURE|POWERSHELL_RUNTIME_MISMATCH|Expected PowerShell $env:DIAGNOSTIC_PWSH_VERSION; observed $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)"
+          }
+
+      - name: Verify physical LAB identity
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\labctl.ps1 host inspect -PhysicalLab
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Collect one-shot diagnostic v2
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\collect-device-diagnostic.ps1 `
+            -AdbPath "$env:ADB_EXE" `
+            -PackageName 'com.mobileproxymish.app.debug' `
+            -EvidencePath "$env:RUNNER_TEMP\mish-device-diagnostic-v2.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Publish bounded diagnostic summary
+        if: ${{ always() }}
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $evidencePath = Join-Path $env:RUNNER_TEMP 'mish-device-diagnostic-v2.json'
+          if (-not (Test-Path -LiteralPath $evidencePath -PathType Leaf)) {
+            "### MISH LAB Diagnostic v2`n`nEvidence collection did not produce a report." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            exit 0
+          }
+          $evidence = Get-Content -Raw -LiteralPath $evidencePath | ConvertFrom-Json
+          @(
+            '### MISH LAB Diagnostic v2',
+            '',
+            "- Classification: **$($evidence.classification)**",
+            "- PID stable: **$($evidence.pid_stable)**",
+            "- Snapshot consistent: **$($evidence.android.consistent)**",
+            "- Runtime running: **$($evidence.android.runtime.running)**",
+            "- Cellular: **$($evidence.android.cellular.state)** / $($evidence.android.cellular.reason)",
+            "- Cellular admitted: **$($evidence.android.cellular.admitted)**",
+            "- Root authority: **$($evidence.android.root.authority_observation)**",
+            "- Root policy authorized: **$($evidence.android.root.policy_authorized)**",
+            "- Proxy: **$($evidence.android.proxy.state)** / healthy=$($evidence.android.proxy.healthy)",
+            "- Credential active: **$($evidence.android.credential.active)**",
+            "- Mesh admission: **$($evidence.android.mesh.state)** / admitted=$($evidence.android.mesh.admitted) / epoch=$($evidence.android.mesh.epoch_present)",
+            "- Mesh ingress: **$($evidence.android.mesh.ingress_running)** / $($evidence.android.mesh.ingress_failure)",
+            "- Readiness: **$($evidence.android.readiness.state)** / binding=$($evidence.android.readiness.binding_eligible) / probe=$($evidence.android.readiness.probe_state)",
+            "- ADB-loopback authenticated E2E: **$($evidence.external.adb_loopback_proxy_e2e.result)** / $($evidence.external.adb_loopback_proxy_e2e.reason)",
+            "- Windows-Mesh authenticated E2E: **$($evidence.external.mesh_proxy_e2e.result)** / $($evidence.external.mesh_proxy_e2e.reason)",
+            '',
+            'No airplane-mode toggle, reinstall, root-policy mutation, Cloudflare mutation or local build is performed.'
+          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Upload bounded diagnostic evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mish-device-diagnostic-v2-${{ github.run_id }}
+          path: ${{ runner.temp }}\mish-device-diagnostic-v2.json
+          if-no-files-found: warn
+          retention-days: 30

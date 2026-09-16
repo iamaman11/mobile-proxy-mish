@@ -33,6 +33,39 @@ function Invoke-NativeChecked {
     }
 }
 
+function Invoke-NativeTextProbe {
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [string]$ArgumentsLine = ''
+    )
+
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $FilePath
+    $startInfo.Arguments = $ArgumentsLine
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.CreateNoWindow = $true
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) {
+            throw "Failed to start native probe: $FilePath"
+        }
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+        return [pscustomobject]@{
+            ExitCode = [int]$process.ExitCode
+            Text = (($stdout + "`n" + $stderr).Trim())
+        }
+    }
+    finally {
+        $process.Dispose()
+    }
+}
+
 function Get-RemoteFile {
     param(
         [Parameter(Mandatory)][string]$Uri,
@@ -98,8 +131,8 @@ function Get-JdkPath {
     foreach ($candidate in @(Get-ChildItem $root -Directory -Filter "jdk-$Major*" -ErrorAction SilentlyContinue | Sort-Object Name -Descending)) {
         $java = Join-Path $candidate.FullName 'bin\java.exe'
         if (-not (Test-Path -LiteralPath $java -PathType Leaf)) { continue }
-        $text = (& $java -version 2>&1 | Out-String)
-        if ($LASTEXITCODE -eq 0 -and $text -match ('version\s+"' + [regex]::Escape([string]$Major) + '(?:\.|\")')) {
+        $probe = Invoke-NativeTextProbe -FilePath $java -ArgumentsLine '-version'
+        if ($probe.ExitCode -eq 0 -and $probe.Text -match ('version\s+"' + [regex]::Escape([string]$Major) + '(?:\.|\")')) {
             return $candidate.FullName
         }
     }
@@ -196,6 +229,11 @@ function Invoke-HostDependencySelfTest {
     $root = Join-Path $env:TEMP ('mish-lab-host-selftest-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Force -Path $root | Out-Null
     try {
+        $probe = Invoke-NativeTextProbe -FilePath $env:ComSpec -ArgumentsLine '/d /c "echo java-version-probe 1>&2"'
+        if ($probe.ExitCode -ne 0 -or $probe.Text -notmatch 'java-version-probe') {
+            throw 'Host dependency self-test failed: native stderr probe was not captured safely.'
+        }
+
         $skipMarker = Join-Path $root 'skip-invoked.txt'
         $skipWinget = Join-Path $root 'skip-winget.cmd'
         Set-Content -Encoding Ascii -LiteralPath $skipWinget -Value @(
@@ -428,6 +466,15 @@ try {
     Invoke-NativeChecked -FilePath $sdkManager -Arguments @("--sdk_root=$sdkRoot", '--licenses')
     $sdkPackages = @($manifest.android.packages | ForEach-Object { [string]$_ })
     Invoke-NativeChecked -FilePath $sdkManager -Arguments (@("--sdk_root=$sdkRoot") + $sdkPackages)
+
+    $canonicalAdb = Join-Path $sdkRoot 'platform-tools\adb.exe'
+    if (-not (Test-Path -LiteralPath $canonicalAdb -PathType Leaf)) {
+        throw "Canonical ADB postcondition is not satisfied after sdkmanager: $canonicalAdb"
+    }
+    $canonicalAdbProbe = Invoke-NativeTextProbe -FilePath $canonicalAdb -ArgumentsLine 'version'
+    if ($canonicalAdbProbe.ExitCode -ne 0 -or $canonicalAdbProbe.Text -notmatch 'Android Debug Bridge') {
+        throw "Canonical ADB execution postcondition is not satisfied after sdkmanager: $canonicalAdb"
+    }
 
     Set-MachineVariable -Name 'RUSTUP_HOME' -Value $rustupHome
     Set-MachineVariable -Name 'CARGO_HOME' -Value $cargoHome

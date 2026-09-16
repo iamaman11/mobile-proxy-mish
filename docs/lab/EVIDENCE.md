@@ -1,88 +1,99 @@
 # Managed lab evidence contract
 
-Physical and provider runs produce evidence, not runtime authority. Evidence is immutable per-run output tied to exact identities and may never become a competing mutable readiness database.
+Physical/provider runs produce evidence, not runtime authority. Evidence is immutable per-run output tied to exact identities and must never become a competing mutable readiness/status database.
 
-## Required envelope
+## Identity model
 
-Every managed-lab evidence document must include:
+Development physical evidence keeps control and product identities separate:
+
+```text
+PRODUCT_SHA
+  exact application source/build identity being exercised
+
+CONTROL_SHA
+  exact protected-main workflow/script identity executing the cycle
+
+HOSTED_RUN_ID / artifact id + digest
+  exact hosted candidate provenance when bytes are consumed
+
+DEVICE_CYCLE_RUN_ID
+  immutable physical execution/evidence identity
+```
+
+Formal RC/release evidence additionally binds exact tag/version, release manifest, APK digest and non-secret signing-certificate identity under `RELEASE.md`.
+
+A local working-tree path, process PID by itself, branch nickname or “latest” is never durable artifact/product identity.
+
+## Evidence envelope
+
+Evidence schemas are owned by their executable producer. New managed evidence should record the minimum exact provenance needed by its claim. For a development Device Cycle this includes, directly or through immutable linked run metadata:
 
 ```json
 {
-  "schema": "mish.lab.evidence/v1",
-  "run_kind": "host-preflight",
-  "repository": "iamaman11/mobile-proxy-mish",
-  "git_ref": "refs/heads/main",
-  "git_commit": "<40-hex accepted commit>",
-  "started_at_utc": "<RFC3339>",
-  "completed_at_utc": "<RFC3339>",
+  "product_sha": "<40-hex PRODUCT_SHA>",
+  "control_sha": "<40-hex CONTROL_SHA>",
+  "hosted_run_id": "<exact producer run when applicable>",
+  "device_cycle_run_id": "<exact physical run>",
   "result": "PASS",
-  "failure": null,
+  "classification": "PASS",
   "observations": {}
 }
 ```
 
-`result` is limited to the acceptance result for that run. It must not be read by the product as live current readiness.
+A host/provider-only run may use a simpler schema because it makes no PRODUCT acceptance claim.
+
+`result` describes only that exact run/request. It is never read by PRODUCT as live current readiness.
 
 ## Typed failure
 
-Failures should be typed rather than inferred from free-form logs. Initial cross-stage categories may include only concrete needs such as:
+Failures should be typed rather than inferred from free-form logs. Categories are introduced only for a concrete consumer/operator distinction, for example:
 
 ```text
 HOST_PREREQUISITE_MISSING
 UNTRUSTED_REF
 IDENTITY_MISMATCH
-PROVIDER_UNAVAILABLE
+ARTIFACT_PROVENANCE_MISMATCH
 DEVICE_REQUIRED
 DEVICE_UNAVAILABLE
 DEVICE_INCOMPATIBLE
-BUILD_FAILED
 TEST_FAILED
 TIMEOUT
 CANCELLED
 OBSERVATION_CONTRADICTION
 ```
 
-Do not create a generic failure taxonomy framework beyond actual consumers. Add categories only when a concrete stage needs a distinct operator action.
+Do not build a generic failure taxonomy framework beyond actual consumers.
 
-## Identity requirements
+## Physical observation rules
 
-Evidence must bind to the identities required by the stage, for example:
+Observations are facts from natural PRODUCT owners or external fixtures. Do not infer READY/acceptance from package presence, a process name, stale files, a historical successful run or a weaker probe.
 
-- exact Git commit/ref;
-- APK/native artifact SHA-256;
-- pinned sing-box version/checksum when involved;
-- non-secret Windows/Android build/version identity;
-- Cloudflare client version when supported/observable;
-- scenario name and timestamp.
+For installation claims, record/verify the exact installed APK digest and signing identity before launch acceptance.
 
-A local working-tree path is never evidence identity.
+For current runtime claims, use current native owner facts (runtime, Cellular, root policy, Proxy Serving, credentials, Mesh, readiness) and the exact functional evidence required by the active roadmap stage.
 
-## Observation rules
+Historical Android sing-box/runtime files or processes are not current PRODUCT evidence. If they are observed during LAB hygiene, record only the bounded facts needed for cleanup/attribution and never promote them into PRODUCT state.
 
-Observations are read-only facts from natural owners or external fixtures. Examples:
+## Evidence ladder
 
-```json
-{
-  "host": {
-    "os": "Windows",
-    "architecture": "x86_64",
-    "android_sdk_available": true,
-    "rust_toolchain_available": true
-  },
-  "artifacts": {
-    "app_apk_sha256": "...",
-    "test_apk_sha256": "..."
-  }
-}
+```text
+E1 code / deterministic hosted CI
+E2 bounded Android build/platform integration
+E3 physical rooted Android + real carrier
+E4 Windows -> Mesh -> Android -> cellular -> real external path
 ```
 
-Do not infer READY from package presence, process presence, stale files or a previous successful run.
+`NO_EVIDENCE_ESCALATION`: evidence can claim only the domain physically/executably exercised by that exact run.
+
+A development `full` Device Cycle can establish exact stage-specific physical facts when provenance and the required topology are exercised. `diagnose_only` / read-only `probe_only` evidence does not establish exact installed-candidate acceptance unless the corresponding installation identity was independently and explicitly bound by the acceptance contract.
+
+Development debug evidence is not formal RC/release identity and cannot be promoted.
 
 ## Secrets and privacy
 
 Evidence must never contain:
 
-- passwords or proxy credentials;
+- passwords/proxy credential material;
 - Cloudflare API/enrollment tokens;
 - GitHub runner registration tokens;
 - Terraform/R2 credentials;
@@ -90,23 +101,17 @@ Evidence must never contain:
 - arbitrary environment dumps;
 - Android ephemeral Network handles;
 - private keys;
-- full command lines when they may contain secrets.
+- unbounded logs/process dumps;
+- full secret-bearing command lines.
 
-When a public IP must be validated, prefer a boolean/type assertion such as `valid_public_ip_observed=true` instead of persisting the literal unless the acceptance contract specifically requires the value.
+When a public IP must be validated, prefer a boolean/type assertion, digest, or changed/unchanged result rather than persisting the literal unless a specific local-only product requirement needs it.
 
-## Evidence ladder
+## Storage and live-state rule
 
-```text
-E1 code/deterministic hosted CI
-E2 bounded Android build/platform integration
-E3 physical rooted Android + real carrier
-E4 Windows -> Mesh -> Android -> cellular -> real clients
-```
+Primary durable evidence is the GitHub workflow/check/artifact record for the exact run. Uploaded JSON evidence is immutable bounded run output with appropriate retention.
 
-`NO_EVIDENCE_ESCALATION`: an evidence document may only claim the domain physically exercised by that run. Host preflight, provider plan, APK build, ABI-specific link/package proof and a device-absent dry run cannot claim E3.
+Do not add a mutable lab status database, D1 table, local registry or second current-stage pointer. Current stage and accepted evidence ids belong to Issue #135. Current runtime facts belong to their PRODUCT/provider/device owners.
 
-## Storage
+## Local-agent evidence
 
-Primary durable evidence is the GitHub workflow/check/artifact record associated with the exact run. If JSON evidence is uploaded as an artifact, it is immutable run output and must have bounded retention appropriate to the project.
-
-Do not add a mutable lab status database, D1 table, local registry or second live pointer to summarize these files. Current stage status belongs to the stage Issue; current runtime facts belong to runtime/provider/device owners.
+A local agent may collect one bounded missing physical fact when current repository tooling cannot. Its raw local output is not automatically durable authority. Sanitize and record only the necessary conclusion/evidence pointer in GitHub (#135, a stage-specific evidence surface, or the relevant natural-owner contract) before relying on it across context loss.

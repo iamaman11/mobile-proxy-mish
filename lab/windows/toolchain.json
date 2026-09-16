@@ -33,7 +33,7 @@
   },
   "rust": {
     "toolchain": "1.98.1",
-    "target": "aarch64-linux-android",
+    "target": "armv7-linux-androideabi",
     "cargo_ndk": "4.1.2",
     "rustup_init_url": "https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe",
     "rustup_init_sha_url": "https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe.sha256"
@@ -49,11 +49,12 @@
     "platform_package": "platforms;android-37.0",
     "platform_dir": "android-37.0",
     "target_sdk": 36,
-    "min_sdk": 23,
+    "min_sdk": 30,
     "ndk": "29.0.14206865",
     "packages": [
       "platform-tools",
       "platforms;android-37.0",
+      "build-tools;36.0.0",
       "ndk;29.0.14206865"
     ]
   }

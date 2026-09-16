@@ -1,213 +1,46 @@
 # Executor policy
 
-GitHub is the durable source of truth. Chat handoffs, copied status text, CI summaries and generated artifacts are not substitutes for a fresh GitHub baseline.
+GitHub is the only durable source of truth. Chat handoffs, copied status text, CI summaries and generated artifacts are not substitutes for a fresh GitHub baseline.
 
 ## Required startup baseline
 
 Before planning or mutating:
 
 1. read fresh protected `main`;
-2. read the active execution checkpoint — currently Issue #135; if that checkpoint explicitly hands off to a successor, follow the successor rather than historical trackers;
-3. inspect the exact current working/integration head and milestone PR named by that checkpoint, when one exists;
-4. read the current slice PR/branch when one exists;
-5. read only the natural-owner issue/contracts and implementation files touched by that slice;
-6. distinguish current facts from historical evidence.
+2. read `docs/architecture/SOURCE_OF_TRUTH.md`;
+3. read fresh Issue #135;
+4. read `docs/architecture/PRODUCT_ROADMAP.md` from protected `main`;
+5. inspect the exact working/integration head and current slice PR named by #135, when one exists;
+6. read only the natural-owner contracts, implementation files and executable workflows/tests required by the active slice;
+7. distinguish PRODUCT source facts, CONTROL/process facts and DEVICE evidence.
 
-Issue #134 is the current master PRODUCT/architecture/research plan for the hardening milestone. Issue #86 is historical M1 / E3-E4 / release-acceptance context and should be read only when a concrete acceptance or release-lineage fact requires it.
+One fresh baseline opens one bounded mutation window. Do not re-baseline after every write inside that window.
 
-One fresh baseline opens one bounded mutation window. Do not re-baseline after every write performed inside that same bounded window.
+Issue #134 is historical research/rationale. Issue #135 is the single current execution/checkpoint pointer. `PRODUCT_ROADMAP.md` owns ordered stage direction.
 
-## Product engineering rule — outcome before code
-
-MISH is developed as a **simple, reliable and efficient product**, not as a code-production exercise.
-
-Every proposed implementation, refactor, optimization, abstraction, test expansion or diagnostic mechanism must answer, before code is added:
+## Product engineering rule
 
 ```text
-concrete product / operator problem
- -> meaningful consequence if left unchanged
- -> smallest safe change that resolves or measures it
- -> measurable result / acceptance signal
+concrete product/operator problem
+ -> smallest safe change or smallest missing measurement
+ -> measurable result
  -> preserved invariants
  -> stop condition
 ```
 
-Default decision rule:
+Prefer NO CHANGE when the accepted requirement is already met. Do not introduce a framework, daemon, generic shell API, second owner, second control plane or refactor merely because it is possible.
+
+## Authority separation
+
+Always keep three identities separate:
 
 ```text
-if current behavior already satisfies the accepted product requirement safely and with adequate measured margin
- -> NO CHANGE is a valid and preferred outcome
+PRODUCT_SHA   -> exact application source/build identity
+CONTROL_SHA   -> protected-main workflow/LAB/diagnostic identity
+DEVICE_EVIDENCE -> immutable physical observation tied to explicit provenance
 ```
 
-Do not optimize for code volume, module count, number of tests, architectural novelty, abstraction purity, use of async/libsu/frameworks, or the highest benchmark/concurrency number. Those are not product success metrics by themselves.
-
-Prefer, in order:
-
-```text
-reuse an existing natural owner / mechanism
- -> remove unnecessary work or duplication
- -> make the smallest local correction
- -> add one narrow typed adapter only when a real boundary requires it
- -> add a new layer/process/framework only when a concrete ownership, privilege, lifecycle or failure-isolation fact proves it necessary
-```
-
-Tests, diagnostics, telemetry and refactors are support mechanisms. They are justified only by a concrete correctness, reliability, operability, maintainability or efficiency outcome. File size alone is not a defect. A broader rewrite is never justified merely because a different design looks cleaner.
-
-Efficiency means measured product efficiency: recovery latency, resource headroom, CPU/battery/thermal cost, bounded concurrency, operator effort and failure containment. Never trade away reliability or fail-closed behavior for a cosmetic simplification or benchmark win.
-
-When evidence is insufficient, obtain the smallest diagnostic fact needed; do not speculate and do not build a framework in anticipation of a hypothetical problem.
-
-## Three integration levels
-
-Do not confuse a coding batch, a review boundary and a `main` merge boundary.
-
-### 1. Commit-only work
-
-While one bounded slice is still being implemented, work on a short-lived slice branch created from the exact current integration/working head named by the active checkpoint.
-
-A commit should be coherent and reviewable. A remote push is not an editor save point. When several repository files must change through GitHub, prefer:
-
-```text
-prepare all edits
- -> one Git tree
- -> one commit
- -> one branch-ref update
-```
-
-Do not open a PR merely because one or two files changed.
-
-### 2. Slice review PR
-
-Open a slice PR only when that bounded slice is coherent enough to audit as a unit.
-
-The slice PR targets the current integration branch named by the active checkpoint, **not `main`**, unless that checkpoint explicitly records a different review boundary. It should be opened review-ready (non-Draft) only after the implementation slice itself is coherent. Ordinary `opened` and `synchronize` events do not trigger the full CI workflow under the current CI contract.
-
-A normal slice contains at most:
-
-- one natural owner;
-- one necessary platform/vendor/composition adapter;
-- the direct tests for that owner/adapter boundary.
-
-If a proposed slice touches more than two semantic owners, or grows beyond roughly eight implementation/test files, split it unless the coupling is technically inseparable and the PR explains why.
-
-Exactly one implementation slice should be active at a time unless the active checkpoint records an explicit dependency reason for parallel slices.
-
-Each slice PR body must record:
-
-```text
-OWNER
-GOAL
-BASE_SHA
-INVARIANTS
-FILES / BOUNDARIES TOUCHED
-TESTS / EVIDENCE
-NOT PROVEN
-FOLLOW-UP
-```
-
-Detailed code review happens at the slice PR. After it is accepted, squash-merge it into the current integration branch and delete the short-lived slice branch. Updating the integration branch does not itself justify a `main` merge or LAB run.
-
-### 3. Milestone PR to main
-
-The current milestone integration PR, when one exists, is a container for accepted slice results and the final cross-slice integration review. It is **not** the normal working diff for day-to-day implementation.
-
-Keep the milestone PR Draft while slices are still being assembled. Merge to `main` only when at least one of these is true:
-
-- the coherent integration milestone is complete as far as E1/E2 can prove it;
-- the next missing fact can only be obtained from a main-only LAB/provider/release path;
-- a natural-owner contract explicitly requires accepted `main`;
-- the change must establish a protected-main compatibility boundary before further work.
-
-Do not merge to `main` merely because one internal implementation stage or slice completed.
-
-## Context-budget rule
-
-The executor must not rely on remembering the whole integration diff.
-
-During implementation, the active working set is:
-
-```text
-active execution checkpoint (currently #135)
-+ current slice PR/branch
-+ only the referenced #134 finding/stage when needed
-+ one natural-owner contract
-+ one adapter boundary when required
-+ direct tests
-```
-
-Do not reload or reason line-by-line over the entire milestone diff, the entire #86 history, or the entire #134 comment history unless a concrete integration/acceptance question requires it.
-
-After each slice merge, the active checkpoint must update `COMPLETED_SLICES`, `CURRENT_STAGE`, `CURRENT_SLICE`, the current integration head/PR pointer, evidence, blocker and next decision. Slice PR descriptions are durable implementation checkpoints; chat memory is not.
-
-## CI rule
-
-CI is deliberate evidence, not an edit loop.
-
-Ordinary PR `synchronize` pushes do **not** trigger CI. Full CI is allowed only through deliberate evidence boundaries:
-
-- `workflow_dispatch` on an exact meaningful checkpoint head when hosted build/test evidence is genuinely needed;
-- `ready_for_review` on the final milestone PR head;
-- `push` to protected `main` after merge.
-
-A slice PR does not receive full CI merely because it exists. Use a manual exact-head checkpoint only when the slice has material build/integration uncertainty that cannot be closed by code review and direct tests alone, for example Rust/UniFFI/Gradle contract changes or another cross-language/toolchain boundary.
-
-Before the milestone merge, mark the milestone PR ready for review and require complete CI PASS on the exact PR head. If that head changes after a ready-for-review validation, return it to Draft, accumulate the correction batch, then mark it ready again for a fresh exact-head CI.
-
-## Main rule
-
-`main` is an accepted integration/evidence boundary. Do not use `main` as a scratch integration branch or progress ledger.
-
-Record intermediate progress in the active execution checkpoint, slice PRs and the Draft milestone PR.
-
-## Diagnostic / local-agent rule
-
-When a material implementation decision depends on a DEVICE-1, Windows, Cloudflare One Client/Mesh, ADB, Magisk/root, real network, timing, resource or other runtime fact that source code and hosted CI cannot establish correctly, do not guess.
-
-Use:
-
-```text
-exact missing fact
- -> smallest bounded read-only/diagnostic local-agent experiment
- -> exact baseline + sanitized evidence
- -> implementation decision
-```
-
-The local/Windows agent is a diagnostic/physical executor, not a second product-state authority. Diagnostic evidence from a working branch/candidate does not become E3/E4 acceptance. Relevant sanitized conclusions must be written back to the active checkpoint or the appropriate natural-owner/master-plan issue.
-
-Never expose raw secrets, credentials, device identifiers, carrier public IPs or other excluded sensitive facts.
-
-## Development LAB rule
-
-Formal Development LAB consumes an exact accepted green PRODUCT `main` SHA. Never claim LAB/E3/E4 evidence from a PR or integration branch.
-
-Do not create a new LAB candidate merely because a slice or milestone PR completed.
-
-Run formal Development LAB only when the active checkpoint identifies a physical fact that cannot be legitimately established by E1/E2 evidence and that fact is needed for the next implementation decision or acceptance gate.
-
-Batch all independent code work that does not require that physical fact before crossing the `main -> LAB` boundary.
-
-## Physical correction loop
-
-When LAB or a bounded diagnostic run reveals a physical defect, use:
-
-```text
-typed physical finding
- -> bounded correction slice
- -> slice review
- -> deliberate exact-head CI when required
- -> one milestone merge
- -> main-only LAB re-proof when the stronger physical fact must be re-established
-```
-
-Do not merge each attempted line-level correction separately. Never guess a physical fact merely to avoid a diagnostic or LAB checkpoint.
-
-## Evidence law
-
-```text
-E1 < E2 < E3 < E4
-```
-
-Weaker evidence must never close a stronger claim. LAB, CI logs, README text, generated artifacts and chat summaries are not mutable product-state authorities.
+Do not infer PRODUCT composition from a stale control branch. Do not infer current architecture from historical device residue. Do not infer physical state from source code.
 
 ## Architecture law
 
@@ -217,12 +50,94 @@ Preserve:
 one fact -> one natural owner -> one write path -> one observation path
 ```
 
-Prefer an existing natural owner plus one narrow adapter.
+Current PRODUCT is one in-process Rust proxy data plane with one `mish-runtime`/Tokio execution owner. Android/Kotlin is the thin platform/composition/effect/projection boundary. Proxy protocol/auth/target semantics live in `mish-proxy`; Cellular Egress owns current cellular admission/currentness and exact-network DNS/socket authority.
 
-Do not introduce a second VPN/TUN, second cellular owner, generic root shell, generic control plane, wildcard proxy exposure, whole-UID routing, default/Wi-Fi/WARP public-egress fallback, or secret leakage.
+Do not introduce:
 
-## Current milestone policy
+- Android sing-box PRODUCT runtime or legacy proxy compatibility/migration/process management;
+- a second Android VPN/TUN;
+- a second Cellular Egress, Runtime Lifecycle or Readiness owner;
+- Kotlin health/recovery supervision that duplicates Rust ownership;
+- a generic root shell/control API or root daemon/helper;
+- whole-UID/default-route public egress policy;
+- Wi-Fi/default/WARP public-egress fallback;
+- a mutable runtime/LAB status database;
+- false PASS from weaker or stale evidence.
 
-The live stage is defined by the active execution checkpoint, currently #135, under the #134 master plan. At the time of this policy update the current stage begins with bounded P0 recovery attribution before evidence-selected recovery/root optimization, followed by the ordered #134 P1-P11 work.
+Tokio belongs to runtime execution. Hyper/Tonic or another framework is not added without a demonstrated product requirement.
 
-Issue #86 remains the historical M1 finish-line and E3/E4/release-acceptance record; it is not the ordinary current-stage working set.
+## Working lineage and slice rule
+
+`main` is the protected control/process/canonical-documentation boundary and a milestone acceptance boundary; it is not a scratch branch and it may lag the current PRODUCT implementation while a roadmap stage is still active.
+
+The current PRODUCT implementation lineage is the exact working/integration head recorded by #135.
+
+A normal implementation slice:
+
+- begins from that exact integration head;
+- has one natural owner and at most one necessary adapter/composition boundary;
+- includes direct tests for that boundary;
+- targets the current integration branch named by #135, not `main`, unless #135 explicitly says otherwise.
+
+Do not merge the working lineage to `main` merely to record progress. Docs/control changes whose only purpose is to keep the protected source-of-truth/process boundary accurate may land on `main` independently, but they must not imply that unmerged PRODUCT implementation is already on `main`.
+
+## CI and candidate production
+
+`docs/architecture/DEVELOPMENT_PIPELINE.md` is the stable development-delivery contract. Executable workflows are the mechanical authority if prose and YAML disagree.
+
+Supported PRODUCT floor:
+
+```text
+Android 11 / API 30
+armeabi-v7a
+```
+
+For integration PRs targeting the working lineage, `Integration Android Preflight` builds/tests the exact head and publishes a candidate only after the configured complete gate passes.
+
+A successful hosted build is a prerequisite only. It never starts DEVICE-1 automatically.
+
+## DEVICE-1 rule
+
+Physical development cycles are explicit post-analysis actions through the protected-main `Device Cycle` workflow.
+
+Normal shape:
+
+```text
+exact successful hosted PRODUCT candidate
+ -> explicit /mish-cycle request
+ -> verify PRODUCT_SHA + CONTROL_SHA + producer policy + artifact provenance
+ -> Windows LAB consumes exact artifact
+ -> adb install -r when requested
+ -> verify installed exact bytes/signing identity
+ -> launch/read-only diagnostic or explicitly named current-function probe
+ -> evidence
+ -> STOP_FOR_ANALYSIS
+```
+
+Do not locally rebuild the APK on the physical runner in the normal path. Do not uninstall as an upgrade mechanism. Do not automatically repair, probe again or start another cycle after a result.
+
+The current supported Device Cycle modes/probes are defined by `.github/workflows/device-cycle.yml`; never rely on an old handoff for that vocabulary.
+
+## Evidence law
+
+```text
+E1 < E2 < E3 < E4
+```
+
+Weaker evidence cannot close a stronger claim.
+
+An exact-head debug candidate can establish a stage-specific physical development fact when #135 explicitly records that evidence. It is not formal release identity and cannot be promoted as RC/release bytes.
+
+Formal release/promotion follows `docs/architecture/RELEASE.md`.
+
+Do not persist secrets, raw public IPs, unrelated logcat, device identifiers or credential material in durable evidence.
+
+## Local-agent rule
+
+When the next decision depends on a real physical fact that source/hosted CI/current Device Cycle cannot establish, request the smallest bounded local-agent diagnostic.
+
+The local agent is a physical executor, not a second architecture or state authority. Prefer read-only scope, define exact output, and write the sanitized conclusion back to #135 or the appropriate owner/evidence surface.
+
+## Physical uncertainty
+
+Do not guess DEVICE-1, Magisk/root, RPDB, Cloudflare/provider, carrier, process, socket or resource facts from source code. Measure the exact missing fact and stop.
