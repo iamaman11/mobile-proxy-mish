@@ -1,5 +1,6 @@
 package com.mobileproxymish.app.cellular
 
+import android.content.pm.ApplicationInfo
 import android.os.Process
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -14,7 +15,7 @@ import org.junit.runner.RunWith
  * Read-only DEVICE-1 diagnostic used only to classify physical composition blockers.
  *
  * This test never mutates RPDB/iptables state and never becomes a readiness owner. It emits
- * only bounded booleans for the accepted PRODUCT candidate set; foreign rule bodies, route
+ * only bounded booleans for the active PRODUCT policy namespace; foreign rule bodies, route
  * tables, addresses and credentials are deliberately not printed. It also does not infer
  * ownership of an observed RPDB rule: occupancy/touch facts remain pure observations.
  */
@@ -22,6 +23,11 @@ import org.junit.runner.RunWith
 class PhysicalCompositionDiagnosticTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context = instrumentation.targetContext
+    private val rootProcess: RootProcess = SuProcess()
+    private val debugIsolation = context.packageName.endsWith(".debug") &&
+        (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+    private val mishChain = if (debugIsolation) DEBUG_MISH_CHAIN else RELEASE_MISH_CHAIN
+    private val candidates = if (debugIsolation) DEBUG_CANDIDATES else RELEASE_CANDIDATES
 
     @Test
     fun emitSanitizedCompositionFacts() {
@@ -55,11 +61,12 @@ class PhysicalCompositionDiagnosticTest {
         val ipv6RuleLines = lines(ipv6Rules.stdout)
         val ipv4MangleLines = lines(ipv4Mangle.stdout)
         val ipv6MangleLines = lines(ipv6Mangle.stdout)
-        val chainPresent = (ipv4MangleLines + ipv6MangleLines).any { it.contains(MISH_CHAIN) }
+        val chainPresent = (ipv4MangleLines + ipv6MangleLines).any { it.contains(mishChain) }
 
-        CANDIDATES.forEachIndexed { index, candidate ->
+        candidates.forEachIndexed { index, candidate ->
             println(
-                "PHYSICAL_POLICY_DIAGNOSTIC candidate=${index + 1} mark=${candidate.markHex} " +
+                "PHYSICAL_POLICY_DIAGNOSTIC namespace=${if (debugIsolation) "DEBUG" else "RELEASE"} " +
+                    "candidate=${index + 1} mark=${candidate.markHex} " +
                     "ipv4_priority_occupied=${priorityOccupied(ipv4RuleLines, candidate)} " +
                     "ipv6_priority_occupied=${priorityOccupied(ipv6RuleLines, candidate)} " +
                     "ipv4_rpdb_mark_touched=${rpdbMarkTouched(ipv4RuleLines, candidate)} " +
@@ -122,7 +129,7 @@ class PhysicalCompositionDiagnosticTest {
 
     private fun mangleMarkTouched(lines: List<String>, candidate: Candidate): Boolean =
         lines.any { line ->
-            !line.contains(MISH_CHAIN) && lineTouchesBit(line, candidate.markValue)
+            !line.contains(mishChain) && lineTouchesBit(line, candidate.markValue)
         }
 
     private fun fwmarkSpec(line: String): String? {
@@ -175,26 +182,15 @@ class PhysicalCompositionDiagnosticTest {
         raw.lineSequence().map(String::trim).filter(String::isNotEmpty).toList()
 
     private fun runProductRoot(command: String): RootReadResult {
-        val child = try {
-            ProcessBuilder(listOf("su", "-c", command))
-                .redirectErrorStream(true)
-                .start()
+        val result = try {
+            rootProcess.run(listOf("su", "-c", command))
         } catch (_: Exception) {
             return RootReadResult(false, "")
         }
-        return try {
-            if (!child.waitFor(ROOT_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-                child.destroy()
-                RootReadResult(false, "")
-            } else {
-                val stdout = child.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-                RootReadResult(child.exitValue() == 0, stdout.take(MAX_ROOT_OUTPUT_CHARS))
-            }
-        } catch (_: Exception) {
-            RootReadResult(false, "")
-        } finally {
-            child.destroy()
-        }
+        return RootReadResult(
+            ok = result.exitCode == 0 && !result.timedOut && result.outputComplete,
+            stdout = result.stdout.take(MAX_ROOT_OUTPUT_CHARS),
+        )
     }
 
     private data class RootReadResult(val ok: Boolean, val stdout: String)
@@ -207,19 +203,25 @@ class PhysicalCompositionDiagnosticTest {
     )
 
     private companion object {
-        const val MISH_CHAIN = "MISH_EGRESS_V1"
+        const val RELEASE_MISH_CHAIN = "MISH_EGRESS_V1"
+        const val DEBUG_MISH_CHAIN = "MISH_DEBUG_EGRESS_V1"
         const val PROXY_WAIT_SECONDS = 10L
-        const val ROOT_TIMEOUT_SECONDS = 5L
         const val MAX_ROOT_OUTPUT_CHARS = 64 * 1024
         const val FULL_MASK = 0xffffffffUL
         val PUBLIC_PORTS = setOf(1080, 1081, 3128)
         val WHITESPACE = Regex("""\s+""")
         val LOOPBACK_PORT = Regex("""127\.0\.0\.1:(\d+)""")
-        val CANDIDATES = listOf(
+        val RELEASE_CANDIDATES = listOf(
             Candidate("0x200000", 0x200000UL, 9500, 9501),
             Candidate("0x400000", 0x400000UL, 9520, 9521),
             Candidate("0x800000", 0x800000UL, 9540, 9541),
             Candidate("0x1000000", 0x1000000UL, 9560, 9561),
+        )
+        val DEBUG_CANDIDATES = listOf(
+            Candidate("0x2000000", 0x2000000UL, 9580, 9581),
+            Candidate("0x4000000", 0x4000000UL, 9600, 9601),
+            Candidate("0x8000000", 0x8000000UL, 9620, 9621),
+            Candidate("0x10000000", 0x10000000UL, 9640, 9641),
         )
     }
 }

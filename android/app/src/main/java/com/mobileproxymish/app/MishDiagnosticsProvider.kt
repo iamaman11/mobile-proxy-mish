@@ -128,20 +128,36 @@ class MishDiagnosticsProvider : ContentProvider() {
     private fun captureSnapshot(app: MishApplication): String {
         val runtime = app.runtimeController
 
+        // Capture exact generation object identities before reading projections. Every runtime
+        // replacement installs fresh adapter objects, so identity equality is a cheap generation
+        // fence without introducing a second lifecycle/generation owner into diagnostics.
+        val cellularGeneration = runtime.currentCellularRuntime
+        val proxyGeneration = runtime.currentProxyRuntime
+        val readinessGeneration = runtime.currentReadinessRuntime
+        val meshGeneration = runtime.currentMeshRuntime
+        val runtimeRunningBefore = runtime.isRunning
+
         val cellularBefore = runtime.cellularSnapshot.value
         val proxyBefore = runtime.proxySnapshot.value
         val readinessBefore = runtime.readinessSnapshot.value
         val meshBefore = runtime.meshSnapshot.value
 
-        val readinessDiagnostic = runtime.currentReadinessRuntime.diagnosticObservation()
-        val meshIngressFailure = runtime.currentMeshRuntime.diagnosticIngressFailure().name
+        val readinessDiagnostic = readinessGeneration.diagnosticObservation()
+        val meshIngressFailure = meshGeneration.diagnosticIngressFailure().name
 
         val cellularAfter = runtime.cellularSnapshot.value
         val proxyAfter = runtime.proxySnapshot.value
         val readinessAfter = runtime.readinessSnapshot.value
         val meshAfter = runtime.meshSnapshot.value
+        val runtimeRunningAfter = runtime.isRunning
 
-        val consistent = cellularBefore == cellularAfter &&
+        val sameGeneration = cellularGeneration === runtime.currentCellularRuntime &&
+            proxyGeneration === runtime.currentProxyRuntime &&
+            readinessGeneration === runtime.currentReadinessRuntime &&
+            meshGeneration === runtime.currentMeshRuntime
+        val consistent = sameGeneration &&
+            runtimeRunningBefore == runtimeRunningAfter &&
+            cellularBefore == cellularAfter &&
             proxyBefore == proxyAfter &&
             readinessBefore == readinessAfter &&
             meshBefore == meshAfter
@@ -177,7 +193,7 @@ class MishDiagnosticsProvider : ContentProvider() {
                 pid = Process.myPid(),
                 capturedElapsedMs = SystemClock.elapsedRealtime(),
                 consistent = consistent,
-                runtimeRunning = runtime.isRunning,
+                runtimeRunning = runtimeRunningAfter,
                 cellularState = cellularState,
                 cellularReason = cellularReason,
                 cellularAdmitted = cellularAdmitted,

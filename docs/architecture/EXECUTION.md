@@ -23,7 +23,7 @@ accepted main
  -> coherent commit batch(es)
  -> slice PR -> current integration branch
  -> repeat bounded slices
- -> deliberate integration CI when justified
+ -> exact-head integration preflight on synchronization when configured for that milestone
  -> final milestone ready-for-review exact-head CI
  -> one milestone merge to main
  -> accepted green main
@@ -64,7 +64,7 @@ Only one slice is active by default. The active checkpoint records any explicit 
 
 Slice PRs provide durable context checkpoints and must state owner, goal, base SHA, invariants, touched boundaries, tests/evidence, what remains unproven and follow-up work.
 
-After review, squash-merge the slice into the current integration branch. That synchronization does not trigger a `main` merge, LAB run or ordinary CI cycle.
+After review, squash-merge the slice into the current integration branch. That synchronization does not trigger a `main` merge or LAB run. Whether it triggers hosted CI is defined by the actual workflow for that milestone; policy text must not contradict the executable workflow trigger.
 
 ## Context budget
 
@@ -96,19 +96,26 @@ After each slice merge, the active checkpoint records the completed slice, next/
 
 ## CI granularity
 
-Ordinary PR `synchronize` pushes do **not** trigger CI.
+CI cadence is executable workflow policy, not prose-only intent.
 
-Full CI is intentionally created only by:
+For the active U1 milestone, `Integration Android Preflight` and the release/harness contract are intentionally triggered by milestone-PR `synchronize` events on the configured integration base. This gives each pushed exact head one deterministic diagnosis and cancels superseded in-progress runs through workflow concurrency.
+
+General milestone law:
 
 ```text
-workflow_dispatch on an exact checkpoint head when justified
-ready_for_review on the final milestone head
-push to protected main after merge
+coherent pushed exact head
+ -> workflow trigger defined for that milestone
+ -> first failing gate is the current hosted diagnosis
+ -> smallest owner-aligned correction
+ -> new exact SHA
+ -> same complete gate from the beginning
 ```
 
-Slice PR existence alone is not a CI boundary. A deliberate manual checkpoint is justified when the slice changes a material cross-language/build contract or otherwise cannot be safely validated by review plus direct tests alone.
+A weaker prior PASS is never promoted across a changed SHA. A failed later gate does not erase the already established meaning of earlier steps, but acceptance is granted only when the complete required gate passes on one exact head.
 
-Before the milestone merge, the milestone PR must be ready for review and complete required CI must pass on the exact head. If that head later changes, return it to Draft, batch corrections, then mark ready again.
+Before the milestone merge, the milestone PR must be ready for review and complete required CI must pass on the exact head. If that head later changes, all required exact-head evidence must be re-established.
+
+`main` remains a separate acceptance boundary. After merge, the native `CI` workflow on protected `main` must pass using the same current architecture contract; PR-only success is insufficient if main CI still encodes obsolete topology.
 
 ## Diagnostic / local-agent escalation
 
@@ -151,11 +158,13 @@ When a main-only physical run or bounded diagnostic run reveals a defect:
 
 ```text
 typed/redacted physical finding
- -> bounded correction slice
- -> slice review
- -> deliberate exact-head CI when justified
- -> one milestone merge
- -> main-only physical re-proof only when the stronger acceptance fact must be re-established
+ -> identify one natural owner and exact violated contract
+ -> bounded correction on the current implementation line
+ -> exact-head hosted re-proof from the beginning
+ -> one milestone/main acceptance boundary when required
+ -> physical re-proof only when the stronger fact must be re-established
 ```
+
+The diagnosis and the correction must refer to the same exact source/artifact lineage. Do not mix stale issue checkpoints, prior APKs, local rebuilds or weaker evidence into the acceptance result.
 
 Never choose fwmarks, RPDB priorities, Mesh identity behavior, DNS ownership, Android/VPN interaction, timeout values, capacity changes or recovery policy by guess merely to avoid a physical checkpoint.

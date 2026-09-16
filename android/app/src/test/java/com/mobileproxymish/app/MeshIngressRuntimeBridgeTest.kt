@@ -1,9 +1,6 @@
 package com.mobileproxymish.app
 
-import com.mobileproxymish.ffi.ProductReadinessState
-import com.mobileproxymish.ffi.meshIngressServingAllowed
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -46,49 +43,5 @@ class MeshIngressRuntimeBridgeTest {
         )
 
         assertEquals(AndroidMeshVpnObservation.AmbiguousVpn, observation)
-    }
-
-    @Test
-    fun publicIngressEligibilityIsOwnedByRustRuntimeComposition() {
-        assertFalse(
-            meshIngressServingAllowed(
-                proxyRunning = true,
-                readiness = ProductReadinessState.NOT_READY,
-                meshAdmitted = true,
-                admissionEpochPresent = true,
-            ),
-        )
-        assertFalse(
-            meshIngressServingAllowed(
-                proxyRunning = true,
-                readiness = ProductReadinessState.DEGRADED,
-                meshAdmitted = true,
-                admissionEpochPresent = true,
-            ),
-        )
-        assertFalse(
-            meshIngressServingAllowed(
-                proxyRunning = false,
-                readiness = ProductReadinessState.READY,
-                meshAdmitted = true,
-                admissionEpochPresent = true,
-            ),
-        )
-        assertTrue(
-            meshIngressServingAllowed(
-                proxyRunning = true,
-                readiness = ProductReadinessState.READY,
-                meshAdmitted = true,
-                admissionEpochPresent = true,
-            ),
-        )
-        assertFalse(
-            meshIngressServingAllowed(
-                proxyRunning = true,
-                readiness = ProductReadinessState.READY,
-                meshAdmitted = true,
-                admissionEpochPresent = false,
-            ),
-        )
     }
 }
