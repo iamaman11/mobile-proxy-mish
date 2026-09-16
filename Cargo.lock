@@ -6,7 +6,7 @@ version = 4
 name = "anstyle"
 version = "1.0.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
+checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2a4f0244f6f69e9bc8574bd"
 
 [[package]]
 name = "anyhow"
@@ -397,6 +397,7 @@ dependencies = [
  "mish-cellular",
  "mish-configuration",
  "mish-proxy",
+ "mish-transport",
  "tokio",
 ]
 
