@@ -46,7 +46,6 @@ pub enum ProbeOutcome {
     Timeout,
 }
 
-/// Exact non-secret owner keys captured for one authenticated egress probe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProbeBinding {
     pub cellular_owner_generation: CellularOwnerGeneration,
@@ -56,8 +55,6 @@ pub struct ProbeBinding {
     pub credential_version: CredentialVersion,
 }
 
-/// One immutable DNS+TLS+authentication effect observation. Successful DNS is represented only
-/// here rather than as a separately cached readiness fact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EgressProbeObservation {
     pub outcome: ProbeOutcome,
@@ -72,10 +69,11 @@ pub struct CellularReadinessFact {
     pub root_policy_verified: bool,
 }
 
+/// Exact foreground runtime generation only. Native Proxy Serving health is owned by the proxy
+/// fact; no transitional private-bridge liveness fact exists after L8.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeReadinessFact {
     pub generation: RuntimeGeneration,
-    pub private_bridge_healthy: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,7 +98,6 @@ pub struct MeshReadinessFact {
     pub ingress_running: bool,
 }
 
-/// Ephemeral projection input assembled from natural-owner observations. No value is stored here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProductReadinessInput {
     pub cellular: Option<CellularReadinessFact>,
@@ -124,12 +121,8 @@ pub fn project(input: ProductReadinessInput) -> Readiness {
         return Readiness::Unknown;
     };
 
-    // Explicit current leaf failure wins before serving-only keys are required. A stopped proxy or
-    // non-admitted Mesh endpoint is therefore NOT_READY rather than malformed/UNKNOWN merely
-    // because no serving credential version/admission epoch exists yet.
     if !cellular.admitted
         || !cellular.root_policy_verified
-        || !runtime.private_bridge_healthy
         || !proxy.healthy
         || !credential.active
         || !mesh.admitted
@@ -230,7 +223,6 @@ mod tests {
             }),
             runtime: Some(RuntimeReadinessFact {
                 generation: binding.runtime_generation,
-                private_bridge_healthy: true,
             }),
             proxy: Some(ProxyReadinessFact {
                 runtime_generation: binding.runtime_generation,
