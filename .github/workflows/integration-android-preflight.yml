@@ -167,7 +167,9 @@ jobs:
             CellularController \
             MeshTransportController \
             RuntimeLifecycleController \
-            ProxyServingLifecycleController \
+            NativeProxyRuntime \
+            NativeProxyRuntimeObserver \
+            ProxyServingSnapshotView \
             proxyServingFailureRecoverable \
             proxyListenerPorts; do
             grep -Fq "$symbol" "$GENERATED"
@@ -178,6 +180,7 @@ jobs:
             bindSocket \
             resolveHost \
             RuntimeProcessLifecycleController \
+            ProxyServingLifecycleController \
             PrivateBridge; do
             if grep -Fq "$forbidden" "$GENERATED"; then
               echo "obsolete or uncontrolled API leaked into UniFFI surface: $forbidden" >&2
