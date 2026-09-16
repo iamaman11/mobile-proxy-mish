@@ -1,0 +1,54 @@
+name: L8 Lockfile Materialization
+
+on:
+  pull_request:
+    branches: [fix/root-policy-reconciliation]
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/l8-lockfile-materialize.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/**/Cargo.toml'
+
+permissions:
+  contents: read
+
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Set up exact Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.98.1 --profile minimal
+          rustup override set 1.98.1
+
+      - name: Generate exact lockfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo generate-lockfile
+          mkdir -p "$RUNNER_TEMP/l8-lockfile"
+          cp Cargo.lock "$RUNNER_TEMP/l8-lockfile/Cargo.lock"
+
+      - name: Upload exact generated lockfile
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: l8-generated-cargo-lock-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/l8-lockfile/Cargo.lock
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Prove committed lock is current
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code -- Cargo.lock
