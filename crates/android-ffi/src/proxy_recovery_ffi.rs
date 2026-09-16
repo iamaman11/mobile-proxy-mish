@@ -18,9 +18,6 @@ pub fn proxy_recovery_delay_ms(attempt: u32) -> u64 {
 fn map_failure(failure: ProxyServingFailure) -> OwnerProxyServingFailure {
     match failure {
         ProxyServingFailure::NativeRuntimeMissing => OwnerProxyServingFailure::NativeRuntimeMissing,
-        ProxyServingFailure::LegacyMigrationBlocked => {
-            OwnerProxyServingFailure::LegacyMigrationBlocked
-        }
         ProxyServingFailure::ExternalCredentialUnavailable => {
             OwnerProxyServingFailure::ExternalCredentialUnavailable
         }
