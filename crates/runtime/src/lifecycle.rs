@@ -1,7 +1,7 @@
 //! Vendor-neutral Runtime Lifecycle natural-owner state machines.
 //!
-//! Android services/process APIs execute effects, but all start/stop/restart/generation and
-//! owned-child lifecycle decisions live here. No Android, sing-box, UI, persistence, or root
+//! Android platform APIs execute effects, but all start/stop/restart/generation and native Proxy
+//! Serving lifecycle decisions live here. No Android, vendor proxy, UI, persistence, or root
 //! mechanism is imported by this module.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,7 +61,7 @@ impl RuntimeCleanupDisposition {
 /// Natural owner of the foreground runtime generation lifecycle.
 ///
 /// Effects are deliberately absent. The Android adapter requests transitions, executes the
-/// concrete generation/process cleanup or startup effect, then publishes the typed outcome here.
+/// concrete generation cleanup or startup effect, then publishes the typed outcome here.
 /// `generation` is the exact monotonic key of the currently installed Android effect generation;
 /// it advances only on owner-authorized replacement transitions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,10 +146,6 @@ impl RuntimeLifecycle {
     }
 
     /// Publishes the result of one start effect sequence.
-    ///
-    /// If stop was requested while startup was executing, the state remains STOPPING and the
-    /// queued stop effect owns cleanup. Otherwise a failed startup may install a fresh generation
-    /// only after exact cleanup succeeded and the owner advanced its generation key.
     pub fn complete_start(
         &mut self,
         started: bool,
@@ -241,80 +237,73 @@ impl RuntimeLifecycle {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RuntimeProcessState {
+pub enum ProxyServingState {
     Stopped,
     Starting,
     Running,
     Failed,
 }
 
+/// Native in-process Proxy Serving failures only. Old external-child/private-bridge vocabulary is
+/// intentionally absent after the L8 cutover.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RuntimeProcessFailure {
+pub enum ProxyServingFailure {
     NativeRuntimeMissing,
-    StaleProcessIdentityMismatch,
+    LegacyMigrationBlocked,
     ExternalCredentialUnavailable,
-    PrivateBridgeUnavailable,
-    ConfigurationRejected,
-    ChildLaunchFailed,
-    ChildExecutorRejected,
-    ChildProcessStartFailed,
-    ChildPidOrPersistenceFailed,
-    HealthCheckFailed,
-    ListenerContractUnavailable,
-    LoopbackListenerUnavailable,
-    ChildExited,
-    PrivateBridgeUnhealthy,
-    CleanupFailed,
+    ListenerUnavailable,
+    ServingUnhealthy,
+    ShutdownFailed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RuntimeProcessSnapshot {
-    state: RuntimeProcessState,
-    failure: Option<RuntimeProcessFailure>,
+pub struct ProxyServingSnapshot {
+    state: ProxyServingState,
+    failure: Option<ProxyServingFailure>,
 }
 
-impl RuntimeProcessSnapshot {
-    pub const fn state(self) -> RuntimeProcessState {
+impl ProxyServingSnapshot {
+    pub const fn state(self) -> ProxyServingState {
         self.state
     }
 
-    pub const fn failure(self) -> Option<RuntimeProcessFailure> {
+    pub const fn failure(self) -> Option<ProxyServingFailure> {
         self.failure
     }
 }
 
-/// Natural-owner state machine for one supervised owned child process generation.
+/// Natural-owner state machine for one in-process Proxy Serving generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RuntimeProcessLifecycle {
-    snapshot: RuntimeProcessSnapshot,
+pub struct ProxyServingLifecycle {
+    snapshot: ProxyServingSnapshot,
 }
 
-impl Default for RuntimeProcessLifecycle {
+impl Default for ProxyServingLifecycle {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl RuntimeProcessLifecycle {
+impl ProxyServingLifecycle {
     pub const fn new() -> Self {
         Self {
-            snapshot: RuntimeProcessSnapshot {
-                state: RuntimeProcessState::Stopped,
+            snapshot: ProxyServingSnapshot {
+                state: ProxyServingState::Stopped,
                 failure: None,
             },
         }
     }
 
-    pub const fn snapshot(self) -> RuntimeProcessSnapshot {
+    pub const fn snapshot(self) -> ProxyServingSnapshot {
         self.snapshot
     }
 
     pub fn request_start(&mut self) -> bool {
         match self.snapshot.state {
-            RuntimeProcessState::Starting | RuntimeProcessState::Running => false,
-            RuntimeProcessState::Stopped | RuntimeProcessState::Failed => {
-                self.snapshot = RuntimeProcessSnapshot {
-                    state: RuntimeProcessState::Starting,
+            ProxyServingState::Starting | ProxyServingState::Running => false,
+            ProxyServingState::Stopped | ProxyServingState::Failed => {
+                self.snapshot = ProxyServingSnapshot {
+                    state: ProxyServingState::Starting,
                     failure: None,
                 };
                 true
@@ -323,26 +312,26 @@ impl RuntimeProcessLifecycle {
     }
 
     pub fn mark_running(&mut self) -> bool {
-        if self.snapshot.state != RuntimeProcessState::Starting {
+        if self.snapshot.state != ProxyServingState::Starting {
             return false;
         }
-        self.snapshot = RuntimeProcessSnapshot {
-            state: RuntimeProcessState::Running,
+        self.snapshot = ProxyServingSnapshot {
+            state: ProxyServingState::Running,
             failure: None,
         };
         true
     }
 
-    pub fn mark_failed(&mut self, failure: RuntimeProcessFailure) {
-        self.snapshot = RuntimeProcessSnapshot {
-            state: RuntimeProcessState::Failed,
+    pub fn mark_failed(&mut self, failure: ProxyServingFailure) {
+        self.snapshot = ProxyServingSnapshot {
+            state: ProxyServingState::Failed,
             failure: Some(failure),
         };
     }
 
     pub fn mark_stopped(&mut self) {
-        self.snapshot = RuntimeProcessSnapshot {
-            state: RuntimeProcessState::Stopped,
+        self.snapshot = ProxyServingSnapshot {
+            state: ProxyServingState::Stopped,
             failure: None,
         };
     }
@@ -444,21 +433,21 @@ mod tests {
     }
 
     #[test]
-    fn child_process_lifecycle_is_owner_state_not_adapter_state() {
-        let mut owner = RuntimeProcessLifecycle::new();
-        assert_eq!(owner.snapshot().state(), RuntimeProcessState::Stopped);
+    fn proxy_serving_lifecycle_uses_native_failure_semantics() {
+        let mut owner = ProxyServingLifecycle::new();
+        assert_eq!(owner.snapshot().state(), ProxyServingState::Stopped);
         assert!(owner.request_start());
         assert!(!owner.request_start());
         assert!(owner.mark_running());
-        owner.mark_failed(RuntimeProcessFailure::ChildExited);
-        assert_eq!(owner.snapshot().state(), RuntimeProcessState::Failed);
+        owner.mark_failed(ProxyServingFailure::ServingUnhealthy);
+        assert_eq!(owner.snapshot().state(), ProxyServingState::Failed);
         assert_eq!(
             owner.snapshot().failure(),
-            Some(RuntimeProcessFailure::ChildExited)
+            Some(ProxyServingFailure::ServingUnhealthy)
         );
         assert!(owner.request_start());
         owner.mark_stopped();
-        assert_eq!(owner.snapshot().state(), RuntimeProcessState::Stopped);
+        assert_eq!(owner.snapshot().state(), ProxyServingState::Stopped);
         assert_eq!(owner.snapshot().failure(), None);
     }
 }
