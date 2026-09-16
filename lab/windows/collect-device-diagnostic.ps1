@@ -266,20 +266,28 @@ $pidStable = $pidStable -and ($pidFinal -ceq $pidBefore)
 $classification = Get-MishDeviceDiagnosticClassification `
     -PidStable $pidStable `
     -AndroidConsistent ([bool]$android.consistent) `
+    -RuntimeRunning ([bool]$android.runtime.running) `
     -CellularState ([string]$android.cellular.state) `
     -CellularReason ([string]$android.cellular.reason) `
     -CellularAdmitted ([bool]$android.cellular.admitted) `
+    -CellularBoundaryFailure ([string]$android.cellular.boundary_failure) `
     -RootAuthorityObservation ([string]$android.root.authority_observation) `
     -RootPolicyAuthorized ([bool]$android.root.policy_authorized) `
     -ProxyState ([string]$android.proxy.state) `
+    -ProxyHealthy ([bool]$android.proxy.healthy) `
     -ProxyFailure ([string]$android.proxy.failure) `
     -CredentialActive ([bool]$android.credential.active) `
     -CredentialLeaseStatus $credentialLeaseStatus `
-    -LoopbackResult ([string]$loopbackProbe.result) `
-    -LoopbackReason ([string]$loopbackProbe.reason) `
-    -ReadinessState ([string]$android.readiness.state) `
+    -MeshState ([string]$android.mesh.state) `
+    -MeshAdmitted ([bool]$android.mesh.admitted) `
+    -MeshEpochPresent ([bool]$android.mesh.epoch_present) `
     -MeshIngressRunning ([bool]$android.mesh.ingress_running) `
     -MeshIngressFailure ([string]$android.mesh.ingress_failure) `
+    -ReadinessState ([string]$android.readiness.state) `
+    -ReadinessBindingEligible ([bool]$android.readiness.binding_eligible) `
+    -ReadinessProbeState ([string]$android.readiness.probe_state) `
+    -LoopbackResult ([string]$loopbackProbe.result) `
+    -LoopbackReason ([string]$loopbackProbe.reason) `
     -MeshEndpointCount $meshEndpointCount `
     -RoutePresent $routePresent `
     -Tcp3128 $tcp3128 `
@@ -322,12 +330,14 @@ if ($parent) { [IO.Directory]::CreateDirectory($parent) | Out-Null }
 Write-Host 'MISH_DIAGNOSTIC_COLLECTION=PASS'
 Write-Host "MISH_DIAGNOSTIC_CLASSIFICATION=$classification"
 Write-Host "MISH_DIAGNOSTIC_PID_STABLE=$pidStable"
+Write-Host "MISH_DIAGNOSTIC_RUNTIME_RUNNING=$([bool]$android.runtime.running)"
 Write-Host "MISH_DIAGNOSTIC_CELLULAR=$([string]$android.cellular.state)/$([string]$android.cellular.reason)"
+Write-Host "MISH_DIAGNOSTIC_CELLULAR_BOUNDARY=$([string]$android.cellular.boundary_failure)"
 Write-Host "MISH_DIAGNOSTIC_ROOT_AUTHORITY=$([string]$android.root.authority_observation)"
 Write-Host "MISH_DIAGNOSTIC_ROOT_POLICY_AUTHORIZED=$([bool]$android.root.policy_authorized)"
-Write-Host "MISH_DIAGNOSTIC_PROXY=$([string]$android.proxy.state)"
-Write-Host "MISH_DIAGNOSTIC_ANDROID_READINESS=$([string]$android.readiness.state)"
-Write-Host "MISH_DIAGNOSTIC_MESH_INGRESS=$([bool]$android.mesh.ingress_running)"
+Write-Host "MISH_DIAGNOSTIC_PROXY=$([string]$android.proxy.state)/healthy=$([bool]$android.proxy.healthy)"
+Write-Host "MISH_DIAGNOSTIC_MESH=$([string]$android.mesh.state)/admitted=$([bool]$android.mesh.admitted)/epoch=$([bool]$android.mesh.epoch_present)/ingress=$([bool]$android.mesh.ingress_running)"
+Write-Host "MISH_DIAGNOSTIC_ANDROID_READINESS=$([string]$android.readiness.state)/binding=$([bool]$android.readiness.binding_eligible)/probe=$([string]$android.readiness.probe_state)"
 Write-Host "MISH_DIAGNOSTIC_CREDENTIAL_LEASE=$credentialLeaseStatus"
 Write-Host "MISH_DIAGNOSTIC_LOOPBACK_E2E=$([string]$loopbackProbe.result)"
 Write-Host "MISH_DIAGNOSTIC_MESH_E2E=$([string]$meshProbe.result)"
