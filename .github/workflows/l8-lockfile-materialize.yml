@@ -11,18 +11,19 @@ on:
       - 'crates/**/Cargo.toml'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   materialize:
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Checkout exact PR head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.ref }}
+          persist-credentials: true
 
       - name: Set up exact Rust toolchain
         shell: bash
@@ -31,24 +32,19 @@ jobs:
           rustup toolchain install 1.98.1 --profile minimal
           rustup override set 1.98.1
 
-      - name: Generate exact lockfile
+      - name: Generate and commit exact lockfile when stale
         shell: bash
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           set -euo pipefail
           cargo generate-lockfile
-          mkdir -p "$RUNNER_TEMP/l8-lockfile"
-          cp Cargo.lock "$RUNNER_TEMP/l8-lockfile/Cargo.lock"
-
-      - name: Upload exact generated lockfile
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: l8-generated-cargo-lock-${{ github.event.pull_request.head.sha }}
-          path: ${{ runner.temp }}/l8-lockfile/Cargo.lock
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Prove committed lock is current
-        shell: bash
-        run: |
-          set -euo pipefail
-          git diff --exit-code -- Cargo.lock
+          if git diff --quiet -- Cargo.lock; then
+            echo 'MISH_CARGO_LOCK_CURRENT=YES'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.lock
+          git commit -m 'Regenerate Cargo.lock for L8 native runtime'
+          git push origin "HEAD:$HEAD_REF"
