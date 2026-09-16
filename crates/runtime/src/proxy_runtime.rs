@@ -5,9 +5,7 @@ use mish_proxy::{
     ProxyCredentialMaterial, ProxyOutboundConnector, ProxyProtocol, ProxyServingPlan,
     prepare_proxy_session,
 };
-use mish_transport::{
-    MeshIngressError, MeshIngressExecutor, MeshPortForward, MeshSessionOwner,
-};
+use mish_transport::{MeshIngressError, MeshIngressExecutor, MeshPortForward, MeshSessionOwner};
 use std::fmt;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener, TcpStream as StdTcpStream};
 use std::panic::{AssertUnwindSafe, catch_unwind};
