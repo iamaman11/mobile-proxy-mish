@@ -178,13 +178,8 @@ try {
         throw 'Healthy current L8 fact set did not classify PASS.'
     }
 
-    $classifierSource = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'DeviceDiagnosticClassification.psm1')
-    $testSource = Get-Content -Raw -LiteralPath $PSCommandPath
-    foreach ($forbidden in @('LEGACY_MIGRATION', 'LEGACY_CUTOVER', 'STALE_PROCESS_IDENTITY', 'runtime_identity')) {
-        if ($classifierSource.Contains($forbidden) -or $testSource.Contains($forbidden)) {
-            throw "Canonical current-L8 diagnostics contain pre-L8 semantic token: $forbidden"
-        }
-    }
+    # Absence of pre-L8 vocabulary is a source-tree contract enforced by
+    # tools/check_device_cycle_contract.py. This executable fixture verifies only current behavior.
 
     $reportScript = Join-Path $PSScriptRoot 'new-device-cycle-report.ps1'
     $controlSha = '1' * 40
