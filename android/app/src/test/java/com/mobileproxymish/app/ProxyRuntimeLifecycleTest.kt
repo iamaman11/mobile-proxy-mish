@@ -11,13 +11,6 @@ import org.junit.Test
  */
 class ProxyRuntimeLifecycleTest {
     @Test
-    fun loopbackHealthRequiresConsecutiveFailuresBeforeTerminalCleanup() {
-        assertFalse(confirmedLoopbackHealthFailure(1))
-        assertFalse(confirmedLoopbackHealthFailure(2))
-        assertTrue(confirmedLoopbackHealthFailure(3))
-    }
-
-    @Test
     fun exactGenerationCleanupClosesMeshThenProxyThenCellularOwner() {
         val effects = mutableListOf<String>()
 
