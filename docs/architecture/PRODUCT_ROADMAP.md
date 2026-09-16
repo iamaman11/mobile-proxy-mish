@@ -22,6 +22,7 @@ MISH is an industrial rooted-Android mobile proxy appliance that is simple to op
 - one in-process Rust proxy data plane;
 - one Cellular Egress owner;
 - one Runtime Lifecycle owner;
+- one process-wide Tokio execution owner for long-lived Mesh + Proxy work, while domain policy ownership remains split by capability;
 - exact-network cellular DNS and public sockets only;
 - Cloudflare One Agent remains the only Android VPN owner;
 - one process-wide persistent Magisk `su` transport, with authority cached per live shell generation;
@@ -37,7 +38,7 @@ Core law:
 one fact -> one natural owner -> one write path -> one observation path
 ```
 
-Do not introduce a second lifecycle/readiness/cellular owner, a generic root command API, a root daemon, a second VPN/TUN, a mutable status database, a fallback public-egress path, or a generic plugin/framework layer without a demonstrated product requirement.
+Do not introduce a second lifecycle/readiness/cellular owner, a second Tokio/runtime executor, a generic root command API, a root daemon, a second VPN/TUN, a mutable status database, a fallback public-egress path, or a generic plugin/framework layer without a demonstrated product requirement.
 
 ## Accepted foundation
 
@@ -47,7 +48,7 @@ The following foundation is already accepted and is not reopened without contrar
 2. Exact-head hosted candidate production and Windows LAB as artifact consumer by default.
 3. Persistent process-wide Magisk shell semantics; terminal grant/denial is not repeatedly polled within one app process. Magisk + one persistent `su` shell remains the minimal platform privilege boundary unless physical evidence proves a simpler supported mechanism; do not replace it with a root daemon/helper or run the whole application as root merely to remove `su`.
 4. Exact stale MISH-owned root-policy identity may self-heal only when the complete known PRODUCT contract is proven; foreign/malformed state stays fail-closed.
-5. Canonical external capacity is 64 accepted sessions with deterministic overload rejection.
+5. Canonical external capacity is 64 accepted sessions with deterministic overload rejection; this external admission policy belongs to `mish-transport`, not to Tokio/runtime execution.
 6. Rust Proxy Serving L1-L7: HTTP CONNECT, SOCKS5, mixed ingress, authentication, unresolved-target preservation, relay, bounded capacity and atomic Android cutover to in-process native listeners.
 
 Historical evidence remains evidence, not a reason to retain mechanisms that no longer exist.
@@ -101,34 +102,92 @@ Current `mish-transport` correctly owns the external Mesh boundary, exact admitt
 
 Current implementation still executes Mesh ingress with a separate `std::net` / `std::thread` concurrency subsystem: listener threads plus per-session blocking relay threads. This is a known current-topology implementation split, not the target resource/lifetime model for final U2 acceptance.
 
-Begin this convergence immediately in U2. The already-requested upstream-lifetime attribution for the inconclusive `example.com:443` hold-open experiment is an independent read-only evidence task: it does **not** block implementation of the accepted Tokio convergence, but it must be resolved before the next final physical capacity/resource acceptance so the harness itself cannot recreate the same ambiguity.
+The direct Windows upstream-lifetime control has now shown both 64 raw TCP and 64 TLS sessions to the selected target remaining alive for 90 seconds. This removes the simple hypothesis that the target itself closes idle connections on that direct path. It does not by itself prove the Android Cellular/Mesh path, so one bounded pre-change characterization separates native Proxy+Cellular from the full Mesh path before PRODUCT implementation changes. That characterization is for localization and regression design only; it does not reopen the accepted decision to converge on one Tokio executor.
+
+The immediate U2 slice is therefore:
+
+```text
+current accepted PRODUCT
+ -> bounded read-only pre-Tokio characterization
+ -> Mesh execution convergence onto existing mish-runtime Tokio
+ -> hosted contract + architecture gates
+ -> fresh exact-head DEVICE-1 functional/capacity/resource acceptance
+```
 
 Before final 64/65 capacity and resource acceptance:
 
-1. move Mesh listener/session execution onto the existing process-wide Tokio runtime owned by `mish-runtime`;
-2. keep `mish-transport` as the natural owner of Mesh admission, admission epoch, external capacity=64 and reject-at-edge semantics;
-3. do **not** add another Tokio runtime/executor, move external capacity policy into `mish-runtime`, or create a second session/lifecycle owner;
-4. replace thread-per-session relay with owned async tasks / async bidirectional relay and deterministic cancellation/drain;
-5. preserve the current external contract and owner-backed diagnostics (`mesh.active_sessions`, `proxy.active_sessions`);
-6. adapt only tests/guards that encode the old thread implementation; protocol/auth/real-Mesh black-box acceptance remains the same contract;
-7. resolve the independent upstream-lifetime attribution and make the final capacity fixture protocol-valid and deterministically long-lived before rerunning DEVICE-1 capacity;
-8. rerun exact hosted gates and record a **fresh** physical idle/10/32/64/overflow/post-cleanup resource baseline after convergence. Pre-convergence thread/resource numbers remain diagnostic evidence only and cannot close final U2 resource acceptance.
+1. characterize the unchanged current PRODUCT just enough to distinguish `Proxy+Cellular` stability from `Mesh+Proxy+Cellular` stability and to validate real client-session liveness rather than collection membership;
+2. move Mesh listener/session execution onto the existing process-wide Tokio runtime owned by `mish-runtime`;
+3. keep `mish-transport` as the natural owner of Mesh admission, admission epoch, external capacity=64, active external-session fact and reject-at-edge semantics;
+4. keep `mish-proxy` as the owner of HTTP CONNECT / SOCKS5 / mixed protocol, authentication and target semantics; it must not own an executor;
+5. make `mish-runtime` the sole PRODUCT execution owner for long-lived Mesh ingress tasks, Proxy Serving tasks, async relays, cancellation and bounded drain;
+6. do **not** add another Tokio runtime/executor, executor/thread pool, per-session OS-thread serving subsystem, move external capacity policy into `mish-runtime`, or create a second session/lifecycle owner;
+7. replace thread-per-session Mesh relay with retained async tasks / async bidirectional relay inside the one runtime-generation task tree;
+8. preserve the current external contract and owner-backed diagnostics (`mesh.active_sessions`, `proxy.active_sessions`);
+9. adapt only tests/guards that encode the old thread implementation; protocol/auth/real-Mesh black-box acceptance remains the same contract;
+10. add architecture tests/guards that mechanically prohibit a second PRODUCT Tokio runtime/executor or independent long-lived serving thread pool in `mish-transport` / `mish-proxy`, and prohibit external-capacity ownership from drifting out of `mish-transport`;
+11. keep the hosted transport black-box proof that 64 sessions can remain admitted while the 65th is rejected before the private backend, independent of the executor mechanism;
+12. rerun exact hosted gates and record a **fresh** physical idle/10/32/64/overflow/post-cleanup resource baseline after convergence. Pre-convergence thread/resource numbers remain diagnostic evidence only and cannot close final U2 resource acceptance.
 
 Target execution/ownership split:
 
 ```text
-mish-runtime
-  -> one process-wide Tokio runtime / cancellation tree
-       -> Mesh ingress/session tasks     [policy owner: mish-transport]
-       -> native Proxy Serving tasks     [protocol owner: mish-proxy]
-       -> async relays
-            -> Cellular Egress           [egress owner: mish-cellular/runtime boundary]
-
-mish-transport retains:
-  exact Mesh endpoint + admission epoch
-  external session budget = 64
-  deterministic overload rejection at the Mesh edge
+Android
+   |
+   | platform effects / observations / presentation only
+   v
+Rust Runtime Owner: mish-runtime
+   |
+   `-- ONE process-wide Tokio runtime / cancellation tree
+          |
+          |-- Mesh ingress/session execution
+          |      domain owner: mish-transport
+          |      - exact Mesh endpoint
+          |      - admission epoch
+          |      - external budget = 64
+          |      - active external-session fact
+          |      - reject 65+ at the Mesh edge
+          |
+          |-- Proxy Serving execution
+          |      runtime owner: mish-runtime
+          |      protocol owner: mish-proxy
+          |      - HTTP CONNECT
+          |      - SOCKS5 / mixed
+          |      - authentication
+          |      - target parsing/preservation
+          |
+          |-- async bidirectional relays
+          |      retained / cancelled / drained by mish-runtime
+          |
+          `-- Cellular Egress
+                 - current cellular authority
+                 - exact-network DNS
+                 - root-policy gate
+                 - exact-network public socket
 ```
+
+Architecture formula:
+
+```text
+mish-runtime   = HOW admitted work executes
+mish-transport = WHETHER an external Mesh session may enter
+mish-proxy     = WHAT the proxy protocol/auth/target semantics mean
+Cellular Egress= WHERE public outbound traffic may go
+Android        = platform effects + observation + presentation
+```
+
+`ONE Tokio runtime` does **not** mean one semantic/domain owner. It means one execution engine and one cancellation/drain tree. Domain facts remain with their natural owners.
+
+The canonical external limit of 64 is not a Tokio business rule. `mish-transport` owns the permit/admission decision; `mish-runtime` may own separate internal execution permits/control reserve only to protect the executor. Those internal permits must never become a second external-capacity authority.
+
+Architecture regression guards are part of U2 DoD, not optional cleanup. After convergence, hosted gates must fail if PRODUCT reintroduces any of the following without an explicitly accepted architecture change:
+
+- `tokio::runtime::Builder` or another runtime/executor owner outside `mish-runtime` for long-lived PRODUCT network work;
+- an independent executor/thread pool in `mish-transport` or `mish-proxy`;
+- thread-per-session Mesh serving/relay;
+- a second external session counter/budget authority outside `mish-transport`;
+- detached long-lived listener/session/relay tasks not retained by the runtime-generation owner;
+- Android-owned duplicate Mesh/proxy admission, counters or lifecycle state.
 
 The reason for doing this inside U2 rather than after it is evidence validity: accepting thread/FD/RSS/PSS at 64 on a thread-per-session Mesh implementation and then replacing that implementation immediately afterward would invalidate the physical baseline U2 is supposed to establish.
 
@@ -142,17 +201,20 @@ Prove on DEVICE-1 after the Mesh/Tokio convergence:
 - no Wi-Fi/default/WARP fallback during uncertainty/loss;
 - 64 accepted full paths and deterministic rejection of the 65th external session at the `mish-transport` edge;
 - a bounded overflow burst beyond 65 does not increase accepted owner counts, evict existing sessions or destabilize the runtime;
+- `mesh.active_sessions` and `proxy.active_sessions` agree for admitted full paths while each remains an observation from its natural owner;
 - stop/start/restart and cellular loss/recovery are bounded and fail closed;
+- runtime-generation shutdown cancels/drains every retained Mesh/Proxy/relay task without detached long-lived work;
 - stable signer/UID and no repeated Magisk prompt on normal replacement install;
 - one process-wide root shell is reused through repeated root-policy reads/reconciliations within the app process instead of creating one `su` process per command/recovery event;
 - process restart establishes a fresh shell generation while the already-granted Magisk policy remains sufficient and does not require another interactive grant;
 - repeated recovery cycles do not reopen Magisk prompts or create unbounded root-shell/process growth;
 - fresh post-convergence baseline/peak/post-cleanup thread count, FD count and RSS/PSS at idle / 10 / 32 / 64 sessions;
+- thread count no longer scales as the deleted Mesh `session thread + copy thread` model;
 - startup, failure-to-fresh-READY, normal stop and recovery timings.
 
 DEVICE-1 diagnostics are current-product health diagnostics. Canonical acceptance observes current runtime, Cellular, root authority/policy, native Proxy Serving, credentials, Mesh, readiness and functional E2E behavior. Historical sing-box PID/config identity is not a current PRODUCT health fact.
 
-Exit: exact native topology, including one process-wide Tokio execution model for long-lived Mesh + Proxy session work, is physically proven and the current resource/recovery baseline is recorded without secret/raw-IP leakage. The Magisk/su privilege boundary is considered physically accepted only after the replacement-install, restart and repeated-recovery evidence above passes.
+Exit: exact native topology, including one process-wide Tokio execution model for long-lived Mesh + Proxy session work, is physically proven and mechanically guarded against regression; the current resource/recovery baseline is recorded without secret/raw-IP leakage. The Magisk/su privilege boundary is considered physically accepted only after the replacement-install, restart and repeated-recovery evidence above passes.
 
 ---
 
@@ -271,7 +333,7 @@ Measure the **current** direct native Tokio architecture, not deleted topology.
 Evaluate:
 
 - idle CPU/wakeup cost;
-- Tokio Mesh accept/task scheduling, cancellation and drain behavior;
+- the one Tokio runtime's Mesh + Proxy accept/task scheduling, cancellation and drain behavior;
 - native health observation cadence/cost;
 - thread/FD/RSS/PSS headroom at 64 sessions;
 - connect/DNS latency distribution;
