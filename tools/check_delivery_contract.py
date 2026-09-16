@@ -201,7 +201,7 @@ def main() -> None:
         "CONTROL_SHA",
         "No successful build, merge to main, label, or completed workflow starts DEVICE-1",
         "one GitHub Actions Device Cycle run",
-        "It is not PRODUCT release identity and cannot be promoted",
+        "They are not PRODUCT release identity and cannot be promoted",
     ):
         require(pipeline, required, "stable development delivery documentation drifted")
 
