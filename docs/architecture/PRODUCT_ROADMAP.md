@@ -101,16 +101,18 @@ Current `mish-transport` correctly owns the external Mesh boundary, exact admitt
 
 Current implementation still executes Mesh ingress with a separate `std::net` / `std::thread` concurrency subsystem: listener threads plus per-session blocking relay threads. This is a known current-topology implementation split, not the target resource/lifetime model for final U2 acceptance.
 
+Begin this convergence immediately in U2. The already-requested upstream-lifetime attribution for the inconclusive `example.com:443` hold-open experiment is an independent read-only evidence task: it does **not** block implementation of the accepted Tokio convergence, but it must be resolved before the next final physical capacity/resource acceptance so the harness itself cannot recreate the same ambiguity.
+
 Before final 64/65 capacity and resource acceptance:
 
-1. finish the current upstream-lifetime attribution for the inconclusive `example.com:443` hold-open experiment without mutating PRODUCT;
-2. move Mesh listener/session execution onto the existing process-wide Tokio runtime owned by `mish-runtime`;
-3. keep `mish-transport` as the natural owner of Mesh admission, admission epoch, external capacity=64 and reject-at-edge semantics;
-4. do **not** add another Tokio runtime/executor, move external capacity policy into `mish-runtime`, or create a second session/lifecycle owner;
-5. replace thread-per-session relay with owned async tasks / async bidirectional relay and deterministic cancellation/drain;
-6. preserve the current external contract and owner-backed diagnostics (`mesh.active_sessions`, `proxy.active_sessions`);
-7. adapt only tests/guards that encode the old thread implementation; protocol/auth/real-Mesh black-box acceptance remains the same contract;
-8. after convergence, rerun exact hosted gates and record a **fresh** physical idle/10/32/64/overflow/post-cleanup resource baseline. Pre-convergence thread/resource numbers remain diagnostic evidence only and cannot close final U2 resource acceptance.
+1. move Mesh listener/session execution onto the existing process-wide Tokio runtime owned by `mish-runtime`;
+2. keep `mish-transport` as the natural owner of Mesh admission, admission epoch, external capacity=64 and reject-at-edge semantics;
+3. do **not** add another Tokio runtime/executor, move external capacity policy into `mish-runtime`, or create a second session/lifecycle owner;
+4. replace thread-per-session relay with owned async tasks / async bidirectional relay and deterministic cancellation/drain;
+5. preserve the current external contract and owner-backed diagnostics (`mesh.active_sessions`, `proxy.active_sessions`);
+6. adapt only tests/guards that encode the old thread implementation; protocol/auth/real-Mesh black-box acceptance remains the same contract;
+7. resolve the independent upstream-lifetime attribution and make the final capacity fixture protocol-valid and deterministically long-lived before rerunning DEVICE-1 capacity;
+8. rerun exact hosted gates and record a **fresh** physical idle/10/32/64/overflow/post-cleanup resource baseline after convergence. Pre-convergence thread/resource numbers remain diagnostic evidence only and cannot close final U2 resource acceptance.
 
 Target execution/ownership split:
 
