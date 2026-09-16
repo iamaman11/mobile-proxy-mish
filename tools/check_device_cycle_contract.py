@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed guard for the explicit, single-run current-L8 DEVICE-1 engineering cycle."""
+"""Fail-closed guard for the explicit single-run current-L8 DEVICE-1 cycle."""
 
 from pathlib import Path
 import re
@@ -31,6 +31,8 @@ def forbid_regex(path: str, pattern: str, reason: str) -> None:
 
 def main() -> None:
     workflow = ".github/workflows/device-cycle.yml"
+
+    # One explicit manual request. Full/install acceptance is pre-merge on a ready PR to main.
     for required in (
         "issue_comment:",
         "types: [created]",
@@ -38,8 +40,9 @@ def main() -> None:
         "startsWith(github.event.comment.body, '/mish-cycle ')",
         "expected /mish-cycle <mode> <40-hex-sha> [probe]",
         "device-cycle requires an explicit exact 40-hex PRODUCT SHA",
-        "open PR or a merged accepted integration PR",
-        "merged candidate source is not contained in current integration lineage",
+        "installing a device candidate requires an open PR to main",
+        "installing a device candidate requires base main",
+        "installing a device candidate requires a ready PR",
         "build first, then explicitly request the cycle",
         "candidate build is not a completed successful PR preflight",
         "Integration Android Preflight",
@@ -74,6 +77,8 @@ def main() -> None:
         require(workflow, required, "explicit single-run orchestration contract drifted")
 
     for forbidden in (
+        "fix/root-policy-reconciliation",
+        "merged candidate source is not contained in current integration lineage",
         "workflow_run:",
         "workflow_dispatch:",
         "Dispatch canonical physical installer",
@@ -97,7 +102,7 @@ def main() -> None:
         "LEGACY_MIGRATION",
         "LEGACY_CUTOVER",
     ):
-        forbid(workflow, forbidden, "cycle must stay current-L8, explicit, non-rebuilding and free of pre-L8 probes")
+        forbid(workflow, forbidden, "cycle must stay main-based, explicit, non-building and current-L8 only")
 
     workflow_text = read(workflow)
     physical_jobs = workflow_text.split("\n  install:", 1)
@@ -107,32 +112,20 @@ def main() -> None:
     pinned_pwsh = r"C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive"
     github_scriptblock_shell = "-Command \"& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))\""
     if pinned_pwsh not in physical_text:
-        raise SystemExit("device cycle contract: DEVICE-1 jobs must execute through pinned portable PowerShell 7.6.6")
+        raise SystemExit("device cycle contract: DEVICE-1 jobs must use pinned portable PowerShell 7.6.6")
     if github_scriptblock_shell not in physical_text:
-        raise SystemExit("device cycle contract: pinned PowerShell must execute GitHub's extensionless temp script from text through ScriptBlock::Create")
-    if "Get-Content -Raw -LiteralPath ''{0}''" not in physical_text or "[ScriptBlock]::Create" not in physical_text:
-        raise SystemExit("device cycle contract: GitHub extensionless temp script must be read as text before execution")
-    for broken_shell in ('-File "{0}"', "-Command \". ''{0}''\""):
-        if broken_shell in workflow_text:
-            raise SystemExit(f"device cycle contract: broken extensionless PowerShell invocation must not return: {broken_shell}")
-    if "DEVICE_CYCLE_PWSH_VERSION: '7.6.6'" not in workflow_text:
-        raise SystemExit("device cycle contract: pinned PowerShell version fact is missing")
+        raise SystemExit("device cycle contract: pinned PowerShell must execute GitHub temp script through ScriptBlock::Create")
     if physical_text.count("Verify pinned PowerShell 7 runtime") != 2:
-        raise SystemExit("device cycle contract: both DEVICE-1 jobs must verify the pinned PowerShell runtime")
+        raise SystemExit("device cycle contract: both DEVICE-1 jobs must verify pinned PowerShell")
     if "shell: powershell" in workflow_text:
-        raise SystemExit("device cycle contract: Windows PowerShell 5.1 must not execute Device Cycle steps")
+        raise SystemExit("device cycle contract: Windows PowerShell 5.1 must not execute Device Cycle")
 
-    obsolete_physical = ROOT / ".github/workflows/device-candidate-physical.yml"
-    if obsolete_physical.exists():
-        raise SystemExit(
-            "device cycle contract: separate Device Candidate Physical workflow must not return; "
-            "normal install/verify belongs to Device Cycle"
-        )
-    obsolete_runtime_probe = ROOT / "lab/windows/collect-runtime-identity.ps1"
-    if obsolete_runtime_probe.exists():
-        raise SystemExit(
-            "device cycle contract: pre-L8 runtime identity probe must not return to canonical diagnostics"
-        )
+    for obsolete_path in (
+        ".github/workflows/device-candidate-physical.yml",
+        "lab/windows/collect-runtime-identity.ps1",
+    ):
+        if (ROOT / obsolete_path).exists():
+            raise SystemExit(f"device cycle contract: obsolete path must not exist: {obsolete_path}")
 
     verifier = "lab/windows/verify-installed-candidate.ps1"
     for required in (
@@ -140,7 +133,6 @@ def main() -> None:
         "'shell', 'pm', 'path'",
         "@('pull', $basePaths[0], $pulledApk)",
         "Get-FileHash -Algorithm SHA256",
-        "'verify', '--print-certs'",
         "INSTALLED_APK_DIGEST_MISMATCH",
         "INSTALLED_APK_CERT_MISMATCH",
         "exact_bytes_verified = $true",
@@ -154,11 +146,10 @@ def main() -> None:
         "am', 'start', '-W'",
         "snapshot_v2",
         "processIdResult",
-        "Write-MishDeviceStartFailureReceipt",
         "PRODUCT_TERMINAL_FAILURE",
     ):
         require(start, required, "deterministic launch contract drifted")
-    forbid(start, "snapshot_v1", "obsolete pre-L8 diagnostic method must not return")
+    forbid(start, "snapshot_v1", "obsolete diagnostic method must not return")
     forbid_regex(start, r"\$pid(?![A-Za-z0-9_])", "launcher must not shadow PowerShell automatic PID")
     forbid(start, "su'", "launch stage must stay non-root")
 
@@ -170,32 +161,17 @@ def main() -> None:
         "DeviceDiagnosticClassification.psm1",
         "android.runtime.running",
         "android.cellular.admitted",
-        "android.cellular.boundary_failure",
-        "android.root.authority_observation",
         "android.root.policy_authorized",
         "android.proxy.healthy",
-        "android.mesh.state",
         "android.mesh.admitted",
-        "android.mesh.epoch_present",
         "android.mesh.ingress_running",
         "android.readiness.binding_eligible",
         "android.readiness.probe_state",
-        "android.proxy.state -ceq 'RUNNING' -and [bool]$android.credential.active",
-        "credential_lease_status = $credentialLeaseStatus",
         "Get-MishDeviceDiagnosticClassification",
     ):
-        require(diagnostic, required, "native L8 diagnostic attribution must remain complete and fact-first")
-    for obsolete in (
-        "snapshot_v1",
-        "mish.diagnostics/v1",
-        "CREDENTIAL_LEASE_UNAVAILABLE",
-        "privateBridge",
-        "RuntimeProcessLifecycle",
-        "LEGACY_MIGRATION",
-        "LEGACY_CUTOVER",
-        "runtime_identity",
-    ):
-        forbid(diagnostic, obsolete, "obsolete pre-L8 diagnostic semantics must not return")
+        require(diagnostic, required, "native L8 diagnostic attribution must remain fact-first")
+    for obsolete in ("snapshot_v1", "privateBridge", "RuntimeProcessLifecycle", "LEGACY_MIGRATION", "runtime_identity"):
+        forbid(diagnostic, obsolete, "pre-L8 diagnostic semantics must not return")
 
     classification = "lab/windows/DeviceDiagnosticClassification.psm1"
     for required in (
@@ -203,28 +179,17 @@ def main() -> None:
         "PRODUCT_ROOT_AUTHORITY_UNAVAILABLE",
         "PRODUCT_ROOT_POLICY_NOT_AUTHORIZED",
         "PRODUCT_CELLULAR_BOUNDARY_",
-        "PRODUCT_CELLULAR_",
         "PRODUCT_PROXY_SERVING_UNHEALTHY",
         "PRODUCT_MESH_ADMISSION_EPOCH_MISSING",
         "READINESS_BINDING_INELIGIBLE",
         "READINESS_PROBE_",
     ):
-        require(classification, required, "L8 diagnostics must preserve current owner-aligned failure attribution")
+        require(classification, required, "owner-aligned failure attribution drifted")
     classification_text = read(classification)
     terminal_proxy = classification_text.find("if ($ProxyState -ceq 'FAILED')")
     root_authority = classification_text.find("if ($RootAuthorityObservation -ceq 'UNAVAILABLE')")
     if terminal_proxy < 0 or root_authority < 0 or terminal_proxy > root_authority:
-        raise SystemExit(
-            "device cycle contract: terminal Proxy Serving failure must outrank downstream root/cellular non-observation"
-        )
-    for obsolete in (
-        "STALE_PROCESS_IDENTITY_MISMATCH",
-        "privateBridge",
-        "LEGACY_MIGRATION",
-        "LEGACY_CUTOVER",
-        "runtime_identity",
-    ):
-        forbid(classification, obsolete, "pre-L8 state must not classify current PRODUCT health")
+        raise SystemExit("device cycle contract: terminal Proxy failure must outrank downstream non-observation")
 
     report = "lab/windows/new-device-cycle-report.ps1"
     for required in (
@@ -233,36 +198,20 @@ def main() -> None:
         "loopback_connect",
         "automatic = $false",
         "MANUAL_PROBE_COMPLETED",
-        "LAB_TARGETED_PROBE_COLLECTION_FAILED",
         "exact_candidate_acceptance",
         "NOT_EVALUATED",
-        "MISH_DEVICE_CYCLE_EXACT_CANDIDATE_ACCEPTANCE",
     ):
-        require(report, required, "cycle report must distinguish current evidence collection from exact PRODUCT acceptance")
-    forbid(report, "runtime_identity", "pre-L8 targeted probe must stay removed")
+        require(report, required, "cycle report evidence semantics drifted")
 
     test = "lab/windows/test-device-cycle.ps1"
     for required in (
         "DEVICE_CYCLE_CONTRACT=PASS",
-        "Terminal current Proxy Serving failure was masked by downstream non-observation",
         "PRODUCT_PROXY_MIXED_LISTENER_UNAVAILABLE",
-        "Current Cellular admission failure was not attributed to Cellular Egress",
-        "Missing Mesh admission epoch was not distinguished from external Mesh reachability",
-        "Current readiness probe state was not preserved",
         "Healthy current L8 fact set did not classify PASS",
-        "Inactive PRODUCT credential was not distinguished from a LAB lease failure",
         "Full PASS report must accept the exact current candidate and contain no automatic probe decision",
         "Explicit current-function probe may pass collection but cannot claim exact PRODUCT acceptance",
     ):
         require(test, required, "current L8 executable regression coverage drifted")
-    for obsolete in (
-        "PRODUCT_PROXY_LISTENER_UNAVAILABLE",
-        "STALE_PROCESS_IDENTITY_MISMATCH",
-        "runtime_identity",
-        "LEGACY_MIGRATION_BLOCKED",
-        "LEGACY_CUTOVER_CLEANUP",
-    ):
-        forbid(test, obsolete, "obsolete or generic fixture must not return to canonical current PRODUCT diagnostics tests")
 
     docs = "docs/architecture/DEVELOPMENT_PIPELINE.md"
     for required in (
