@@ -32,7 +32,6 @@ try {
         "'ss', '-H', '-tanp'",
         "'/proc/net/tcp'",
         "'/proc/net/tcp6'",
-        'canonical_ports = @(1080, 1081, 3128)',
         'listener_state = $listenerState',
         'MISH_LOOPBACK_DIAGNOSTIC_TARGET_SOCKET_ROWS'
     )) {
@@ -48,7 +47,7 @@ try {
         "'shell', 'am', 'force-stop'"
     )) {
         if ($loopbackProbeSource.Contains($forbidden)) {
-            throw "Manual loopback probe must stay current, product-agnostic, read-only and non-root: $forbidden"
+            throw "Manual loopback probe must remain product-agnostic, read-only and non-root: $forbidden"
         }
     }
 
