@@ -114,7 +114,7 @@ def main() -> None:
     if len(physical_jobs) != 2:
         raise SystemExit("device cycle contract: install job boundary is missing")
     physical_text = physical_jobs[1]
-    pinned_pwsh = r"C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive"
+    pinned_pwsh = r"C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive"
     github_scriptblock_shell = "-Command \"& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))\""
     if pinned_pwsh not in physical_text:
         raise SystemExit("device cycle contract: DEVICE-1 jobs must use pinned portable PowerShell 7.6.6")
