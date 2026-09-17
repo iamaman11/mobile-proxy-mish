@@ -83,6 +83,12 @@ $diagnostic = Read-OptionalJson -Path $DiagnosticEvidencePath
 $targeted = Read-OptionalJson -Path $TargetedEvidencePath
 $targetedAcceptance = Get-MishTargetedAcceptance -Evidence $targeted
 $targetedClassification = Get-MishTargetedClassification -Evidence $targeted
+$diagnosticClassification = if ($null -eq $diagnostic) { '' } else { [string]$diagnostic.classification }
+$externalMeshBaselineBlocked = (
+    $Mode -ceq 'full' -and
+    $RequestedProbe -ceq 'recovery_lifecycle' -and
+    $diagnosticClassification -ceq 'LAB_WINDOWS_SANDBOX_OUTBOUND_BLOCKED'
+)
 
 $launchFailed = $null -ne $launch -and [string]$launch.result -ceq 'FAIL'
 $launchFailureCategory = if ($launchFailed) { [string]$launch.failure_category } else { '' }
@@ -100,7 +106,13 @@ $classification = switch ($Mode) {
     'full' {
         if ($launchFailed) { "LAB_LAUNCH_$launchFailureCategory" }
         elseif ($null -eq $diagnostic) { 'DIAGNOSTIC_COLLECTION_FAILED' }
-        elseif ([string]$diagnostic.classification -cne 'PASS') { [string]$diagnostic.classification }
+        elseif ($externalMeshBaselineBlocked) {
+            if ($targetedAcceptance -eq 'MISSING') { 'LAB_TARGETED_PROBE_COLLECTION_FAILED' }
+            elseif ($targetedAcceptance -eq 'INVALID') { 'LAB_TARGETED_PROBE_SCHEMA_INVALID' }
+            elseif ($targetedAcceptance -ceq 'PASS') { $diagnosticClassification }
+            else { $targetedClassification }
+        }
+        elseif ($diagnosticClassification -cne 'PASS') { $diagnosticClassification }
         elseif ($RequestedProbe -ceq 'none') { 'PASS' }
         elseif (-not (Test-MishSupportedFullProbe -Probe $RequestedProbe)) { 'LAB_PROBE_NOT_EXPLICIT' }
         elseif ($targetedAcceptance -eq 'MISSING') { 'LAB_TARGETED_PROBE_COLLECTION_FAILED' }
@@ -111,7 +123,7 @@ $classification = switch ($Mode) {
     default {
         if ($launchFailed) { "LAB_LAUNCH_$launchFailureCategory" }
         elseif ($null -eq $diagnostic) { 'DIAGNOSTIC_COLLECTION_FAILED' }
-        else { [string]$diagnostic.classification }
+        else { $diagnosticClassification }
     }
 }
 
@@ -124,11 +136,16 @@ $cycleResult = switch ($Mode) {
         break
     }
     'full' {
-        # Baseline facts outrank targeted-probe absence/failure. A baseline PRODUCT failure must not
-        # be reclassified as LAB failure merely because an explicit targeted acceptance could not run.
+        # Baseline PRODUCT failures outrank targeted-probe absence/failure. The one accepted exception is
+        # the proven Windows sandbox external-Mesh blocker for recovery_lifecycle: it must not mask an
+        # independently observed targeted PRODUCT failure, and it can never produce PASS on its own.
         if ($launchFailed -or $null -eq $diagnostic) { 'LAB_FAIL' }
-        elseif ([string]$diagnostic.classification -cne 'PASS') {
-            Get-MishCycleFailureKind -Classification ([string]$diagnostic.classification)
+        elseif ($externalMeshBaselineBlocked) {
+            if ($targetedAcceptance -in @('MISSING', 'INVALID', 'PASS')) { 'LAB_FAIL' }
+            else { Get-MishCycleFailureKind -Classification $classification }
+        }
+        elseif ($diagnosticClassification -cne 'PASS') {
+            Get-MishCycleFailureKind -Classification $diagnosticClassification
         }
         elseif ($RequestedProbe -ceq 'none') { 'PASS' }
         elseif (-not (Test-MishSupportedFullProbe -Probe $RequestedProbe)) { 'LAB_FAIL' }
@@ -180,6 +197,7 @@ $report = [ordered]@{
     install_run_id = $InstallRunId
     cycle_result = $cycleResult
     classification = $classification
+    baseline_classification = $diagnosticClassification
     exact_candidate_acceptance = $exactCandidateAcceptance
     targeted_probe = [ordered]@{
         requested = $RequestedProbe
@@ -201,6 +219,7 @@ if ($parent) { [IO.Directory]::CreateDirectory($parent) | Out-Null }
 
 Write-Host "MISH_DEVICE_CYCLE_RESULT=$cycleResult"
 Write-Host "MISH_DEVICE_CYCLE_CLASSIFICATION=$classification"
+Write-Host "MISH_DEVICE_CYCLE_BASELINE_CLASSIFICATION=$diagnosticClassification"
 Write-Host "MISH_DEVICE_CYCLE_EXACT_CANDIDATE_ACCEPTANCE=$exactCandidateAcceptance"
 Write-Host "MISH_DEVICE_CYCLE_SOURCE_IDENTITY=$sourceIdentityClaim"
 Write-Host "MISH_DEVICE_CYCLE_CONTROL_SHA=$ControlSha"
