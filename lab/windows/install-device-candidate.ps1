@@ -16,7 +16,7 @@ $schema = 'mish-device-candidate-v1'
 $productName = 'mobile-proxy-mish-debug.apk'
 $testName = 'mobile-proxy-mish-debug-androidTest.apk'
 $applicationId = 'com.mobileproxymish.app.debug'
-$testApplicationId = 'com.mobileproxymish.app.test'
+$testApplicationId = "$applicationId.test"
 $keystorePassword = 'mish-lab-device-candidate-v1'
 $keyAlias = 'mish-lab-device-candidate-v1'
 $legacyStateRoot = 'C:\mish-lab\runner\_work\.mish-device-candidate'
@@ -40,9 +40,6 @@ function Invoke-NativeCapture {
         [Parameter(Mandatory)][string[]]$Arguments
     )
 
-    # Windows PowerShell 5.1 can promote native stderr to NativeCommandError when the caller
-    # uses ErrorActionPreference=Stop. Capture stderr as ordinary bounded text so the installer
-    # can classify the native exit code itself and always return a typed MISH failure.
     $previousErrorActionPreference = $ErrorActionPreference
     $lines = @()
     $exitCode = -1
@@ -313,9 +310,15 @@ if ($installResult.ExitCode -ne 0 -or $installResult.Text -notmatch '(?m)^Succes
 $testInstallResult = Invoke-AdbInstallBounded -Adb $adb -ApkPath $signedTest -TestOnly -TimeoutSeconds 90
 if ($testInstallResult.ExitCode -ne 0 -or $testInstallResult.Text -notmatch '(?m)^Success\s*$') {
     if ($testInstallResult.Text -match 'INSTALL_FAILED_UPDATE_INCOMPATIBLE') {
-        Stop-Candidate 'TEST_HARNESS_SIGNATURE_MIGRATION_REQUIRED' "Existing $testApplicationId uses another signing identity; remove only that LAB test package once, then rerun. PRODUCT package is untouched."
+        $testUninstall = Invoke-NativeCapture -FilePath $adb -Arguments @('uninstall', $testApplicationId)
+        if ($testUninstall.ExitCode -ne 0 -or $testUninstall.Text -notmatch '(?m)^Success\s*$') {
+            Stop-Candidate 'TEST_HARNESS_SIGNATURE_MIGRATION_REQUIRED' "Existing $testApplicationId uses another signing identity and automatic LAB-only cleanup failed. PRODUCT package is untouched."
+        }
+        $testInstallResult = Invoke-AdbInstallBounded -Adb $adb -ApkPath $signedTest -TestOnly -TimeoutSeconds 90
     }
-    Stop-Candidate 'TEST_HARNESS_INSTALL_FAILED' 'LAB-signed androidTest APK installation did not report Success.'
+    if ($testInstallResult.ExitCode -ne 0 -or $testInstallResult.Text -notmatch '(?m)^Success\s*$') {
+        Stop-Candidate 'TEST_HARNESS_INSTALL_FAILED' 'LAB-signed androidTest APK installation did not report Success after one bounded attempt/recovery.'
+    }
 }
 
 [pscustomobject]@{
