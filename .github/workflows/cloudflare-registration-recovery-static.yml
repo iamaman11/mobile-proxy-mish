@@ -6,6 +6,8 @@ on:
       - '.github/workflows/cloudflare-registration-recovery-static.yml'
       - 'lab/windows/diagnose-cloudflare-registration-recovery.ps1'
       - 'lab/windows/test-cloudflare-registration-recovery-contract.ps1'
+      - 'lab/windows/test-cloudflare-registration-auth.ps1'
+      - 'lab/windows/test-cloudflare-registration-auth-contract.ps1'
 
 permissions:
   contents: read
@@ -30,4 +32,5 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          .\lab\windows\test-cloudflare-registration-auth-contract.ps1
           .\lab\windows\test-cloudflare-registration-recovery-contract.ps1
