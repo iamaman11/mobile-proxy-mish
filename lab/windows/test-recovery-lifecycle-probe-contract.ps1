@@ -2,10 +2,11 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $probePath = Join-Path $PSScriptRoot 'diagnose-recovery-lifecycle.ps1'
+$installerPath = Join-Path $PSScriptRoot 'install-device-candidate.ps1'
 $startPath = Join-Path $PSScriptRoot 'start-device-app.ps1'
 $reportPath = Join-Path $PSScriptRoot 'new-device-cycle-report.ps1'
 
-foreach ($path in @($probePath, $startPath)) {
+foreach ($path in @($probePath, $installerPath, $startPath)) {
     $tokens = $null
     $errors = $null
     [void][System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
@@ -23,9 +24,15 @@ foreach ($required in @(
     "`$script:Schema = 'mish.lab.recovery-lifecycle/v1'",
     "schema -cne `$script:CandidateSchema",
     'candidate.android_test_apk.sha256',
+    '$script:TestPackage = "$PackageName.test"',
+    '$script:TestComponent = "$($script:TestPackage)/androidx.test.runner.AndroidJUnitRunner"',
     "'shell', 'pm', 'path', `$script:TestPackage",
+    "@('uninstall', `$script:TestPackage)",
+    'LAB_TEST_HARNESS_CLEANUP_FAILED',
+    'test_harness = $harnessCleanup',
     'exact_test_apk_digest_verified = $true',
     'preinstalled_lab_signed_harness = $true',
+    'test_package_id = $script:TestPackage',
     'installed_package_path_verified = $true',
     'instrumentation_exit_code = [int]$instrumentation.ExitCode',
     'LAB_TEST_HARNESS_SIGNATURE_MISMATCH',
@@ -33,7 +40,6 @@ foreach ($required in @(
     "reason = 'NO_SUPPORTED_DETERMINISTIC_UNATTENDED_TRIGGER_ON_DEVICE_1'",
     "external_mesh_owner_fault_injection = 'NOT_PERFORMED'",
     "`$script:TestClass = 'com.mobileproxymish.app.cellular.CellularE3InstrumentedTest'",
-    "`$script:TestComponent = 'com.mobileproxymish.app.test/androidx.test.runner.AndroidJUnitRunner'",
     "'e3Mode', 'lifecycle'",
     "'E3_EVIDENCE phase=positive '",
     "'E3_EVIDENCE phase=negative '",
@@ -59,6 +65,22 @@ foreach ($required in @(
     if (-not $source.Contains($required)) {
         throw "Recovery/lifecycle probe lost required exact-candidate/recovery evidence: $required"
     }
+}
+
+$installerSource = Get-Content -Raw -LiteralPath $installerPath
+foreach ($required in @(
+    '$testApplicationId = "$applicationId.test"',
+    "@('uninstall', `$testApplicationId)",
+    'TEST_HARNESS_SIGNATURE_MIGRATION_REQUIRED',
+    'TEST_HARNESS_INSTALL_FAILED',
+    'test_harness_installed = $true'
+)) {
+    if (-not $installerSource.Contains($required)) {
+        throw "Device candidate installer lost bounded LAB test-harness self-heal semantics: $required"
+    }
+}
+if ($installerSource.Contains("`$testApplicationId = 'com.mobileproxymish.app.test'")) {
+    throw 'Device candidate installer regressed to the wrong androidTest package identity.'
 }
 
 foreach ($forbidden in @(

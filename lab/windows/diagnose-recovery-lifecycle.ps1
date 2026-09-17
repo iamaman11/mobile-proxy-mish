@@ -16,9 +16,9 @@ $ErrorActionPreference = 'Stop'
 
 $script:Schema = 'mish.lab.recovery-lifecycle/v1'
 $script:CandidateSchema = 'mish-device-candidate-v1'
-$script:TestPackage = 'com.mobileproxymish.app.test'
+$script:TestPackage = "$PackageName.test"
 $script:TestClass = 'com.mobileproxymish.app.cellular.CellularE3InstrumentedTest'
-$script:TestComponent = 'com.mobileproxymish.app.test/androidx.test.runner.AndroidJUnitRunner'
+$script:TestComponent = "$($script:TestPackage)/androidx.test.runner.AndroidJUnitRunner"
 $script:SnapshotMethod = 'snapshot_v2'
 
 function Stop-MishRecovery {
@@ -140,6 +140,11 @@ $lossEvidence = [ordered]@{
 }
 $cellularEvidence = [ordered]@{}
 $restartEvidence = [ordered]@{}
+$harnessCleanup = [ordered]@{
+    package_id = $script:TestPackage
+    attempted = $false
+    succeeded = $false
+}
 
 try {
     $candidateRoot = [IO.Path]::GetFullPath($CandidateDirectory)
@@ -200,6 +205,7 @@ try {
         exact_test_apk_sha256 = $testApkSha
         exact_test_apk_digest_verified = $true
         preinstalled_lab_signed_harness = $true
+        test_package_id = $script:TestPackage
         installed_package_path_verified = $true
         instrumentation_exit_code = [int]$instrumentation.ExitCode
         instrumentation_pass = $instrumentationPass
@@ -307,6 +313,28 @@ catch {
     }
 }
 finally {
+    try {
+        $installedHarness = Invoke-MishAdb -Arguments @('shell', 'pm', 'path', $script:TestPackage) -TimeoutSeconds 20
+        $harnessPresent = $installedHarness.ExitCode -eq 0 -and $installedHarness.StdOut -match '(?m)^package:'
+        if ($harnessPresent) {
+            $harnessCleanup.attempted = $true
+            $cleanup = Invoke-MishAdb -Arguments @('uninstall', $script:TestPackage) -TimeoutSeconds 30
+            $harnessCleanup.succeeded = $cleanup.ExitCode -eq 0 -and $cleanup.StdOut -match '(?m)^Success\s*$'
+        }
+        else {
+            $harnessCleanup.succeeded = $true
+        }
+    }
+    catch {
+        $harnessCleanup.attempted = $true
+        $harnessCleanup.succeeded = $false
+    }
+
+    if ($acceptanceResult -ceq 'PASS' -and -not [bool]$harnessCleanup.succeeded) {
+        $acceptanceResult = 'FAIL'
+        $classification = 'LAB_TEST_HARNESS_CLEANUP_FAILED'
+    }
+
     $evidence = [ordered]@{
         schema = $script:Schema
         collected_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
@@ -317,6 +345,7 @@ finally {
         mesh_vpn_loss_recovery = $lossEvidence
         cellular_e3 = $cellularEvidence
         restart = $restartEvidence
+        test_harness = $harnessCleanup
         lab_effects = [ordered]@{
             external_mesh_owner_fault_injection = 'NOT_PERFORMED'
             cellular_loss = 'exact-head CellularE3InstrumentedTest uses cmd phone data disable/enable'
