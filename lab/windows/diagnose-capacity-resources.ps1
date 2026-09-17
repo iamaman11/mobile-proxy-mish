@@ -14,6 +14,7 @@ $script:SnapshotMethod = 'snapshot_v2'
 $script:AndroidSchema = 'mish.diagnostics/v2'
 $script:ConnectTimeoutMs = 5000
 $script:CounterDeadlineMs = 5000
+$script:OverflowTimeoutMs = 1500
 
 function Stop-MishCapacityProbe {
     param(
@@ -140,24 +141,66 @@ function Read-MishStatusLine {
     return ''
 }
 
-function Read-MishConnectHeaders {
-    param([Parameter(Mandatory)][System.IO.Stream] $Stream)
+function Read-MishHeaders {
+    param(
+        [Parameter(Mandatory)][System.IO.Stream] $Stream,
+        [Parameter(Mandatory)][string] $Context
+    )
+    $connectionClose = $false
     for ($index = 0; $index -lt 64; $index++) {
         $line = Read-MishStatusLine -Stream $Stream
         if ($null -eq $line) {
-            throw 'Proxy closed before CONNECT response headers completed.'
+            throw "$Context closed before response headers completed."
         }
         if ($line.Length -eq 0) {
-            return
+            return [ordered]@{ connection_close = $connectionClose }
+        }
+        if ($line -imatch '^Connection\s*:\s*close\s*$') {
+            $connectionClose = $true
         }
     }
-    throw 'CONNECT response headers exceeded the bounded parser limit.'
+    throw "$Context response headers exceeded the bounded parser limit."
 }
 
-function Open-MishHeldConnectSession {
+function Read-MishConnectHeaders {
+    param([Parameter(Mandatory)][System.IO.Stream] $Stream)
+    [void](Read-MishHeaders -Stream $Stream -Context 'Proxy CONNECT')
+}
+
+function Invoke-MishApplicationRoundTrip {
+    param([Parameter(Mandatory)] $Session)
+    $requestBytes = $null
+    try {
+        $request = "HEAD / HTTP/1.1`r`nHost: $TargetHost`r`nConnection: keep-alive`r`nUser-Agent: mish-capacity-probe/1`r`n`r`n"
+        $requestBytes = [Text.Encoding]::ASCII.GetBytes($request)
+        $Session.Stream.Write($requestBytes, 0, $requestBytes.Length)
+        $Session.Stream.Flush()
+        $status = Read-MishStatusLine -Stream $Session.Stream
+        if ($null -eq $status) {
+            return [ordered]@{ result = 'FAIL'; reason = 'APPLICATION_EOF'; status_line = $null }
+        }
+        if ($status -notmatch '^HTTP/1\.[01]\s+[1-5]\d\d(?:\s|$)') {
+            return [ordered]@{ result = 'FAIL'; reason = 'APPLICATION_STATUS_INVALID'; status_line = $status }
+        }
+        $headers = Read-MishHeaders -Stream $Session.Stream -Context 'Target HTTP'
+        if ([bool]$headers.connection_close) {
+            return [ordered]@{ result = 'FAIL'; reason = 'TARGET_CONNECTION_CLOSE'; status_line = $status }
+        }
+        return [ordered]@{ result = 'PASS'; reason = 'NONE'; status_line = $status }
+    }
+    catch {
+        return [ordered]@{ result = 'FAIL'; reason = 'APPLICATION_IO_FAILED'; error = $_.Exception.GetType().FullName }
+    }
+    finally {
+        if ($null -ne $requestBytes) { [Array]::Clear($requestBytes, 0, $requestBytes.Length) }
+    }
+}
+
+function Open-MishApplicationSession {
     param(
         [Parameter(Mandatory)][string] $ProxyHost,
-        [Parameter(Mandatory)] $Lease
+        [Parameter(Mandatory)] $Lease,
+        [Parameter(Mandatory)][int] $Ordinal
     )
     $client = [Net.Sockets.TcpClient]::new()
     $stream = $null
@@ -192,22 +235,25 @@ function Open-MishHeldConnectSession {
         if ($null -eq $status -or $status -notmatch '^HTTP/1\.[01]\s+2\d\d(?:\s|$)') {
             throw "Authenticated CONNECT was not established: '$status'"
         }
-
-        # A raw CONNECT socket is not a stable held session against a TLS endpoint: the target may
-        # close clients that never start TLS. Complete the target protocol handshake before counting
-        # the tunnel as held so capacity observations measure PRODUCT ownership, not target timeout.
         Read-MishConnectHeaders -Stream $stream
         $tlsStream = [Net.Security.SslStream]::new($stream, $false)
         $tlsStream.ReadTimeout = $script:ConnectTimeoutMs
         $tlsStream.WriteTimeout = $script:ConnectTimeoutMs
         $tlsStream.AuthenticateAsClient($TargetHost)
 
-        return [pscustomobject]@{
+        $session = [pscustomobject]@{
+            Ordinal = $Ordinal
             Client = $client
             Stream = $tlsStream
-            StatusLine = $status
-            HeldProtocol = 'TLS'
+            ConnectStatusLine = $status
+            HeldProtocol = 'TLS+HTTP'
         }
+        $initial = Invoke-MishApplicationRoundTrip -Session $session
+        if ([string]$initial.result -cne 'PASS') {
+            throw "Initial target application round-trip failed: $([string]$initial.reason)"
+        }
+        $session | Add-Member -NotePropertyName InitialApplicationStatusLine -NotePropertyValue ([string]$initial.status_line)
+        return $session
     }
     catch {
         if ($null -ne $tlsStream) { $tlsStream.Dispose() }
@@ -220,6 +266,80 @@ function Open-MishHeldConnectSession {
     }
 }
 
+function Test-MishApplicationLiveSet {
+    param(
+        [Parameter(Mandatory)][object[]] $Sessions,
+        [Parameter(Mandatory)][int] $ExpectedSessions
+    )
+    $results = [Collections.Generic.List[object]]::new()
+    $live = 0
+    foreach ($session in $Sessions) {
+        $roundTrip = Invoke-MishApplicationRoundTrip -Session $session
+        if ([string]$roundTrip.result -ceq 'PASS') { $live++ }
+        [void]$results.Add([ordered]@{
+            ordinal = [int]$session.Ordinal
+            result = [string]$roundTrip.result
+            reason = [string]$roundTrip.reason
+            status_line = if ($roundTrip.Contains('status_line')) { [string]$roundTrip.status_line } else { $null }
+        })
+    }
+    return [ordered]@{
+        result = if ($Sessions.Count -eq $ExpectedSessions -and $live -eq $ExpectedSessions) { 'PASS' } else { 'FAIL' }
+        expected = $ExpectedSessions
+        observed_sessions = $Sessions.Count
+        application_live = $live
+        failures = @($results | Where-Object { [string]$_.result -cne 'PASS' })
+    }
+}
+
+function Open-MishFreshApplicationSet {
+    param(
+        [Parameter(Mandatory)][string] $ProxyHost,
+        [Parameter(Mandatory)] $Lease,
+        [Parameter(Mandatory)][int] $ExpectedSessions
+    )
+    $sessions = [Collections.Generic.List[object]]::new()
+    try {
+        for ($ordinal = 1; $ordinal -le $ExpectedSessions; $ordinal++) {
+            [void]$sessions.Add((Open-MishApplicationSession -ProxyHost $ProxyHost -Lease $Lease -Ordinal $ordinal))
+            if (($ordinal % 8) -eq 0 -and $ordinal -lt $ExpectedSessions) {
+                $openingLiveness = Test-MishApplicationLiveSet -Sessions @($sessions) -ExpectedSessions $ordinal
+                if ([string]$openingLiveness.result -cne 'PASS') {
+                    throw "Application liveness failed while opening fresh batch at $ordinal/$ExpectedSessions."
+                }
+            }
+        }
+        return @($sessions)
+    }
+    catch {
+        foreach ($session in $sessions) {
+            try { $session.Stream.Dispose() } catch {}
+            try { $session.Client.Dispose() } catch {}
+        }
+        throw
+    }
+}
+
+function Close-MishApplicationSet {
+    param([object[]] $Sessions)
+    foreach ($session in @($Sessions)) {
+        try { if ($null -ne $session.Stream) { $session.Stream.Dispose() } } catch {}
+        try { if ($null -ne $session.Client) { $session.Client.Dispose() } } catch {}
+    }
+}
+
+function Test-MishTimeoutException {
+    param([Parameter(Mandatory)][Exception] $Exception)
+    $current = $Exception
+    while ($null -ne $current) {
+        if ($current -is [Net.Sockets.SocketException] -and $current.SocketErrorCode -eq [Net.Sockets.SocketError]::TimedOut) {
+            return $true
+        }
+        $current = $current.InnerException
+    }
+    return $false
+}
+
 function Test-MishOverflowRejected {
     param(
         [Parameter(Mandatory)][string] $ProxyHost,
@@ -229,16 +349,21 @@ function Test-MishOverflowRejected {
     $stream = $null
     $plainPassword = $null
     try {
-        $connectTask = $client.ConnectAsync($ProxyHost, 3128)
-        if (-not $connectTask.Wait($script:ConnectTimeoutMs)) {
-            return [ordered]@{ result = 'PASS'; reason = 'CONNECT_TIMEOUT_BEFORE_ADMISSION' }
+        try {
+            $connectTask = $client.ConnectAsync($ProxyHost, 3128)
+            if (-not $connectTask.Wait($script:ConnectTimeoutMs)) {
+                return [ordered]@{ result = 'INCONCLUSIVE'; reason = 'EDGE_CONNECT_TIMEOUT' }
+            }
+        }
+        catch {
+            return [ordered]@{ result = 'INCONCLUSIVE'; reason = 'EDGE_CONNECT_FAILED'; error = $_.Exception.GetType().FullName }
         }
         if (-not $client.Connected) {
-            return [ordered]@{ result = 'PASS'; reason = 'CONNECT_REJECTED' }
+            return [ordered]@{ result = 'INCONCLUSIVE'; reason = 'EDGE_CONNECT_NOT_ESTABLISHED' }
         }
         $stream = $client.GetStream()
-        $stream.ReadTimeout = 1500
-        $stream.WriteTimeout = 1500
+        $stream.ReadTimeout = $script:OverflowTimeoutMs
+        $stream.WriteTimeout = $script:OverflowTimeoutMs
         $plainPassword = [Net.NetworkCredential]::new('', [Security.SecureString]$Lease.ProxyPassword).Password
         $authBytes = [Text.Encoding]::UTF8.GetBytes("$([string]$Lease.ProxyUserName):$plainPassword")
         try { $authorization = [Convert]::ToBase64String($authBytes) }
@@ -246,26 +371,35 @@ function Test-MishOverflowRejected {
         $authority = "${TargetHost}:$TargetPort"
         $requestBytes = [Text.Encoding]::ASCII.GetBytes("CONNECT $authority HTTP/1.1`r`nHost: $authority`r`nProxy-Authorization: Basic $authorization`r`n`r`n")
         try {
-            $stream.Write($requestBytes, 0, $requestBytes.Length)
-            $stream.Flush()
-        }
-        catch {
-            return [ordered]@{ result = 'PASS'; reason = 'EDGE_CLOSED_ON_WRITE' }
+            try {
+                $stream.Write($requestBytes, 0, $requestBytes.Length)
+                $stream.Flush()
+            }
+            catch {
+                if (Test-MishTimeoutException -Exception $_.Exception) {
+                    return [ordered]@{ result = 'INCONCLUSIVE'; reason = 'EDGE_WRITE_TIMEOUT' }
+                }
+                return [ordered]@{ result = 'PASS'; reason = 'EDGE_CLOSED_ON_WRITE' }
+            }
         }
         finally {
             [Array]::Clear($requestBytes, 0, $requestBytes.Length)
             $authorization = $null
             $plainPassword = $null
         }
-        try { $status = Read-MishStatusLine -Stream $stream }
-        catch { return [ordered]@{ result = 'PASS'; reason = 'EDGE_RESET' } }
+        try {
+            $status = Read-MishStatusLine -Stream $stream
+        }
+        catch {
+            if (Test-MishTimeoutException -Exception $_.Exception) {
+                return [ordered]@{ result = 'INCONCLUSIVE'; reason = 'EDGE_READ_TIMEOUT' }
+            }
+            return [ordered]@{ result = 'PASS'; reason = 'EDGE_RESET_BEFORE_PROXY_STATUS' }
+        }
         if ($null -eq $status) {
             return [ordered]@{ result = 'PASS'; reason = 'EDGE_CLOSED_BEFORE_PROXY_STATUS' }
         }
         return [ordered]@{ result = 'FAIL'; reason = 'OVERFLOW_REACHED_PROXY'; status_line = $status }
-    }
-    catch {
-        return [ordered]@{ result = 'PASS'; reason = 'EDGE_REJECTED' }
     }
     finally {
         $plainPassword = $null
@@ -303,20 +437,6 @@ function Get-MishProcessResources {
     }
 }
 
-function New-MishStageObservation {
-    param(
-        [Parameter(Mandatory)][string] $Name,
-        [Parameter(Mandatory)][int] $ExpectedSessions,
-        [Parameter(Mandatory)][string] $PidText
-    )
-    return [ordered]@{
-        name = $Name
-        expected_sessions = $ExpectedSessions
-        owner_counts = Wait-MishOwnerCounts -ExpectedMesh $ExpectedSessions -ExpectedProxy $ExpectedSessions
-        resources = Get-MishProcessResources -PidText $PidText
-    }
-}
-
 if (-not (Test-Path -LiteralPath $AdbPath -PathType Leaf)) {
     Stop-MishCapacityProbe 'ADB_MISSING' 'Canonical ADB executable is missing.'
 }
@@ -350,56 +470,201 @@ if ([string]::IsNullOrWhiteSpace($tempRoot)) {
 }
 $credentialStorePath = Join-Path ([IO.Path]::GetFullPath($tempRoot)) ('mish-capacity-credential-' + [Guid]::NewGuid().ToString('N') + '.dpapi')
 $lease = $null
-$held = [Collections.Generic.List[object]]::new()
+$activeSessions = @()
 $stages = [Collections.Generic.List[object]]::new()
-$overflow = $null
-$overflowCounts = $null
+$stageBoundaries = [Collections.Generic.List[object]]::new()
+$soak = [Collections.Generic.List[object]]::new()
+$overflowAttempts = [Collections.Generic.List[object]]::new()
+$overflowOwnerCounts = $null
+$postOverflowLiveness = $null
 $cleanupCounts = $null
+$postCleanupMeshE2e = [ordered]@{ result = 'NOT_RUN'; reason = 'NOT_RUN' }
 $postCleanupResources = $null
 $acceptanceResult = 'FAIL'
 $classification = 'U2_CAPACITY_RESOURCE_INCOMPLETE'
+$detail = $null
+
 try {
     [void](Invoke-MishExternalProxyCredentialProvisioning -AdbPath $AdbPath -PackageName $PackageName -StorePath $credentialStorePath)
     $lease = Open-MishExternalProxyCredentialLease -StorePath $credentialStorePath
     if ($null -eq $lease) { Stop-MishCapacityProbe 'CREDENTIAL_LEASE_UNAVAILABLE' 'Credential lease is unavailable.' }
 
-    $stages.Add((New-MishStageObservation -Name 'idle' -ExpectedSessions 0 -PidText $pidBefore))
-    foreach ($target in @(10, 32, 64)) {
-        while ($held.Count -lt $target) {
-            $held.Add((Open-MishHeldConnectSession -ProxyHost $meshAddress -Lease $lease))
+    $idleCounts = Wait-MishOwnerCounts -ExpectedMesh 0 -ExpectedProxy 0
+    $idleResources = Get-MishProcessResources -PidText $pidBefore
+    [void]$stages.Add([ordered]@{
+        name = 'idle'
+        expected_sessions = 0
+        fresh_batch = $true
+        application_liveness = [ordered]@{ result = 'PASS'; expected = 0; application_live = 0; failures = @() }
+        owner_counts = $idleCounts
+        resources = $idleResources
+    })
+    if ([string]$idleCounts.result -cne 'PASS') {
+        $classification = 'LAB_CAPACITY_PRECONDITION_BUSY'
+        $detail = 'Owner counters were not 0/0 before capacity testing.'
+    }
+
+    if ($classification -ceq 'U2_CAPACITY_RESOURCE_INCOMPLETE') {
+        foreach ($target in @(10, 32, 64)) {
+            $boundaryBefore = Wait-MishOwnerCounts -ExpectedMesh 0 -ExpectedProxy 0
+            if ([string]$boundaryBefore.result -cne 'PASS') {
+                $classification = 'LAB_STAGE_BOUNDARY_NOT_DRAINED'
+                $detail = "Owner counters were not 0/0 before fresh $target-session stage."
+                break
+            }
+
+            try {
+                $activeSessions = @(Open-MishFreshApplicationSet -ProxyHost $meshAddress -Lease $lease -ExpectedSessions $target)
+            }
+            catch {
+                $classification = 'LAB_APPLICATION_LIVE_PRECONDITION_FAILED'
+                $detail = $_.Exception.Message
+                break
+            }
+
+            $applicationLiveness = Test-MishApplicationLiveSet -Sessions $activeSessions -ExpectedSessions $target
+            $ownerCounts = Wait-MishOwnerCounts -ExpectedMesh $target -ExpectedProxy $target
+            $resources = Get-MishProcessResources -PidText $pidBefore
+            [void]$stages.Add([ordered]@{
+                name = "sessions_$target"
+                expected_sessions = $target
+                fresh_batch = $true
+                application_liveness = $applicationLiveness
+                owner_counts = $ownerCounts
+                resources = $resources
+            })
+
+            if ([string]$applicationLiveness.result -cne 'PASS') {
+                $classification = 'LAB_APPLICATION_LIVE_PRECONDITION_FAILED'
+                $detail = "Fresh $target-session stage did not remain application-live."
+                break
+            }
+            if ([string]$ownerCounts.result -cne 'PASS') {
+                $classification = 'U2_CAPACITY_OWNER_COUNT_MISMATCH'
+                $detail = "Client proved $target application-live sessions while owner counters diverged."
+                break
+            }
+
+            if ($target -lt 64) {
+                Close-MishApplicationSet -Sessions $activeSessions
+                $activeSessions = @()
+                $boundaryAfter = Wait-MishOwnerCounts -ExpectedMesh 0 -ExpectedProxy 0
+                [void]$stageBoundaries.Add([ordered]@{
+                    after_stage = $target
+                    owner_counts = $boundaryAfter
+                })
+                if ([string]$boundaryAfter.result -cne 'PASS') {
+                    $classification = 'U2_CAPACITY_CLEANUP_NOT_DRAINED'
+                    $detail = "Owner counters did not drain after $target-session stage."
+                    break
+                }
+            }
         }
-        $stages.Add((New-MishStageObservation -Name "sessions_$target" -ExpectedSessions $target -PidText $pidBefore))
     }
 
-    $overflow = Test-MishOverflowRejected -ProxyHost $meshAddress -Lease $lease
-    $overflowCounts = Wait-MishOwnerCounts -ExpectedMesh 64 -ExpectedProxy 64
+    if ($classification -ceq 'U2_CAPACITY_RESOURCE_INCOMPLETE' -and $activeSessions.Count -eq 64) {
+        $soakWatch = [Diagnostics.Stopwatch]::StartNew()
+        foreach ($checkpoint in @(10, 20, 30, 45, 60, 90)) {
+            $remainingMs = ($checkpoint * 1000) - [int]$soakWatch.ElapsedMilliseconds
+            if ($remainingMs -gt 0) { Start-Sleep -Milliseconds $remainingMs }
+            $checkpointLiveness = Test-MishApplicationLiveSet -Sessions $activeSessions -ExpectedSessions 64
+            $checkpointOwners = Wait-MishOwnerCounts -ExpectedMesh 64 -ExpectedProxy 64
+            [void]$soak.Add([ordered]@{
+                checkpoint_seconds = $checkpoint
+                elapsed_ms = [int64]$soakWatch.ElapsedMilliseconds
+                application_liveness = $checkpointLiveness
+                owner_counts = $checkpointOwners
+            })
+            if ([string]$checkpointLiveness.result -cne 'PASS') {
+                $classification = 'LAB_APPLICATION_LIVENESS_SOAK_FAILED'
+                $detail = "The 64-session set lost application liveness before the $checkpoint-second checkpoint."
+                break
+            }
+            if ([string]$checkpointOwners.result -cne 'PASS') {
+                $classification = 'U2_CAPACITY_OWNER_COUNT_MISMATCH'
+                $detail = "The 64-session set remained application-live while owner counters diverged at $checkpoint seconds."
+                break
+            }
+        }
+    }
 
-    $stageFailures = @($stages | Where-Object { [string]$_.owner_counts.result -cne 'PASS' }).Count
-    if ($stageFailures -ne 0) {
-        $classification = 'U2_CAPACITY_OWNER_COUNT_MISMATCH'
-    }
-    elseif ([string]$overflow.result -cne 'PASS') {
-        $classification = 'U2_CAPACITY_65TH_NOT_REJECTED'
-    }
-    elseif ([string]$overflowCounts.result -cne 'PASS') {
-        $classification = 'U2_CAPACITY_OVERFLOW_REACHED_BACKEND'
-    }
-    else {
-        $acceptanceResult = 'PASS'
-        $classification = 'U2_CAPACITY_AND_RESOURCE_MEASUREMENTS_PASS'
+    if ($classification -ceq 'U2_CAPACITY_RESOURCE_INCOMPLETE' -and $activeSessions.Count -eq 64) {
+        $preOverflowLiveness = Test-MishApplicationLiveSet -Sessions $activeSessions -ExpectedSessions 64
+        $preOverflowOwners = Wait-MishOwnerCounts -ExpectedMesh 64 -ExpectedProxy 64
+        if ([string]$preOverflowLiveness.result -cne 'PASS') {
+            $classification = 'LAB_APPLICATION_LIVE_PRECONDITION_FAILED'
+            $detail = 'The original 64 were not application-live immediately before overflow.'
+        }
+        elseif ([string]$preOverflowOwners.result -cne 'PASS') {
+            $classification = 'U2_CAPACITY_OWNER_COUNT_MISMATCH'
+            $detail = 'The original 64 were application-live but owner counters were not 64/64 immediately before overflow.'
+        }
+        else {
+            foreach ($overflowOrdinal in 65..80) {
+                $attempt = Test-MishOverflowRejected -ProxyHost $meshAddress -Lease $lease
+                [void]$overflowAttempts.Add([ordered]@{
+                    ordinal = $overflowOrdinal
+                    result = [string]$attempt.result
+                    reason = [string]$attempt.reason
+                    status_line = if ($attempt.Contains('status_line')) { [string]$attempt.status_line } else { $null }
+                })
+                if ([string]$attempt.result -ceq 'FAIL') {
+                    $classification = 'U2_CAPACITY_65TH_NOT_REJECTED'
+                    $detail = "Overflow attempt $overflowOrdinal reached Proxy Serving."
+                    break
+                }
+                if ([string]$attempt.result -ceq 'INCONCLUSIVE') {
+                    $classification = 'LAB_OVERFLOW_OBSERVATION_INCONCLUSIVE'
+                    $detail = "Overflow attempt $overflowOrdinal was inconclusive: $([string]$attempt.reason)."
+                    break
+                }
+            }
+
+            $postOverflowLiveness = Test-MishApplicationLiveSet -Sessions $activeSessions -ExpectedSessions 64
+            $overflowOwnerCounts = Wait-MishOwnerCounts -ExpectedMesh 64 -ExpectedProxy 64
+            if ($classification -ceq 'U2_CAPACITY_RESOURCE_INCOMPLETE') {
+                if ([string]$postOverflowLiveness.result -cne 'PASS') {
+                    $classification = 'LAB_APPLICATION_LIVENESS_SOAK_FAILED'
+                    $detail = 'The original 64 lost application liveness after overflow attempts.'
+                }
+                elseif ([string]$overflowOwnerCounts.result -cne 'PASS') {
+                    $classification = 'U2_CAPACITY_OWNER_COUNT_MISMATCH'
+                    $detail = 'The original 64 remained application-live after overflow while owner counters diverged.'
+                }
+                else {
+                    $acceptanceResult = 'PASS'
+                    $classification = 'U2_CAPACITY_AND_RESOURCE_MEASUREMENTS_PASS'
+                }
+            }
+        }
     }
 }
 finally {
-    foreach ($session in $held) {
-        try { if ($null -ne $session.Stream) { $session.Stream.Dispose() } } catch {}
-        try { if ($null -ne $session.Client) { $session.Client.Dispose() } } catch {}
+    Close-MishApplicationSet -Sessions $activeSessions
+    $activeSessions = @()
+    try { $cleanupCounts = Wait-MishOwnerCounts -ExpectedMesh 0 -ExpectedProxy 0 } catch {}
+
+    if ($null -ne $lease -and $null -ne $cleanupCounts -and [string]$cleanupCounts.result -ceq 'PASS') {
+        $postCleanupSession = $null
+        try {
+            $postCleanupSession = Open-MishApplicationSession -ProxyHost $meshAddress -Lease $lease -Ordinal 1
+            $postCleanupMeshE2e = [ordered]@{ result = 'PASS'; reason = 'NONE' }
+        }
+        catch {
+            $postCleanupMeshE2e = [ordered]@{ result = 'FAIL'; reason = 'APPLICATION_ROUND_TRIP_FAILED'; error = $_.Exception.GetType().FullName }
+        }
+        finally {
+            if ($null -ne $postCleanupSession) {
+                Close-MishApplicationSet -Sessions @($postCleanupSession)
+                try { $cleanupCounts = Wait-MishOwnerCounts -ExpectedMesh 0 -ExpectedProxy 0 } catch {}
+            }
+        }
     }
-    $held.Clear()
+
     $lease = $null
     if (Test-Path -LiteralPath $credentialStorePath -PathType Leaf) {
         Remove-Item -LiteralPath $credentialStorePath -Force -ErrorAction SilentlyContinue
     }
-    try { $cleanupCounts = Wait-MishOwnerCounts -ExpectedMesh 0 -ExpectedProxy 0 } catch {}
     try { $postCleanupResources = Get-MishProcessResources -PidText $pidBefore } catch {}
 }
 
@@ -409,6 +674,12 @@ if (-not $pidStable) {
     $acceptanceResult = 'FAIL'
     $classification = 'INVALID_PROCESS_CHANGED_DURING_CAPACITY_PROBE'
 }
+elseif ($classification -like 'LAB_*') {
+    $acceptanceResult = 'FAIL'
+}
+elseif ($classification -in @('U2_CAPACITY_OWNER_COUNT_MISMATCH', 'U2_CAPACITY_65TH_NOT_REJECTED', 'U2_CAPACITY_CLEANUP_NOT_DRAINED')) {
+    $acceptanceResult = 'FAIL'
+}
 elseif ($null -eq $cleanupCounts -or [string]$cleanupCounts.result -cne 'PASS') {
     $acceptanceResult = 'FAIL'
     $classification = 'U2_CAPACITY_CLEANUP_NOT_DRAINED'
@@ -416,6 +687,10 @@ elseif ($null -eq $cleanupCounts -or [string]$cleanupCounts.result -cne 'PASS') 
 elseif ($null -eq $postCleanupResources) {
     $acceptanceResult = 'FAIL'
     $classification = 'LAB_RESOURCE_POST_CLEANUP_UNAVAILABLE'
+}
+elseif ([string]$postCleanupMeshE2e.result -cne 'PASS') {
+    $acceptanceResult = 'FAIL'
+    $classification = 'LAB_POST_CLEANUP_MESH_E2E_FAILED'
 }
 
 $resourceSummary = $null
@@ -449,16 +724,23 @@ $evidence = [ordered]@{
     collection_result = 'PASS'
     acceptance_result = $acceptanceResult
     classification = $classification
+    detail = $detail
     package = $PackageName
     product_pid = [string]$pidBefore
     pid_stable = $pidStable
     mesh_address = $meshAddress
     target = "${TargetHost}:$TargetPort"
-    held_session_protocol = 'TLS'
+    held_session_protocol = 'TLS+HTTP'
+    application_live_semantics = 'fresh HTTP HEAD round-trip on the same established TLS connection'
+    fresh_batch = $true
     stages = @($stages)
-    overflow_65th = $overflow
-    overflow_owner_counts = $overflowCounts
+    stage_boundaries = @($stageBoundaries)
+    soak_checkpoints = @($soak)
+    overflow_attempts = @($overflowAttempts)
+    post_overflow_application_liveness = $postOverflowLiveness
+    overflow_owner_counts = $overflowOwnerCounts
     cleanup_owner_counts = $cleanupCounts
+    post_cleanup_mesh_e2e = $postCleanupMeshE2e
     resource_summary = $resourceSummary
 }
 
@@ -467,7 +749,7 @@ $parent = Split-Path -Parent $fullEvidencePath
 if ($parent) { [IO.Directory]::CreateDirectory($parent) | Out-Null }
 [IO.File]::WriteAllText(
     $fullEvidencePath,
-    (($evidence | ConvertTo-Json -Depth 12) + [Environment]::NewLine),
+    (($evidence | ConvertTo-Json -Depth 16) + [Environment]::NewLine),
     [Text.UTF8Encoding]::new($false)
 )
 
