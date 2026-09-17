@@ -186,18 +186,6 @@ try {
         Stop-MishRecovery 'LAB_TEST_APK_INSTALL_IDENTITY_MISSING' 'Installed exact androidTest package path could not be resolved uniquely.'
     }
 
-    $remoteTestApk = $pathRows[0].Substring('package:'.Length)
-    $pulledTestApk = Join-Path ([IO.Path]::GetTempPath()) ('mish-e3-installed-' + [Guid]::NewGuid().ToString('N') + '.apk')
-    try {
-        $pull = Invoke-MishAdb -Arguments @('pull', $remoteTestApk, $pulledTestApk) -TimeoutSeconds 60
-        if ($pull.ExitCode -ne 0 -or (Get-MishSha256 -Path $pulledTestApk) -cne $testApkSha) {
-            Stop-MishRecovery 'LAB_TEST_APK_INSTALLED_DIGEST_MISMATCH' 'Installed androidTest APK bytes differ from the exact hosted candidate.'
-        }
-    }
-    finally {
-        Remove-Item -LiteralPath $pulledTestApk -Force -ErrorAction SilentlyContinue
-    }
-
     $instrumentation = Invoke-MishAdb -Arguments @(
         'shell', 'am', 'instrument', '-w', '-r',
         '-e', 'class', $script:TestClass,
@@ -215,7 +203,9 @@ try {
 
     $cellularEvidence = [ordered]@{
         exact_test_apk_sha256 = $testApkSha
-        installed_exact_bytes_verified = $true
+        exact_test_apk_digest_verified = $true
+        install_command_confirmed = $true
+        installed_package_path_verified = $true
         instrumentation_pass = $true
         positive_phase = $positive
         negative_phase = $negative

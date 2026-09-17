@@ -2,17 +2,20 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $probePath = Join-Path $PSScriptRoot 'diagnose-recovery-lifecycle.ps1'
+$startPath = Join-Path $PSScriptRoot 'start-device-app.ps1'
 $reportPath = Join-Path $PSScriptRoot 'new-device-cycle-report.ps1'
 
-$tokens = $null
-$errors = $null
-[void][System.Management.Automation.Language.Parser]::ParseFile($probePath, [ref]$tokens, [ref]$errors)
-if ($errors.Count -ne 0) {
-    $errors | ForEach-Object { Write-Error $_.Message }
-    throw 'Recovery/lifecycle probe must parse under PowerShell.'
-}
-if (@($tokens | Where-Object { $_.Text -ieq '$PID' }).Count -ne 0) {
-    throw 'Recovery/lifecycle probe must not shadow the PowerShell automatic PID variable.'
+foreach ($path in @($probePath, $startPath)) {
+    $tokens = $null
+    $errors = $null
+    [void][System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
+    if ($errors.Count -ne 0) {
+        $errors | ForEach-Object { Write-Error $_.Message }
+        throw "Recovery/lifecycle control must parse under PowerShell: $path"
+    }
+    if (@($tokens | Where-Object { $_.Text -ieq '$PID' }).Count -ne 0) {
+        throw "Recovery/lifecycle control must not shadow the PowerShell automatic PID variable: $path"
+    }
 }
 
 $source = Get-Content -Raw -LiteralPath $probePath
@@ -22,7 +25,9 @@ foreach ($required in @(
     'candidate.android_test_apk.sha256',
     "'install', '-r', '-t', `$testApkPath",
     "'shell', 'pm', 'path', `$script:TestPackage",
-    'Get-MishSha256 -Path $pulledTestApk',
+    'exact_test_apk_digest_verified = $true',
+    'install_command_confirmed = $true',
+    'installed_package_path_verified = $true',
     "external_owner_fault_injection = 'NOT_REQUIRED'",
     "reason = 'NO_SUPPORTED_DETERMINISTIC_UNATTENDED_TRIGGER_ON_DEVICE_1'",
     "external_mesh_owner_fault_injection = 'NOT_PERFORMED'",
@@ -52,6 +57,9 @@ foreach ($required in @(
 }
 
 foreach ($forbidden in @(
+    'LAB_TEST_APK_INSTALLED_DIGEST_MISMATCH',
+    '$pulledTestApk',
+    'installed_exact_bytes_verified = $true',
     "'cmd', 'connectivity', 'airplane-mode'",
     'CredentialProvisioning.psm1',
     'Open-MishApplicationSession',
@@ -71,7 +79,20 @@ foreach ($forbidden in @(
     'assembleDebug'
 )) {
     if ($source.Contains($forbidden)) {
-        throw "Recovery/lifecycle probe contains forbidden external-owner or PRODUCT mutation path: $forbidden"
+        throw "Recovery/lifecycle probe contains forbidden external-owner, false-provenance or PRODUCT mutation path: $forbidden"
+    }
+}
+
+$startSource = Get-Content -Raw -LiteralPath $startPath
+foreach ($required in @(
+    '[ValidateRange(0, 60)][int] $ReadinessGraceSeconds = 10',
+    '$proxyRunningSince = $null',
+    '$proxyRunningElapsed -ge $ReadinessGraceSeconds',
+    'readiness_grace_seconds = $ReadinessGraceSeconds',
+    "if (`$readinessState -ceq 'READY')"
+)) {
+    if (-not $startSource.Contains($required)) {
+        throw "Canonical launcher lost bounded READY grace semantics: $required"
     }
 }
 

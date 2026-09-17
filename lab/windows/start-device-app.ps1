@@ -6,6 +6,7 @@ param(
     [ValidateRange(5, 180)][int] $StartupTimeoutSeconds = 75,
     [ValidateRange(1, 10)][int] $StablePidSamples = 3,
     [ValidateRange(100, 5000)][int] $PollIntervalMs = 1000,
+    [ValidateRange(0, 60)][int] $ReadinessGraceSeconds = 10,
     [string] $ReceiptPath = (Join-Path $env:TEMP 'mish-device-start-v1.json')
 )
 
@@ -104,7 +105,7 @@ $deadline = [DateTimeOffset]::UtcNow.AddSeconds($StartupTimeoutSeconds)
 $lastPid = $null
 $stableCount = 0
 $stablePid = $null
-$proxyRunningSamples = 0
+$proxyRunningSince = $null
 $proxyState = 'UNKNOWN'
 $readinessState = 'UNKNOWN'
 $terminalObservation = 'TIMEOUT'
@@ -115,7 +116,7 @@ while ([DateTimeOffset]::UtcNow -lt $deadline) {
     if ($null -eq $processId) {
         $lastPid = $null
         $stableCount = 0
-        $proxyRunningSamples = 0
+        $proxyRunningSince = $null
         Start-Sleep -Milliseconds $PollIntervalMs
         continue
     }
@@ -126,7 +127,7 @@ while ([DateTimeOffset]::UtcNow -lt $deadline) {
     else {
         $lastPid = $processId
         $stableCount = 1
-        $proxyRunningSamples = 0
+        $proxyRunningSince = $null
     }
 
     if ($stableCount -ge $StablePidSamples) {
@@ -144,14 +145,17 @@ while ([DateTimeOffset]::UtcNow -lt $deadline) {
                 break
             }
             if ($proxyState -ceq 'RUNNING') {
-                $proxyRunningSamples += 1
-                if ($proxyRunningSamples -ge 2) {
+                if ($null -eq $proxyRunningSince) {
+                    $proxyRunningSince = [DateTimeOffset]::UtcNow
+                }
+                $proxyRunningElapsed = ([DateTimeOffset]::UtcNow - $proxyRunningSince).TotalSeconds
+                if ($proxyRunningElapsed -ge $ReadinessGraceSeconds) {
                     $terminalObservation = 'PROXY_RUNNING'
                     break
                 }
             }
             else {
-                $proxyRunningSamples = 0
+                $proxyRunningSince = $null
             }
         }
     }
@@ -181,6 +185,7 @@ $receipt = [ordered]@{
     terminal_observation = $terminalObservation
     proxy_state = $proxyState
     readiness_state = $readinessState
+    readiness_grace_seconds = $ReadinessGraceSeconds
     elapsed_ms = [int64]$startedAt.ElapsedMilliseconds
 }
 
