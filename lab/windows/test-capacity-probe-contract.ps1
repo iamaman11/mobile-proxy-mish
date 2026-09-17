@@ -20,6 +20,7 @@ foreach ($required in @(
     'function Invoke-MishApplicationRoundTrip',
     'function Test-MishApplicationLiveSet',
     'function Add-MishApplicationSessionsUntil',
+    '[Parameter(Mandatory)][AllowEmptyCollection()][Collections.Generic.List[object]] $Sessions',
     '[Net.Security.SslStream]::new($stream, $false)',
     '$tlsStream.AuthenticateAsClient($TargetHost)',
     'HEAD / HTTP/1.1',
@@ -58,6 +59,7 @@ foreach ($forbidden in @(
     'foreach ($checkpoint',
     'soak_checkpoints',
     '65..80',
+    '[Parameter(Mandatory)][Collections.Generic.List[object]] $Sessions',
     "reason = 'CONNECT_TIMEOUT_BEFORE_ADMISSION'"
 )) {
     if ($source.Contains($forbidden)) {
