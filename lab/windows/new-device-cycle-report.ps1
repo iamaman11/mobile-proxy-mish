@@ -136,9 +136,11 @@ $cycleResult = switch ($Mode) {
         break
     }
     'full' {
-        # Baseline PRODUCT failures outrank targeted-probe absence/failure. The one accepted exception is
-        # the proven Windows sandbox external-Mesh blocker for recovery_lifecycle: it must not mask an
-        # independently observed targeted PRODUCT failure, and it can never produce PASS on its own.
+        # Baseline facts outrank targeted-probe absence/failure. A baseline PRODUCT failure must not
+        # be reclassified as LAB failure merely because an explicit targeted acceptance could not run.
+        # The one accepted exception is the proven Windows sandbox external-Mesh blocker for
+        # recovery_lifecycle: it must not mask an independently observed targeted PRODUCT failure,
+        # and it can never produce PASS on its own.
         if ($launchFailed -or $null -eq $diagnostic) { 'LAB_FAIL' }
         elseif ($externalMeshBaselineBlocked) {
             if ($targetedAcceptance -in @('MISSING', 'INVALID', 'PASS')) { 'LAB_FAIL' }
