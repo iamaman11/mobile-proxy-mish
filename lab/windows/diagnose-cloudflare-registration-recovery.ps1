@@ -2,7 +2,7 @@
 param(
     [Parameter(Mandatory)][ValidatePattern('^[0-9a-f]{32}$')][string] $AccountId,
     [Parameter(Mandatory)][ValidatePattern('^[0-9a-fA-F-]{36}$')][string] $RegistrationId,
-    [string] $ApiTokenEnvironmentVariable = 'CLOUDFLARE_API_TOKEN',
+    [string] $ApiTokenEnvironmentVariable = 'MISH_CF_REGISTRATION_TOKEN',
     [string] $AdbPath = 'C:\mish-lab\tools\android-sdk\platform-tools\adb.exe',
     [string] $PackageName = 'com.mobileproxymish.app.debug',
     [string] $MeshCidr = '100.96.0.0/12',
@@ -153,7 +153,7 @@ function Get-MishRegistration {
         [Parameter(Mandatory)][string] $Id
     )
     $escaped = [Uri]::EscapeDataString($Id)
-    $response = Invoke-MishCloudflare -Client $Client -Method GET -Uri "$script:ApiRoot/$escaped?include=policy"
+    $response = Invoke-MishCloudflare -Client $Client -Method GET -Uri "$($script:ApiRoot)/$escaped?include=policy"
     if (-not $response.SuccessStatus -or $null -eq $response.Json -or -not [bool](Get-MishProperty $response.Json 'success')) {
         return $null
     }
@@ -162,7 +162,7 @@ function Get-MishRegistration {
 
 function Get-MishRegistrations {
     param([Parameter(Mandatory)][Net.Http.HttpClient] $Client)
-    $response = Invoke-MishCloudflare -Client $Client -Method GET -Uri "$script:ApiRoot?status=all&per_page=100&include=policy"
+    $response = Invoke-MishCloudflare -Client $Client -Method GET -Uri "$($script:ApiRoot)?status=all&per_page=100&include=policy"
     if (-not $response.SuccessStatus -or $null -eq $response.Json -or -not [bool](Get-MishProperty $response.Json 'success')) {
         return $null
     }
@@ -187,7 +187,7 @@ function Invoke-MishRegistrationMutation {
         [Parameter(Mandatory)][ValidateSet('revoke','unrevoke')][string] $Action
     )
     $escaped = [Uri]::EscapeDataString($RegistrationId)
-    $response = Invoke-MishCloudflare -Client $Client -Method POST -Uri "$script:ApiRoot/$Action?id=$escaped"
+    $response = Invoke-MishCloudflare -Client $Client -Method POST -Uri "$($script:ApiRoot)/$Action?id=$escaped"
     return ($response.SuccessStatus -and $null -ne $response.Json -and [bool](Get-MishProperty $response.Json 'success'))
 }
 
@@ -509,6 +509,60 @@ try {
     $lossEvidence.snapshot_timeout_count = @($lossObservations | Where-Object { $_.snapshot_fresh -and $_.snapshot_timeout }).Count
     $lossEvidence.mesh_observation_timeout_count = @($lossObservations | Where-Object { $_.mesh_observation_timeout }).Count
 
+    $successfulLossSnapshots = @(
+        $lossObservations |
+            Where-Object {
+                $_.snapshot_fresh -and
+                $_.snapshot_available
+            }
+    )
+
+    $lossEvidence.successful_authoritative_snapshots =
+        $successfulLossSnapshots.Count
+
+    $lossEvidence.first_successful_snapshot_ms =
+        if ($successfulLossSnapshots.Count -gt 0) {
+            [int64]$successfulLossSnapshots[0].elapsed_ms
+        }
+        else {
+            $null
+        }
+
+    $lossEvidence.last_successful_snapshot_ms =
+        if ($successfulLossSnapshots.Count -gt 0) {
+            [int64]$successfulLossSnapshots[
+                $successfulLossSnapshots.Count - 1
+            ].elapsed_ms
+        }
+        else {
+            $null
+        }
+
+    $maxSnapshotGapMs = 0L
+
+    for (
+        $index = 1;
+        $index -lt $successfulLossSnapshots.Count;
+        $index++
+    ) {
+        $gap = (
+            [int64]$successfulLossSnapshots[$index].elapsed_ms -
+            [int64]$successfulLossSnapshots[$index - 1].elapsed_ms
+        )
+
+        if ($gap -gt $maxSnapshotGapMs) {
+            $maxSnapshotGapMs = $gap
+        }
+    }
+
+    $lossEvidence.max_snapshot_gap_ms =
+        if ($successfulLossSnapshots.Count -gt 0) {
+            $maxSnapshotGapMs
+        }
+        else {
+            $null
+        }
+
     $unrevoke = Invoke-MishGuaranteedUnrevoke -Client $client
     $cleanupEvidence.attempted = $true
     $cleanupEvidence.mutation_success = [bool]$unrevoke.mutation_success
@@ -519,6 +573,30 @@ try {
     $registrationMayBeRevoked = $false
 
     if ($null -eq $lossState) {
+        $minimumCoverageEndMs =
+            [Math]::Max(
+                0,
+                ($LossWindowSeconds * 1000) - 10000
+            )
+
+        $coverageAdequate = (
+            $successfulLossSnapshots.Count -ge 3 -and
+            [int64]$successfulLossSnapshots[0].elapsed_ms -le 10000 -and
+            [int64]$successfulLossSnapshots[
+                $successfulLossSnapshots.Count - 1
+            ].elapsed_ms -ge $minimumCoverageEndMs -and
+            $maxSnapshotGapMs -le 10000
+        )
+
+        $lossEvidence.authoritative_observation_coverage_adequate =
+            $coverageAdequate
+
+        if (-not $coverageAdequate) {
+            Stop-MishProbe `
+                'LAB_OWNER_OBSERVATION_COVERAGE_INSUFFICIENT' `
+                'No owner loss was observed, but fresh authoritative PRODUCT snapshot coverage was insufficient for a conclusive no-loss result.'
+        }
+
         Stop-MishProbe 'LAB_REGISTRATION_REVOKE_NO_OWNER_LOSS_WITHIN_WINDOW' 'Registration revoke did not produce natural Mesh owner revocation inside the bounded loss window.'
     }
 

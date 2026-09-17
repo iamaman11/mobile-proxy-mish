@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][ValidatePattern('^[0-9a-fA-F]{32}$')][string] $AccountId,
-    [string] $ApiTokenEnvironmentVariable = 'CLOUDFLARE_API_TOKEN',
+    [string] $ApiTokenEnvironmentVariable = 'MISH_CF_REGISTRATION_TOKEN',
     [ValidateRange(1, 30)][int] $ApiTimeoutSeconds = 10
 )
 

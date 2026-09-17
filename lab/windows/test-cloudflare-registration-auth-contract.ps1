@@ -13,7 +13,7 @@ if ($errors.Count -ne 0) {
 
 $source = Get-Content -Raw -LiteralPath $probePath
 foreach ($required in @(
-    "`$ApiTokenEnvironmentVariable = 'CLOUDFLARE_API_TOKEN'",
+    "`$ApiTokenEnvironmentVariable = 'MISH_CF_REGISTRATION_TOKEN'",
     'devices/registrations?status=all&per_page=100&include=policy',
     "AuthenticationHeaderValue]::new('Bearer', `$token)",
     "StartsWith('Bearer ', [StringComparison]::OrdinalIgnoreCase)",

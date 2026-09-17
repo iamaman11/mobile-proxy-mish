@@ -18,7 +18,7 @@ $source = Get-Content -Raw -LiteralPath $probePath
 
 foreach ($required in @(
     "`$script:Schema = 'mish.lab.cloudflare-registration-recovery/v1'",
-    "`$ApiTokenEnvironmentVariable = 'CLOUDFLARE_API_TOKEN'",
+    "`$ApiTokenEnvironmentVariable = 'MISH_CF_REGISTRATION_TOKEN'",
     '/devices/registrations',
     "ValidateSet('revoke','unrevoke')",
     "-Action revoke",
@@ -28,12 +28,18 @@ foreach ($required in @(
     "Invoke-MishGuaranteedUnrevoke",
     "LAB_TARGET_UNREVOKE_CLEANUP_FAILED",
     "LAB_REGISTRATION_REVOKE_NO_OWNER_LOSS_WITHIN_WINDOW",
+    "LAB_OWNER_OBSERVATION_COVERAGE_INSUFFICIENT",
+    "successful_authoritative_snapshots",
+    "first_successful_snapshot_ms",
+    "last_successful_snapshot_ms",
+    "max_snapshot_gap_ms",
+    "authoritative_observation_coverage_adequate",
     "LAB_REGISTRATION_UNREVOKE_AUTORECOVERY_NOT_OBSERVED",
     "-TimeoutSeconds `$SnapshotTimeoutSeconds",
     "`$script:SnapshotPollMs = 2000",
     "`$script:PollMs = 250",
     "`$process.Kill(`$true)",
-    "status=all&per_page=100&include=policy",
+    '"$($script:ApiRoot)?status=all&per_page=100&include=policy"',
     "registration_type') -cne 'warp'",
     "tunnel_type') -cne 'masque'",
     "Compare-MishNonTargetRegistrations",
@@ -49,6 +55,10 @@ foreach ($required in @(
     if (-not $source.Contains($required)) {
         throw "Cloudflare registration recovery probe lost required bounded/scope/cleanup evidence: $required"
     }
+}
+
+if ($source.Contains('"$script:ApiRoot?')) {
+    throw 'Cloudflare registration recovery probe must delimit ApiRoot before a query string.'
 }
 
 $armIndex = $source.IndexOf('$registrationMayBeRevoked = $true', [StringComparison]::Ordinal)
