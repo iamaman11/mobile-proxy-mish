@@ -73,6 +73,11 @@ function Get-MishCycleFailureKind {
     return 'PRODUCT_FAIL'
 }
 
+function Test-MishSupportedFullProbe {
+    param([Parameter(Mandatory)][string] $Probe)
+    return $Probe -in @('capacity_resources', 'recovery_lifecycle')
+}
+
 $launch = Read-OptionalJson -Path $LaunchReceiptPath
 $diagnostic = Read-OptionalJson -Path $DiagnosticEvidencePath
 $targeted = Read-OptionalJson -Path $TargetedEvidencePath
@@ -97,7 +102,7 @@ $classification = switch ($Mode) {
         elseif ($null -eq $diagnostic) { 'DIAGNOSTIC_COLLECTION_FAILED' }
         elseif ([string]$diagnostic.classification -cne 'PASS') { [string]$diagnostic.classification }
         elseif ($RequestedProbe -ceq 'none') { 'PASS' }
-        elseif ($RequestedProbe -cne 'capacity_resources') { 'LAB_PROBE_NOT_EXPLICIT' }
+        elseif (-not (Test-MishSupportedFullProbe -Probe $RequestedProbe)) { 'LAB_PROBE_NOT_EXPLICIT' }
         elseif ($targetedAcceptance -eq 'MISSING') { 'LAB_TARGETED_PROBE_COLLECTION_FAILED' }
         elseif ($targetedAcceptance -eq 'INVALID') { 'LAB_TARGETED_PROBE_SCHEMA_INVALID' }
         else { $targetedClassification }
@@ -120,13 +125,13 @@ $cycleResult = switch ($Mode) {
     }
     'full' {
         # Baseline facts outrank targeted-probe absence/failure. A baseline PRODUCT failure must not
-        # be reclassified as LAB failure merely because capacity execution was not meaningful.
+        # be reclassified as LAB failure merely because an explicit targeted acceptance could not run.
         if ($launchFailed -or $null -eq $diagnostic) { 'LAB_FAIL' }
         elseif ([string]$diagnostic.classification -cne 'PASS') {
             Get-MishCycleFailureKind -Classification ([string]$diagnostic.classification)
         }
         elseif ($RequestedProbe -ceq 'none') { 'PASS' }
-        elseif ($RequestedProbe -cne 'capacity_resources') { 'LAB_FAIL' }
+        elseif (-not (Test-MishSupportedFullProbe -Probe $RequestedProbe)) { 'LAB_FAIL' }
         elseif ($targetedAcceptance -in @('MISSING', 'INVALID')) { 'LAB_FAIL' }
         elseif ($targetedAcceptance -ceq 'PASS') { 'PASS' }
         else { Get-MishCycleFailureKind -Classification $classification }
@@ -158,7 +163,11 @@ $report = [ordered]@{
     collected_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
     mode = $Mode
     acceptance_scope = switch ($Mode) {
-        'full' { if ($RequestedProbe -ceq 'capacity_resources') { 'FULL_BASELINE_PLUS_CAPACITY_RESOURCES' } else { 'FULL_BASELINE' } }
+        'full' {
+            if ($RequestedProbe -ceq 'capacity_resources') { 'FULL_BASELINE_PLUS_CAPACITY_RESOURCES' }
+            elseif ($RequestedProbe -ceq 'recovery_lifecycle') { 'FULL_BASELINE_PLUS_RECOVERY_LIFECYCLE' }
+            else { 'FULL_BASELINE' }
+        }
         'install_only' { 'INSTALL_ONLY' }
         'diagnose_only' { 'DIAGNOSE_ONLY' }
         'probe_only' { 'PROBE_ONLY' }
