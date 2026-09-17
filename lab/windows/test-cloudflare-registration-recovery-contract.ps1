@@ -30,6 +30,27 @@ foreach ($required in @(
     "cloudflare_registration_revoke_succeeded",
     "cloudflare_registration_unrevoke_attempted",
     "cloudflare_registration_unrevoke_succeeded",
+    "snapshot_authoritative",
+    "snapshot_consistent",
+    "LAB_REGISTRATION_RECOVERY_UNEXPECTED_FAILURE",
+    "exception_type",
+    "script_line",
+    "offset_in_line",
+    "`$stage = 'INITIALIZING'",
+    "`$stage = 'INITIAL_SCOPE'",
+    "`$stage = 'BASELINE'",
+    "`$stage = 'REVOKE_REQUEST'",
+    "`$stage = 'REVOKE_CONFIRMATION'",
+    "`$stage = 'POST_REVOKE_SCOPE'",
+    "`$stage = 'LOSS_OBSERVATION'",
+    "`$stage = 'UNREVOKE_REQUEST'",
+    "`$stage = 'LOSS_CLASSIFICATION'",
+    "`$stage = 'RECOVERY_OBSERVATION'",
+    "`$stage = 'POST_RECOVERY_DIAGNOSTIC'",
+    "`$stage = 'FINAL_SCOPE'",
+    "`$stage = 'COMPLETED'",
+    "failure = `$failureEvidence",
+    '$_.snapshot_authoritative',
     "LAB_TARGET_UNREVOKE_CLEANUP_FAILED",
     "LAB_REGISTRATION_REVOKE_NO_OWNER_LOSS_WITHIN_WINDOW",
     "LAB_OWNER_OBSERVATION_COVERAGE_INSUFFICIENT",
@@ -70,6 +91,19 @@ if ($source.Contains('"$script:ApiRoot?')) {
 
 if ($source -match '\$[A-Za-z_][A-Za-z0-9_:]*\?') {
     throw 'Cloudflare registration recovery probe must not concatenate query strings directly after PowerShell variables.'
+}
+
+$coverageStart = $source.IndexOf('$successfulLossSnapshots = @(', [StringComparison]::Ordinal)
+$coverageEnd = $source.IndexOf('$lossEvidence.successful_authoritative_snapshots', [StringComparison]::Ordinal)
+if ($coverageStart -lt 0 -or $coverageEnd -le $coverageStart) {
+    throw 'Cloudflare registration recovery probe must expose authoritative loss coverage selection.'
+}
+$coverageSource = $source.Substring($coverageStart, $coverageEnd - $coverageStart)
+if (-not $coverageSource.Contains('$_.snapshot_authoritative')) {
+    throw 'Loss coverage must count only authoritative snapshots.'
+}
+if ($coverageSource.Contains('$_.snapshot_available')) {
+    throw 'Loss coverage must not count merely available non-authoritative snapshots.'
 }
 
 $armIndex = $source.IndexOf('$registrationMayBeRevoked = $true', [StringComparison]::Ordinal)

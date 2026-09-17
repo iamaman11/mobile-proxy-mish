@@ -308,7 +308,110 @@ function New-MishObservation {
         [Parameter(Mandatory)] $MeshResult,
         [Parameter(Mandatory)][bool] $SnapshotFresh
     )
-    $snapshot = if ($null -ne $SnapshotResult -and $SnapshotResult.Available) { $SnapshotResult.Value } else { $null }
+    $snapshot =
+        if (
+            $null -ne $SnapshotResult -and
+            $SnapshotResult.Available
+        ) {
+            $SnapshotResult.Value
+        }
+        else {
+            $null
+        }
+
+    $cellular =
+        if ($null -ne $snapshot) {
+            Get-MishProperty $snapshot 'cellular'
+        }
+        else {
+            $null
+        }
+
+    $mesh =
+        if ($null -ne $snapshot) {
+            Get-MishProperty $snapshot 'mesh'
+        }
+        else {
+            $null
+        }
+
+    $readiness =
+        if ($null -ne $snapshot) {
+            Get-MishProperty $snapshot 'readiness'
+        }
+        else {
+            $null
+        }
+
+    $consistent =
+        if ($null -ne $snapshot) {
+            Get-MishProperty $snapshot 'consistent'
+        }
+        else {
+            $null
+        }
+
+    $cellularAdmitted =
+        if ($null -ne $cellular) {
+            Get-MishProperty $cellular 'admitted'
+        }
+        else {
+            $null
+        }
+
+    $meshAdmitted =
+        if ($null -ne $mesh) {
+            Get-MishProperty $mesh 'admitted'
+        }
+        else {
+            $null
+        }
+
+    $meshEpochPresent =
+        if ($null -ne $mesh) {
+            Get-MishProperty $mesh 'epoch_present'
+        }
+        else {
+            $null
+        }
+
+    $meshIngressRunning =
+        if ($null -ne $mesh) {
+            Get-MishProperty $mesh 'ingress_running'
+        }
+        else {
+            $null
+        }
+
+    $meshActiveSessions =
+        if ($null -ne $mesh) {
+            Get-MishProperty $mesh 'active_sessions'
+        }
+        else {
+            $null
+        }
+
+    $readinessState =
+        if ($null -ne $readiness) {
+            Get-MishProperty $readiness 'state'
+        }
+        else {
+            $null
+        }
+
+    $snapshotAuthoritative = (
+        $null -ne $snapshot -and
+        $null -ne $consistent -and
+        $null -ne $cellularAdmitted -and
+        $null -ne $meshAdmitted -and
+        $null -ne $meshEpochPresent -and
+        $null -ne $meshIngressRunning -and
+        $null -ne $meshActiveSessions -and
+        -not [string]::IsNullOrWhiteSpace(
+            [string]$readinessState
+        )
+    )
+
     return [pscustomobject][ordered]@{
         elapsed_ms = [int64]$Watch.ElapsedMilliseconds
         mesh_observation_available = [bool]$MeshResult.Available
@@ -316,13 +419,15 @@ function New-MishObservation {
         mesh_addresses = @($MeshResult.Addresses)
         snapshot_fresh = $SnapshotFresh
         snapshot_available = ($null -ne $snapshot)
+        snapshot_authoritative = $snapshotAuthoritative
         snapshot_timeout = if ($null -ne $SnapshotResult) { [bool]$SnapshotResult.TimedOut } else { $false }
-        cellular_admitted = if ($null -ne $snapshot) { [bool]$snapshot.cellular.admitted } else { $null }
-        mesh_admitted = if ($null -ne $snapshot) { [bool]$snapshot.mesh.admitted } else { $null }
-        mesh_epoch_present = if ($null -ne $snapshot) { [bool]$snapshot.mesh.epoch_present } else { $null }
-        mesh_ingress_running = if ($null -ne $snapshot) { [bool]$snapshot.mesh.ingress_running } else { $null }
-        mesh_active_sessions = if ($null -ne $snapshot) { [int64]$snapshot.mesh.active_sessions } else { $null }
-        readiness = if ($null -ne $snapshot) { [string]$snapshot.readiness.state } else { $null }
+        snapshot_consistent = if ($null -ne $consistent) { [bool]$consistent } else { $null }
+        cellular_admitted = if ($null -ne $cellularAdmitted) { [bool]$cellularAdmitted } else { $null }
+        mesh_admitted = if ($null -ne $meshAdmitted) { [bool]$meshAdmitted } else { $null }
+        mesh_epoch_present = if ($null -ne $meshEpochPresent) { [bool]$meshEpochPresent } else { $null }
+        mesh_ingress_running = if ($null -ne $meshIngressRunning) { [bool]$meshIngressRunning } else { $null }
+        mesh_active_sessions = if ($null -ne $meshActiveSessions) { [int64]$meshActiveSessions } else { $null }
+        readiness = if ($null -ne $readinessState) { [string]$readinessState } else { $null }
     }
 }
 
@@ -354,30 +459,29 @@ function Wait-MishOwnerState {
         $observation = New-MishObservation -Watch $watch -SnapshotResult $lastSnapshot -MeshResult $mesh -SnapshotFresh $snapshotFresh
         $Observations.Add($observation)
 
-        if ($null -ne $lastSnapshot -and $lastSnapshot.Available) {
-            $snapshot = $lastSnapshot.Value
-            if (
-                $State -ceq 'lost' -and
-                [bool]$snapshot.consistent -and
-                -not [bool]$snapshot.mesh.admitted -and
-                -not [bool]$snapshot.mesh.epoch_present -and
-                -not [bool]$snapshot.mesh.ingress_running -and
-                [int64]$snapshot.mesh.active_sessions -eq 0
-            ) {
-                return [pscustomobject]@{ Observation = $observation; ElapsedMs = [int64]$watch.ElapsedMilliseconds }
-            }
-            if (
-                $State -ceq 'ready' -and
-                [bool]$snapshot.consistent -and
-                [bool]$snapshot.cellular.admitted -and
-                [bool]$snapshot.mesh.admitted -and
-                [bool]$snapshot.mesh.epoch_present -and
-                [bool]$snapshot.mesh.ingress_running -and
-                [string]$snapshot.readiness.state -ceq 'READY' -and
-                $mesh.Available -and @($mesh.Addresses).Count -eq 1
-            ) {
-                return [pscustomobject]@{ Observation = $observation; ElapsedMs = [int64]$watch.ElapsedMilliseconds }
-            }
+        if (
+            $State -ceq 'lost' -and
+            $observation.snapshot_authoritative -and
+            $observation.snapshot_consistent -and
+            -not $observation.mesh_admitted -and
+            -not $observation.mesh_epoch_present -and
+            -not $observation.mesh_ingress_running -and
+            [int64]$observation.mesh_active_sessions -eq 0
+        ) {
+            return [pscustomobject]@{ Observation = $observation; ElapsedMs = [int64]$watch.ElapsedMilliseconds }
+        }
+        if (
+            $State -ceq 'ready' -and
+            $observation.snapshot_authoritative -and
+            $observation.snapshot_consistent -and
+            $observation.cellular_admitted -and
+            $observation.mesh_admitted -and
+            $observation.mesh_epoch_present -and
+            $observation.mesh_ingress_running -and
+            [string]$observation.readiness -ceq 'READY' -and
+            $mesh.Available -and @($mesh.Addresses).Count -eq 1
+        ) {
+            return [pscustomobject]@{ Observation = $observation; ElapsedMs = [int64]$watch.ElapsedMilliseconds }
         }
 
         Start-Sleep -Milliseconds $script:PollMs
@@ -449,8 +553,17 @@ $scopeEvidence = [ordered]@{}
 $lossObservations = [Collections.Generic.List[object]]::new()
 $recoveryObservations = [Collections.Generic.List[object]]::new()
 $registrationsBefore = @()
+$stage = 'INITIALIZING'
+$failureEvidence = [ordered]@{
+    stage = $null
+    exception_type = $null
+    message = $null
+    script_line = $null
+    offset_in_line = $null
+}
 
 try {
+    $stage = 'INITIAL_SCOPE'
     $client = New-MishHttpClient -Token $token
 
     $registrationsBefore = @(Get-MishRegistrations -Client $client)
@@ -485,6 +598,7 @@ try {
         non_target_registrations_unchanged = $false
     }
 
+    $stage = 'BASELINE'
     $airplane = Invoke-MishAdb -Arguments @('shell','cmd','connectivity','airplane-mode') -TimeoutSeconds 5
     $vpnPid = Invoke-MishAdb -Arguments @('shell','pidof','com.cloudflare.cloudflareoneagent') -TimeoutSeconds 5
     $meshBefore = Get-MishMeshAddresses
@@ -516,6 +630,7 @@ try {
     }
 
     # Mark cleanup-required before the request: an HTTP timeout can occur after Cloudflare applied the mutation.
+    $stage = 'REVOKE_REQUEST'
     $registrationMayBeRevoked = $true
     $revokeAttempted = $true
     $revokeSucceeded =
@@ -525,17 +640,20 @@ try {
     if (-not $revokeSucceeded) {
         Stop-MishProbe 'LAB_TARGET_REVOKE_REQUEST_FAILED' 'Exact registration revoke request did not return Cloudflare success.'
     }
+    $stage = 'REVOKE_CONFIRMATION'
     $revoked = Wait-MishRegistrationState -Client $client -State revoked -TimeoutSeconds 20
     if ($null -eq $revoked) {
         Stop-MishProbe 'LAB_TARGET_REVOKE_NOT_CONFIRMED' 'Cloudflare control plane did not confirm exact registration revocation.'
     }
 
+    $stage = 'POST_REVOKE_SCOPE'
     $registrationsAfterRevoke = @(Get-MishRegistrations -Client $client)
     if ($registrationsAfterRevoke.Count -eq 0 -or -not (Compare-MishNonTargetRegistrations -Before $registrationsBefore -After $registrationsAfterRevoke)) {
         Stop-MishProbe 'LAB_REVOKE_SCOPE_VIOLATION' 'A non-target registration changed during the targeted revoke experiment.'
     }
     $scopeEvidence.non_target_registrations_unchanged = $true
 
+    $stage = 'LOSS_OBSERVATION'
     $lossState = Wait-MishOwnerState -State lost -TimeoutSeconds $LossWindowSeconds -Observations $lossObservations
     $lossEvidence.control_plane_revoked = $true
     $lossEvidence.owner_revoke_observed = ($null -ne $lossState)
@@ -548,7 +666,7 @@ try {
         $lossObservations |
             Where-Object {
                 $_.snapshot_fresh -and
-                $_.snapshot_available
+                $_.snapshot_authoritative
             }
     )
 
@@ -598,6 +716,7 @@ try {
             $null
         }
 
+    $stage = 'UNREVOKE_REQUEST'
     $unrevokeAttempted = $true
     $unrevoke = Invoke-MishGuaranteedUnrevoke -Client $client
     $unrevokeSucceeded = (
@@ -612,6 +731,7 @@ try {
     }
     $registrationMayBeRevoked = $false
 
+    $stage = 'LOSS_CLASSIFICATION'
     if ($null -eq $lossState) {
         $minimumCoverageEndMs =
             [Math]::Max(
@@ -640,6 +760,7 @@ try {
         Stop-MishProbe 'LAB_REGISTRATION_REVOKE_NO_OWNER_LOSS_WITHIN_WINDOW' 'Registration revoke did not produce natural Mesh owner revocation inside the bounded loss window.'
     }
 
+    $stage = 'RECOVERY_OBSERVATION'
     $recoveryState = Wait-MishOwnerState -State ready -TimeoutSeconds $RecoveryWindowSeconds -Observations $recoveryObservations
     $recoveryEvidence.control_plane_active = $true
     $recoveryEvidence.owner_recovery_observed = ($null -ne $recoveryState)
@@ -651,6 +772,7 @@ try {
         Stop-MishProbe 'LAB_REGISTRATION_UNREVOKE_AUTORECOVERY_NOT_OBSERVED' 'Active registration did not yield autonomous Mesh owner recovery inside the bounded recovery window.'
     }
 
+    $stage = 'POST_RECOVERY_DIAGNOSTIC'
     & (Join-Path $PSScriptRoot 'collect-device-diagnostic.ps1') `
         -AdbPath $AdbPath `
         -PackageName $PackageName `
@@ -662,6 +784,7 @@ try {
         Stop-MishProbe 'U2_REGISTRATION_RECOVERY_E2E_FAILED' 'Natural owner recovery occurred but canonical post-recovery diagnostic/Mesh E2E was not PASS.'
     }
 
+    $stage = 'FINAL_SCOPE'
     $registrationsFinal = @(Get-MishRegistrations -Client $client)
     if ($registrationsFinal.Count -ne $ExpectedRegistrationCount -or -not (Compare-MishNonTargetRegistrations -Before $registrationsBefore -After $registrationsFinal)) {
         Stop-MishProbe 'LAB_FINAL_REGISTRATION_SCOPE_MISMATCH' 'Final control-plane scope differs from the guarded baseline.'
@@ -671,17 +794,34 @@ try {
         Stop-MishProbe 'LAB_FINAL_TARGET_NOT_ACTIVE' 'The exact Android registration is not active at final verification.'
     }
 
+    $stage = 'COMPLETED'
     $acceptanceResult = 'PASS'
     $classification = 'LAB_REGISTRATION_REVOKE_UNREVOKE_TRIGGER_PASS'
     $primaryClassification = $classification
 }
 catch {
-    $message = $_.Exception.Message
+    $failureEvidence.stage = $stage
+    $message = [string]$_.Exception.Message
     if ($message -match '^MISH_REGISTRATION_RECOVERY_FAILURE\|(?<classification>[A-Z0-9_]+)\|') {
         $classification = $Matches['classification']
     }
     else {
         $classification = 'LAB_REGISTRATION_RECOVERY_UNEXPECTED_FAILURE'
+        $errorMessage = [regex]::Replace(
+            $message,
+            '(?i)Bearer\s+\S+',
+            'Bearer <redacted>'
+        )
+        $failureEvidence.exception_type =
+            $_.Exception.GetType().FullName
+        $failureEvidence.message = $errorMessage
+        $invocation = $_.InvocationInfo
+        if ($null -ne $invocation) {
+            $failureEvidence.script_line =
+                $invocation.ScriptLineNumber
+            $failureEvidence.offset_in_line =
+                $invocation.OffsetInLine
+        }
     }
     $primaryClassification = $classification
 }
@@ -731,6 +871,7 @@ finally {
         recovery = $recoveryEvidence
         recovery_observations = @($recoveryObservations)
         cleanup = $cleanupEvidence
+        failure = $failureEvidence
         lab_effects = [ordered]@{
             cloudflare_registration_revoke_attempted = $revokeAttempted
             cloudflare_registration_revoke_succeeded = $revokeSucceeded
