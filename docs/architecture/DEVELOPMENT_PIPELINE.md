@@ -160,7 +160,11 @@ Windows external client -> admitted Mesh endpoint:3128
  -> Cellular Egress target connect
 ```
 
-It holds authenticated CONNECT paths at `10`, `32` and `64`, reads owner-backed `mesh.active_sessions` and `proxy.active_sessions`, requires the 65th external client to be rejected before the backend count grows, drains to zero, and records threads / FD / RSS / PSS at idle, load and post-cleanup. It does not infer capacity from `/proc/net/tcp`, does not use ADB forwarding, and does not add a LAB-owned session counter.
+Capacity acceptance uses independent fresh batches at `10`, `32` and `64`. A client path counts as application-live only when a fresh bounded HTTP request/response round-trip succeeds over the same already-established TLS connection. The probe drains owner counts to `0/0` between batches, repeatedly re-proves all 64 application-live paths through a bounded 90-second window, requires `mesh.active_sessions=64` and `proxy.active_sessions=64`, then verifies overflow attempts are rejected before Proxy Serving while the original 64 remain application-live and owner counts stay `64/64`. Finally it drains to `0/0`, records threads / FD / RSS / PSS, and performs one fresh external Mesh application round-trip after cleanup.
+
+A client object, `TcpClient.Connected`, an historical CONNECT response, or an historical TLS handshake is not application-liveness evidence. An overflow connect/read/write timeout is not automatically accepted as edge rejection; ambiguous transport observations are classified as LAB failure/inconclusive and do not reject the PRODUCT candidate. A PRODUCT capacity failure is emitted only when application-live client evidence proves the required admitted set while natural-owner counts diverge, or when an overflow attempt reaches Proxy Serving despite the proven 64-session precondition.
+
+The probe does not infer capacity from `/proc/net/tcp`, does not use ADB forwarding, and does not add a LAB-owned session counter.
 
 Resource values are measurements, not invented absolute production thresholds. Capacity, owner-count causality, PID stability and post-cleanup session drain are strict acceptance facts; resource baselines/peaks/deltas are durable evidence for later lifetime evaluation.
 
