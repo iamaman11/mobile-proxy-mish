@@ -23,11 +23,12 @@ foreach ($required in @(
     "`$script:Schema = 'mish.lab.recovery-lifecycle/v1'",
     "schema -cne `$script:CandidateSchema",
     'candidate.android_test_apk.sha256',
-    "'install', '-r', '-t', `$testApkPath",
     "'shell', 'pm', 'path', `$script:TestPackage",
     'exact_test_apk_digest_verified = $true',
-    'install_command_confirmed = $true',
+    'preinstalled_lab_signed_harness = $true',
     'installed_package_path_verified = $true',
+    'instrumentation_exit_code = [int]$instrumentation.ExitCode',
+    'LAB_TEST_HARNESS_SIGNATURE_MISMATCH',
     "external_owner_fault_injection = 'NOT_REQUIRED'",
     "reason = 'NO_SUPPORTED_DETERMINISTIC_UNATTENDED_TRIGGER_ON_DEVICE_1'",
     "external_mesh_owner_fault_injection = 'NOT_PERFORMED'",
@@ -57,6 +58,9 @@ foreach ($required in @(
 }
 
 foreach ($forbidden in @(
+    "'install', '-r', '-t', `$testApkPath",
+    'LAB_TEST_APK_INSTALL_FAILED',
+    'install_command_confirmed = $true',
     'LAB_TEST_APK_INSTALLED_DIGEST_MISMATCH',
     '$pulledTestApk',
     'installed_exact_bytes_verified = $true',
@@ -79,7 +83,7 @@ foreach ($forbidden in @(
     'assembleDebug'
 )) {
     if ($source.Contains($forbidden)) {
-        throw "Recovery/lifecycle probe contains forbidden external-owner, false-provenance or PRODUCT mutation path: $forbidden"
+        throw "Recovery/lifecycle probe contains forbidden duplicate harness install, external-owner, false-provenance or PRODUCT mutation path: $forbidden"
     }
 }
 
