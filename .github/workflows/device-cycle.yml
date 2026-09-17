@@ -13,6 +13,8 @@ on:
       - 'lab/windows/DeviceDiagnosticClassification.psm1'
       - 'lab/windows/diagnose-loopback-connect.ps1'
       - 'lab/windows/diagnose-capacity-resources.ps1'
+      - 'lab/windows/diagnose-recovery-lifecycle.ps1'
+      - 'lab/windows/test-recovery-lifecycle-probe-contract.ps1'
       - 'lab/windows/new-device-cycle-report.ps1'
       - 'lab/windows/test-device-cycle.ps1'
       - 'tools/check_device_cycle_contract.py'
@@ -53,6 +55,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           .\lab\windows\test-device-candidate.ps1
           .\lab\windows\test-device-cycle.ps1
+          .\lab\windows\test-recovery-lifecycle-probe-contract.ps1
           python .\tools\check_device_cycle_contract.py
           python .\tools\check_delivery_contract.py
 
@@ -103,10 +106,10 @@ jobs:
           elif mode == 'full':
               if len(parts) == 3:
                   probe = 'none'
-              elif len(parts) == 4 and parts[3] == 'capacity_resources':
+              elif len(parts) == 4 and parts[3] in {'capacity_resources', 'recovery_lifecycle'}:
                   probe = parts[3]
               else:
-                  raise SystemExit('full accepts only the explicit optional capacity_resources probe')
+                  raise SystemExit('full accepts only the explicit optional capacity_resources probe or recovery_lifecycle')
           else:
               if len(parts) != 3:
                   raise SystemExit('install_only/diagnose_only do not accept a probe')
@@ -508,6 +511,35 @@ jobs:
             -PackageName $env:PACKAGE_NAME `
             -EvidencePath "$env:RUNNER_TEMP\\mish-targeted-probe-v1.json"
 
+      - name: Download exact candidate harness for recovery lifecycle
+        if: ${{ needs.resolve.outputs.mode == 'full' && needs.resolve.outputs.probe == 'recovery_lifecycle' && steps.baseline.outcome == 'success' }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.resolve.outputs.artifact_id }}
+          path: ${{ runner.temp }}\\mish-recovery-candidate
+          github-token: ${{ github.token }}
+          repository: iamaman11/mobile-proxy-mish
+          run-id: ${{ needs.resolve.outputs.hosted_run_id }}
+          merge-multiple: false
+
+      - name: Explicit U2 recovery/lifecycle - Mesh loss + exact Cellular E3 + restart
+        if: ${{ needs.resolve.outputs.mode == 'full' && needs.resolve.outputs.probe == 'recovery_lifecycle' && steps.baseline.outcome == 'success' }}
+        continue-on-error: true
+        shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $candidateDirectory = Join-Path "$env:RUNNER_TEMP\\mish-recovery-candidate" '${{ needs.resolve.outputs.artifact_name }}'
+          .\\lab\\windows\\diagnose-recovery-lifecycle.ps1 `
+            -CandidateDirectory $candidateDirectory `
+            -ExpectedSourceSha '${{ needs.resolve.outputs.source_sha }}' `
+            -AdbPath $env:ADB_EXE `
+            -PackageName $env:PACKAGE_NAME `
+            -ComponentName "$env:PACKAGE_NAME/com.mobileproxymish.app.MainActivity" `
+            -InitialLaunchReceiptPath "$env:RUNNER_TEMP\\mish-device-start-v1.json" `
+            -PostRestartReceiptPath "$env:RUNNER_TEMP\\mish-device-post-recovery-start-v1.json" `
+            -PostRestartDiagnosticPath "$env:RUNNER_TEMP\\mish-device-post-recovery-diagnostic-v2.json" `
+            -EvidencePath "$env:RUNNER_TEMP\\mish-targeted-probe-v1.json"
+
       - name: Build observational cycle report
         id: report
         if: ${{ always() }}
@@ -551,6 +583,8 @@ jobs:
             ${{ runner.temp }}\\mish-device-start-v1.json
             ${{ runner.temp }}\\mish-device-diagnostic-v2.json
             ${{ runner.temp }}\\mish-targeted-probe-v1.json
+            ${{ runner.temp }}\\mish-device-post-recovery-start-v1.json
+            ${{ runner.temp }}\\mish-device-post-recovery-diagnostic-v2.json
           if-no-files-found: warn
           retention-days: 30
 
@@ -576,7 +610,7 @@ jobs:
               '- Automatic cycle start: **NO**',
               '- Automatic repair/probe decision: **NO**',
               '- Next action: **STOP_FOR_ANALYSIS**',
-              '- Airplane recovery: **NOT RUN**'
+              "- Recovery/lifecycle acceptance: $([string]$report.targeted_probe.acceptance_result)"
             ) | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_STEP_SUMMARY
           }
 
