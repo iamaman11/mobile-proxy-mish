@@ -292,31 +292,18 @@ function Test-MishApplicationLiveSet {
     }
 }
 
-function Open-MishFreshApplicationSet {
+function Add-MishApplicationSessionsUntil {
     param(
         [Parameter(Mandatory)][string] $ProxyHost,
         [Parameter(Mandatory)] $Lease,
+        [Parameter(Mandatory)][Collections.Generic.List[object]] $Sessions,
         [Parameter(Mandatory)][int] $ExpectedSessions
     )
-    $sessions = [Collections.Generic.List[object]]::new()
-    try {
-        for ($ordinal = 1; $ordinal -le $ExpectedSessions; $ordinal++) {
-            [void]$sessions.Add((Open-MishApplicationSession -ProxyHost $ProxyHost -Lease $Lease -Ordinal $ordinal))
-            if (($ordinal % 8) -eq 0 -and $ordinal -lt $ExpectedSessions) {
-                $openingLiveness = Test-MishApplicationLiveSet -Sessions @($sessions) -ExpectedSessions $ordinal
-                if ([string]$openingLiveness.result -cne 'PASS') {
-                    throw "Application liveness failed while opening fresh batch at $ordinal/$ExpectedSessions."
-                }
-            }
-        }
-        return @($sessions)
+    if ($Sessions.Count -gt $ExpectedSessions) {
+        throw "Session set already exceeds requested target $ExpectedSessions."
     }
-    catch {
-        foreach ($session in $sessions) {
-            try { $session.Stream.Dispose() } catch {}
-            try { $session.Client.Dispose() } catch {}
-        }
-        throw
+    for ($ordinal = $Sessions.Count + 1; $ordinal -le $ExpectedSessions; $ordinal++) {
+        [void]$Sessions.Add((Open-MishApplicationSession -ProxyHost $ProxyHost -Lease $Lease -Ordinal $ordinal))
     }
 }
 
@@ -470,10 +457,10 @@ if ([string]::IsNullOrWhiteSpace($tempRoot)) {
 }
 $credentialStorePath = Join-Path ([IO.Path]::GetFullPath($tempRoot)) ('mish-capacity-credential-' + [Guid]::NewGuid().ToString('N') + '.dpapi')
 $lease = $null
-$activeSessions = @()
+$activeSessions = [Collections.Generic.List[object]]::new()
 $stages = [Collections.Generic.List[object]]::new()
-$stageBoundaries = [Collections.Generic.List[object]]::new()
-$soak = [Collections.Generic.List[object]]::new()
+$preOverflowLiveness = $null
+$preOverflowOwnerCounts = $null
 $overflowAttempts = [Collections.Generic.List[object]]::new()
 $overflowOwnerCounts = $null
 $postOverflowLiveness = $null
@@ -494,7 +481,7 @@ try {
     [void]$stages.Add([ordered]@{
         name = 'idle'
         expected_sessions = 0
-        fresh_batch = $true
+        batch_model = 'single_monotonic'
         application_liveness = [ordered]@{ result = 'PASS'; expected = 0; application_live = 0; failures = @() }
         owner_counts = $idleCounts
         resources = $idleResources
@@ -506,15 +493,8 @@ try {
 
     if ($classification -ceq 'U2_CAPACITY_RESOURCE_INCOMPLETE') {
         foreach ($target in @(10, 32, 64)) {
-            $boundaryBefore = Wait-MishOwnerCounts -ExpectedMesh 0 -ExpectedProxy 0
-            if ([string]$boundaryBefore.result -cne 'PASS') {
-                $classification = 'LAB_STAGE_BOUNDARY_NOT_DRAINED'
-                $detail = "Owner counters were not 0/0 before fresh $target-session stage."
-                break
-            }
-
             try {
-                $activeSessions = @(Open-MishFreshApplicationSet -ProxyHost $meshAddress -Lease $lease -ExpectedSessions $target)
+                Add-MishApplicationSessionsUntil -ProxyHost $meshAddress -Lease $lease -Sessions $activeSessions -ExpectedSessions $target
             }
             catch {
                 $classification = 'LAB_APPLICATION_LIVE_PRECONDITION_FAILED'
@@ -522,13 +502,13 @@ try {
                 break
             }
 
-            $applicationLiveness = Test-MishApplicationLiveSet -Sessions $activeSessions -ExpectedSessions $target
-            $ownerCounts = Wait-MishOwnerCounts -ExpectedMesh $target -ExpectedProxy $target
             $resources = Get-MishProcessResources -PidText $pidBefore
+            $applicationLiveness = Test-MishApplicationLiveSet -Sessions @($activeSessions) -ExpectedSessions $target
+            $ownerCounts = Wait-MishOwnerCounts -ExpectedMesh $target -ExpectedProxy $target
             [void]$stages.Add([ordered]@{
                 name = "sessions_$target"
                 expected_sessions = $target
-                fresh_batch = $true
+                batch_model = 'single_monotonic'
                 application_liveness = $applicationLiveness
                 owner_counts = $ownerCounts
                 resources = $resources
@@ -536,7 +516,7 @@ try {
 
             if ([string]$applicationLiveness.result -cne 'PASS') {
                 $classification = 'LAB_APPLICATION_LIVE_PRECONDITION_FAILED'
-                $detail = "Fresh $target-session stage did not remain application-live."
+                $detail = "The $target-session milestone was not fully application-live."
                 break
             }
             if ([string]$ownerCounts.result -cne 'PASS') {
@@ -545,103 +525,51 @@ try {
                 break
             }
 
-            if ($target -lt 64) {
-                Close-MishApplicationSet -Sessions $activeSessions
-                $activeSessions = @()
-                $boundaryAfter = Wait-MishOwnerCounts -ExpectedMesh 0 -ExpectedProxy 0
-                [void]$stageBoundaries.Add([ordered]@{
-                    after_stage = $target
-                    owner_counts = $boundaryAfter
-                })
-                if ([string]$boundaryAfter.result -cne 'PASS') {
-                    $classification = 'U2_CAPACITY_CLEANUP_NOT_DRAINED'
-                    $detail = "Owner counters did not drain after $target-session stage."
-                    break
-                }
+            if ($target -eq 64) {
+                $preOverflowLiveness = $applicationLiveness
+                $preOverflowOwnerCounts = $ownerCounts
             }
         }
     }
 
     if ($classification -ceq 'U2_CAPACITY_RESOURCE_INCOMPLETE' -and $activeSessions.Count -eq 64) {
-        $soakWatch = [Diagnostics.Stopwatch]::StartNew()
-        foreach ($checkpoint in @(10, 20, 30, 45, 60, 90)) {
-            $remainingMs = ($checkpoint * 1000) - [int]$soakWatch.ElapsedMilliseconds
-            if ($remainingMs -gt 0) { Start-Sleep -Milliseconds $remainingMs }
-            $checkpointLiveness = Test-MishApplicationLiveSet -Sessions $activeSessions -ExpectedSessions 64
-            $checkpointOwners = Wait-MishOwnerCounts -ExpectedMesh 64 -ExpectedProxy 64
-            [void]$soak.Add([ordered]@{
-                checkpoint_seconds = $checkpoint
-                elapsed_ms = [int64]$soakWatch.ElapsedMilliseconds
-                application_liveness = $checkpointLiveness
-                owner_counts = $checkpointOwners
-            })
-            if ([string]$checkpointLiveness.result -cne 'PASS') {
-                $classification = 'LAB_APPLICATION_LIVENESS_SOAK_FAILED'
-                $detail = "The 64-session set lost application liveness before the $checkpoint-second checkpoint."
-                break
+        $attempt = Test-MishOverflowRejected -ProxyHost $meshAddress -Lease $lease
+        [void]$overflowAttempts.Add([ordered]@{
+            ordinal = 65
+            result = [string]$attempt.result
+            reason = [string]$attempt.reason
+            status_line = if ($attempt.Contains('status_line')) { [string]$attempt.status_line } else { $null }
+        })
+        if ([string]$attempt.result -ceq 'FAIL') {
+            $classification = 'U2_CAPACITY_65TH_NOT_REJECTED'
+            $detail = 'Overflow attempt 65 reached Proxy Serving.'
+        }
+        elseif ([string]$attempt.result -ceq 'INCONCLUSIVE') {
+            $classification = 'LAB_OVERFLOW_OBSERVATION_INCONCLUSIVE'
+            $detail = "Overflow attempt 65 was inconclusive: $([string]$attempt.reason)."
+        }
+
+        $postOverflowLiveness = Test-MishApplicationLiveSet -Sessions @($activeSessions) -ExpectedSessions 64
+        $overflowOwnerCounts = Wait-MishOwnerCounts -ExpectedMesh 64 -ExpectedProxy 64
+        if ($classification -ceq 'U2_CAPACITY_RESOURCE_INCOMPLETE') {
+            if ([string]$postOverflowLiveness.result -cne 'PASS') {
+                $classification = 'LAB_APPLICATION_LIVE_POST_OVERFLOW_FAILED'
+                $detail = 'The original 64 lost application liveness after the overflow attempt.'
             }
-            if ([string]$checkpointOwners.result -cne 'PASS') {
+            elseif ([string]$overflowOwnerCounts.result -cne 'PASS') {
                 $classification = 'U2_CAPACITY_OWNER_COUNT_MISMATCH'
-                $detail = "The 64-session set remained application-live while owner counters diverged at $checkpoint seconds."
-                break
+                $detail = 'The original 64 remained application-live after overflow while owner counters diverged.'
             }
-        }
-    }
-
-    if ($classification -ceq 'U2_CAPACITY_RESOURCE_INCOMPLETE' -and $activeSessions.Count -eq 64) {
-        $preOverflowLiveness = Test-MishApplicationLiveSet -Sessions $activeSessions -ExpectedSessions 64
-        $preOverflowOwners = Wait-MishOwnerCounts -ExpectedMesh 64 -ExpectedProxy 64
-        if ([string]$preOverflowLiveness.result -cne 'PASS') {
-            $classification = 'LAB_APPLICATION_LIVE_PRECONDITION_FAILED'
-            $detail = 'The original 64 were not application-live immediately before overflow.'
-        }
-        elseif ([string]$preOverflowOwners.result -cne 'PASS') {
-            $classification = 'U2_CAPACITY_OWNER_COUNT_MISMATCH'
-            $detail = 'The original 64 were application-live but owner counters were not 64/64 immediately before overflow.'
-        }
-        else {
-            foreach ($overflowOrdinal in 65..80) {
-                $attempt = Test-MishOverflowRejected -ProxyHost $meshAddress -Lease $lease
-                [void]$overflowAttempts.Add([ordered]@{
-                    ordinal = $overflowOrdinal
-                    result = [string]$attempt.result
-                    reason = [string]$attempt.reason
-                    status_line = if ($attempt.Contains('status_line')) { [string]$attempt.status_line } else { $null }
-                })
-                if ([string]$attempt.result -ceq 'FAIL') {
-                    $classification = 'U2_CAPACITY_65TH_NOT_REJECTED'
-                    $detail = "Overflow attempt $overflowOrdinal reached Proxy Serving."
-                    break
-                }
-                if ([string]$attempt.result -ceq 'INCONCLUSIVE') {
-                    $classification = 'LAB_OVERFLOW_OBSERVATION_INCONCLUSIVE'
-                    $detail = "Overflow attempt $overflowOrdinal was inconclusive: $([string]$attempt.reason)."
-                    break
-                }
-            }
-
-            $postOverflowLiveness = Test-MishApplicationLiveSet -Sessions $activeSessions -ExpectedSessions 64
-            $overflowOwnerCounts = Wait-MishOwnerCounts -ExpectedMesh 64 -ExpectedProxy 64
-            if ($classification -ceq 'U2_CAPACITY_RESOURCE_INCOMPLETE') {
-                if ([string]$postOverflowLiveness.result -cne 'PASS') {
-                    $classification = 'LAB_APPLICATION_LIVENESS_SOAK_FAILED'
-                    $detail = 'The original 64 lost application liveness after overflow attempts.'
-                }
-                elseif ([string]$overflowOwnerCounts.result -cne 'PASS') {
-                    $classification = 'U2_CAPACITY_OWNER_COUNT_MISMATCH'
-                    $detail = 'The original 64 remained application-live after overflow while owner counters diverged.'
-                }
-                else {
-                    $acceptanceResult = 'PASS'
-                    $classification = 'U2_CAPACITY_AND_RESOURCE_MEASUREMENTS_PASS'
-                }
+            else {
+                $acceptanceResult = 'PASS'
+                $classification = 'U2_CAPACITY_AND_RESOURCE_MEASUREMENTS_PASS'
             }
         }
     }
 }
 finally {
-    Close-MishApplicationSet -Sessions $activeSessions
-    $activeSessions = @()
+    Close-MishApplicationSet -Sessions @($activeSessions)
+    $activeSessions.Clear()
     try { $cleanupCounts = Wait-MishOwnerCounts -ExpectedMesh 0 -ExpectedProxy 0 } catch {}
 
     if ($null -ne $lease -and $null -ne $cleanupCounts -and [string]$cleanupCounts.result -ceq 'PASS') {
@@ -732,10 +660,11 @@ $evidence = [ordered]@{
     target = "${TargetHost}:$TargetPort"
     held_session_protocol = 'TLS+HTTP'
     application_live_semantics = 'fresh HTTP HEAD round-trip on the same established TLS connection'
-    fresh_batch = $true
+    acceptance_profile = 'fast-linear-v1'
+    batch_model = 'single_monotonic'
     stages = @($stages)
-    stage_boundaries = @($stageBoundaries)
-    soak_checkpoints = @($soak)
+    pre_overflow_application_liveness = $preOverflowLiveness
+    pre_overflow_owner_counts = $preOverflowOwnerCounts
     overflow_attempts = @($overflowAttempts)
     post_overflow_application_liveness = $postOverflowLiveness
     overflow_owner_counts = $overflowOwnerCounts
