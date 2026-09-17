@@ -26,6 +26,10 @@ foreach ($required in @(
     "`$registrationMayBeRevoked = `$true",
     "finally {",
     "Invoke-MishGuaranteedUnrevoke",
+    "cloudflare_registration_revoke_attempted",
+    "cloudflare_registration_revoke_succeeded",
+    "cloudflare_registration_unrevoke_attempted",
+    "cloudflare_registration_unrevoke_succeeded",
     "LAB_TARGET_UNREVOKE_CLEANUP_FAILED",
     "LAB_REGISTRATION_REVOKE_NO_OWNER_LOSS_WITHIN_WINDOW",
     "LAB_OWNER_OBSERVATION_COVERAGE_INSUFFICIENT",
@@ -39,7 +43,10 @@ foreach ($required in @(
     "`$script:SnapshotPollMs = 2000",
     "`$script:PollMs = 250",
     "`$process.Kill(`$true)",
-    '"$($script:ApiRoot)?status=all&per_page=100&include=policy"',
+    '[string]::Concat(',
+    "'?include=policy'",
+    "'?status=all&per_page=100&include=policy'",
+    "'?id='",
     "registration_type') -cne 'warp'",
     "tunnel_type') -cne 'masque'",
     "Compare-MishNonTargetRegistrations",
@@ -61,8 +68,12 @@ if ($source.Contains('"$script:ApiRoot?')) {
     throw 'Cloudflare registration recovery probe must delimit ApiRoot before a query string.'
 }
 
+if ($source -match '\$[A-Za-z_][A-Za-z0-9_:]*\?') {
+    throw 'Cloudflare registration recovery probe must not concatenate query strings directly after PowerShell variables.'
+}
+
 $armIndex = $source.IndexOf('$registrationMayBeRevoked = $true', [StringComparison]::Ordinal)
-$revokeIndex = $source.IndexOf('Invoke-MishRegistrationMutation -Client $client -Action revoke', [StringComparison]::Ordinal)
+$revokeIndex = $source.IndexOf('-Action revoke', [StringComparison]::Ordinal)
 if ($armIndex -lt 0 -or $revokeIndex -lt 0 -or $armIndex -ge $revokeIndex) {
     throw 'Cleanup must be armed before issuing targeted revoke because an HTTP timeout may occur after server-side mutation.'
 }

@@ -153,7 +153,16 @@ function Get-MishRegistration {
         [Parameter(Mandatory)][string] $Id
     )
     $escaped = [Uri]::EscapeDataString($Id)
-    $response = Invoke-MishCloudflare -Client $Client -Method GET -Uri "$($script:ApiRoot)/$escaped?include=policy"
+    $uri = [string]::Concat(
+        $script:ApiRoot,
+        '/',
+        $escaped,
+        '?include=policy'
+    )
+    $response = Invoke-MishCloudflare `
+        -Client $Client `
+        -Method GET `
+        -Uri $uri
     if (-not $response.SuccessStatus -or $null -eq $response.Json -or -not [bool](Get-MishProperty $response.Json 'success')) {
         return $null
     }
@@ -162,7 +171,14 @@ function Get-MishRegistration {
 
 function Get-MishRegistrations {
     param([Parameter(Mandatory)][Net.Http.HttpClient] $Client)
-    $response = Invoke-MishCloudflare -Client $Client -Method GET -Uri "$($script:ApiRoot)?status=all&per_page=100&include=policy"
+    $uri = [string]::Concat(
+        $script:ApiRoot,
+        '?status=all&per_page=100&include=policy'
+    )
+    $response = Invoke-MishCloudflare `
+        -Client $Client `
+        -Method GET `
+        -Uri $uri
     if (-not $response.SuccessStatus -or $null -eq $response.Json -or -not [bool](Get-MishProperty $response.Json 'success')) {
         return $null
     }
@@ -187,7 +203,17 @@ function Invoke-MishRegistrationMutation {
         [Parameter(Mandatory)][ValidateSet('revoke','unrevoke')][string] $Action
     )
     $escaped = [Uri]::EscapeDataString($RegistrationId)
-    $response = Invoke-MishCloudflare -Client $Client -Method POST -Uri "$($script:ApiRoot)/$Action?id=$escaped"
+    $uri = [string]::Concat(
+        $script:ApiRoot,
+        '/',
+        $Action,
+        '?id=',
+        $escaped
+    )
+    $response = Invoke-MishCloudflare `
+        -Client $Client `
+        -Method POST `
+        -Uri $uri
     return ($response.SuccessStatus -and $null -ne $response.Json -and [bool](Get-MishProperty $response.Json 'success'))
 }
 
@@ -408,6 +434,10 @@ if ([string]::IsNullOrWhiteSpace($token)) {
 
 $client = $null
 $registrationMayBeRevoked = $false
+$revokeAttempted = $false
+$revokeSucceeded = $false
+$unrevokeAttempted = $false
+$unrevokeSucceeded = $false
 $cleanupEvidence = [ordered]@{ attempted = $false; mutation_success = $false; active_confirmed = $false }
 $acceptanceResult = 'FAIL'
 $classification = 'LAB_REGISTRATION_RECOVERY_NOT_COMPLETED'
@@ -487,7 +517,12 @@ try {
 
     # Mark cleanup-required before the request: an HTTP timeout can occur after Cloudflare applied the mutation.
     $registrationMayBeRevoked = $true
-    if (-not (Invoke-MishRegistrationMutation -Client $client -Action revoke)) {
+    $revokeAttempted = $true
+    $revokeSucceeded =
+        Invoke-MishRegistrationMutation `
+            -Client $client `
+            -Action revoke
+    if (-not $revokeSucceeded) {
         Stop-MishProbe 'LAB_TARGET_REVOKE_REQUEST_FAILED' 'Exact registration revoke request did not return Cloudflare success.'
     }
     $revoked = Wait-MishRegistrationState -Client $client -State revoked -TimeoutSeconds 20
@@ -563,7 +598,12 @@ try {
             $null
         }
 
+    $unrevokeAttempted = $true
     $unrevoke = Invoke-MishGuaranteedUnrevoke -Client $client
+    $unrevokeSucceeded = (
+        $unrevokeSucceeded -or
+        [bool]$unrevoke.mutation_success
+    )
     $cleanupEvidence.attempted = $true
     $cleanupEvidence.mutation_success = [bool]$unrevoke.mutation_success
     $cleanupEvidence.active_confirmed = [bool]$unrevoke.active_confirmed
@@ -649,7 +689,12 @@ finally {
     if ($null -ne $client -and $registrationMayBeRevoked) {
         $cleanupEvidence.attempted = $true
         try {
+            $unrevokeAttempted = $true
             $cleanup = Invoke-MishGuaranteedUnrevoke -Client $client
+            $unrevokeSucceeded = (
+                $unrevokeSucceeded -or
+                [bool]$cleanup.mutation_success
+            )
             $cleanupEvidence.mutation_success = [bool]$cleanup.mutation_success
             $cleanupEvidence.active_confirmed = [bool]$cleanup.active_confirmed
             if (-not $cleanup.active_confirmed) {
@@ -687,8 +732,10 @@ finally {
         recovery_observations = @($recoveryObservations)
         cleanup = $cleanupEvidence
         lab_effects = [ordered]@{
-            cloudflare_registration_revoke = $true
-            cloudflare_registration_unrevoke = $true
+            cloudflare_registration_revoke_attempted = $revokeAttempted
+            cloudflare_registration_revoke_succeeded = $revokeSucceeded
+            cloudflare_registration_unrevoke_attempted = $unrevokeAttempted
+            cloudflare_registration_unrevoke_succeeded = $unrevokeSucceeded
             physical_device_revoke = $false
             global_warp_disconnect = $false
             cloudflare_app_force_stop = $false
