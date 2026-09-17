@@ -296,7 +296,7 @@ function Add-MishApplicationSessionsUntil {
     param(
         [Parameter(Mandatory)][string] $ProxyHost,
         [Parameter(Mandatory)] $Lease,
-        [Parameter(Mandatory)][Collections.Generic.List[object]] $Sessions,
+        [Parameter(Mandatory)][AllowEmptyCollection()][Collections.Generic.List[object]] $Sessions,
         [Parameter(Mandatory)][int] $ExpectedSessions
     )
     if ($Sessions.Count -gt $ExpectedSessions) {
