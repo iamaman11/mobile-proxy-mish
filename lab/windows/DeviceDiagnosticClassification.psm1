@@ -1,5 +1,28 @@
 Set-StrictMode -Version Latest
 
+function Test-MishCodexSandboxOutboundBlock {
+    [CmdletBinding()]
+    param()
+
+    $command = Get-Command 'Get-NetFirewallRule' -ErrorAction SilentlyContinue
+    if ($null -eq $command) { return $false }
+
+    try {
+        $rules = @(
+            Get-NetFirewallRule -Name 'codex_sandbox_offline_block_outbound' -ErrorAction Stop |
+                Where-Object {
+                    [string]$_.Enabled -eq 'True' -and
+                    [string]$_.Direction -eq 'Outbound' -and
+                    [string]$_.Action -eq 'Block'
+                }
+        )
+        return $rules.Count -gt 0
+    }
+    catch {
+        return $false
+    }
+}
+
 function Get-MishDeviceDiagnosticClassification {
     [CmdletBinding()]
     param(
@@ -95,7 +118,12 @@ function Get-MishDeviceDiagnosticClassification {
     if ($LoopbackResult -cne 'PASS') { return "PRODUCT_LOOPBACK_E2E_$LoopbackReason" }
     if ($MeshEndpointCount -ne 1) { return 'MESH_ENDPOINT_CARDINALITY_INVALID' }
     if (-not $RoutePresent) { return 'WINDOWS_MESH_ROUTE_UNAVAILABLE' }
-    if (-not $Tcp3128) { return 'WINDOWS_MESH_TCP_3128_UNREACHABLE' }
+    if (-not $Tcp3128) {
+        if (Test-MishCodexSandboxOutboundBlock) {
+            return 'LAB_WINDOWS_SANDBOX_OUTBOUND_BLOCKED'
+        }
+        return 'WINDOWS_MESH_TCP_3128_UNREACHABLE'
+    }
     if ($MeshProbeResult -cne 'PASS') { return "WINDOWS_MESH_PROXY_E2E_$MeshProbeReason" }
     return 'PASS'
 }
