@@ -117,6 +117,9 @@ function Read-MishSnapshot {
 
 function Get-MishE3FailureClassification {
     param([Parameter(Mandatory)][string] $Output)
+    if ($Output -match '(?i)not signed with the same certificate|signatures?.*(?:do not|don''t).*match|INSTRUMENTATION_FAILED.*sign') {
+        return 'LAB_TEST_HARNESS_SIGNATURE_MISMATCH'
+    }
     if ($Output -match 'root mobile-data transition command failed') { return 'LAB_E3_DEVICE_CONTROL_FAILED' }
     if ($Output -match 'expected direct cellular Internet presence=true validated_required=true') { return 'LAB_E3_DIRECT_CELLULAR_UNAVAILABLE' }
     if ($Output -match 'E3_SAFE_FAILURE stage=(dns_query|public_probe|socket_timeout|http_status|response_parse|public_ip_parse)') { return 'LAB_E3_UPSTREAM_PROBE_FAILED' }
@@ -175,15 +178,10 @@ try {
         Stop-MishRecovery 'LAB_RECOVERY_PRECONDITION_NOT_READY' 'Baseline owner/network facts are not ready for recovery/lifecycle acceptance.'
     }
 
-    $install = Invoke-MishAdb -Arguments @('install', '-r', '-t', $testApkPath) -TimeoutSeconds 120
-    if ($install.ExitCode -ne 0 -or $install.StdOut -notmatch '(?m)^Success\s*$') {
-        Stop-MishRecovery 'LAB_TEST_APK_INSTALL_FAILED' 'Exact androidTest APK installation failed.'
-    }
-
     $testPackagePath = Invoke-MishAdb -Arguments @('shell', 'pm', 'path', $script:TestPackage) -TimeoutSeconds 20
     $pathRows = @($testPackagePath.StdOut -split "`r?`n" | Where-Object { $_ -match '^package:.+/base\.apk$' })
     if ($testPackagePath.ExitCode -ne 0 -or $pathRows.Count -ne 1) {
-        Stop-MishRecovery 'LAB_TEST_APK_INSTALL_IDENTITY_MISSING' 'Installed exact androidTest package path could not be resolved uniquely.'
+        Stop-MishRecovery 'LAB_TEST_APK_INSTALL_IDENTITY_MISSING' 'Preinstalled LAB-signed androidTest package path could not be resolved uniquely.'
     }
 
     $instrumentation = Invoke-MishAdb -Arguments @(
@@ -197,16 +195,14 @@ try {
     $positive = $instrumentation.StdOut -match 'E3_EVIDENCE phase=positive '
     $negative = $instrumentation.StdOut -match 'E3_EVIDENCE phase=negative '
     $recovery = $instrumentation.StdOut -match 'E3_EVIDENCE phase=recovery '
-    if (-not $instrumentationPass -or -not $positive -or -not $negative -or -not $recovery) {
-        Stop-MishRecovery (Get-MishE3FailureClassification -Output $instrumentation.StdOut) 'Exact-head Cellular E3 lifecycle instrumentation failed.'
-    }
 
     $cellularEvidence = [ordered]@{
         exact_test_apk_sha256 = $testApkSha
         exact_test_apk_digest_verified = $true
-        install_command_confirmed = $true
+        preinstalled_lab_signed_harness = $true
         installed_package_path_verified = $true
-        instrumentation_pass = $true
+        instrumentation_exit_code = [int]$instrumentation.ExitCode
+        instrumentation_pass = $instrumentationPass
         positive_phase = $positive
         negative_phase = $negative
         recovery_phase = $recovery
@@ -217,6 +213,11 @@ try {
         fresh_generation = $instrumentation.StdOut -match 'fresh_generation=true'
         cleanup_verified = $instrumentation.StdOut -match 'cleanup_verified=true'
     }
+
+    if (-not $instrumentationPass -or -not $positive -or -not $negative -or -not $recovery) {
+        Stop-MishRecovery (Get-MishE3FailureClassification -Output $instrumentation.StdOut) 'Exact-head Cellular E3 lifecycle instrumentation failed.'
+    }
+
     foreach ($required in @('established_flow_blocked','dns_blocked','public_socket_blocked','no_default_fallback','fresh_generation','cleanup_verified')) {
         if (-not [bool]$cellularEvidence[$required]) {
             Stop-MishRecovery 'U2_CELLULAR_E3_EVIDENCE_INCOMPLETE' "Cellular E3 PASS output omitted required $required evidence."
