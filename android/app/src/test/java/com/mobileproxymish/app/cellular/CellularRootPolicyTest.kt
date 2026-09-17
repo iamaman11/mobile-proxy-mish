@@ -235,6 +235,94 @@ class CellularRootPolicyTest {
     }
 
     @Test
+    fun cleanupDoesNotRequirePreflightAuthorityProbeBeforeExactDeletes() {
+        val process = FakePolicyProcess()
+        val policy = policy(process)
+        assertEquals(
+            CellularRootPolicyResult.Enforced,
+            policy.reconcile(admitted = true, interfaceName = "rmnet_data0"),
+        )
+
+        // Model a transient authority snapshot that would fail only before teardown has begun.
+        // Exact cleanup must not consult that preflight snapshot; it must attempt its owned
+        // deletes first and then perform the existing authoritative post-verification.
+        process.blockAuthorityProbeUntilCleanupMutation = true
+
+        policy.close()
+
+        assertTrue(process.cleanupMutationObserved)
+        assertNull(process.ipv4Lookup)
+        assertNull(process.ipv4Guard)
+        assertNull(process.ipv6Guard)
+        assertFalse(process.ipv4ChainExists)
+        assertFalse(process.ipv6ChainExists)
+        assertEquals(0, process.ipv4JumpCount)
+        assertEquals(0, process.ipv6JumpCount)
+    }
+
+    @Test
+    fun failedIpv4JumpDetachPreservesReferencedChainAndGuardWhileIpv6StillCleans() {
+        val process = FakePolicyProcess()
+        val policy = policy(process)
+        assertEquals(
+            CellularRootPolicyResult.Enforced,
+            policy.reconcile(admitted = true, interfaceName = "rmnet_data0"),
+        )
+        val ipv4ChainBefore = process.ipv4ChainRules.toList()
+        process.failIpv4JumpDelete = true
+        process.commands.clear()
+
+        assertFalse(policy.cleanupExactOwnedRules())
+        assertEquals(
+            CellularRootPolicyCleanupFailure.IPV4_OUTPUT_JUMP_DELETE_FAILED,
+            policy.cleanupFailureStage(),
+        )
+
+        assertNull(process.ipv4Lookup)
+        assertEquals(1, process.ipv4JumpCount)
+        assertTrue(process.ipv4ChainExists)
+        assertEquals(ipv4ChainBefore, process.ipv4ChainRules)
+        assertTrue(process.ipv4Guard != null)
+        assertFalse(process.commands.contains("iptables -t mangle -F $CHAIN"))
+        assertFalse(process.commands.contains("iptables -t mangle -X $CHAIN"))
+
+        assertEquals(0, process.ipv6JumpCount)
+        assertFalse(process.ipv6ChainExists)
+        assertNull(process.ipv6Guard)
+    }
+
+    @Test
+    fun failedIpv6JumpDetachPreservesReferencedChainAndGuardWhileIpv4StillCleans() {
+        val process = FakePolicyProcess()
+        val policy = policy(process)
+        assertEquals(
+            CellularRootPolicyResult.Enforced,
+            policy.reconcile(admitted = true, interfaceName = "rmnet_data0"),
+        )
+        val ipv6ChainBefore = process.ipv6ChainRules.toList()
+        process.failIpv6JumpDelete = true
+        process.commands.clear()
+
+        assertFalse(policy.cleanupExactOwnedRules())
+        assertEquals(
+            CellularRootPolicyCleanupFailure.IPV6_OUTPUT_JUMP_DELETE_FAILED,
+            policy.cleanupFailureStage(),
+        )
+
+        assertEquals(1, process.ipv6JumpCount)
+        assertTrue(process.ipv6ChainExists)
+        assertEquals(ipv6ChainBefore, process.ipv6ChainRules)
+        assertTrue(process.ipv6Guard != null)
+        assertFalse(process.commands.contains("ip6tables -t mangle -F $CHAIN"))
+        assertFalse(process.commands.contains("ip6tables -t mangle -X $CHAIN"))
+
+        assertNull(process.ipv4Lookup)
+        assertEquals(0, process.ipv4JumpCount)
+        assertFalse(process.ipv4ChainExists)
+        assertNull(process.ipv4Guard)
+    }
+
+    @Test
     fun intentionalCloseRemovesOnlyExactSelectedPolicyAndLeavesForeignRules() {
         val foreign = "-A OUTPUT -j MARK --set-xmark 0x200000/0x200000"
         val process = FakePolicyProcess().apply { foreignIpv4Mangle += foreign }
@@ -285,6 +373,10 @@ class CellularRootPolicyTest {
         var legacyIpv4Selector = false
         var legacyIpv6Selector = false
         var incompleteIpv4RuleReadAt: Int? = null
+        var blockAuthorityProbeUntilCleanupMutation = false
+        var cleanupMutationObserved = false
+        var failIpv4JumpDelete = false
+        var failIpv6JumpDelete = false
         val ipv4ChainRules = mutableListOf<String>()
         val ipv6ChainRules = mutableListOf<String>()
         val foreignIpv4Rpdb = mutableListOf<String>()
@@ -298,7 +390,17 @@ class CellularRootPolicyTest {
             val command = arguments.last()
             commands += command
             return when {
-                command == "id -u" -> ok("0\n")
+                command == "id -u" -> {
+                    if (blockAuthorityProbeUntilCleanupMutation && !cleanupMutationObserved) {
+                        RootProcessResult(
+                            exitCode = 0,
+                            stdout = "0\n",
+                            outputComplete = false,
+                        )
+                    } else {
+                        ok("0\n")
+                    }
+                }
                 command == "ip -4 rule show" -> {
                     ipv4RuleReads += 1
                     RootProcessResult(
@@ -323,10 +425,24 @@ class CellularRootPolicyTest {
                     if (!ipv6ChainExists) fail() else { ipv6JumpCount += 1; ok() }
                 }
                 command == IPV4_JUMP_DELETE -> {
-                    if (ipv4JumpCount > 0) { ipv4JumpCount -= 1; ok() } else fail()
+                    if (failIpv4JumpDelete) {
+                        fail()
+                    } else if (ipv4JumpCount > 0) {
+                        ipv4JumpCount -= 1
+                        ok()
+                    } else {
+                        fail()
+                    }
                 }
                 command == IPV6_JUMP_DELETE -> {
-                    if (ipv6JumpCount > 0) { ipv6JumpCount -= 1; ok() } else fail()
+                    if (failIpv6JumpDelete) {
+                        fail()
+                    } else if (ipv6JumpCount > 0) {
+                        ipv6JumpCount -= 1
+                        ok()
+                    } else {
+                        fail()
+                    }
                 }
                 command.startsWith("iptables -t mangle -A $CHAIN ") -> appendChain(command, true)
                 command.startsWith("ip6tables -t mangle -A $CHAIN ") -> appendChain(command, false)
@@ -382,6 +498,7 @@ class CellularRootPolicyTest {
         }
 
         private fun deleteLookup(command: String): RootProcessResult {
+            cleanupMutationObserved = true
             val match = checkNotNull(LOOKUP_DELETE_REGEX.matchEntire(command))
             val current = ipv4Lookup ?: return fail()
             if (current.lookup != match.groupValues[1].toInt() ||

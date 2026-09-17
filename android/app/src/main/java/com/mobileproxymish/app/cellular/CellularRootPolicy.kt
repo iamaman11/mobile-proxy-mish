@@ -23,6 +23,21 @@ enum class CellularRootPolicyFailure {
  * Runtime result of the infrastructure adapter. This is not a second Cellular Egress
  * admission/readiness state; admission and generation remain owned by the Rust owner.
  */
+internal enum class CellularRootPolicyCleanupFailure {
+    IDENTITY_UNAVAILABLE,
+    IDENTITY_COLLISION,
+    IPV4_LOOKUP_DELETE_FAILED,
+    IPV4_OUTPUT_JUMP_DELETE_FAILED,
+    IPV4_LEGACY_SELECTOR_DELETE_FAILED,
+    IPV4_CHAIN_DELETE_FAILED,
+    IPV4_GUARD_DELETE_FAILED,
+    IPV6_OUTPUT_JUMP_DELETE_FAILED,
+    IPV6_LEGACY_SELECTOR_DELETE_FAILED,
+    IPV6_CHAIN_DELETE_FAILED,
+    IPV6_GUARD_DELETE_FAILED,
+    FINAL_VERIFICATION_FAILED,
+}
+
 sealed interface CellularRootPolicyResult {
     data object Enforced : CellularRootPolicyResult
 
@@ -73,6 +88,7 @@ class CellularRootPolicy internal constructor(
     private var activeIdentity: PolicyIdentity? = null
     /** Sanitized teardown stage for lifecycle/E3 evidence; never contains commands or addresses. */
     private var lastCleanupFailure: CellularRootPolicyFailure? = null
+    private var lastCleanupStage: CellularRootPolicyCleanupFailure? = null
 
     @Synchronized
     fun failClosed(): CellularRootPolicyResult = reconcile(admitted = false, interfaceName = null)
@@ -158,52 +174,112 @@ class CellularRootPolicy internal constructor(
         return CellularRootPolicyResult.Enforced
     }
 
-    /** Exact intentional teardown. Foreign overlapping state is never deleted or repurposed. */
+    /**
+     * Exact intentional teardown. Cleanup attempts every exact PRODUCT-owned delete before
+     * authoritative post-verification. A transient preliminary authority probe must not skip
+     * teardown and leave stale routing state behind.
+     */
     @Synchronized
     internal fun cleanupExactOwnedRules(): Boolean {
         lastCleanupFailure = null
-        if (authority.probe() != RootAuthorityStatus.Ready) return false
+        lastCleanupStage = null
 
         if (activeIdentity == null) {
             when (resolvePolicyIdentity()) {
                 PolicyIdentityResolution.Selected -> Unit
-                PolicyIdentityResolution.Unavailable -> return cleanupFailed()
+                PolicyIdentityResolution.Unavailable ->
+                    return cleanupFailed(CellularRootPolicyCleanupFailure.IDENTITY_UNAVAILABLE)
                 PolicyIdentityResolution.Collision -> {
                     // A collision before PRODUCT published anything needs no mutation.
-                    return !hasAnyProductSignature()
+                    if (hasAnyProductSignature()) {
+                        return cleanupFailed(CellularRootPolicyCleanupFailure.IDENTITY_COLLISION)
+                    }
+                    return true
                 }
             }
         }
 
         var mutatedCleanly = true
-        if (!removeOwnedIpv4Lookups()) mutatedCleanly = false
-        if (!removeExactOutputJumps(IPTABLES, ipv4OutputJump())) mutatedCleanly = false
-        if (!removeExactOutputJumps(IP6TABLES, ipv6OutputJump())) mutatedCleanly = false
-        if (!removeLegacySelectors()) mutatedCleanly = false
-        if (!removeOwnedChain(IPTABLES, ipv4OwnedChainLines())) mutatedCleanly = false
-        if (!removeOwnedChain(IP6TABLES, ipv6OwnedChainLines())) mutatedCleanly = false
-        if (!removeRpdbGuard(IPV4_RULE_SHOW, ::isOwnedIpv4Guard, IPV4_GUARD_DELETE)) {
-            mutatedCleanly = false
-        }
-        if (!removeRpdbGuard(IPV6_RULE_SHOW, ::isOwnedIpv6Guard, IPV6_GUARD_DELETE)) {
+        if (!removeOwnedIpv4Lookups()) {
+            recordCleanupFailure(CellularRootPolicyCleanupFailure.IPV4_LOOKUP_DELETE_FAILED)
             mutatedCleanly = false
         }
 
+        // Cleanup is dependency-aware per address family. The fail-closed guard must remain
+        // installed until every PRODUCT mark producer is detached and the referenced chain is
+        // gone. Otherwise a failed OUTPUT-jump delete followed by a chain flush can publish the
+        // forbidden live-jump -> empty-chain state observed on DEVICE-1 after U2 run #214.
+        val ipv4JumpDetached = removeExactOutputJumps(IPTABLES, ipv4OutputJump())
+        val ipv4LegacyDetached =
+            removeExactRule(legacyIpv4SelectorCheck(), legacyIpv4SelectorDelete())
+        if (!ipv4JumpDetached) {
+            recordCleanupFailure(CellularRootPolicyCleanupFailure.IPV4_OUTPUT_JUMP_DELETE_FAILED)
+            mutatedCleanly = false
+        }
+        if (!ipv4LegacyDetached) {
+            recordCleanupFailure(CellularRootPolicyCleanupFailure.IPV4_LEGACY_SELECTOR_DELETE_FAILED)
+            mutatedCleanly = false
+        }
+        if (ipv4JumpDetached && ipv4LegacyDetached) {
+            val ipv4ChainRemoved = removeOwnedChain(IPTABLES, ipv4OwnedChainLines())
+            if (!ipv4ChainRemoved) {
+                recordCleanupFailure(CellularRootPolicyCleanupFailure.IPV4_CHAIN_DELETE_FAILED)
+                mutatedCleanly = false
+            } else if (!removeRpdbGuard(IPV4_RULE_SHOW, ::isOwnedIpv4Guard, IPV4_GUARD_DELETE)) {
+                recordCleanupFailure(CellularRootPolicyCleanupFailure.IPV4_GUARD_DELETE_FAILED)
+                mutatedCleanly = false
+            }
+        }
+
+        val ipv6JumpDetached = removeExactOutputJumps(IP6TABLES, ipv6OutputJump())
+        val ipv6LegacyDetached =
+            removeExactRule(legacyIpv6SelectorCheck(), legacyIpv6SelectorDelete())
+        if (!ipv6JumpDetached) {
+            recordCleanupFailure(CellularRootPolicyCleanupFailure.IPV6_OUTPUT_JUMP_DELETE_FAILED)
+            mutatedCleanly = false
+        }
+        if (!ipv6LegacyDetached) {
+            recordCleanupFailure(CellularRootPolicyCleanupFailure.IPV6_LEGACY_SELECTOR_DELETE_FAILED)
+            mutatedCleanly = false
+        }
+        if (ipv6JumpDetached && ipv6LegacyDetached) {
+            val ipv6ChainRemoved = removeOwnedChain(IP6TABLES, ipv6OwnedChainLines())
+            if (!ipv6ChainRemoved) {
+                recordCleanupFailure(CellularRootPolicyCleanupFailure.IPV6_CHAIN_DELETE_FAILED)
+                mutatedCleanly = false
+            } else if (!removeRpdbGuard(IPV6_RULE_SHOW, ::isOwnedIpv6Guard, IPV6_GUARD_DELETE)) {
+                recordCleanupFailure(CellularRootPolicyCleanupFailure.IPV6_GUARD_DELETE_FAILED)
+                mutatedCleanly = false
+            }
+        }
+
         val verifiedClean = verifyExactCleanup()
+        if (!verifiedClean) {
+            recordCleanupFailure(CellularRootPolicyCleanupFailure.FINAL_VERIFICATION_FAILED)
+        }
         if (!mutatedCleanly || !verifiedClean) lastCleanupFailure = CellularRootPolicyFailure.ExactCleanupFailed
         if (mutatedCleanly && verifiedClean) activeIdentity = null
         return mutatedCleanly && verifiedClean
     }
 
-    private fun cleanupFailed(): Boolean {
+    private fun recordCleanupFailure(stage: CellularRootPolicyCleanupFailure) {
+        if (lastCleanupStage == null) lastCleanupStage = stage
         lastCleanupFailure = CellularRootPolicyFailure.ExactCleanupFailed
+    }
+
+    private fun cleanupFailed(stage: CellularRootPolicyCleanupFailure): Boolean {
+        recordCleanupFailure(stage)
         return false
     }
 
     @Synchronized
+    internal fun cleanupFailureStage(): CellularRootPolicyCleanupFailure? = lastCleanupStage
+
+    @Synchronized
     override fun close() {
         check(cleanupExactOwnedRules()) {
-            "exact PRODUCT root-policy cleanup failed: ${lastCleanupFailure?.name ?: "UNKNOWN"}"
+            "exact PRODUCT root-policy cleanup failed: " +
+                "${cleanupFailureStage()?.name ?: lastCleanupFailure?.name ?: "UNKNOWN"}"
         }
     }
 

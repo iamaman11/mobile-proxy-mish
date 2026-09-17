@@ -593,7 +593,8 @@ class CellularRuntimeBridge(
             mutableSnapshot.value = CellularRuntimeSnapshot.BoundaryUnavailable(
                 CellularBoundaryFailure.RootPolicyCleanupFailed,
             )
-            throw IllegalStateException("exact PRODUCT root-policy cleanup failed")
+            val stage = rootPolicy.cleanupFailureStage()?.name ?: "UNKNOWN"
+            throw IllegalStateException("exact PRODUCT root-policy cleanup failed stage=$stage")
         }
     }
 
