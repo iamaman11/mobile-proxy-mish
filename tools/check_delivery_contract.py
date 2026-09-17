@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +37,19 @@ def require_regex(path: str, pattern: str, reason: str) -> None:
 def forbid_regex(path: str, pattern: str, reason: str) -> None:
     if re.search(pattern, read(path), flags=re.MULTILINE | re.DOTALL) is not None:
         raise SystemExit(f"delivery contract: {reason}: {path} matches {pattern!r}")
+
+
+def require_device_cycle_contract() -> None:
+    """Keep the workflow fail-closed even if pwsh masks an earlier native exit code."""
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "tools/check_device_cycle_contract.py")],
+        cwd=ROOT,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise SystemExit(
+            f"delivery contract: device cycle contract failed with exit code {result.returncode}"
+        )
 
 
 def main() -> None:
@@ -214,6 +229,7 @@ def main() -> None:
     ):
         require(pipeline, required, "stable development delivery documentation drifted")
 
+    require_device_cycle_contract()
     print("DELIVERY_CONTRACT=PASS")
 
 
