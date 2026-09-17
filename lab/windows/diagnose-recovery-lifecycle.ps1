@@ -18,6 +18,7 @@ $script:Schema = 'mish.lab.recovery-lifecycle/v1'
 $script:CandidateSchema = 'mish-device-candidate-v1'
 $script:TestPackage = "$PackageName.test"
 $script:TestClass = 'com.mobileproxymish.app.cellular.CellularE3InstrumentedTest'
+$script:TestMethod = 'runPhysicalScenario'
 $script:TestComponent = "$($script:TestPackage)/androidx.test.runner.AndroidJUnitRunner"
 $script:SnapshotMethod = 'snapshot_v2'
 
@@ -115,8 +116,22 @@ function Read-MishSnapshot {
     }
 }
 
+function Get-MishBoundedText {
+    param(
+        [AllowEmptyString()][string] $Text,
+        [ValidateRange(256, 65536)][int] $MaxChars = 32768
+    )
+    if ([string]::IsNullOrEmpty($Text)) { return '' }
+    if ($Text.Length -le $MaxChars) { return $Text }
+    return $Text.Substring(0, $MaxChars) + "`n[TRUNCATED]"
+}
+
 function Get-MishE3FailureClassification {
-    param([Parameter(Mandatory)][string] $Output)
+    param(
+        [Parameter(Mandatory)][string] $Output,
+        [Parameter(Mandatory)][bool] $TestDispatched
+    )
+    if (-not $TestDispatched) { return 'LAB_TEST_HARNESS_EXECUTION_UNPROVEN' }
     if ($Output -match '(?i)not signed with the same certificate|signatures?.*(?:do not|don''t).*match|INSTRUMENTATION_FAILED.*sign') {
         return 'LAB_TEST_HARNESS_SIGNATURE_MISMATCH'
     }
@@ -196,10 +211,12 @@ try {
         $script:TestComponent
     ) -TimeoutSeconds 300
 
-    $instrumentationPass = $instrumentation.ExitCode -eq 0 -and $instrumentation.StdOut -match 'OK \(1 test\)'
-    $positive = $instrumentation.StdOut -match 'E3_EVIDENCE phase=positive '
-    $negative = $instrumentation.StdOut -match 'E3_EVIDENCE phase=negative '
-    $recovery = $instrumentation.StdOut -match 'E3_EVIDENCE phase=recovery '
+    $instrumentationOutput = (($instrumentation.StdOut, $instrumentation.StdErr) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join "`n"
+    $testDispatched = $instrumentationOutput -match "(?im)^INSTRUMENTATION_STATUS:\s*test=$([regex]::Escape($script:TestMethod))\s*$"
+    $instrumentationPass = $instrumentation.ExitCode -eq 0 -and $testDispatched -and $instrumentationOutput -match '(?m)^OK \(1 test\)\s*$'
+    $positive = $instrumentationOutput -match 'E3_EVIDENCE phase=positive '
+    $negative = $instrumentationOutput -match 'E3_EVIDENCE phase=negative '
+    $recovery = $instrumentationOutput -match 'E3_EVIDENCE phase=recovery '
 
     $cellularEvidence = [ordered]@{
         exact_test_apk_sha256 = $testApkSha
@@ -208,20 +225,23 @@ try {
         test_package_id = $script:TestPackage
         installed_package_path_verified = $true
         instrumentation_exit_code = [int]$instrumentation.ExitCode
+        instrumentation_test_dispatched = $testDispatched
         instrumentation_pass = $instrumentationPass
+        instrumentation_stderr_present = -not [string]::IsNullOrWhiteSpace($instrumentation.StdErr)
+        instrumentation_output = Get-MishBoundedText -Text $instrumentationOutput
         positive_phase = $positive
         negative_phase = $negative
         recovery_phase = $recovery
-        established_flow_blocked = $instrumentation.StdOut -match 'established_flow_blocked=true'
-        dns_blocked = $instrumentation.StdOut -match 'dns_blocked=true'
-        public_socket_blocked = $instrumentation.StdOut -match 'public_socket_blocked=true'
-        no_default_fallback = $instrumentation.StdOut -match 'no_default_fallback=true'
-        fresh_generation = $instrumentation.StdOut -match 'fresh_generation=true'
-        cleanup_verified = $instrumentation.StdOut -match 'cleanup_verified=true'
+        established_flow_blocked = $instrumentationOutput -match 'established_flow_blocked=true'
+        dns_blocked = $instrumentationOutput -match 'dns_blocked=true'
+        public_socket_blocked = $instrumentationOutput -match 'public_socket_blocked=true'
+        no_default_fallback = $instrumentationOutput -match 'no_default_fallback=true'
+        fresh_generation = $instrumentationOutput -match 'fresh_generation=true'
+        cleanup_verified = $instrumentationOutput -match 'cleanup_verified=true'
     }
 
     if (-not $instrumentationPass -or -not $positive -or -not $negative -or -not $recovery) {
-        Stop-MishRecovery (Get-MishE3FailureClassification -Output $instrumentation.StdOut) 'Exact-head Cellular E3 lifecycle instrumentation failed.'
+        Stop-MishRecovery (Get-MishE3FailureClassification -Output $instrumentationOutput -TestDispatched $testDispatched) 'Exact-head Cellular E3 lifecycle instrumentation failed.'
     }
 
     foreach ($required in @('established_flow_blocked','dns_blocked','public_socket_blocked','no_default_fallback','fresh_generation','cleanup_verified')) {
