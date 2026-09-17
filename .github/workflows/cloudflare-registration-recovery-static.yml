@@ -1,0 +1,33 @@
+name: Cloudflare Registration Recovery Static
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/cloudflare-registration-recovery-static.yml'
+      - 'lab/windows/diagnose-cloudflare-registration-recovery.ps1'
+      - 'lab/windows/test-cloudflare-registration-recovery-contract.ps1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-registration-recovery-static-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    name: Cloudflare Registration Recovery Static
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Validate bounded registration recovery contract
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\test-cloudflare-registration-recovery-contract.ps1
