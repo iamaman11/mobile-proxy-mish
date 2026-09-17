@@ -2,6 +2,7 @@ package com.mobileproxymish.app.cellular
 
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.os.Bundle
 import android.os.Process
 import android.os.SystemClock
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -109,8 +110,8 @@ class CellularE3InstrumentedTest {
                 host = host,
                 port = proofPort,
             )
-            println(
-                "E3_EVIDENCE phase=positive owner_admitted=true product_root_policy=enforced " +
+            emitEvidence(
+                "phase=positive owner_admitted=true product_root_policy=enforced " +
                     "dns=uid_policy public_socket=uid_policy transport=https " +
                     "public_ip_observed=true established_https_ready=true ipv6=fail_closed",
             )
@@ -140,8 +141,8 @@ class CellularE3InstrumentedTest {
             establishedFlow = null
             assertDnsFailsClosed(positiveDns, host)
             assertPublicSocketFailsClosed(stableProbeAddress, proofPort)
-            println(
-                "E3_EVIDENCE phase=negative owner_not_admitted=true fresh_loss_generation=true " +
+            emitEvidence(
+                "phase=negative owner_not_admitted=true fresh_loss_generation=true " +
                     "established_flow_blocked=true dns_blocked=true public_socket_blocked=true " +
                     "no_default_fallback=true",
             )
@@ -183,8 +184,8 @@ class CellularE3InstrumentedTest {
             runtimeClosed = true
             verifyProductPolicyCleanup()
 
-            println(
-                "E3_EVIDENCE phase=recovery owner_admitted=true fresh_generation=true " +
+            emitEvidence(
+                "phase=recovery owner_admitted=true fresh_generation=true " +
                     "product_root_policy=reconciled dns=uid_policy public_socket=uid_policy " +
                     "transport=https public_ip_observed=true cleanup_verified=true ipv6=fail_closed",
             )
@@ -210,6 +211,13 @@ class CellularE3InstrumentedTest {
                 }
             }
         }
+    }
+
+    private fun emitEvidence(value: String) {
+        instrumentation.sendStatus(
+            0,
+            Bundle().apply { putString(E3_EVIDENCE_KEY, value) },
+        )
     }
 
     private fun waitForOwnerState(
@@ -770,17 +778,18 @@ class CellularE3InstrumentedTest {
         const val ROOT_READ_TIMEOUT_MILLIS = 5_000L
         const val ROOT_READ_POLL_MILLIS = 25L
         const val ROOT_READ_OUTPUT_MAX_CHARS = 65_536
-        const val MISH_CHAIN = "MISH_EGRESS_V1"
+        const val MISH_CHAIN = "MISH_DEBUG_EGRESS_V1"
+        const val E3_EVIDENCE_KEY = "e3_evidence"
 
         val HOST_PATTERN = Regex("^[A-Za-z0-9.-]+$")
         val IPV4_LITERAL = Regex(
             "^(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)(?:\\.(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)){3}$",
         )
         val POLICY_IDENTITIES = listOf(
-            PolicyIdentityEvidence("0x200000", 9500, 9501),
-            PolicyIdentityEvidence("0x400000", 9520, 9521),
-            PolicyIdentityEvidence("0x800000", 9540, 9541),
-            PolicyIdentityEvidence("0x1000000", 9560, 9561),
+            PolicyIdentityEvidence("0x2000000", 9580, 9581),
+            PolicyIdentityEvidence("0x4000000", 9600, 9601),
+            PolicyIdentityEvidence("0x8000000", 9620, 9621),
+            PolicyIdentityEvidence("0x10000000", 9640, 9641),
         )
     }
 }
