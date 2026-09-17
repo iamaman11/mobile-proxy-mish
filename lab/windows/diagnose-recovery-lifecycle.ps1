@@ -241,8 +241,9 @@ try {
         -EvidencePath $PostRestartDiagnosticPath | Out-Host
 
     $postDiagnostic = Read-MishJson -Path $PostRestartDiagnosticPath
-    if ([string]$postDiagnostic.classification -cne 'PASS') {
-        $postClass = [string]$postDiagnostic.classification
+    $postClass = [string]$postDiagnostic.classification
+    $externalMeshBlocked = $postClass -ceq 'LAB_WINDOWS_SANDBOX_OUTBOUND_BLOCKED'
+    if ($postClass -cne 'PASS' -and -not $externalMeshBlocked) {
         if ($postClass -like 'LAB_*') {
             Stop-MishRecovery $postClass 'Post-restart canonical diagnostic failed in LAB.'
         }
@@ -259,7 +260,8 @@ try {
         final_pid = [int]$postStart.pid
         final_pid_stable = [bool]$postStart.pid_stable
         launch_elapsed_ms = [int64]$postStart.elapsed_ms
-        diagnostic_classification = [string]$postDiagnostic.classification
+        diagnostic_classification = $postClass
+        external_mesh_acceptance_blocked = $externalMeshBlocked
         root_policy_authorized = [bool]$postDiagnostic.android.root.policy_authorized
         root_authority_observation = [string]$postDiagnostic.android.root.authority_observation
         proxy_healthy = [bool]$postDiagnostic.android.proxy.healthy
@@ -274,6 +276,7 @@ try {
         mesh_e2e = [string]$postDiagnostic.external.mesh_proxy_e2e.result
     }
 
+    $externalMeshSatisfied = $externalMeshBlocked -or [string]$restartEvidence.mesh_e2e -ceq 'PASS'
     if (
         -not [bool]$restartEvidence.root_policy_authorized -or
         [string]$restartEvidence.root_authority_observation -cne 'READY_AT_POLICY_AUTHORIZATION' -or
@@ -282,9 +285,13 @@ try {
         -not [bool]$restartEvidence.mesh_epoch_present -or
         -not [bool]$restartEvidence.mesh_ingress_running -or
         [string]$restartEvidence.loopback_e2e -cne 'PASS' -or
-        [string]$restartEvidence.mesh_e2e -cne 'PASS'
+        -not $externalMeshSatisfied
     ) {
         Stop-MishRecovery 'U2_RESTART_RECOVERY_INCOMPLETE' 'Canonical post-restart owner/readiness/E2E evidence is incomplete.'
+    }
+
+    if ($externalMeshBlocked) {
+        Stop-MishRecovery 'LAB_EXTERNAL_MESH_ACCEPTANCE_BLOCKED' 'Cellular E3 and PRODUCT restart passed, but external Mesh E2E is blocked by the Windows LAB sandbox.'
     }
 
     $classification = 'U2_RECOVERY_LIFECYCLE_PASS'
