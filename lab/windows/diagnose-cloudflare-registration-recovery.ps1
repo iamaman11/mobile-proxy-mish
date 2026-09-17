@@ -435,7 +435,8 @@ function Wait-MishOwnerState {
     param(
         [Parameter(Mandatory)][ValidateSet('lost','ready')][string] $State,
         [Parameter(Mandatory)][int] $TimeoutSeconds,
-        [Parameter(Mandatory)][Collections.Generic.List[object]] $Observations
+        [Parameter(Mandatory)][AllowEmptyCollection()]
+        [Collections.Generic.List[object]] $Observations
     )
 
     $watch = [Diagnostics.Stopwatch]::StartNew()

@@ -18,6 +18,8 @@ $source = Get-Content -Raw -LiteralPath $probePath
 
 foreach ($required in @(
     "`$script:Schema = 'mish.lab.cloudflare-registration-recovery/v1'",
+    'function Wait-MishOwnerState',
+    '[AllowEmptyCollection()]',
     "`$ApiTokenEnvironmentVariable = 'MISH_CF_REGISTRATION_TOKEN'",
     '/devices/registrations',
     "ValidateSet('revoke','unrevoke')",
