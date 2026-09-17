@@ -24,7 +24,7 @@ foreach ($required in @(
     "'shell', 'pm', 'path', `$script:TestPackage",
     "Get-MishSha256 -Path `$pulledTestApk",
     "'cmd', 'connectivity', 'airplane-mode', `$State",
-    'external Mesh endpoint loss did not revoke admission/epoch/ingress and drain sessions',
+    'U2_MESH_LOSS_NOT_REVOKED',
     'U2_MESH_SESSION_SURVIVED_REVOKE',
     'epoch_reestablished_after_absence = $true',
     "`$script:TestClass = 'com.mobileproxymish.app.cellular.CellularE3InstrumentedTest'",
