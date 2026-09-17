@@ -46,6 +46,10 @@ foreach ($required in @(
     'cleanup_verified=true',
     'start-device-app.ps1',
     'collect-device-diagnostic.ps1',
+    "`$externalMeshBlocked = `$postClass -ceq 'LAB_WINDOWS_SANDBOX_OUTBOUND_BLOCKED'",
+    'external_mesh_acceptance_blocked = $externalMeshBlocked',
+    '$externalMeshSatisfied = $externalMeshBlocked -or',
+    "'LAB_EXTERNAL_MESH_ACCEPTANCE_BLOCKED'",
     'U2_RESTART_ACTIVE_SESSION_LEAK',
     'U2_RESTART_RECOVERY_INCOMPLETE',
     'U2_RECOVERY_LIFECYCLE_PASS',
@@ -182,6 +186,32 @@ try {
         [string]$lab.exact_candidate_acceptance -cne 'NOT_EVALUATED'
     ) {
         throw 'LAB recovery-control failure must not reject the PRODUCT candidate.'
+    }
+
+    $externalMeshEvidence = Join-Path $root 'recovery-external-mesh-blocked.json'
+    [ordered]@{
+        schema = 'mish.lab.recovery-lifecycle/v1'
+        acceptance_result = 'FAIL'
+        classification = 'LAB_EXTERNAL_MESH_ACCEPTANCE_BLOCKED'
+        cellular_e3 = [ordered]@{ instrumentation_pass = $true }
+        restart = [ordered]@{ external_mesh_acceptance_blocked = $true; loopback_e2e = 'PASS'; mesh_e2e = 'FAIL' }
+    } | ConvertTo-Json -Depth 6 | Set-Content -Encoding UTF8 -LiteralPath $externalMeshEvidence
+    $externalMesh = & $reportPath `
+        -Mode full `
+        -PrNumber 213 `
+        -SourceSha ('d' * 40) `
+        -ControlSha $controlSha `
+        -DiagnosticEvidencePath $diagnostic `
+        -RequestedProbe recovery_lifecycle `
+        -TargetedEvidencePath $externalMeshEvidence `
+        -OutputPath (Join-Path $root 'external-mesh-report.json') |
+        Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$externalMesh.cycle_result -cne 'LAB_FAIL' -or
+        [string]$externalMesh.classification -cne 'LAB_EXTERNAL_MESH_ACCEPTANCE_BLOCKED' -or
+        [string]$externalMesh.exact_candidate_acceptance -cne 'NOT_EVALUATED'
+    ) {
+        throw 'External Mesh sandbox block must preserve recovery evidence without accepting or rejecting the PRODUCT candidate.'
     }
 }
 finally {
