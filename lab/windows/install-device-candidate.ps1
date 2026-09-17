@@ -16,6 +16,7 @@ $schema = 'mish-device-candidate-v1'
 $productName = 'mobile-proxy-mish-debug.apk'
 $testName = 'mobile-proxy-mish-debug-androidTest.apk'
 $applicationId = 'com.mobileproxymish.app.debug'
+$testApplicationId = 'com.mobileproxymish.app.test'
 $keystorePassword = 'mish-lab-device-candidate-v1'
 $keyAlias = 'mish-lab-device-candidate-v1'
 $legacyStateRoot = 'C:\mish-lab\runner\_work\.mish-device-candidate'
@@ -78,8 +79,13 @@ function Invoke-AdbInstallBounded {
     param(
         [Parameter(Mandatory)][string]$Adb,
         [Parameter(Mandatory)][string]$ApkPath,
+        [switch]$TestOnly,
         [ValidateRange(10, 300)][int]$TimeoutSeconds = 90
     )
+
+    $arguments = @('install', '-r')
+    if ($TestOnly) { $arguments += '-t' }
+    $arguments += $ApkPath
 
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $Adb
@@ -87,14 +93,14 @@ function Invoke-AdbInstallBounded {
     $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
-    foreach ($argument in @('install', '-r', $ApkPath)) {
+    foreach ($argument in $arguments) {
         [void]$start.ArgumentList.Add($argument)
     }
 
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $start
     if (-not $process.Start()) {
-        Stop-Candidate 'INSTALL_FAILED' 'adb install -r could not be started.'
+        Stop-Candidate 'INSTALL_FAILED' 'adb install could not be started.'
     }
 
     try {
@@ -103,7 +109,7 @@ function Invoke-AdbInstallBounded {
         if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
             try { $process.Kill($true) } catch { }
             try { [void]$process.WaitForExit(5000) } catch { }
-            Stop-Candidate 'INSTALL_TIMEOUT' "adb install -r exceeded the bounded ${TimeoutSeconds}s timeout."
+            Stop-Candidate 'INSTALL_TIMEOUT' "adb install exceeded the bounded ${TimeoutSeconds}s timeout."
         }
 
         $stdout = $stdoutTask.GetAwaiter().GetResult()
@@ -304,6 +310,14 @@ if ($installResult.ExitCode -ne 0 -or $installResult.Text -notmatch '(?m)^Succes
     Stop-Candidate 'INSTALL_FAILED' 'adb install -r did not report Success.'
 }
 
+$testInstallResult = Invoke-AdbInstallBounded -Adb $adb -ApkPath $signedTest -TestOnly -TimeoutSeconds 90
+if ($testInstallResult.ExitCode -ne 0 -or $testInstallResult.Text -notmatch '(?m)^Success\s*$') {
+    if ($testInstallResult.Text -match 'INSTALL_FAILED_UPDATE_INCOMPATIBLE') {
+        Stop-Candidate 'TEST_HARNESS_SIGNATURE_MIGRATION_REQUIRED' "Existing $testApplicationId uses another signing identity; remove only that LAB test package once, then rerun. PRODUCT package is untouched."
+    }
+    Stop-Candidate 'TEST_HARNESS_INSTALL_FAILED' 'LAB-signed androidTest APK installation did not report Success.'
+}
+
 [pscustomobject]@{
     result = 'PASS'
     mode = 'install'
@@ -311,11 +325,13 @@ if ($installResult.ExitCode -ne 0 -or $installResult.Text -notmatch '(?m)^Succes
     source_sha = $ExpectedSourceSha
     target_abi = [string]$manifest.target_abi
     application_id = $applicationId
+    test_application_id = $testApplicationId
     original_product_apk_sha256 = $productSha
     signed_product_apk_sha256 = Get-Sha256 $signedProduct
     signed_android_test_apk_sha256 = Get-Sha256 $signedTest
     lab_signing_certificate_sha256 = $certSha
     signing_state_root = $state
     installed = $true
+    test_harness_installed = $true
     local_build = $false
 } | ConvertTo-Json -Compress
