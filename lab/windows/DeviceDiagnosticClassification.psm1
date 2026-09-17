@@ -7,20 +7,27 @@ function Test-MishCodexSandboxOutboundBlock {
     $command = Get-Command 'Get-NetFirewallRule' -ErrorAction SilentlyContinue
     if ($null -eq $command) { return $false }
 
+    $ruleName = 'codex_sandbox_offline_block_outbound'
+    $rules = @()
     try {
-        $rules = @(
-            Get-NetFirewallRule -Name 'codex_sandbox_offline_block_outbound' -ErrorAction Stop |
-                Where-Object {
-                    [string]$_.Enabled -eq 'True' -and
-                    [string]$_.Direction -eq 'Outbound' -and
-                    [string]$_.Action -eq 'Block'
-                }
-        )
-        return $rules.Count -gt 0
+        $rules += @(Get-NetFirewallRule -Name $ruleName -ErrorAction Stop)
     }
-    catch {
-        return $false
+    catch { }
+    try {
+        $rules += @(Get-NetFirewallRule -DisplayName $ruleName -ErrorAction Stop)
     }
+    catch { }
+
+    foreach ($rule in $rules) {
+        if (
+            [string]$rule.Enabled -eq 'True' -and
+            [string]$rule.Direction -eq 'Outbound' -and
+            [string]$rule.Action -eq 'Block'
+        ) {
+            return $true
+        }
+    }
+    return $false
 }
 
 function Get-MishDeviceDiagnosticClassification {
