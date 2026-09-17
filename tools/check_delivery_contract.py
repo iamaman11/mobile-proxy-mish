@@ -139,7 +139,12 @@ def main() -> None:
         "C:\\mish-lab\\runner\\.state\\device-candidate",
         "Invoke-NativeCapture",
         "SIGNING_IDENTITY_CONFLICT",
-        "@('install', '-r', $signedProduct)",
+        "Invoke-AdbInstallBounded",
+        "foreach ($argument in @('install', '-r', $ApkPath))",
+        "[ValidateRange(10, 300)][int]$TimeoutSeconds = 90",
+        "$process.Kill($true)",
+        "INSTALL_TIMEOUT",
+        "$installResult = Invoke-AdbInstallBounded -Adb $adb -ApkPath $signedProduct -TimeoutSeconds 90",
         "signed_product_apk_sha256",
         "lab_signing_certificate_sha256",
     ):

@@ -74,6 +74,50 @@ function Invoke-Native {
     return $result
 }
 
+function Invoke-AdbInstallBounded {
+    param(
+        [Parameter(Mandatory)][string]$Adb,
+        [Parameter(Mandatory)][string]$ApkPath,
+        [ValidateRange(10, 300)][int]$TimeoutSeconds = 90
+    )
+
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $Adb
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    foreach ($argument in @('install', '-r', $ApkPath)) {
+        [void]$start.ArgumentList.Add($argument)
+    }
+
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $start
+    if (-not $process.Start()) {
+        Stop-Candidate 'INSTALL_FAILED' 'adb install -r could not be started.'
+    }
+
+    try {
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            try { $process.Kill($true) } catch { }
+            try { [void]$process.WaitForExit(5000) } catch { }
+            Stop-Candidate 'INSTALL_TIMEOUT' "adb install -r exceeded the bounded ${TimeoutSeconds}s timeout."
+        }
+
+        $stdout = $stdoutTask.GetAwaiter().GetResult()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
+        return [pscustomobject]@{
+            ExitCode = [int]$process.ExitCode
+            Text = (($stdout, $stderr | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join "`n").Trim()
+        }
+    }
+    finally {
+        $process.Dispose()
+    }
+}
+
 function Test-FullyQualifiedWindowsPath {
     param([Parameter(Mandatory)][string]$Path)
     return $Path -match '^(?:[A-Za-z]:[\\/]|\\\\)'
@@ -252,7 +296,7 @@ if ($certSha -notmatch '^[0-9a-f]{64}$') {
     Stop-Candidate 'SIGNING_FAILED' 'LAB signing certificate digest is invalid.'
 }
 
-$installResult = Invoke-NativeCapture -FilePath $adb -Arguments @('install', '-r', $signedProduct)
+$installResult = Invoke-AdbInstallBounded -Adb $adb -ApkPath $signedProduct -TimeoutSeconds 90
 if ($installResult.ExitCode -ne 0 -or $installResult.Text -notmatch '(?m)^Success\s*$') {
     if ($installResult.Text -match 'INSTALL_FAILED_UPDATE_INCOMPATIBLE') {
         Stop-Candidate 'SIGNATURE_MIGRATION_REQUIRED' 'Existing debug package uses another signing identity; perform one explicit debug-package migration, then rerun. Production package is untouched.'
