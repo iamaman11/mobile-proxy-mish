@@ -213,6 +213,70 @@ try {
     ) {
         throw 'External Mesh sandbox block must preserve recovery evidence without accepting or rejecting the PRODUCT candidate.'
     }
+
+    $sandboxDiagnostic = Join-Path $root 'diagnostic-sandbox-blocked.json'
+    [ordered]@{
+        schema = 'mish.lab.diagnostic/v2'
+        classification = 'LAB_WINDOWS_SANDBOX_OUTBOUND_BLOCKED'
+        collection_result = 'PASS'
+    } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $sandboxDiagnostic
+
+    $sandboxExternal = & $reportPath `
+        -Mode full `
+        -PrNumber 213 `
+        -SourceSha ('e' * 40) `
+        -ControlSha $controlSha `
+        -DiagnosticEvidencePath $sandboxDiagnostic `
+        -RequestedProbe recovery_lifecycle `
+        -TargetedEvidencePath $externalMeshEvidence `
+        -OutputPath (Join-Path $root 'sandbox-external-report.json') |
+        Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$sandboxExternal.cycle_result -cne 'LAB_FAIL' -or
+        [string]$sandboxExternal.classification -cne 'LAB_EXTERNAL_MESH_ACCEPTANCE_BLOCKED' -or
+        [string]$sandboxExternal.baseline_classification -cne 'LAB_WINDOWS_SANDBOX_OUTBOUND_BLOCKED' -or
+        [string]$sandboxExternal.exact_candidate_acceptance -cne 'NOT_EVALUATED'
+    ) {
+        throw 'Sandboxed baseline must not mask the targeted external-Mesh blocker or accept the candidate.'
+    }
+
+    $sandboxProduct = & $reportPath `
+        -Mode full `
+        -PrNumber 213 `
+        -SourceSha ('f' * 40) `
+        -ControlSha $controlSha `
+        -DiagnosticEvidencePath $sandboxDiagnostic `
+        -RequestedProbe recovery_lifecycle `
+        -TargetedEvidencePath $productEvidence `
+        -OutputPath (Join-Path $root 'sandbox-product-report.json') |
+        Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$sandboxProduct.cycle_result -cne 'PRODUCT_FAIL' -or
+        [string]$sandboxProduct.classification -cne 'U2_CELLULAR_E3_FAILED' -or
+        [string]$sandboxProduct.baseline_classification -cne 'LAB_WINDOWS_SANDBOX_OUTBOUND_BLOCKED' -or
+        [string]$sandboxProduct.exact_candidate_acceptance -cne 'FAIL'
+    ) {
+        throw 'Sandboxed external Mesh baseline must not mask an independently observed targeted PRODUCT failure.'
+    }
+
+    $sandboxPass = & $reportPath `
+        -Mode full `
+        -PrNumber 213 `
+        -SourceSha ('0' * 40) `
+        -ControlSha $controlSha `
+        -DiagnosticEvidencePath $sandboxDiagnostic `
+        -RequestedProbe recovery_lifecycle `
+        -TargetedEvidencePath $passEvidence `
+        -OutputPath (Join-Path $root 'sandbox-pass-report.json') |
+        Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$sandboxPass.cycle_result -cne 'LAB_FAIL' -or
+        [string]$sandboxPass.classification -cne 'LAB_WINDOWS_SANDBOX_OUTBOUND_BLOCKED' -or
+        [string]$sandboxPass.baseline_classification -cne 'LAB_WINDOWS_SANDBOX_OUTBOUND_BLOCKED' -or
+        [string]$sandboxPass.exact_candidate_acceptance -cne 'NOT_EVALUATED'
+    ) {
+        throw 'Targeted PASS must never override a sandbox-blocked external Mesh baseline.'
+    }
 }
 finally {
     Remove-Item -Recurse -Force -LiteralPath $root -ErrorAction SilentlyContinue
