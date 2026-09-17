@@ -17,7 +17,7 @@ if (@($tokens | Where-Object { $_.Text -ieq '$PID' }).Count -ne 0) {
 
 $source = Get-Content -Raw -LiteralPath $probePath
 foreach ($required in @(
-    "schema = 'mish.lab.recovery-lifecycle/v1'",
+    "`$script:Schema = 'mish.lab.recovery-lifecycle/v1'",
     "schema -cne `$script:CandidateSchema",
     'candidate.android_test_apk.sha256',
     "'install', '-r', '-t', `$testApkPath",
