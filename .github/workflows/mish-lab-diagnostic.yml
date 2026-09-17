@@ -98,3 +98,122 @@ jobs:
           path: ${{ runner.temp }}\mish-device-diagnostic-v2.json
           if-no-files-found: warn
           retention-days: 30
+
+  mesh-route:
+    name: Read-only Windows Mesh route attribution
+    if: >-
+      github.event.issue.number == 163 &&
+      github.event.comment.user.login == 'iamaman11' &&
+      github.event.comment.body == '/mish-diag mesh-route'
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 5
+    env:
+      ADB_EXE: C:\\mish-lab\\tools\\android-sdk\\platform-tools\\adb.exe
+    steps:
+      - name: Verify pinned PowerShell 7 runtime
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($PSVersionTable.PSEdition -cne 'Core' -or $PSVersionTable.PSVersion.ToString() -cne $env:DIAGNOSTIC_PWSH_VERSION) {
+            throw "MISH_DIAGNOSTIC_FAILURE|POWERSHELL_RUNTIME_MISMATCH|Expected PowerShell $env:DIAGNOSTIC_PWSH_VERSION; observed $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)"
+          }
+
+      - name: Attribute Windows route to current DEVICE Mesh endpoint
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Test-MishMeshAddress {
+            param([Parameter(Mandatory)][string] $Address)
+            try {
+              $bytes = [Net.IPAddress]::Parse($Address).GetAddressBytes()
+            }
+            catch { return $false }
+            if ($bytes.Length -ne 4 -or $bytes[0] -ne 100) { return $false }
+            return ([int]$bytes[1] -ge 96 -and [int]$bytes[1] -le 111)
+          }
+
+          $rows = @(& $env:ADB_EXE shell ip -o -4 addr show 2>$null | ForEach-Object { [string]$_ })
+          if ($LASTEXITCODE -ne 0) {
+            throw 'MISH_DIAGNOSTIC_FAILURE|ADB_FAILED|Could not read DEVICE IPv4 addresses.'
+          }
+          $meshAddresses = @(
+            [regex]::Matches(($rows -join "`n"), '\binet\s+(?<ip>\d{1,3}(?:\.\d{1,3}){3})/\d+') |
+              ForEach-Object { $_.Groups['ip'].Value } |
+              Where-Object { Test-MishMeshAddress $_ } |
+              Sort-Object -Unique
+          )
+          if ($meshAddresses.Count -ne 1) {
+            throw "MISH_DIAGNOSTIC_FAILURE|MESH_ENDPOINT_COUNT|Expected one DEVICE Mesh IPv4 endpoint; observed $($meshAddresses.Count)."
+          }
+
+          $meshAddress = [string]$meshAddresses[0]
+          $route = @(Find-NetRoute -RemoteIPAddress $meshAddress -ErrorAction Stop) | Select-Object -First 1
+          if ($null -eq $route) {
+            throw 'MISH_DIAGNOSTIC_FAILURE|WINDOWS_MESH_ROUTE_MISSING|No Windows route resolves the DEVICE Mesh endpoint.'
+          }
+
+          $tcp = Test-NetConnection -ComputerName $meshAddress -Port 3128 -InformationLevel Detailed -WarningAction SilentlyContinue
+          $cloudflareAdapters = @(
+            Get-NetAdapter -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match 'Cloudflare|WARP' -or $_.InterfaceDescription -match 'Cloudflare|WARP' } |
+              ForEach-Object {
+                [ordered]@{
+                  name = [string]$_.Name
+                  description = [string]$_.InterfaceDescription
+                  status = [string]$_.Status
+                  interface_index = [int]$_.ifIndex
+                }
+              }
+          )
+          $cloudflareServices = @(
+            Get-Service -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match 'Cloudflare|WARP' -or $_.DisplayName -match 'Cloudflare|WARP' } |
+              ForEach-Object {
+                [ordered]@{
+                  name = [string]$_.Name
+                  display_name = [string]$_.DisplayName
+                  status = [string]$_.Status
+                  start_type = [string]$_.StartType
+                }
+              }
+          )
+
+          $evidence = [ordered]@{
+            schema = 'mish.lab.windows-mesh-route/v1'
+            collected_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
+            mesh_endpoint_count = 1
+            route = [ordered]@{
+              present = $true
+              interface_alias = [string]$route.InterfaceAlias
+              interface_index = [int]$route.InterfaceIndex
+              route_metric = [int]$route.RouteMetric
+            }
+            tcp_3128 = [ordered]@{
+              succeeded = [bool]$tcp.TcpTestSucceeded
+              interface_alias = [string]$tcp.InterfaceAlias
+            }
+            cloudflare_adapters = $cloudflareAdapters
+            cloudflare_services = $cloudflareServices
+          }
+          $path = Join-Path $env:RUNNER_TEMP 'mish-windows-mesh-route-v1.json'
+          [IO.File]::WriteAllText(
+            $path,
+            (($evidence | ConvertTo-Json -Depth 8) + [Environment]::NewLine),
+            [Text.UTF8Encoding]::new($false)
+          )
+
+          Write-Host "MISH_WINDOWS_MESH_ROUTE_INTERFACE=$($evidence.route.interface_alias)"
+          Write-Host "MISH_WINDOWS_MESH_ROUTE_INDEX=$($evidence.route.interface_index)"
+          Write-Host "MISH_WINDOWS_MESH_TCP_3128=$($evidence.tcp_3128.succeeded)"
+          Write-Host "MISH_WINDOWS_MESH_TCP_INTERFACE=$($evidence.tcp_3128.interface_alias)"
+          Write-Host "MISH_WINDOWS_CLOUDFLARE_ADAPTERS=$($cloudflareAdapters.Count)"
+          Write-Host "MISH_WINDOWS_CLOUDFLARE_SERVICES=$($cloudflareServices.Count)"
+
+      - name: Upload Windows Mesh route evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mish-windows-mesh-route-v1-${{ github.run_id }}
+          path: ${{ runner.temp }}\mish-windows-mesh-route-v1.json
+          if-no-files-found: error
+          retention-days: 7
