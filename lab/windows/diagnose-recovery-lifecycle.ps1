@@ -214,9 +214,9 @@ try {
     $instrumentationOutput = (($instrumentation.StdOut, $instrumentation.StdErr) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join "`n"
     $testDispatched = $instrumentationOutput -match "(?im)^INSTRUMENTATION_STATUS:\s*test=$([regex]::Escape($script:TestMethod))\s*$"
     $instrumentationPass = $instrumentation.ExitCode -eq 0 -and $testDispatched -and $instrumentationOutput -match '(?m)^OK \(1 test\)\s*$'
-    $positive = $instrumentationOutput -match 'E3_EVIDENCE phase=positive '
-    $negative = $instrumentationOutput -match 'E3_EVIDENCE phase=negative '
-    $recovery = $instrumentationOutput -match 'E3_EVIDENCE phase=recovery '
+    $positive = $instrumentationOutput -match '(?m)^INSTRUMENTATION_STATUS:\s*e3_evidence=phase=positive '
+    $negative = $instrumentationOutput -match '(?m)^INSTRUMENTATION_STATUS:\s*e3_evidence=phase=negative '
+    $recovery = $instrumentationOutput -match '(?m)^INSTRUMENTATION_STATUS:\s*e3_evidence=phase=recovery '
 
     $cellularEvidence = [ordered]@{
         exact_test_apk_sha256 = $testApkSha
