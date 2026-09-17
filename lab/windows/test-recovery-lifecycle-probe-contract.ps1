@@ -22,11 +22,10 @@ foreach ($required in @(
     'candidate.android_test_apk.sha256',
     "'install', '-r', '-t', `$testApkPath",
     "'shell', 'pm', 'path', `$script:TestPackage",
-    "Get-MishSha256 -Path `$pulledTestApk",
-    "'cmd', 'connectivity', 'airplane-mode', `$State",
-    'U2_MESH_LOSS_NOT_REVOKED',
-    'U2_MESH_SESSION_SURVIVED_REVOKE',
-    'epoch_reestablished_after_absence = $true',
+    'Get-MishSha256 -Path $pulledTestApk',
+    "external_owner_fault_injection = 'NOT_REQUIRED'",
+    "reason = 'NO_SUPPORTED_DETERMINISTIC_UNATTENDED_TRIGGER_ON_DEVICE_1'",
+    "external_mesh_owner_fault_injection = 'NOT_PERFORMED'",
     "`$script:TestClass = 'com.mobileproxymish.app.cellular.CellularE3InstrumentedTest'",
     "`$script:TestComponent = 'com.mobileproxymish.app.test/androidx.test.runner.AndroidJUnitRunner'",
     "'e3Mode', 'lifecycle'",
@@ -39,19 +38,26 @@ foreach ($required in @(
     'no_default_fallback=true',
     'fresh_generation=true',
     'cleanup_verified=true',
-    "start-device-app.ps1",
-    "collect-device-diagnostic.ps1",
-    "U2_RESTART_ACTIVE_SESSION_LEAK",
-    "U2_RECOVERY_LIFECYCLE_PASS",
+    'start-device-app.ps1',
+    'collect-device-diagnostic.ps1',
+    'U2_RESTART_ACTIVE_SESSION_LEAK',
+    'U2_RESTART_RECOVERY_INCOMPLETE',
+    'U2_RECOVERY_LIFECYCLE_PASS',
     'cloudflare_app_mutated = $false',
     'product_routes_or_iptables_mutated_by_lab = $false'
 )) {
     if (-not $source.Contains($required)) {
-        throw "Recovery/lifecycle probe lost required exact-candidate/owner evidence: $required"
+        throw "Recovery/lifecycle probe lost required exact-candidate/recovery evidence: $required"
     }
 }
 
 foreach ($forbidden in @(
+    "'cmd', 'connectivity', 'airplane-mode'",
+    'CredentialProvisioning.psm1',
+    'Open-MishApplicationSession',
+    'Set-MishAirplane',
+    'LAB_MESH_LOSS_EFFECT_NOT_OBSERVED',
+    'U2_MESH_LOSS_NOT_REVOKED',
     "'shell', 'su'",
     "'shell', 'iptables'",
     "'shell', 'ip6tables'",
@@ -65,7 +71,7 @@ foreach ($forbidden in @(
     'assembleDebug'
 )) {
     if ($source.Contains($forbidden)) {
-        throw "Recovery/lifecycle probe must remain CONTROL-only and must not mutate PRODUCT/network policy directly: $forbidden"
+        throw "Recovery/lifecycle probe contains forbidden external-owner or PRODUCT mutation path: $forbidden"
     }
 }
 
@@ -109,7 +115,7 @@ try {
     [ordered]@{
         schema = 'mish.lab.recovery-lifecycle/v1'
         acceptance_result = 'FAIL'
-        classification = 'U2_MESH_LOSS_NOT_REVOKED'
+        classification = 'U2_CELLULAR_E3_FAILED'
     } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $productEvidence
     $product = & $reportPath `
         -Mode full `
@@ -123,17 +129,17 @@ try {
         Select-Object -Last 1 | ConvertFrom-Json
     if (
         [string]$product.cycle_result -cne 'PRODUCT_FAIL' -or
-        [string]$product.classification -cne 'U2_MESH_LOSS_NOT_REVOKED' -or
+        [string]$product.classification -cne 'U2_CELLULAR_E3_FAILED' -or
         [string]$product.exact_candidate_acceptance -cne 'FAIL'
     ) {
-        throw 'Observed recovery PRODUCT failure must reject the exact candidate.'
+        throw 'Observed Cellular E3 PRODUCT failure must reject the exact candidate.'
     }
 
     $labEvidence = Join-Path $root 'recovery-lab-fail.json'
     [ordered]@{
         schema = 'mish.lab.recovery-lifecycle/v1'
         acceptance_result = 'FAIL'
-        classification = 'LAB_MESH_LOSS_EFFECT_NOT_OBSERVED'
+        classification = 'LAB_E3_DEVICE_CONTROL_FAILED'
     } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $labEvidence
     $lab = & $reportPath `
         -Mode full `
@@ -147,6 +153,7 @@ try {
         Select-Object -Last 1 | ConvertFrom-Json
     if (
         [string]$lab.cycle_result -cne 'LAB_FAIL' -or
+        [string]$lab.classification -cne 'LAB_E3_DEVICE_CONTROL_FAILED' -or
         [string]$lab.exact_candidate_acceptance -cne 'NOT_EVALUATED'
     ) {
         throw 'LAB recovery-control failure must not reject the PRODUCT candidate.'
