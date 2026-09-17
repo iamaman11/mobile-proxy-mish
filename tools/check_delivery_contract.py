@@ -129,7 +129,6 @@ def main() -> None:
     forbid(producer, "fix/root-policy-reconciliation", "candidate producer must target protected main after convergence")
     forbid(producer, "sing-box", "native candidate producer must not know the deleted external proxy runtime")
 
-    # Candidate verifier must positively require current native surface and reject old packaged runtime.
     product_verifier = "tools/verify_android_candidate.py"
     for required in ("libmish_android_ffi.so", "libsingbox.so"):
         require(product_verifier, required, "candidate verifier must enforce the native-only APK contract")
@@ -140,12 +139,18 @@ def main() -> None:
         "Invoke-NativeCapture",
         "SIGNING_IDENTITY_CONFLICT",
         "Invoke-AdbInstallBounded",
-        "foreach ($argument in @('install', '-r', $ApkPath))",
+        "$arguments = @('install', '-r')",
+        "if ($TestOnly) { $arguments += '-t' }",
+        "$arguments += $ApkPath",
         "[ValidateRange(10, 300)][int]$TimeoutSeconds = 90",
         "$process.Kill($true)",
         "INSTALL_TIMEOUT",
         "$installResult = Invoke-AdbInstallBounded -Adb $adb -ApkPath $signedProduct -TimeoutSeconds 90",
+        "$testInstallResult = Invoke-AdbInstallBounded -Adb $adb -ApkPath $signedTest -TestOnly -TimeoutSeconds 90",
+        "TEST_HARNESS_SIGNATURE_MIGRATION_REQUIRED",
+        "test_harness_installed = $true",
         "signed_product_apk_sha256",
+        "signed_android_test_apk_sha256",
         "lab_signing_certificate_sha256",
     ):
         require(installer, required, "DEVICE-1 installer contract drifted")
@@ -163,7 +168,6 @@ def main() -> None:
     ):
         require(verifier, required, "post-install exact-byte verification contract drifted")
 
-    # Physical execution remains explicit and non-building.
     consumer = ".github/workflows/device-cycle.yml"
     for required in (
         "issue_comment:",
