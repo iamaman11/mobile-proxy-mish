@@ -381,12 +381,18 @@ jobs:
             $receipt | Set-Content -Encoding UTF8 -LiteralPath $receiptPath
           }
           catch {
+            $message = [string]$_
+            $category = 'INSTALL_FAILED'
+            if ($message -match 'MISH_DEVICE_CANDIDATE_FAILURE\|([^|]+)\|') {
+              $category = $Matches[1]
+            }
             [pscustomobject]@{
               result = 'FAIL'
-              category = 'INSTALL_FAILED'
+              category = $category
               pr_number = [int]'${{ needs.resolve.outputs.pr_number }}'
               source_sha = '${{ needs.resolve.outputs.source_sha }}'
-              installed = $false
+              installed = $null
+              installed_state = 'UNKNOWN'
               local_build = $false
             } | ConvertTo-Json -Compress | Set-Content -Encoding UTF8 -LiteralPath $receiptPath
             throw

@@ -106,7 +106,11 @@ function Invoke-AdbInstallBounded {
         if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
             try { $process.Kill($true) } catch { }
             try { [void]$process.WaitForExit(5000) } catch { }
-            Stop-Candidate 'INSTALL_TIMEOUT' "adb install exceeded the bounded ${TimeoutSeconds}s timeout."
+            return [pscustomobject]@{
+                ExitCode = -1
+                Text = ''
+                TimedOut = $true
+            }
         }
 
         $stdout = $stdoutTask.GetAwaiter().GetResult()
@@ -114,10 +118,41 @@ function Invoke-AdbInstallBounded {
         return [pscustomobject]@{
             ExitCode = [int]$process.ExitCode
             Text = (($stdout, $stderr | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join "`n").Trim()
+            TimedOut = $false
         }
     }
     finally {
         $process.Dispose()
+    }
+}
+
+function Test-ExactInstalledApk {
+    param(
+        [Parameter(Mandatory)][string]$Adb,
+        [Parameter(Mandatory)][string]$ApplicationId,
+        [Parameter(Mandatory)][string]$ExpectedSha256
+    )
+
+    $pathResult = Invoke-NativeCapture -FilePath $Adb -Arguments @('shell', 'pm', 'path', $ApplicationId)
+    if ($pathResult.ExitCode -ne 0) { return $false }
+    $basePath = @(
+        $pathResult.Text -split "`r?`n" |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ -match '^package:(.+/base\.apk)$' } |
+            ForEach-Object { [regex]::Match($_, '^package:(.+/base\.apk)$').Groups[1].Value }
+    )
+    if ($basePath.Count -ne 1) { return $false }
+
+    $temp = Join-Path $env:TEMP ('mish-install-timeout-' + [Guid]::NewGuid().ToString('N') + '.apk')
+    try {
+        $pull = Invoke-NativeCapture -FilePath $Adb -Arguments @('pull', $basePath[0], $temp)
+        if ($pull.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $temp -PathType Leaf)) {
+            return $false
+        }
+        return (Get-FileHash -Algorithm SHA256 -LiteralPath $temp).Hash.ToLowerInvariant() -ceq $ExpectedSha256
+    }
+    finally {
+        Remove-Item -Force -LiteralPath $temp -ErrorAction SilentlyContinue
     }
 }
 
@@ -299,8 +334,17 @@ if ($certSha -notmatch '^[0-9a-f]{64}$') {
     Stop-Candidate 'SIGNING_FAILED' 'LAB signing certificate digest is invalid.'
 }
 
+$signedProductSha = Get-Sha256 $signedProduct
+$signedTestSha = Get-Sha256 $signedTest
+
 $installResult = Invoke-AdbInstallBounded -Adb $adb -ApkPath $signedProduct -TimeoutSeconds 90
-if ($installResult.ExitCode -ne 0 -or $installResult.Text -notmatch '(?m)^Success\s*$') {
+if ($installResult.TimedOut) {
+    if (-not (Test-ExactInstalledApk -Adb $adb -ApplicationId $applicationId -ExpectedSha256 $signedProductSha)) {
+        Stop-Candidate 'INSTALL_TIMEOUT_AMBIGUOUS' 'adb install timed out and exact installed PRODUCT bytes could not be proven.'
+    }
+    Write-Host 'PRODUCT_INSTALL_TIMEOUT_RECOVERED_BY_EXACT_DEVICE_BYTES=PASS'
+}
+elseif ($installResult.ExitCode -ne 0 -or $installResult.Text -notmatch '(?m)^Success\s*$') {
     if ($installResult.Text -match 'INSTALL_FAILED_UPDATE_INCOMPATIBLE') {
         Stop-Candidate 'SIGNATURE_MIGRATION_REQUIRED' 'Existing debug package uses another signing identity; perform one explicit debug-package migration, then rerun. Production package is untouched.'
     }
@@ -308,7 +352,13 @@ if ($installResult.ExitCode -ne 0 -or $installResult.Text -notmatch '(?m)^Succes
 }
 
 $testInstallResult = Invoke-AdbInstallBounded -Adb $adb -ApkPath $signedTest -TestOnly -TimeoutSeconds 90
-if ($testInstallResult.ExitCode -ne 0 -or $testInstallResult.Text -notmatch '(?m)^Success\s*$') {
+if ($testInstallResult.TimedOut) {
+    if (-not (Test-ExactInstalledApk -Adb $adb -ApplicationId $testApplicationId -ExpectedSha256 $signedTestSha)) {
+        Stop-Candidate 'TEST_HARNESS_INSTALL_TIMEOUT_AMBIGUOUS' 'adb install -t timed out and exact installed test-harness bytes could not be proven.'
+    }
+    Write-Host 'TEST_HARNESS_INSTALL_TIMEOUT_RECOVERED_BY_EXACT_DEVICE_BYTES=PASS'
+}
+elseif ($testInstallResult.ExitCode -ne 0 -or $testInstallResult.Text -notmatch '(?m)^Success\s*$') {
     if ($testInstallResult.Text -match 'INSTALL_FAILED_UPDATE_INCOMPATIBLE') {
         $testUninstall = Invoke-NativeCapture -FilePath $adb -Arguments @('uninstall', $testApplicationId)
         if ($testUninstall.ExitCode -ne 0 -or $testUninstall.Text -notmatch '(?m)^Success\s*$') {
@@ -330,8 +380,8 @@ if ($testInstallResult.ExitCode -ne 0 -or $testInstallResult.Text -notmatch '(?m
     application_id = $applicationId
     test_application_id = $testApplicationId
     original_product_apk_sha256 = $productSha
-    signed_product_apk_sha256 = Get-Sha256 $signedProduct
-    signed_android_test_apk_sha256 = Get-Sha256 $signedTest
+    signed_product_apk_sha256 = $signedProductSha
+    signed_android_test_apk_sha256 = $signedTestSha
     lab_signing_certificate_sha256 = $certSha
     signing_state_root = $state
     installed = $true
