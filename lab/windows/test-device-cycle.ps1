@@ -1,6 +1,20 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+function Invoke-MishNativeContract {
+    param(
+        [Parameter(Mandatory)][string] $Executable,
+        [Parameter(Mandatory)][string[]] $Arguments,
+        [Parameter(Mandatory)][string] $Name
+    )
+
+    & $Executable @Arguments
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+        throw "$Name failed with native exit code $exitCode."
+    }
+}
+
 $root = Join-Path $env:TEMP ('mish-device-cycle-test-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $root | Out-Null
 try {
@@ -261,6 +275,10 @@ try {
     if ([string]$baselineWins.cycle_result -cne 'PRODUCT_FAIL' -or [string]$baselineWins.classification -cne 'PRODUCT_PROXY_MIXED_LISTENER_UNAVAILABLE') {
         throw 'Baseline PRODUCT failure must outrank absent capacity evidence.'
     }
+
+    $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+    $deviceCycleChecker = Join-Path $repoRoot 'tools/check_device_cycle_contract.py'
+    Invoke-MishNativeContract -Executable 'python' -Arguments @($deviceCycleChecker) -Name 'Device Cycle Python contract'
 
     Write-Host 'DEVICE_CYCLE_CONTRACT=PASS'
 }
