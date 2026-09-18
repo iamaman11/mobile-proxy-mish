@@ -1,6 +1,8 @@
 use crate::readiness_ffi::ProductReadinessState;
 use crate::runtime_lifecycle_ffi::{
-    ProxyServingFailure, ProxyServingState, map_proxy_failure_out,
+    ProxyServingFailure, ProxyServingState, RuntimeLifecycleState, RuntimeStartAction,
+    RuntimeStopAction, map_lifecycle_state, map_proxy_failure_out, map_start_action,
+    map_stop_action,
 };
 use crate::runtime_boundary::{
     AndroidDnsResolver, CellularAdmissionView, CellularBridgeError, CellularController,
@@ -15,14 +17,14 @@ use mish_cellular::{
 };
 use mish_runtime::{
     CellularPolicyObserver, CellularPolicyPublication, CellularReconcileDiagnostic,
-    ProductGeneration, ProxyRuntimeObserver, ProxyRuntimePublication,
+    ProductRuntimeCoordinator, ProductRuntimeSnapshot, ProxyRuntimeObserver,
+    ProxyRuntimePublication,
     ProxyServingState as OwnerProxyServingState,
     RootAuthorityStatus as OwnerRootAuthorityStatus,
     RootPolicyFailure as OwnerRootPolicyFailure,
     ReadinessDiagnosticSnapshot, ReadinessObserver,
     ReadinessRuntimeError, RootPolicyReconcileDiagnostic,
     RootPolicyResult as OwnerRootPolicyResult, RootRecoveryDiagnostic, RuntimeExecutionError,
-    RuntimeExecutor,
 };
 use mish_transport::MeshVpnObservation;
 use std::fmt;
@@ -150,6 +152,13 @@ pub struct ReadinessDiagnosticView {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct RuntimeLifecycleSnapshotView {
+    pub state: RuntimeLifecycleState,
+    pub generation: u64,
+    pub generation_requires_replacement: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
 pub struct ProxyRuntimePublicationView {
     pub state: ProxyServingState,
     pub failure: Option<ProxyServingFailure>,
@@ -182,10 +191,7 @@ pub trait NativeCellularPolicyObserver: Send + Sync {
 /// and consume typed projections, but cannot independently authorize or recover root policy.
 #[derive(uniffi::Object)]
 pub struct NativeProductRuntime {
-    executor: Arc<RuntimeExecutor>,
-    generation: Arc<ProductGeneration>,
-    cellular_view: Arc<CellularController>,
-    closed: AtomicBool,
+    runtime: Arc<ProductRuntimeCoordinator>,
 }
 
 #[uniffi::export]
@@ -194,45 +200,48 @@ impl NativeProductRuntime {
     pub fn new(
         product_uid: u32,
         debug_isolation: bool,
-        runtime_generation: u64,
     ) -> Result<Arc<Self>, NativeProductRuntimeError> {
         if product_uid == 0 {
             return Err(NativeProductRuntimeError::InvalidProductUid);
         }
-        if runtime_generation == 0 {
-            return Err(NativeProductRuntimeError::InvalidRuntimeGeneration);
-        }
 
-        let executor = RuntimeExecutor::new()?;
         let namespace = if debug_isolation {
             RootPolicyNamespace::Debug
         } else {
             RootPolicyNamespace::Release
         };
-        let generation = ProductGeneration::new(
-            Arc::clone(&executor),
+        let runtime = ProductRuntimeCoordinator::new(
             Arc::new(AndroidDnsResolver),
             product_uid,
             namespace,
-            runtime_generation,
         )?;
-        let cellular_view = CellularController::from_runtime(generation.cellular());
 
-        Ok(Arc::new(Self {
-            executor,
-            generation,
-            cellular_view,
-            closed: AtomicBool::new(false),
-        }))
+        Ok(Arc::new(Self { runtime }))
     }
 
-    pub fn start_cellular_policy(&self) -> Result<(), NativeProductRuntimeError> {
-        if self.closed.load(Ordering::Acquire) {
-            return Err(NativeProductRuntimeError::StateUnavailable);
-        }
-        self.generation.policy()
-            .start()
-            .map_err(|_| NativeProductRuntimeError::StateUnavailable)
+    pub fn runtime_lifecycle_snapshot(&self) -> RuntimeLifecycleSnapshotView {
+        map_runtime_snapshot(self.runtime.snapshot())
+    }
+
+    pub fn start_runtime(
+        self: &Arc<Self>,
+        credential_version: Option<u64>,
+        username: Option<String>,
+        password: Option<String>,
+    ) -> Result<RuntimeStartAction, NativeProductRuntimeError> {
+        self.runtime
+            .request_start(credential_version, username, password)
+            .map(map_start_action)
+            .map_err(Into::into)
+    }
+
+    pub fn stop_runtime(
+        self: &Arc<Self>,
+    ) -> Result<RuntimeStopAction, NativeProductRuntimeError> {
+        self.runtime
+            .request_stop()
+            .map(map_stop_action)
+            .map_err(Into::into)
     }
 
     pub fn observe_cellular_policy(&self, observer: Arc<dyn NativeCellularPolicyObserver>) {
