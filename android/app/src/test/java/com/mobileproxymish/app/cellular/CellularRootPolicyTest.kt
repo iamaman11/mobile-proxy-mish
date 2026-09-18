@@ -311,9 +311,9 @@ class CellularRootPolicyTest {
         assertNull(policy.cleanupFailureStage())
 
         assertEquals(
+            "uncertain mutation must be confirmed read-only, never replayed",
             1,
             process.commands.count { it == IPV4_JUMP_DELETE },
-            "uncertain mutation must be confirmed read-only, never replayed",
         )
         assertNull(process.ipv4Lookup)
         assertEquals(0, process.ipv4JumpCount)
