@@ -43,6 +43,66 @@ class RootPolicySeamsTest {
     }
 
     @Test
+    fun executorDiagnosticWindowCountsObservationsMutationsAndExactDuplicateReads() {
+        val observation = "ip -4 rule show"
+        val mutation = "ip -4 rule add pref 9501 fwmark 0x200000/0x200000 unreachable"
+        val executor = RootPolicyExecutor(
+            ScriptedRootProcess(
+                mutableMapOf(
+                    observation to ok("1000: from all lookup 100\n"),
+                    mutation to ok(""),
+                ),
+            ),
+        )
+
+        executor.beginDiagnosticWindow()
+        assertEquals(listOf("1000: from all lookup 100"), executor.lines(observation))
+        assertEquals(listOf("1000: from all lookup 100"), executor.lines(observation))
+        assertTrue(executor.commandSucceeded(mutation))
+        val diagnostic = executor.finishDiagnosticWindow()
+
+        assertEquals(3, diagnostic.commands)
+        assertEquals(2, diagnostic.observationCommands)
+        assertEquals(1, diagnostic.mutationCommands)
+        assertEquals(1, diagnostic.duplicateObservations)
+        assertEquals(0, diagnostic.incompleteOrTimedOutCommands)
+        assertEquals(0, diagnostic.mutationFailures)
+    }
+
+    @Test
+    fun executorDiagnosticWindowSeparatesIncompleteObservationFromMutationFailure() {
+        val incomplete = "ip -4 rule show"
+        val absent = "iptables -t mangle -C OUTPUT -j MISH_EGRESS_V1"
+        val failedMutation = "iptables -t mangle -D OUTPUT -j MISH_EGRESS_V1"
+        val executor = RootPolicyExecutor(
+            ScriptedRootProcess(
+                mutableMapOf(
+                    incomplete to RootProcessResult(
+                        exitCode = 0,
+                        stdout = "",
+                        outputComplete = false,
+                    ),
+                    absent to RootProcessResult(exitCode = 1, stdout = ""),
+                    failedMutation to RootProcessResult(exitCode = 1, stdout = ""),
+                ),
+            ),
+        )
+
+        executor.beginDiagnosticWindow()
+        assertNull(executor.lines(incomplete))
+        assertTrue(executor.removeExactRule(absent, failedMutation, maxPasses = 1))
+        assertFalse(executor.commandSucceeded(failedMutation))
+        val diagnostic = executor.finishDiagnosticWindow()
+
+        assertEquals(3, diagnostic.commands)
+        assertEquals(2, diagnostic.observationCommands)
+        assertEquals(1, diagnostic.mutationCommands)
+        assertEquals(0, diagnostic.duplicateObservations)
+        assertEquals(1, diagnostic.incompleteOrTimedOutCommands)
+        assertEquals(1, diagnostic.mutationFailures)
+    }
+
+    @Test
     fun routeInspectorFailsClosedOnAmbiguityAndVerifiesExactInterface() {
         val ambiguous = DirectCellularRouteInspector(
             RootPolicyExecutor(

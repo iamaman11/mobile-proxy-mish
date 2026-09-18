@@ -336,6 +336,9 @@ class CellularRuntimeBridge(
     internal fun reconcileDiagnosticObservation(): CellularReconcileDiagnostic =
         latestReconcile.diagnostic()
 
+    internal fun rootPolicyReconcileDiagnosticObservation(): CellularRootPolicyReconcileDiagnostic =
+        rootPolicy.reconcileDiagnosticObservation()
+
     private fun reconcileOwnerGeneration(
         activeController: CellularController,
         admission: CellularAdmissionView,

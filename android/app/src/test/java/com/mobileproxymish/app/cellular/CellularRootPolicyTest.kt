@@ -42,6 +42,42 @@ class CellularRootPolicyTest {
     }
 
     @Test
+    fun reconcileDiagnosticTracksExactExecutorWindowWithoutChangingPolicySemantics() {
+        val process = FakePolicyProcess()
+        val policy = policy(process)
+
+        assertEquals(
+            CellularRootPolicyResult.Enforced,
+            policy.reconcile(admitted = true, interfaceName = "rmnet_data0"),
+        )
+        val first = policy.reconcileDiagnosticObservation()
+
+        assertEquals(1L, first.attempts)
+        assertEquals(first.lastExecutorCommands.toLong(), first.totalExecutorCommands)
+        assertTrue(first.lastExecutorCommands > 0)
+        assertTrue(first.lastObservationCommands > 0)
+        assertTrue(first.lastMutationCommands > 0)
+        assertEquals(0, first.lastIncompleteOrTimedOutCommands)
+        assertEquals(0, first.lastMutationFailures)
+        assertTrue(first.lastReconcileElapsedMs >= first.lastPolicyEffectElapsedMs)
+        assertTrue(first.maxReconcileElapsedMs >= first.lastReconcileElapsedMs)
+        assertTrue(first.maxPolicyEffectElapsedMs >= first.lastPolicyEffectElapsedMs)
+
+        assertEquals(
+            CellularRootPolicyResult.FailClosed(),
+            policy.reconcile(admitted = false, interfaceName = null),
+        )
+        val second = policy.reconcileDiagnosticObservation()
+
+        assertEquals(2L, second.attempts)
+        assertTrue(second.totalExecutorCommands > first.totalExecutorCommands)
+        assertTrue(second.totalObservationCommands > first.totalObservationCommands)
+        assertTrue(second.lastReconcileElapsedMs >= second.lastPolicyEffectElapsedMs)
+        assertEquals(0, second.lastIncompleteOrTimedOutCommands)
+        assertEquals(0, second.lastMutationFailures)
+    }
+
+    @Test
     fun ownerLossRemovesLookupButRetainsFlowMarkAndGuard() {
         val process = FakePolicyProcess()
         val policy = policy(process)
