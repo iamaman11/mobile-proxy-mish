@@ -638,8 +638,8 @@ def main() -> None:
     for required in (
         "struct RootSessionManager",
         "RootCommandKind",
-        "RootCommand::observation",
-        "RootCommand::mutation",
+        "pub(crate) fn observation",
+        "pub(crate) fn mutation",
         'arg("exec su 2>&1")',
         "COMMAND_TIMEOUT",
         "MAX_OUTPUT_BYTES",
