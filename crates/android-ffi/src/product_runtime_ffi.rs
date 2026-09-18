@@ -298,7 +298,7 @@ impl NativeProductRuntime {
     }
 
     pub fn start_proxy_runtime(
-        self: &Arc<Self>,
+        &self,
         credential_version: u64,
         username: String,
         password: String,
@@ -323,7 +323,7 @@ impl NativeProductRuntime {
         map_proxy_publication(self.proxy.start(credential_version, credentials))
     }
 
-    pub fn stop_proxy_runtime(self: &Arc<Self>) -> ProxyRuntimePublicationView {
+    pub fn stop_proxy_runtime(&self) -> ProxyRuntimePublicationView {
         map_proxy_publication(self.proxy.stop())
     }
 
