@@ -85,6 +85,7 @@ pub enum ReadinessBoundaryError {
     InvalidOwnerKey,
     ProbeFreshnessExhausted,
     InvalidProbeTarget,
+    ProbeEffectUnavailable,
 }
 
 impl fmt::Display for ReadinessBoundaryError {
@@ -93,6 +94,7 @@ impl fmt::Display for ReadinessBoundaryError {
             Self::InvalidOwnerKey => "readiness input contains a zero/invalid owner key",
             Self::ProbeFreshnessExhausted => "probe freshness sequence is exhausted",
             Self::InvalidProbeTarget => "deployment readiness probe target is invalid",
+            Self::ProbeEffectUnavailable => "native readiness probe effect is unavailable",
         })
     }
 }
@@ -338,7 +340,7 @@ fn map_outcome_in(outcome: EgressProbeOutcome) -> ProbeOutcome {
     }
 }
 
-fn map_outcome_out(outcome: ProbeOutcome) -> EgressProbeOutcome {
+pub(crate) fn map_outcome_out(outcome: ProbeOutcome) -> EgressProbeOutcome {
     match outcome {
         ProbeOutcome::Succeeded => EgressProbeOutcome::Succeeded,
         ProbeOutcome::DnsFailed => EgressProbeOutcome::DnsFailed,
