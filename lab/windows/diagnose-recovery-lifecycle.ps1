@@ -234,6 +234,23 @@ $dnsLifetimeEvidence = [ordered]@{
     post_e3_wait_elapsed_ms = 0
 }
 $restartEvidence = [ordered]@{}
+$lifecycleLatencyBudget = [ordered]@{
+    measurement_status = 'NOT_OBSERVED'
+    threshold_policy = 'NO_NEW_SLA'
+    startup = [ordered]@{
+        initial_launch_elapsed_ms = $null
+        restart_launch_elapsed_ms = $null
+    }
+    root_reconcile = [ordered]@{
+        initial_last_reconcile_elapsed_ms = $null
+        initial_last_policy_effect_elapsed_ms = $null
+        restart_last_reconcile_elapsed_ms = $null
+        restart_last_policy_effect_elapsed_ms = $null
+    }
+    loss = $null
+    recovery = $null
+    stop = $null
+}
 $harnessCleanup = [ordered]@{
     package_id = $script:TestPackage
     attempted = $false
@@ -277,6 +294,12 @@ try {
         Stop-MishRecovery 'LAB_RECOVERY_PRECONDITION_NOT_READY' 'Baseline owner/network facts are not ready for recovery/lifecycle acceptance.'
     }
 
+    $lifecycleLatencyBudget.startup.initial_launch_elapsed_ms = [int64]$initialLaunch.elapsed_ms
+    $lifecycleLatencyBudget.root_reconcile.initial_last_reconcile_elapsed_ms =
+        [int64]$preSnapshot.root.reconcile.last_reconcile_elapsed_ms
+    $lifecycleLatencyBudget.root_reconcile.initial_last_policy_effect_elapsed_ms =
+        [int64]$preSnapshot.root.reconcile.last_policy_effect_elapsed_ms
+
     $preDnsObservation = Get-MishDnsLifetimeObservation -Snapshot $preSnapshot
     if ($null -eq $preDnsObservation) {
         Stop-MishRecovery 'LAB_DNS_LIFETIME_BASELINE_INVALID' 'Baseline canonical snapshot omitted a consistent native DNS observation.'
@@ -302,6 +325,35 @@ try {
     $positive = $instrumentationOutput -match '(?m)^INSTRUMENTATION_STATUS:\s*e3_evidence=phase=positive '
     $negative = $instrumentationOutput -match '(?m)^INSTRUMENTATION_STATUS:\s*e3_evidence=phase=negative '
     $recovery = $instrumentationOutput -match '(?m)^INSTRUMENTATION_STATUS:\s*e3_evidence=phase=recovery '
+
+    $latencyPattern =
+        '(?m)^INSTRUMENTATION_STATUS:\s*e3_evidence=phase=latency ' +
+        'loss_owner_elapsed_ms=(?<lossOwner>\d+) ' +
+        'loss_fail_closed_elapsed_ms=(?<lossFailClosed>\d+) ' +
+        'recovery_owner_elapsed_ms=(?<recoveryOwner>\d+) ' +
+        'recovery_functional_elapsed_ms=(?<recoveryFunctional>\d+) ' +
+        'proxy_close_elapsed_ms=(?<proxyClose>\d+) ' +
+        'cellular_close_elapsed_ms=(?<cellularClose>\d+) ' +
+        'cleanup_verify_elapsed_ms=(?<cleanupVerify>\d+) ' +
+        'stop_total_elapsed_ms=(?<stopTotal>\d+)\s*$'
+    $latencyMatch = [regex]::Match($instrumentationOutput, $latencyPattern)
+    if ($latencyMatch.Success) {
+        $lifecycleLatencyBudget.measurement_status = 'E3_OBSERVED'
+        $lifecycleLatencyBudget.loss = [ordered]@{
+            owner_not_admitted_elapsed_ms = [int64]$latencyMatch.Groups['lossOwner'].Value
+            full_fail_closed_elapsed_ms = [int64]$latencyMatch.Groups['lossFailClosed'].Value
+        }
+        $lifecycleLatencyBudget.recovery = [ordered]@{
+            owner_ready_elapsed_ms = [int64]$latencyMatch.Groups['recoveryOwner'].Value
+            functional_ready_elapsed_ms = [int64]$latencyMatch.Groups['recoveryFunctional'].Value
+        }
+        $lifecycleLatencyBudget.stop = [ordered]@{
+            proxy_close_elapsed_ms = [int64]$latencyMatch.Groups['proxyClose'].Value
+            cellular_close_elapsed_ms = [int64]$latencyMatch.Groups['cellularClose'].Value
+            cleanup_verify_elapsed_ms = [int64]$latencyMatch.Groups['cleanupVerify'].Value
+            total_elapsed_ms = [int64]$latencyMatch.Groups['stopTotal'].Value
+        }
+    }
 
     $cellularEvidence = [ordered]@{
         exact_test_apk_sha256 = $testApkSha
@@ -413,6 +465,15 @@ try {
         mesh_e2e = [string]$postDiagnostic.external.mesh_proxy_e2e.result
     }
 
+    $lifecycleLatencyBudget.startup.restart_launch_elapsed_ms = [int64]$postStart.elapsed_ms
+    $lifecycleLatencyBudget.root_reconcile.restart_last_reconcile_elapsed_ms =
+        [int64]$postDiagnostic.android.root.reconcile.last_reconcile_elapsed_ms
+    $lifecycleLatencyBudget.root_reconcile.restart_last_policy_effect_elapsed_ms =
+        [int64]$postDiagnostic.android.root.reconcile.last_policy_effect_elapsed_ms
+    if ([string]$lifecycleLatencyBudget.measurement_status -ceq 'E3_OBSERVED') {
+        $lifecycleLatencyBudget.measurement_status = 'COMPLETE'
+    }
+
     $externalMeshSatisfied = $externalMeshBlocked -or [string]$restartEvidence.mesh_e2e -ceq 'PASS'
     if (
         -not [bool]$restartEvidence.root_policy_authorized -or
@@ -476,6 +537,7 @@ finally {
         mesh_vpn_loss_recovery = $lossEvidence
         cellular_e3 = $cellularEvidence
         dns_lifetime = $dnsLifetimeEvidence
+        lifecycle_latency_budget = $lifecycleLatencyBudget
         restart = $restartEvidence
         test_harness = $harnessCleanup
         lab_effects = [ordered]@{

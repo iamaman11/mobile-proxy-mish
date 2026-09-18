@@ -5,6 +5,7 @@ $probePath = Join-Path $PSScriptRoot 'diagnose-recovery-lifecycle.ps1'
 $installerPath = Join-Path $PSScriptRoot 'install-device-candidate.ps1'
 $startPath = Join-Path $PSScriptRoot 'start-device-app.ps1'
 $reportPath = Join-Path $PSScriptRoot 'new-device-cycle-report.ps1'
+$e3SourcePath = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'android/app/src/androidTest/java/com/mobileproxymish/app/cellular/CellularE3InstrumentedTest.kt'
 
 foreach ($path in @($probePath, $installerPath, $startPath)) {
     $tokens = $null
@@ -74,6 +75,20 @@ foreach ($required in @(
     'discarded_after_deadline = [int64]$dns.discarded_after_deadline',
     'discarded_stale = [int64]$dns.discarded_stale',
     'dns_lifetime = $dnsLifetimeEvidence',
+    'lifecycle_latency_budget = $lifecycleLatencyBudget',
+    "measurement_status = 'NOT_OBSERVED'",
+    "threshold_policy = 'NO_NEW_SLA'",
+    "measurement_status = 'E3_OBSERVED'",
+    "measurement_status = 'COMPLETE'",
+    'initial_launch_elapsed_ms = [int64]$initialLaunch.elapsed_ms',
+    'restart_launch_elapsed_ms = [int64]$postStart.elapsed_ms',
+    'last_reconcile_elapsed_ms',
+    'last_policy_effect_elapsed_ms',
+    'loss_owner_elapsed_ms=(?<lossOwner>\d+)',
+    'loss_fail_closed_elapsed_ms=(?<lossFailClosed>\d+)',
+    'recovery_owner_elapsed_ms=(?<recoveryOwner>\d+)',
+    'recovery_functional_elapsed_ms=(?<recoveryFunctional>\d+)',
+    'stop_total_elapsed_ms=(?<stopTotal>\d+)',
     'start-device-app.ps1',
     'collect-device-diagnostic.ps1',
     "`$externalMeshBlocked = `$postClass -ceq 'LAB_WINDOWS_SANDBOX_OUTBOUND_BLOCKED'",
@@ -108,6 +123,47 @@ $preDnsIndex = $source.IndexOf('$dnsLifetimeEvidence.before_e3 = $preDnsObservat
 $postDnsIndex = $source.IndexOf('$dnsLifetimeEvidence.after_e3_before_restart = $postE3Read.observation', [StringComparison]::Ordinal)
 if ($preDnsIndex -lt 0 -or $postDnsIndex -le $preDnsIndex) {
     throw 'Recovery/lifecycle control must preserve ordered before-E3 and after-E3 DNS observations without implying cross-PID counter continuity.'
+}
+
+$e3Source = Get-Content -Raw -LiteralPath $e3SourcePath
+foreach ($required in @(
+    'val lossStartedAt = SystemClock.elapsedRealtime()',
+    'val lossOwnerElapsedMs = SystemClock.elapsedRealtime() - lossStartedAt',
+    'val lossFailClosedElapsedMs = SystemClock.elapsedRealtime() - lossStartedAt',
+    'val recoveryStartedAt = SystemClock.elapsedRealtime()',
+    'val recoveryOwnerElapsedMs = SystemClock.elapsedRealtime() - recoveryStartedAt',
+    'val recoveryFunctionalElapsedMs = SystemClock.elapsedRealtime() - recoveryStartedAt',
+    'val proxyCloseElapsedMs = SystemClock.elapsedRealtime() - proxyCloseStartedAt',
+    'val cellularCloseElapsedMs = SystemClock.elapsedRealtime() - cellularCloseStartedAt',
+    'val cleanupVerifyElapsedMs = SystemClock.elapsedRealtime() - cleanupVerifyStartedAt',
+    'val stopTotalElapsedMs = SystemClock.elapsedRealtime() - stopStartedAt',
+    '"phase=latency "',
+    '"loss_owner_elapsed_ms=$lossOwnerElapsedMs "',
+    '"loss_fail_closed_elapsed_ms=$lossFailClosedElapsedMs "',
+    '"recovery_owner_elapsed_ms=$recoveryOwnerElapsedMs "',
+    '"recovery_functional_elapsed_ms=$recoveryFunctionalElapsedMs "',
+    '"proxy_close_elapsed_ms=$proxyCloseElapsedMs "',
+    '"cellular_close_elapsed_ms=$cellularCloseElapsedMs "',
+    '"cleanup_verify_elapsed_ms=$cleanupVerifyElapsedMs "',
+    '"stop_total_elapsed_ms=$stopTotalElapsedMs"'
+)) {
+    if (-not $e3Source.Contains($required)) {
+        throw "Exact E3 harness lost observational lifecycle timing evidence: $required"
+    }
+}
+
+foreach ($forbidden in @(
+    'MAX_STARTUP_LATENCY',
+    'MAX_RECOVERY_LATENCY',
+    'MAX_STOP_LATENCY',
+    'latency budget exceeded',
+    'assertTrue("startup latency',
+    'assertTrue("recovery latency',
+    'assertTrue("stop latency'
+)) {
+    if ($e3Source.Contains($forbidden) -or $source.Contains($forbidden)) {
+        throw "Lifecycle latency observation must not invent a PRODUCT SLA or acceptance threshold: $forbidden"
+    }
 }
 
 $installerSource = Get-Content -Raw -LiteralPath $installerPath
