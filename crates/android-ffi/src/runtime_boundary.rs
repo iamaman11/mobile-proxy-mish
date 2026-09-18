@@ -205,7 +205,10 @@ impl PublicIpProbeTicket {
             .map_err(map_public_ip_failure)
     }
 
-    pub fn complete(&self, raw_body: String) -> Result<PublicIpObservationView, PublicIpProbeError> {
+    pub fn complete(
+        &self,
+        raw_body: String,
+    ) -> Result<PublicIpObservationView, PublicIpProbeError> {
         self.inner
             .complete(&raw_body)
             .map(|observation| PublicIpObservationView {
