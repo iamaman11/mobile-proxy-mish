@@ -1,10 +1,11 @@
 package com.mobileproxymish.app
 
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import com.mobileproxymish.app.cellular.CellularRuntimeBridge
 import com.mobileproxymish.app.cellular.CellularRuntimeSnapshot
 import com.mobileproxymish.ffi.MeshAdmissionView
-import com.mobileproxymish.ffi.NativeRuntimeExecutor
+import com.mobileproxymish.ffi.NativeProductRuntime
 import com.mobileproxymish.ffi.ProductReadinessState
 import com.mobileproxymish.ffi.ProxyServingFailure
 import com.mobileproxymish.ffi.RuntimeLifecycleController
@@ -300,12 +301,16 @@ class MishRuntimeController internal constructor(
 
     private fun newGeneration(): RuntimeGeneration {
         val runtimeGeneration = lifecycle.generation()
-        val executionRuntime = NativeRuntimeExecutor()
+        val debugIsolation = appContext.packageName.endsWith(".debug") &&
+            (appContext.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        val productRuntime = NativeProductRuntime(
+            appContext.applicationInfo.uid.toUInt(),
+            debugIsolation,
+        )
         try {
-            val cellularRuntime = CellularRuntimeBridge(appContext)
+            val cellularRuntime = CellularRuntimeBridge(appContext, productRuntime)
             val proxyRuntime = ProxyRuntimeSupervisor(
-                executor = executionRuntime,
-                cellularRuntime = cellularRuntime,
+                productRuntime = productRuntime,
                 publicCredentials = externalCredentialStore,
                 onFailureObserved = ::scheduleProxyRecoveryIfAllowed,
             )
@@ -322,20 +327,20 @@ class MishRuntimeController internal constructor(
             )
             meshRuntime.requireEgressReadiness(readinessRuntime.state)
             return RuntimeGeneration(
-                executionRuntime = executionRuntime,
+                productRuntime = productRuntime,
                 cellularRuntime = cellularRuntime,
                 proxyRuntime = proxyRuntime,
                 meshRuntime = meshRuntime,
                 readinessRuntime = readinessRuntime,
             )
         } catch (failure: Throwable) {
-            runCatching { executionRuntime.shutdown() }
+            runCatching { productRuntime.shutdown() }
             throw failure
         }
     }
 
     private data class RuntimeGeneration(
-        val executionRuntime: NativeRuntimeExecutor,
+        val productRuntime: NativeProductRuntime,
         val cellularRuntime: CellularRuntimeBridge,
         val proxyRuntime: ProxyRuntimeSupervisor,
         val meshRuntime: MeshIngressRuntimeBridge,
@@ -348,7 +353,7 @@ class MishRuntimeController internal constructor(
                 closeProxy = proxyRuntime::close,
                 closeCellular = cellularRuntime::close,
             ) && clean
-            clean = runCatching { executionRuntime.shutdown() }.isSuccess && clean
+            clean = runCatching { productRuntime.shutdown() }.isSuccess && clean
             return clean
         }
     }
