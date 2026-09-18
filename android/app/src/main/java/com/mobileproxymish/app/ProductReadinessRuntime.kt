@@ -223,22 +223,27 @@ internal class ProductReadinessRuntime(
 
     private fun executeScheduledRefresh(expectedBinding: ProbeBindingView) {
         if (closed.get()) return
-        val ticket = synchronized(probeIssueLock) {
+        val issuance = synchronized(probeIssueLock) {
             if (closed.get()) return
             val facts = currentFacts()
             val binding = eligibleBinding(facts) ?: return
             if (!readinessRefreshBindingStillCurrent(expectedBinding, binding)) return
-            try {
+            val ticket = try {
                 controller.beginProbe(binding)
             } catch (_: Exception) {
                 null
-            }
+            } ?: return@synchronized null
+            ReadinessRefreshIssuance(facts = facts, ticket = ticket)
         }
-        if (ticket == null) {
+        if (issuance == null) {
             mutableState.value = projectUnknown()
             return
         }
-        executeProbe(ticket)
+
+        // beginProbe minted a new expected freshness marker. The previous success is no longer
+        // current, so readiness must stop publishing READY while this refresh is in flight.
+        mutableState.value = projectOrUnknown(issuance.facts, null)
+        executeProbe(issuance.ticket)
     }
 
     private fun cancelScheduledRefresh() {
@@ -346,6 +351,11 @@ internal class ProductReadinessRuntime(
             throw IllegalStateException("readiness probe worker did not stop cleanly")
         }
     }
+
+    private data class ReadinessRefreshIssuance(
+        val facts: ProductReadinessFactsView,
+        val ticket: ProbeTicketView,
+    )
 
     private data class StructuralObservation(
         val cellular: CellularRuntimeSnapshot,
