@@ -699,6 +699,7 @@ def main() -> None:
         "android/app/src/main/java/com/mobileproxymish/app/cellular/RootPolicyExecutor.kt",
         "android/app/src/main/java/com/mobileproxymish/app/cellular/RootPolicySnapshot.kt",
         "android/app/src/main/java/com/mobileproxymish/app/cellular/RootSessionBootstrap.kt",
+        "crates/android-ffi/src/runtime_executor_ffi.rs",
     ):
         forbid_exists(obsolete_path, "Kotlin must not regain a second root-policy/root-session control plane")
 
