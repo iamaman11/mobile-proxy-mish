@@ -629,7 +629,7 @@ jobs:
               "- Targeted acceptance: $([string]$report.targeted_probe.acceptance_result)",
               '- Automatic cycle start: **NO**',
               '- Automatic repair/probe decision: **NO**',
-              '- Next action: **STOP_FOR_ANALYSIS**',
+              '- Next action: **STOP_FOR_ANALYSIS**'
             ) | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_STEP_SUMMARY
           }
 
