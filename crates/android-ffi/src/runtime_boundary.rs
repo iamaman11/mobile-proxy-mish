@@ -13,9 +13,9 @@ use mish_cellular::{
 };
 use mish_proxy::ProxyOutboundConnectError;
 use mish_runtime::{
-    CellularDnsResolver, CellularRuntimeCoordinator, CellularRuntimeError, RuntimePublicIpProbe,
+    CellularDnsResolver, CellularRuntimeCoordinator, CellularRuntimeError,
     PublicIpProbeEffectFailure as RuntimePublicIpProbeEffectFailure,
-    PublicIpProbeFailure as RuntimePublicIpProbeFailure,
+    PublicIpProbeFailure as RuntimePublicIpProbeFailure, RuntimePublicIpProbe,
 };
 use std::fmt;
 use std::net::IpAddr;
@@ -217,7 +217,8 @@ impl PublicIpProbeTicket {
 
     pub fn effect_failed(&self, effect: PublicIpEffectFailure) -> Result<(), PublicIpProbeError> {
         Err(map_public_ip_failure(
-            self.inner.effect_failed(map_public_ip_effect_failure(effect)),
+            self.inner
+                .effect_failed(map_public_ip_effect_failure(effect)),
         ))
     }
 }
