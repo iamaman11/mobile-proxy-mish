@@ -26,6 +26,7 @@ const DNS_SLOW_OBSERVATION_THRESHOLD: Duration = Duration::from_secs(5);
 /// started `spawn_blocking` operation can outlive the runtime generation that started it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CellularDnsDiagnosticSnapshot {
+    pub slow_threshold_ms: u64,
     pub started: u64,
     pub completed: u64,
     pub active: u64,
@@ -96,6 +97,8 @@ impl DnsDiagnosticsTracker {
 
     fn snapshot(&self) -> CellularDnsDiagnosticSnapshot {
         CellularDnsDiagnosticSnapshot {
+            slow_threshold_ms: u64::try_from(DNS_SLOW_OBSERVATION_THRESHOLD.as_millis())
+                .unwrap_or(u64::MAX),
             started: self.started.load(Ordering::Relaxed),
             completed: self.completed.load(Ordering::Relaxed),
             active: self.active.load(Ordering::Relaxed),
