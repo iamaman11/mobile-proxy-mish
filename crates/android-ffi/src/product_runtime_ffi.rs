@@ -16,11 +16,10 @@ use mish_cellular::{
 use mish_runtime::{
     CellularPolicyObserver, CellularPolicyPublication, CellularReconcileDiagnostic,
     ProductGeneration, ProxyRuntimeObserver, ProxyRuntimePublication,
-    ProxyServingFailure as OwnerProxyServingFailure,
     ProxyServingState as OwnerProxyServingState,
     RootAuthorityStatus as OwnerRootAuthorityStatus,
     RootPolicyFailure as OwnerRootPolicyFailure,
-    ReadinessDiagnosticSnapshot, ReadinessObserver, ReadinessRuntimeCoordinator,
+    ReadinessDiagnosticSnapshot, ReadinessObserver,
     ReadinessRuntimeError, RootPolicyReconcileDiagnostic,
     RootPolicyResult as OwnerRootPolicyResult, RootRecoveryDiagnostic, RuntimeExecutionError,
     RuntimeExecutor,
