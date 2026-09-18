@@ -155,7 +155,6 @@ function Get-MishDnsLifetimeObservation {
 
 function Wait-MishDnsLifetimeObservation {
     param(
-        [Parameter(Mandatory)][int] $ExpectedPid,
         [ValidateRange(1, 30)][int] $TimeoutSeconds = 10,
         [ValidateRange(50, 5000)][int] $PollMilliseconds = 250
     )
@@ -166,10 +165,6 @@ function Wait-MishDnsLifetimeObservation {
         $attempts++
         $snapshot = Read-MishSnapshot
         if ($null -ne $snapshot) {
-            if ([int]$snapshot.pid -ne $ExpectedPid) {
-                Stop-MishRecovery 'LAB_DNS_LIFETIME_PROCESS_CHANGED' 'Native DNS lifetime observation crossed a PRODUCT process boundary before the explicit restart.'
-            }
-
             $observation = Get-MishDnsLifetimeObservation -Snapshot $snapshot
             if ($null -ne $observation) {
                 return [pscustomobject]@{
@@ -231,6 +226,7 @@ $lossEvidence = [ordered]@{
 $cellularEvidence = [ordered]@{}
 $dnsLifetimeEvidence = [ordered]@{
     same_process = $false
+    comparison_scope = 'NOT_OBSERVED'
     before_e3 = $null
     after_e3_before_restart = $null
     post_e3_snapshot_attempts = 0
@@ -338,19 +334,24 @@ try {
         }
     }
 
-    # Capture the process-wide native DNS facts before the explicit force-stop/start below.
-    # Restart creates a fresh process and would erase the very old-generation occupancy facts U3
-    # needs to observe. Recovery callbacks can still be settling immediately after instrumentation,
-    # so retain the canonical consistent=true fence and wait only for a bounded coherent read.
-    # This is read-only evidence; no DNS result is accepted/rejected here.
-    $postE3Read = Wait-MishDnsLifetimeObservation -ExpectedPid ([int]$preDnsObservation.pid)
+    # Capture the first coherent process-wide DNS observation available after E3 and before the
+    # explicit force-stop/start below. Android instrumentation can replace the PRODUCT process, so
+    # PID continuity is evidence, not a recovery acceptance gate. Counters from different PIDs must
+    # never be compared as one process-wide lifetime series.
+    $postE3Read = Wait-MishDnsLifetimeObservation
     $dnsLifetimeEvidence.post_e3_snapshot_attempts = [int]$postE3Read.attempts
     $dnsLifetimeEvidence.post_e3_wait_elapsed_ms = [int64]$postE3Read.elapsed_ms
     if ($null -eq $postE3Read.observation) {
         Stop-MishRecovery 'LAB_DNS_LIFETIME_POST_E3_INVALID' 'No coherent native DNS observation was available within the bounded post-E3 read window.'
     }
-    $dnsLifetimeEvidence.same_process = $true
     $dnsLifetimeEvidence.after_e3_before_restart = $postE3Read.observation
+    $dnsLifetimeEvidence.same_process =
+        [int]$postE3Read.observation.pid -eq [int]$preDnsObservation.pid
+    $dnsLifetimeEvidence.comparison_scope = if ([bool]$dnsLifetimeEvidence.same_process) {
+        'SAME_PROCESS'
+    } else {
+        'PROCESS_BOUNDARY'
+    }
 
     & (Join-Path $PSScriptRoot 'start-device-app.ps1') `
         -AdbPath $AdbPath `
