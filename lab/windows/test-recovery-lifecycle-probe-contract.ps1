@@ -36,6 +36,11 @@ foreach ($required in @(
     'test_package_id = $script:TestPackage',
     'installed_package_path_verified = $true',
     'instrumentation_exit_code = [int]$instrumentation.ExitCode',
+    'Stop-MishProductProcessForInstrumentation',
+    'LAB_INSTRUMENTATION_HANDOFF_FORCE_STOP_FAILED',
+    'LAB_INSTRUMENTATION_HANDOFF_PROCESS_STILL_ALIVE',
+    "mode = 'EXPLICIT_FORCE_STOP'",
+    'instrumentation_handoff = $instrumentationHandoff',
     'LAB_TEST_HARNESS_SIGNATURE_MISMATCH',
     "external_owner_fault_injection = 'NOT_REQUIRED'",
     "reason = 'NO_SUPPORTED_DETERMINISTIC_UNATTENDED_TRIGGER_ON_DEVICE_1'",
@@ -104,6 +109,15 @@ foreach ($required in @(
     if (-not $source.Contains($required)) {
         throw "Recovery/lifecycle probe lost required exact-candidate/recovery evidence: $required"
     }
+}
+
+$handoffIndex = $source.IndexOf('$handoff = Stop-MishProductProcessForInstrumentation', [StringComparison]::Ordinal)
+$instrumentIndex = $source.IndexOf("'shell', 'am', 'instrument'", [StringComparison]::Ordinal)
+if ($handoffIndex -lt 0 -or $instrumentIndex -lt 0 -or $handoffIndex -ge $instrumentIndex) {
+    throw 'Recovery/lifecycle control must prove the baseline PRODUCT process absent before starting instrumentation.'
+}
+if ($source.IndexOf("'shell', 'su'", [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+    throw 'Instrumentation process handoff must remain non-root and must not mutate PRODUCT root policy from LAB.'
 }
 
 $postE3WaitIndex = $source.IndexOf('$postE3Read = Wait-MishDnsLifetimeObservation', [StringComparison]::Ordinal)

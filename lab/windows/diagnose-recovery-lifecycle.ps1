@@ -77,6 +77,32 @@ function Invoke-MishAdb {
     Invoke-MishProcess -FilePath $AdbPath -Arguments $Arguments -TimeoutSeconds $TimeoutSeconds
 }
 
+function Stop-MishProductProcessForInstrumentation {
+    param(
+        [ValidateRange(1, 30)][int] $TimeoutSeconds = 10,
+        [ValidateRange(50, 2000)][int] $PollMilliseconds = 100
+    )
+
+    $forceStop = Invoke-MishAdb -Arguments @('shell', 'am', 'force-stop', $PackageName) -TimeoutSeconds 20
+    if ($forceStop.ExitCode -ne 0) {
+        Stop-MishRecovery 'LAB_INSTRUMENTATION_HANDOFF_FORCE_STOP_FAILED' 'Baseline PRODUCT process could not be stopped before instrumentation.'
+    }
+
+    $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+    do {
+        $processId = Invoke-MishAdb -Arguments @('shell', 'pidof', $PackageName) -TimeoutSeconds 10
+        if ([string]::IsNullOrWhiteSpace($processId.StdOut)) {
+            return [ordered]@{
+                force_stop_succeeded = $true
+                previous_process_absent = $true
+                elapsed_ms = [int64]$stopwatch.ElapsedMilliseconds
+            }
+        }
+        Start-Sleep -Milliseconds $PollMilliseconds
+    } while ($stopwatch.Elapsed.TotalSeconds -lt $TimeoutSeconds)
+
+    Stop-MishRecovery 'LAB_INSTRUMENTATION_HANDOFF_PROCESS_STILL_ALIVE' 'Baseline PRODUCT process remained alive after bounded force-stop before instrumentation.'
+}
 function Get-MishSha256 {
     param([Parameter(Mandatory)][string] $Path)
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
@@ -256,6 +282,13 @@ $harnessCleanup = [ordered]@{
     attempted = $false
     succeeded = $false
 }
+$instrumentationHandoff = [ordered]@{
+    mode = 'EXPLICIT_FORCE_STOP'
+    attempted = $false
+    force_stop_succeeded = $false
+    previous_process_absent = $false
+    elapsed_ms = $null
+}
 
 try {
     $candidateRoot = [IO.Path]::GetFullPath($CandidateDirectory)
@@ -311,6 +344,16 @@ try {
     if ($testPackagePath.ExitCode -ne 0 -or $pathRows.Count -ne 1) {
         Stop-MishRecovery 'LAB_TEST_APK_INSTALL_IDENTITY_MISSING' 'Preinstalled LAB-signed androidTest package path could not be resolved uniquely.'
     }
+
+    # Android instrumentation may replace the PRODUCT process. Make that boundary explicit:
+    # stop the baseline process first, prove its PID is absent, then start the exact androidTest.
+    # This prevents two process generations from reconciling/cleaning the same PRODUCT-owned
+    # kernel policy concurrently. No root-policy object is mutated by LAB here.
+    $instrumentationHandoff.attempted = $true
+    $handoff = Stop-MishProductProcessForInstrumentation
+    $instrumentationHandoff.force_stop_succeeded = [bool]$handoff.force_stop_succeeded
+    $instrumentationHandoff.previous_process_absent = [bool]$handoff.previous_process_absent
+    $instrumentationHandoff.elapsed_ms = [int64]$handoff.elapsed_ms
 
     $instrumentation = Invoke-MishAdb -Arguments @(
         'shell', 'am', 'instrument', '-w', '-r',
@@ -539,6 +582,7 @@ finally {
         dns_lifetime = $dnsLifetimeEvidence
         lifecycle_latency_budget = $lifecycleLatencyBudget
         restart = $restartEvidence
+        instrumentation_handoff = $instrumentationHandoff
         test_harness = $harnessCleanup
         lab_effects = [ordered]@{
             external_mesh_owner_fault_injection = 'NOT_PERFORMED'
