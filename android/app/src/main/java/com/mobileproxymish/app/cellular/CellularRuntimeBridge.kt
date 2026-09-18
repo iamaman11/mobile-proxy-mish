@@ -6,6 +6,7 @@ import android.os.Process
 import com.mobileproxymish.ffi.CellularAdmissionState
 import com.mobileproxymish.ffi.CellularAdmissionView
 import com.mobileproxymish.ffi.CellularController
+import com.mobileproxymish.ffi.CellularDnsDiagnosticView
 import java.io.Closeable
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
@@ -217,6 +218,15 @@ class CellularRuntimeBridge(
     internal fun nativeController(): CellularController {
         check(!closed.get()) { "cellular runtime is closed" }
         return controller ?: error("Cellular Egress owner is unavailable")
+    }
+
+    /** Read-only process-wide native DNS execution facts; no Android-side accounting is kept. */
+    internal fun dnsDiagnosticObservation(): CellularDnsDiagnosticView? = try {
+        controller?.dnsDiagnosticSnapshot()
+    } catch (_: LinkageError) {
+        null
+    } catch (_: Exception) {
+        null
     }
 
     fun start() {
