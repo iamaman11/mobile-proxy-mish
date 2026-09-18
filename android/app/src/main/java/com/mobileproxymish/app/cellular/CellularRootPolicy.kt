@@ -660,7 +660,12 @@ class CellularRootPolicy internal constructor(
             val lines = mangleOutputOrNull(binary) ?: return false
             if (lines.none { it == outputJump }) return true
             if (!commandSucceeded("$binary -t mangle ${outputJump.replaceFirst("-A ", "-D ")}")) {
-                return false
+                // A mutating root command can reach the kernel while its transport/result becomes
+                // non-authoritative. Never replay that uncertain mutation automatically. Instead,
+                // take one fresh read-only snapshot and accept detach only if the exact owned jump
+                // is now proven absent. If it remains (or cannot be observed), fail closed so the
+                // referenced chain and guard stay intact.
+                return mangleOutputOrNull(binary)?.none { it == outputJump } == true
             }
         }
         return mangleOutputOrNull(binary)?.none { it == outputJump } == true
