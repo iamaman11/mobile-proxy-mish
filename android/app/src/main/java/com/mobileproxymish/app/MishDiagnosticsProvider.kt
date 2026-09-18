@@ -84,16 +84,24 @@ internal fun renderMishDiagnosticSnapshotV2(facts: MishDiagnosticFactsV2): Strin
             put("policy_authorized", facts.rootPolicyAuthorized)
             put("reconcile", JSONObject().apply {
                 put("attempts", facts.rootReconcile.attempts)
-                put("total_policy_commands", facts.rootReconcile.totalPolicyCommands)
+                put("total_executor_commands", facts.rootReconcile.totalExecutorCommands)
                 put("total_observation_commands", facts.rootReconcile.totalObservationCommands)
                 put("total_mutation_commands", facts.rootReconcile.totalMutationCommands)
                 put(
                     "total_duplicate_observations",
                     facts.rootReconcile.totalDuplicateObservations,
                 )
-                put("last_elapsed_ms", facts.rootReconcile.lastElapsedMs)
-                put("max_elapsed_ms", facts.rootReconcile.maxElapsedMs)
-                put("last_policy_commands", facts.rootReconcile.lastPolicyCommands)
+                put("last_reconcile_elapsed_ms", facts.rootReconcile.lastReconcileElapsedMs)
+                put("max_reconcile_elapsed_ms", facts.rootReconcile.maxReconcileElapsedMs)
+                put(
+                    "last_policy_effect_elapsed_ms",
+                    facts.rootReconcile.lastPolicyEffectElapsedMs,
+                )
+                put(
+                    "max_policy_effect_elapsed_ms",
+                    facts.rootReconcile.maxPolicyEffectElapsedMs,
+                )
+                put("last_executor_commands", facts.rootReconcile.lastExecutorCommands)
                 put("last_observation_commands", facts.rootReconcile.lastObservationCommands)
                 put("last_mutation_commands", facts.rootReconcile.lastMutationCommands)
                 put(
