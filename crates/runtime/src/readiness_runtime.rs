@@ -139,12 +139,22 @@ impl ReadinessRuntimeCoordinator {
         self: &Arc<Self>,
         publication: CellularPolicyPublication,
     ) -> Result<(), ReadinessRuntimeError> {
-        let fact = publication.admission.last_sequence().map(|sequence| CellularReadinessFact {
-            owner_generation: CellularOwnerGeneration::new(sequence.raw())
-                .expect("Cellular observation sequence is non-zero"),
-            admitted: publication.admission.state() == CellularAdmissionState::Admitted,
-            root_policy_verified: matches!(publication.result, RootPolicyResult::Enforced),
-        });
+        let fact = publication
+            .admission
+            .last_sequence()
+            .map(|sequence| {
+                CellularOwnerGeneration::new(sequence.raw())
+                    .map(|owner_generation| CellularReadinessFact {
+                        owner_generation,
+                        admitted: publication.admission.state() == CellularAdmissionState::Admitted,
+                        root_policy_verified: matches!(
+                            publication.result,
+                            RootPolicyResult::Enforced
+                        ),
+                    })
+                    .ok_or(ReadinessRuntimeError::InvalidOwnerKey)
+            })
+            .transpose()?;
         self.update_structural(|state| state.facts.cellular = fact)
     }
 
@@ -304,7 +314,14 @@ impl ReadinessRuntimeCoordinator {
 
         self.publish_readiness(readiness);
         if let Some(ticket) = ticket {
-            self.spawn_probe(ticket)?;
+            if let Err(error) = self.spawn_probe(ticket) {
+                Arc::clone(self).complete_probe(
+                    ticket,
+                    mish_readiness::ProbeOutcome::TransportFailed,
+                    Duration::ZERO,
+                );
+                return Err(error);
+            }
         }
         Ok(())
     }
