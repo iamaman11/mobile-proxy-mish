@@ -4,6 +4,7 @@ import android.content.Context
 import com.mobileproxymish.app.cellular.CellularRuntimeBridge
 import com.mobileproxymish.app.cellular.CellularRuntimeSnapshot
 import com.mobileproxymish.ffi.MeshAdmissionView
+import com.mobileproxymish.ffi.NativeRuntimeExecutor
 import com.mobileproxymish.ffi.ProductReadinessState
 import com.mobileproxymish.ffi.ProxyServingFailure
 import com.mobileproxymish.ffi.RuntimeLifecycleController
@@ -299,33 +300,42 @@ class MishRuntimeController internal constructor(
 
     private fun newGeneration(): RuntimeGeneration {
         val runtimeGeneration = lifecycle.generation()
-        val cellularRuntime = CellularRuntimeBridge(appContext)
-        val proxyRuntime = ProxyRuntimeSupervisor(
-            cellularRuntime = cellularRuntime,
-            publicCredentials = externalCredentialStore,
-            onFailureObserved = ::scheduleProxyRecoveryIfAllowed,
-        )
-        val meshRuntime = MeshIngressRuntimeBridge(
-            context = appContext,
-            proxyRuntime = proxyRuntime,
-        )
-        val readinessRuntime = ProductReadinessRuntime(
-            runtimeGeneration = runtimeGeneration,
-            cellularRuntime = cellularRuntime,
-            proxyRuntime = proxyRuntime,
-            meshRuntime = meshRuntime,
-            credentialStore = externalCredentialStore,
-        )
-        meshRuntime.requireEgressReadiness(readinessRuntime.state)
-        return RuntimeGeneration(
-            cellularRuntime = cellularRuntime,
-            proxyRuntime = proxyRuntime,
-            meshRuntime = meshRuntime,
-            readinessRuntime = readinessRuntime,
-        )
+        val executionRuntime = NativeRuntimeExecutor()
+        try {
+            val cellularRuntime = CellularRuntimeBridge(appContext)
+            val proxyRuntime = ProxyRuntimeSupervisor(
+                executor = executionRuntime,
+                cellularRuntime = cellularRuntime,
+                publicCredentials = externalCredentialStore,
+                onFailureObserved = ::scheduleProxyRecoveryIfAllowed,
+            )
+            val meshRuntime = MeshIngressRuntimeBridge(
+                context = appContext,
+                proxyRuntime = proxyRuntime,
+            )
+            val readinessRuntime = ProductReadinessRuntime(
+                runtimeGeneration = runtimeGeneration,
+                cellularRuntime = cellularRuntime,
+                proxyRuntime = proxyRuntime,
+                meshRuntime = meshRuntime,
+                credentialStore = externalCredentialStore,
+            )
+            meshRuntime.requireEgressReadiness(readinessRuntime.state)
+            return RuntimeGeneration(
+                executionRuntime = executionRuntime,
+                cellularRuntime = cellularRuntime,
+                proxyRuntime = proxyRuntime,
+                meshRuntime = meshRuntime,
+                readinessRuntime = readinessRuntime,
+            )
+        } catch (failure: Throwable) {
+            runCatching { executionRuntime.shutdown() }
+            throw failure
+        }
     }
 
     private data class RuntimeGeneration(
+        val executionRuntime: NativeRuntimeExecutor,
         val cellularRuntime: CellularRuntimeBridge,
         val proxyRuntime: ProxyRuntimeSupervisor,
         val meshRuntime: MeshIngressRuntimeBridge,
@@ -338,6 +348,7 @@ class MishRuntimeController internal constructor(
                 closeProxy = proxyRuntime::close,
                 closeCellular = cellularRuntime::close,
             ) && clean
+            clean = runCatching { executionRuntime.shutdown() }.isSuccess && clean
             return clean
         }
     }
