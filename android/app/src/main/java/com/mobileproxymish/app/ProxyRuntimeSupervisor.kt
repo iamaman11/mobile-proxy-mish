@@ -5,8 +5,6 @@ import com.mobileproxymish.ffi.NativeProxyRuntimeObserver
 import com.mobileproxymish.ffi.ProxyRuntimePublicationView
 import com.mobileproxymish.ffi.ProxyServingFailure
 import com.mobileproxymish.ffi.ProxyServingState
-import java.io.Closeable
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -46,23 +44,15 @@ internal class ProxyRuntimeCredentialSnapshot(
     override fun toString(): String = "ProxyRuntimeCredentialSnapshot(version=$version,<redacted>)"
 }
 
-/** Narrow composition input; credential lifecycle and durable semantics remain in Rust. */
-internal fun interface ProxyCredentialProvider {
-    fun currentCredential(): ProxyRuntimeCredentialSnapshot?
-}
-
 /**
- * Android composition/presentation adapter for the Rust-owned Proxy runtime coordinator.
+ * Presentation-only Android projection of the Rust-owned Proxy runtime coordinator.
  *
- * Rust owns serving-generation identity, listener/session execution, terminal failure,
- * recoverability, backoff, recovery timers and restart. Android supplies the current credential
- * snapshot at an explicit start and projects immutable native publications to StateFlow.
+ * Rust owns start/stop, serving generation, terminal failure and recovery. This class owns no
+ * credentials, lifecycle token, retry state, timer or control path.
  */
 class ProxyRuntimeSupervisor internal constructor(
     private val productRuntime: NativeProductRuntime,
-    private val publicCredentials: ProxyCredentialProvider,
-) : Closeable {
-    private val closed = AtomicBoolean(false)
+) {
     private val mutableSnapshot = MutableStateFlow(
         projectOwnerPublication(productRuntime.proxyRuntimeSnapshot()),
     )
@@ -88,62 +78,6 @@ class ProxyRuntimeSupervisor internal constructor(
             credentialVersion = publication.credentialVersion,
             activeSessions = runCatching { productRuntime.proxyActiveSessions() }.getOrNull(),
         )
-    }
-
-    fun start() {
-        if (closed.get()) return
-        val publicCredential = try {
-            publicCredentials.currentCredential()
-        } catch (_: Exception) {
-            null
-        }
-        val publication = try {
-            productRuntime.startProxyRuntime(
-                credentialVersion = publicCredential?.version,
-                username = publicCredential?.credentials?.username,
-                password = publicCredential?.credentials?.password,
-            )
-        } catch (_: LinkageError) {
-            null
-        } catch (_: Exception) {
-            null
-        }
-        mutableSnapshot.value = if (publication == null) {
-            ProxyRuntimeSnapshot.Failed(ProxyServingFailure.RUNTIME_STATE_UNAVAILABLE)
-        } else {
-            projectOwnerPublication(publication)
-        }
-    }
-
-    fun stop() {
-        if (closed.get()) return
-        val publication = try {
-            productRuntime.stopProxyRuntime()
-        } catch (_: Exception) {
-            null
-        }
-        mutableSnapshot.value = if (publication == null) {
-            ProxyRuntimeSnapshot.Failed(ProxyServingFailure.RUNTIME_STATE_UNAVAILABLE)
-        } else {
-            projectOwnerPublication(publication)
-        }
-    }
-
-    override fun close() {
-        if (!closed.compareAndSet(false, true)) return
-        val publication = try {
-            productRuntime.stopProxyRuntime()
-        } catch (_: Exception) {
-            null
-        }
-        mutableSnapshot.value = if (publication == null) {
-            ProxyRuntimeSnapshot.Failed(ProxyServingFailure.RUNTIME_STATE_UNAVAILABLE)
-        } else {
-            projectOwnerPublication(publication)
-        }
-        if (publication?.failure == ProxyServingFailure.SHUTDOWN_FAILED) {
-            throw IllegalStateException("native proxy runtime cleanup failed")
-        }
     }
 
     private fun projectOwnerPublication(
