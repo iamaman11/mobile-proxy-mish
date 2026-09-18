@@ -394,6 +394,38 @@ mod tests {
     }
 
     #[test]
+    fn public_ip_ticket_rejects_same_generation_after_root_policy_gate_closes() {
+        let runtime = coordinator();
+        runtime
+            .observe_network(NetworkObservation::new(
+                sequence(1),
+                handle(42),
+                true,
+                true,
+                true,
+                true,
+            ))
+            .expect("observe");
+        assert!(
+            runtime
+                .authorize_root_policy(sequence(1), handle(42))
+                .expect("authorize")
+        );
+
+        let probe = runtime
+            .prepare_public_ip_probe(Duration::from_secs(2))
+            .expect("probe");
+        assert!(probe.is_current());
+
+        runtime.close_root_policy_gate().expect("close gate");
+        assert!(!probe.is_current());
+        assert_eq!(
+            probe.complete("198.51.100.42"),
+            Err(PublicIpProbeFailure::RootPolicyUnavailable)
+        );
+    }
+
+    #[test]
     fn zero_timeout_is_rejected_before_connector_creation() {
         let runtime = coordinator();
         assert!(matches!(
