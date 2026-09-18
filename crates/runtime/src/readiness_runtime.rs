@@ -220,6 +220,7 @@ impl ReadinessRuntimeCoordinator {
 
     pub fn observe_proxy_started(
         self: &Arc<Self>,
+        serving_generation: u64,
         credential_version: u64,
         username: String,
         password: String,
@@ -227,7 +228,7 @@ impl ReadinessRuntimeCoordinator {
         let version = CredentialVersion::new(credential_version)
             .ok_or(ReadinessRuntimeError::InvalidOwnerKey)?;
         let runtime_generation = self.runtime_generation()?;
-        let serving_generation = ProxyServingGeneration::new(runtime_generation.raw())
+        let serving_generation = ProxyServingGeneration::new(serving_generation)
             .ok_or(ReadinessRuntimeError::InvalidOwnerKey)?;
         self.update_structural(|state| {
             state.facts.proxy = Some(ProxyReadinessFact {
