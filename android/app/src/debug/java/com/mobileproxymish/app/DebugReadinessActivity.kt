@@ -22,8 +22,12 @@ class DebugReadinessActivity : Activity() {
             ) {
                 SystemClock.sleep(POLL_INTERVAL_MS)
             }
-            val diagnostic = runtime.currentReadinessRuntime.diagnosticObservation()
-            val innerReadiness = runtime.currentReadinessRuntime.state.value
+            val diagnostic = runtime.currentProductRuntime.readinessDiagnosticSnapshot()
+            val innerReadiness = diagnostic.state
+            val cellularSnapshot = runtime.cellularSnapshot.value
+            val ownerAdmission =
+                (cellularSnapshot as? com.mobileproxymish.app.cellular.CellularRuntimeSnapshot.OwnerSnapshot)
+                    ?.admission
             val proxySnapshot = runtime.currentProxyRuntime.snapshot.value
             val proxyFailure = (proxySnapshot as? ProxyRuntimeSnapshot.Failed)?.reason
             val proxyFailureCode = proxyFailure?.name ?: "NONE"
@@ -31,9 +35,12 @@ class DebugReadinessActivity : Activity() {
             val ingressFailure = runtime.currentMeshRuntime.diagnosticIngressFailure()
             Log.i(TAG, "state=${runtime.readinessSnapshot.value}")
             Log.i(TAG, "inner_readiness=$innerReadiness")
-            Log.i(TAG, "cellular_state=${diagnostic.cellularState}")
-            Log.i(TAG, "cellular_reason=${diagnostic.cellularReason}")
-            Log.i(TAG, "cellular_admitted=${diagnostic.cellularAdmitted}")
+            Log.i(TAG, "cellular_state=${ownerAdmission?.state?.name ?: \"BOUNDARY_UNAVAILABLE\"}")
+            Log.i(TAG, "cellular_reason=${ownerAdmission?.reason?.name ?: \"NONE\"}")
+            Log.i(
+                TAG,
+                "cellular_admitted=${ownerAdmission?.state == com.mobileproxymish.ffi.CellularAdmissionState.ADMITTED}",
+            )
             Log.i(TAG, "root_policy=${diagnostic.rootPolicyVerified}")
             Log.i(TAG, "proxy_healthy=${diagnostic.proxyHealthy}")
             Log.i(TAG, "proxy_lifecycle=${proxySnapshot.javaClass.simpleName}")
