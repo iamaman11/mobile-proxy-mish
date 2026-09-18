@@ -21,6 +21,9 @@ pub use cellular_connector::*;
 mod cellular_runtime;
 pub use cellular_runtime::*;
 
+mod cellular_policy_coordinator;
+pub use cellular_policy_coordinator::*;
+
 mod public_ip;
 pub use public_ip::*;
 
