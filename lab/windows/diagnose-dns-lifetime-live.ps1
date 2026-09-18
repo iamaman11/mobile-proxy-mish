@@ -192,9 +192,11 @@ function Start-MishDnsRequest {
     $client = [Net.Http.HttpClient]::new($handler)
     $client.Timeout = [TimeSpan]::FromSeconds($script:RequestTimeoutSeconds)
 
-    # Unique names force the accepted proxy-domain resolver seam instead of reusing a target result.
-    # The target hostname is deliberately not persisted in durable evidence.
-    $url = "http://mish-dns-$RunTag-$Ordinal.example.com/"
+    # HTTPS through the accepted HTTP proxy forces CONNECT <host>:443, which is the
+    # PRODUCT path that performs target-domain resolution. A plain http:// URL would be a
+    # forward-proxy GET and can be rejected before native DNS is exercised.
+    # Unique names avoid reusing a previous target-name result and are not persisted.
+    $url = "https://mish-dns-$RunTag-$Ordinal.example.com/"
     return [pscustomobject]@{
         Ordinal = $Ordinal
         Client = $client
