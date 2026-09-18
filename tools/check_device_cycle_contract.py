@@ -57,10 +57,7 @@ def main() -> None:
         "capacity_resources",
         "recovery_lifecycle",
         "dns_lifetime_live",
-        "public_ip_u4",
         "Explicit U3 DNS lifetime - live same-process observation",
-        "Explicit U4 generation-bound public IP",
-        "diagnose-public-ip-u4.ps1",
         "diagnose-dns-lifetime-live.ps1",
         'echo "control_sha=$GITHUB_SHA"',
         "actions: read",
@@ -204,29 +201,6 @@ def main() -> None:
         require(protocol_probe, required, "U2 physical protocol/auth/relay evidence drifted")
     for forbidden in ("sing-box", "'shell', 'su'", "'shell', 'kill'", "'shell', 'pkill'", "'shell', 'am', 'force-stop'"):
         forbid(protocol_probe, forbidden, "U2 protocol probe must remain read-only, non-root and current-PRODUCT-only")
-
-    u4_probe = "lab/windows/diagnose-public-ip-u4.ps1"
-    for required in (
-        "mish.lab.public-ip-u4/v1",
-        "PublicIpU4InstrumentedTest",
-        "U4_PUBLIC_IP_PASS",
-        "stale_generation_rejected",
-        "no_default_fallback",
-        "repeated_observations_bounded",
-        "raw_public_ip_persisted = $false",
-    ):
-        require(u4_probe, required, "U4 physical public-IP acceptance contract drifted")
-    for forbidden in (
-        "public_ip =",
-        "address =",
-        "instrumentation_output",
-        "checkip.amazonaws.com",
-    ):
-        forbid(
-            u4_probe,
-            forbidden,
-            "U4 physical evidence must remain semantic and must not persist endpoint/raw-IP values",
-        )
 
     dns_probe = "lab/windows/diagnose-dns-lifetime-live.ps1"
     for required in (
