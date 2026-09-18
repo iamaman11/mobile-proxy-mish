@@ -22,7 +22,7 @@ rust-version = "1.98.1"
 repository = "https://github.com/iamaman11/mobile-proxy-mish"
 
 [workspace.dependencies]
-tokio = { version = "=1.53.1", default-features = false, features = ["io-util", "net", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "=1.53.1", default-features = false, features = ["io-util", "net", "process", "rt-multi-thread", "sync", "time"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"
