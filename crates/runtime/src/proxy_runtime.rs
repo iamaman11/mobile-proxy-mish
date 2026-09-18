@@ -1,5 +1,8 @@
 use crate::mesh_serving::MeshExecutionOwner;
-use crate::{ProxyServingFailure, ProxyServingLifecycle, ProxyServingSnapshot, ProxyServingState};
+use crate::{
+    ProxyServingFailure, ProxyServingLifecycle, ProxyServingSnapshot, ProxyServingState,
+    RuntimeExecutionError, RuntimeExecutor,
+};
 use mish_configuration::EXTERNAL_TCP_SESSION_BUDGET;
 use mish_proxy::{
     ProxyCredentialMaterial, ProxyOutboundConnector, ProxyProtocol, ProxyServingPlan,
@@ -14,14 +17,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::copy_bidirectional;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::runtime::{Builder, Runtime};
 use tokio::sync::{Semaphore, watch};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::timeout;
 
 const CONTROL_SESSION_RESERVE: usize = 1;
 const MAX_NATIVE_PROXY_SESSIONS: usize = EXTERNAL_TCP_SESSION_BUDGET + CONTROL_SESSION_RESERVE;
-const IO_WORKER_THREADS: usize = 2;
 const ACCEPT_POLL_TIMEOUT: Duration = Duration::from_millis(200);
 const SESSION_SETUP_TIMEOUT: Duration = Duration::from_secs(15);
 const START_TIMEOUT: Duration = Duration::from_secs(2);
@@ -88,6 +89,13 @@ impl fmt::Display for ProxyServingRuntimeError {
 }
 
 impl std::error::Error for ProxyServingRuntimeError {}
+
+fn map_execution_error(error: RuntimeExecutionError) -> ProxyServingRuntimeError {
+    match error {
+        RuntimeExecutionError::ThreadUnavailable => ProxyServingRuntimeError::ThreadUnavailable,
+        RuntimeExecutionError::StateUnavailable => ProxyServingRuntimeError::StateUnavailable,
+    }
+}
 
 /// One-way terminal event emitted by the Rust runtime owner after startup publication.
 pub type ProxyServingTerminalObserver = Arc<dyn Fn(ProxyServingFailure) + Send + Sync + 'static>;
@@ -213,13 +221,13 @@ fn notify_terminal_observer(
 /// Tokio is deliberately confined to this runtime layer.
 ///
 /// Every Proxy accept/session task and every Mesh listener/session task is retained under this
-/// runtime generation. Shutdown therefore has one explicit ownership tree: stop Mesh admission and
-/// drain its tasks -> signal Proxy admission stop -> drain Proxy tasks -> destroy the one Tokio
-/// runtime. Android observes owner facts and executes composition effects only.
+/// runtime generation. The process-generation RuntimeExecutor owns the only Tokio runtime; this
+/// component owns only its serving tasks. Shutdown therefore drains Mesh and Proxy tasks without
+/// destroying the process executor.
 pub struct ProxyServingRuntime {
     listener_count: usize,
     shutdown: watch::Sender<bool>,
-    runtime: Mutex<Option<Runtime>>,
+    executor: Arc<RuntimeExecutor>,
     accept_tasks: Mutex<Vec<JoinHandle<()>>>,
     mesh_execution: MeshExecutionOwner,
     stopping: Arc<AtomicBool>,
@@ -230,6 +238,7 @@ pub struct ProxyServingRuntime {
 
 impl ProxyServingRuntime {
     pub fn start(
+        executor: Arc<RuntimeExecutor>,
         plan: ProxyServingPlan,
         connector: Arc<dyn ProxyOutboundConnector>,
     ) -> Result<Arc<Self>, ProxyServingRuntimeError> {
@@ -249,13 +258,7 @@ impl ProxyServingRuntime {
             bound.push((listener.protocol, tcp));
         }
 
-        let runtime = Builder::new_multi_thread()
-            .worker_threads(IO_WORKER_THREADS)
-            .thread_name("mish-runtime-io")
-            .enable_io()
-            .enable_time()
-            .build()
-            .map_err(|_| ProxyServingRuntimeError::ThreadUnavailable)?;
+        let handle = executor.handle().map_err(map_execution_error)?;
         let (shutdown, shutdown_rx) = watch::channel(false);
         let owner_state = Arc::new(ProxyServingOwnerState::new(shutdown.clone()));
         let stopping = Arc::new(AtomicBool::new(false));
@@ -267,11 +270,11 @@ impl ProxyServingRuntime {
         let mut accept_tasks = Vec::with_capacity(listener_count);
 
         {
-            let _enter = runtime.enter();
+            let _enter = handle.enter();
             for (protocol, listener) in bound {
                 let listener = TcpListener::from_std(listener)
                     .map_err(|_| ProxyServingRuntimeError::ListenerUnavailable(protocol))?;
-                accept_tasks.push(runtime.spawn(accept_loop(
+                accept_tasks.push(handle.spawn(accept_loop(
                     protocol,
                     listener,
                     Arc::clone(&credentials),
@@ -289,7 +292,7 @@ impl ProxyServingRuntime {
         let owner = Arc::new(Self {
             listener_count,
             shutdown,
-            runtime: Mutex::new(Some(runtime)),
+            executor,
             accept_tasks: Mutex::new(accept_tasks),
             mesh_execution: MeshExecutionOwner::new(),
             stopping,
@@ -354,18 +357,9 @@ impl ProxyServingRuntime {
                 return Err(ProxyServingRuntimeError::StateUnavailable);
             }
         };
-        let runtime = match self.runtime.lock() {
-            Ok(mut runtime) => runtime.take(),
-            Err(_) => {
-                self.owner_state
-                    .publish_failure(ProxyServingFailure::RuntimeStateUnavailable);
-                return Err(ProxyServingRuntimeError::StateUnavailable);
-            }
-        };
-
-        let mut joined_cleanly = true;
-        if let Some(runtime) = runtime {
-            joined_cleanly = runtime.block_on(async move {
+        let joined_cleanly = self
+            .executor
+            .block_on(async move {
                 timeout(SHUTDOWN_TIMEOUT, async move {
                     for task in accept_tasks {
                         let _ = task.await;
@@ -373,9 +367,8 @@ impl ProxyServingRuntime {
                 })
                 .await
                 .is_ok()
-            });
-            runtime.shutdown_timeout(SHUTDOWN_TIMEOUT);
-        }
+            })
+            .map_err(map_execution_error)?;
 
         if !mesh_clean || !joined_cleanly || self.active_sessions.load(Ordering::Acquire) != 0 {
             self.owner_state
@@ -397,26 +390,23 @@ impl MeshIngressExecutor for ProxyServingRuntime {
         if !self.is_healthy() {
             return Err(MeshIngressError::ExecutorUnavailable);
         }
-        let runtime = self
-            .runtime
-            .lock()
+        let handle = self
+            .executor
+            .handle()
             .map_err(|_| MeshIngressError::ExecutorUnavailable)?;
-        let runtime = runtime
-            .as_ref()
-            .ok_or(MeshIngressError::ExecutorUnavailable)?;
         self.mesh_execution
-            .start(runtime, endpoint, mappings, sessions)
+            .start(&handle, endpoint, mappings, sessions)
     }
 
     fn stop_ingress(&self) -> Result<(), MeshIngressError> {
         if !self.mesh_execution.is_running() {
             return Ok(());
         }
-        let runtime = self
-            .runtime
-            .lock()
+        let handle = self
+            .executor
+            .handle()
             .map_err(|_| MeshIngressError::ExecutorUnavailable)?;
-        self.mesh_execution.stop(runtime.as_ref())
+        self.mesh_execution.stop(Some(&handle))
     }
 
     fn ingress_healthy(&self) -> bool {
