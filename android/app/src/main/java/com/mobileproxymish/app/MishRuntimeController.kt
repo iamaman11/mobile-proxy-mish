@@ -6,6 +6,7 @@ import com.mobileproxymish.app.cellular.CellularRuntimeBridge
 import com.mobileproxymish.app.cellular.CellularRuntimeSnapshot
 import com.mobileproxymish.ffi.MeshAdmissionView
 import com.mobileproxymish.ffi.NativeProductRuntime
+import com.mobileproxymish.ffi.NativeReadinessObserver
 import com.mobileproxymish.ffi.ProductReadinessState
 import com.mobileproxymish.ffi.ProxyServingFailure
 import com.mobileproxymish.ffi.RuntimeLifecycleController
@@ -96,11 +97,11 @@ class MishRuntimeController internal constructor(
 
     @OptIn(ExperimentalCoroutinesApi::class)
     val readinessSnapshot: StateFlow<ProductReadinessState> = generation
-        .flatMapLatest { it.readinessRuntime.state }
+        .flatMapLatest { it.readinessState }
         .stateIn(
             scope = observationScope,
             started = SharingStarted.Eagerly,
-            initialValue = generation.value.readinessRuntime.state.value,
+            initialValue = generation.value.readinessState.value,
         )
 
     /** Read-only Transport Reachability projection for UI and retained device diagnostics. */
@@ -119,8 +120,8 @@ class MishRuntimeController internal constructor(
     internal val currentProxyRuntime: ProxyRuntimeSupervisor
         get() = generation.value.proxyRuntime
 
-    internal val currentReadinessRuntime: ProductReadinessRuntime
-        get() = generation.value.readinessRuntime
+    internal val currentProductRuntime: NativeProductRuntime
+        get() = generation.value.productRuntime
 
     internal val currentMeshRuntime: MeshIngressRuntimeBridge
         get() = generation.value.meshRuntime
@@ -306,6 +307,7 @@ class MishRuntimeController internal constructor(
         val productRuntime = NativeProductRuntime(
             appContext.applicationInfo.uid.toUInt(),
             debugIsolation,
+            runtimeGeneration,
         )
         try {
             val cellularRuntime = CellularRuntimeBridge(appContext, productRuntime)
@@ -318,21 +320,20 @@ class MishRuntimeController internal constructor(
                 context = appContext,
                 productRuntime = productRuntime,
             )
-            val readinessRuntime = ProductReadinessRuntime(
-                productRuntime = productRuntime,
-                runtimeGeneration = runtimeGeneration,
-                cellularRuntime = cellularRuntime,
-                proxyRuntime = proxyRuntime,
-                meshRuntime = meshRuntime,
-                credentialStore = externalCredentialStore,
+            val readinessState = MutableStateFlow(productRuntime.readinessSnapshot())
+            productRuntime.observeReadiness(
+                object : NativeReadinessObserver {
+                    override fun onReadiness(readiness: ProductReadinessState) {
+                        readinessState.value = readiness
+                    }
+                },
             )
-            meshRuntime.requireEgressReadiness(readinessRuntime.state)
             return RuntimeGeneration(
                 productRuntime = productRuntime,
                 cellularRuntime = cellularRuntime,
                 proxyRuntime = proxyRuntime,
                 meshRuntime = meshRuntime,
-                readinessRuntime = readinessRuntime,
+                readinessState = readinessState,
             )
         } catch (failure: Throwable) {
             runCatching { productRuntime.shutdown() }
@@ -345,15 +346,14 @@ class MishRuntimeController internal constructor(
         val cellularRuntime: CellularRuntimeBridge,
         val proxyRuntime: ProxyRuntimeSupervisor,
         val meshRuntime: MeshIngressRuntimeBridge,
-        val readinessRuntime: ProductReadinessRuntime,
+        val readinessState: MutableStateFlow<ProductReadinessState>,
     ) {
         fun closeExact(): Boolean {
-            var clean = runCatching(readinessRuntime::close).isSuccess
-            clean = closeRuntimeGenerationExact(
+            var clean = closeRuntimeGenerationExact(
                 closeMesh = meshRuntime::close,
                 closeProxy = proxyRuntime::close,
                 closeCellular = cellularRuntime::close,
-            ) && clean
+            )
             clean = runCatching { productRuntime.shutdown() }.isSuccess && clean
             return clean
         }
