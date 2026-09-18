@@ -87,6 +87,7 @@ impl std::error::Error for AndroidRuntimeError {}
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct CellularDnsDiagnosticView {
+    pub slow_threshold_ms: u64,
     pub started: u64,
     pub completed: u64,
     pub active: u64,
@@ -152,6 +153,7 @@ impl CellularController {
     pub fn dns_diagnostic_snapshot(&self) -> CellularDnsDiagnosticView {
         let snapshot = self.runtime.dns_diagnostic_snapshot();
         CellularDnsDiagnosticView {
+            slow_threshold_ms: snapshot.slow_threshold_ms,
             started: snapshot.started,
             completed: snapshot.completed,
             active: snapshot.active,
