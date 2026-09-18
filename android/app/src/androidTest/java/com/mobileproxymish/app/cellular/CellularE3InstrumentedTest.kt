@@ -120,6 +120,7 @@ class CellularE3InstrumentedTest {
             // command result is only a control-plane precondition; actual loss is proven
             // exclusively by the owner/ConnectivityManager facts observed below.
             mobileDataMayBeDisabled = true
+            val lossStartedAt = SystemClock.elapsedRealtime()
             requireMobileDataTransition("disable")
             waitForDirectCellular(validated = false, present = false, timeoutMillis = NEGATIVE_TIMEOUT_MILLIS)
             val negativeAdmission = waitForOwnerState(
@@ -127,6 +128,7 @@ class CellularE3InstrumentedTest {
                 expected = CellularAdmissionState.NOT_ADMITTED,
                 timeoutMillis = NEGATIVE_TIMEOUT_MILLIS,
             )
+            val lossOwnerElapsedMs = SystemClock.elapsedRealtime() - lossStartedAt
             val negativeSequence = requireSequence(negativeAdmission, "negative")
             assertTrue(
                 "negative owner sequence must supersede the positive generation",
@@ -141,6 +143,7 @@ class CellularE3InstrumentedTest {
             establishedFlow = null
             assertDnsFailsClosed(positiveDns, host)
             assertPublicSocketFailsClosed(stableProbeAddress, proofPort)
+            val lossFailClosedElapsedMs = SystemClock.elapsedRealtime() - lossStartedAt
             emitEvidence(
                 "phase=negative owner_not_admitted=true fresh_loss_generation=true " +
                     "established_flow_blocked=true dns_blocked=true public_socket_blocked=true " +
@@ -150,6 +153,7 @@ class CellularE3InstrumentedTest {
             // Recovery: the same owner/runtime must reacquire direct cellular, mint a fresh
             // observation generation, rediscover the current route table and reconcile the
             // PRODUCT policy before public egress works again.
+            val recoveryStartedAt = SystemClock.elapsedRealtime()
             requireMobileDataTransition("enable")
             mobileDataMayBeDisabled = false
             val recoveryAdmission = waitForOwnerState(
@@ -158,6 +162,7 @@ class CellularE3InstrumentedTest {
                 timeoutMillis = RECOVERY_TIMEOUT_MILLIS,
             )
             waitForDirectCellular(validated = true, present = true, timeoutMillis = RECOVERY_TIMEOUT_MILLIS)
+            val recoveryOwnerElapsedMs = SystemClock.elapsedRealtime() - recoveryStartedAt
             val recoverySequence = requireSequence(recoveryAdmission, "recovery")
             assertTrue(
                 "recovery owner sequence must supersede the loss generation",
@@ -175,14 +180,37 @@ class CellularE3InstrumentedTest {
                 phase = "recovery",
             )
             requirePublicIpLiteral(recoveryPublicIp)
+            val recoveryFunctionalElapsedMs = SystemClock.elapsedRealtime() - recoveryStartedAt
 
             // Deliberate shutdown follows the real composition dependency order: the proxy
             // runtime releases its private Cellular bridge before root-policy quiescence and
             // cleanup. Verification remains read-only after the production adapters stop.
+            val stopStartedAt = SystemClock.elapsedRealtime()
+            val proxyCloseStartedAt = SystemClock.elapsedRealtime()
             application.proxyRuntime.close()
+            val proxyCloseElapsedMs = SystemClock.elapsedRealtime() - proxyCloseStartedAt
+
+            val cellularCloseStartedAt = SystemClock.elapsedRealtime()
             runtime.close()
+            val cellularCloseElapsedMs = SystemClock.elapsedRealtime() - cellularCloseStartedAt
             runtimeClosed = true
+
+            val cleanupVerifyStartedAt = SystemClock.elapsedRealtime()
             verifyProductPolicyCleanup()
+            val cleanupVerifyElapsedMs = SystemClock.elapsedRealtime() - cleanupVerifyStartedAt
+            val stopTotalElapsedMs = SystemClock.elapsedRealtime() - stopStartedAt
+
+            emitEvidence(
+                "phase=latency " +
+                    "loss_owner_elapsed_ms=$lossOwnerElapsedMs " +
+                    "loss_fail_closed_elapsed_ms=$lossFailClosedElapsedMs " +
+                    "recovery_owner_elapsed_ms=$recoveryOwnerElapsedMs " +
+                    "recovery_functional_elapsed_ms=$recoveryFunctionalElapsedMs " +
+                    "proxy_close_elapsed_ms=$proxyCloseElapsedMs " +
+                    "cellular_close_elapsed_ms=$cellularCloseElapsedMs " +
+                    "cleanup_verify_elapsed_ms=$cleanupVerifyElapsedMs " +
+                    "stop_total_elapsed_ms=$stopTotalElapsedMs",
+            )
 
             emitEvidence(
                 "phase=recovery owner_admitted=true fresh_generation=true " +
