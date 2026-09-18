@@ -105,9 +105,8 @@ async fn read_connect_header(
             return Err(ProbeOutcome::TransportFailed);
         }
         let remaining = MAX_CONNECT_HEADER_BYTES - response.len();
-        let read = match timeout_at(deadline, stream.read(&mut chunk[..remaining.min(chunk.len())]))
-            .await
-        {
+        let chunk_len = remaining.min(chunk.len());
+        let read = match timeout_at(deadline, stream.read(&mut chunk[..chunk_len])).await {
             Ok(Ok(read)) => read,
             Ok(Err(_)) => return Err(ProbeOutcome::TransportFailed),
             Err(_) => return Err(ProbeOutcome::Timeout),
