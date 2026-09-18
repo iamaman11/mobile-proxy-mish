@@ -314,7 +314,7 @@ def main() -> None:
     for required in (
         "execute_public_ip_probe(",
         "TcpStream::connect(",
-        "tls.connect(",
+        "let mut stream = tls",
         "HTTP_RESPONSE_MAX_BYTES",
         "parse_http_200_body(",
     ):
