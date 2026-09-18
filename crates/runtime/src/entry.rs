@@ -6,6 +6,8 @@
 mod execution;
 pub use execution::*;
 
+mod tls_client;
+
 mod root_session;
 
 mod root_policy_effect;
