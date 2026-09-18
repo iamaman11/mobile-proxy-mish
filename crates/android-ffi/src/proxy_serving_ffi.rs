@@ -8,7 +8,7 @@ use mish_runtime::{
     ProxyServingTerminalObserver,
 };
 use std::net::{IpAddr, Ipv4Addr};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 const MAX_OUTBOUND_OPERATION_TIMEOUT_MS: u64 = 15_000;
@@ -21,6 +21,7 @@ pub trait NativeProxyRuntimeObserver: Send + Sync {
 #[derive(uniffi::Object)]
 pub struct NativeProxyRuntime {
     inner: Arc<ProxyServingRuntime>,
+    product_runtime: Weak<NativeProductRuntime>,
 }
 
 impl NativeProxyRuntime {
@@ -52,7 +53,11 @@ impl NativeProxyRuntime {
     }
 
     pub fn observe_terminal_failure(&self, observer: Arc<dyn NativeProxyRuntimeObserver>) {
+        let product_runtime = self.product_runtime.clone();
         let terminal_observer: ProxyServingTerminalObserver = Arc::new(move |failure| {
+            if let Some(product_runtime) = product_runtime.upgrade() {
+                let _ = product_runtime.clear_proxy_for_mesh();
+            }
             observer.on_terminal_failure(map_proxy_failure_out(failure));
         });
         self.inner.set_terminal_observer(terminal_observer);
@@ -60,10 +65,21 @@ impl NativeProxyRuntime {
 
     /// Expected shutdown failures remain typed owner data; Kotlin does not classify Rust errors.
     pub fn stop(&self) -> Option<ProxyServingFailure> {
-        self.inner
+        let mesh_clean = self
+            .product_runtime
+            .upgrade()
+            .map(|runtime| runtime.clear_proxy_for_mesh().is_ok())
+            .unwrap_or(true);
+        let proxy_failure = self
+            .inner
             .stop()
             .err()
-            .map(|error| map_proxy_failure_out(error.lifecycle_failure()))
+            .map(|error| map_proxy_failure_out(error.lifecycle_failure()));
+        if !mesh_clean {
+            Some(ProxyServingFailure::ShutdownFailed)
+        } else {
+            proxy_failure
+        }
     }
 }
 
@@ -87,9 +103,22 @@ impl NativeProxyStartAttempt {
 }
 
 impl NativeProxyStartAttempt {
-    fn started(inner: Arc<ProxyServingRuntime>) -> Arc<Self> {
+    fn started(
+        product_runtime: &Arc<NativeProductRuntime>,
+        inner: Arc<ProxyServingRuntime>,
+    ) -> Arc<Self> {
+        let product_runtime_weak = Arc::downgrade(product_runtime);
+        let internal_product_runtime = product_runtime_weak.clone();
+        inner.set_terminal_observer(Arc::new(move |_| {
+            if let Some(product_runtime) = internal_product_runtime.upgrade() {
+                let _ = product_runtime.clear_proxy_for_mesh();
+            }
+        }));
         Arc::new(Self {
-            runtime: Some(Arc::new(NativeProxyRuntime { inner })),
+            runtime: Some(Arc::new(NativeProxyRuntime {
+                inner,
+                product_runtime: product_runtime_weak,
+            })),
             failure: None,
         })
     }
@@ -145,7 +174,19 @@ pub fn start_native_proxy_runtime(
         }
     };
     match ProxyServingRuntime::start(product_runtime.executor_handle(), plan, connector) {
-        Ok(inner) => NativeProxyStartAttempt::started(inner),
+        Ok(inner) => {
+            if product_runtime
+                .install_proxy_for_mesh(Arc::clone(&inner))
+                .is_err()
+            {
+                let _ = inner.stop();
+                NativeProxyStartAttempt::failed(
+                    OwnerProxyServingFailure::RuntimeStateUnavailable,
+                )
+            } else {
+                NativeProxyStartAttempt::started(&product_runtime, inner)
+            }
+        }
         Err(error) => NativeProxyStartAttempt::failed(error.lifecycle_failure()),
     }
 }
