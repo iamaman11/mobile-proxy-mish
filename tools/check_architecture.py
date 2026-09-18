@@ -81,11 +81,33 @@ def main() -> None:
         "scheduleProxyRecoveryIfAllowed",
         "proxyServingFailureRecoverable(",
         "proxyRecoveryDelayMs(",
+        "mish-runtime-lifecycle",
+        "lifecycleExecutor",
+        "RuntimeLifecycleController",
+        "generation = MutableStateFlow",
+        "generation.value =",
+        "newGeneration(",
+        "RuntimeGeneration(",
+        "completeStart(",
+        "completeStop(",
+        "takeGenerationReplacementForStart(",
     ):
         forbid(
             runtime_controller,
             forbidden,
             "Kotlin must not own or execute Proxy recovery policy, timers or retry state",
+        )
+    for required in (
+        "private val productRuntime = NativeProductRuntime(",
+        "productRuntime.startRuntime(",
+        "productRuntime.stopRuntime()",
+        "productRuntime.runtimeLifecycleSnapshot()",
+        "productRuntime.advanceStoppedGenerationAfterPlatformMutation()",
+    ):
+        require(
+            runtime_controller,
+            required,
+            "Kotlin runtime facade must delegate lifecycle/generation identity to the stable native process handle",
         )
 
     # Cross-owner Mesh composition decisions belong to Rust/runtime, not Android adapters.
@@ -651,12 +673,16 @@ def main() -> None:
         "pub struct ProxyServingSnapshotView",
         "UniFFI must expose the immutable native Proxy Serving snapshot type",
     )
-    forbid(
-        lifecycle_ffi,
+    for forbidden in (
         "ProxyServingLifecycleController",
-        "UniFFI must not expose a second mutable Proxy Serving lifecycle controller",
-    )
-    forbid(lifecycle_ffi, "RuntimeProcessLifecycle", "child-process lifecycle must not return to FFI")
+        "RuntimeLifecycleController",
+        "RuntimeProcessLifecycle",
+    ):
+        forbid(
+            lifecycle_ffi,
+            forbidden,
+            "UniFFI lifecycle vocabulary must be projection-only; no separately constructible lifecycle owner",
+        )
     proxy_coordinator = "crates/runtime/src/proxy_coordinator.rs"
     for required in (
         "pub struct ProxyRuntimeCoordinator",
@@ -712,17 +738,47 @@ def main() -> None:
             forbidden,
             "android-ffi must not assemble the PRODUCT generation object graph",
         )
+    product_runtime = "crates/runtime/src/product_runtime.rs"
     for required in (
+        "pub struct ProductRuntimeCoordinator",
+        "RuntimeExecutor::new",
+        "RuntimeLifecycle::new",
         "ProductGeneration::new",
+        "pub fn request_start(",
+        "pub fn request_stop(",
+        "run_start",
+        "run_stop",
+        "advance_stopped_generation_after_platform_mutation",
+        "bind_observers",
+    ):
+        require_product(
+            product_runtime,
+            required,
+            "mish-runtime must own one stable process handle and all runtime generation transitions",
+        )
+    for required in (
+        "ProductRuntimeCoordinator::new",
+        "pub fn runtime_lifecycle_snapshot(",
+        "pub fn start_runtime(",
+        "pub fn stop_runtime(",
         "pub fn observe_proxy_runtime(",
         "pub fn proxy_runtime_snapshot(",
-        "pub fn start_proxy_runtime(",
-        "pub fn stop_proxy_runtime(",
     ):
         require_product(
             product_ffi,
             required,
-            "NativeProductRuntime must expose one projection/control seam over the Rust-owned generation",
+            "NativeProductRuntime must be a stable forwarding/projection handle over ProductRuntimeCoordinator",
+        )
+    for forbidden in (
+        "ProductGeneration::new",
+        "RuntimeExecutor::new",
+        "pub fn start_proxy_runtime(",
+        "pub fn stop_proxy_runtime(",
+    ):
+        forbid_product(
+            product_ffi,
+            forbidden,
+            "android-ffi must not construct generations/executors or expose a second Proxy lifecycle control path",
         )
     forbid_exists(
         "crates/android-ffi/src/proxy_serving_ffi.rs",
@@ -809,14 +865,23 @@ def main() -> None:
         forbid(proxy_android, second_owner, "Android proxy adapter must not drive Proxy Serving lifecycle state")
     for required in (
         "productRuntime.observeProxyRuntime(",
-        "productRuntime.startProxyRuntime(",
-        "productRuntime.stopProxyRuntime()",
         "productRuntime.proxyRuntimeSnapshot()",
     ):
         require(
             proxy_android,
             required,
-            "Android Proxy adapter must only invoke/project the single native Proxy coordinator",
+            "Android Proxy adapter must only project the single native Proxy coordinator",
+        )
+    for forbidden in (
+        "productRuntime.startProxyRuntime(",
+        "productRuntime.stopProxyRuntime(",
+        "ProxyCredentialProvider",
+        "publicCredentials",
+    ):
+        forbid(
+            proxy_android,
+            forbidden,
+            "Android Proxy projection must not retain a direct lifecycle or credential control path",
         )
     for forbidden in (
         "NativeProxyRuntime?",
@@ -912,11 +977,11 @@ def main() -> None:
 
     for required in (
         "pub struct NativeProductRuntime",
-        "ProductGeneration::new",
-        "RuntimeExecutor::new",
+        "ProductRuntimeCoordinator::new",
+        "runtime_lifecycle_snapshot",
         "observe_cellular_policy",
     ):
-        require_product(product_ffi, required, "Android must receive one opaque native PRODUCT process handle")
+        require_product(product_ffi, required, "Android must receive one stable opaque native PRODUCT process handle")
 
     for obsolete_path in (
         "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRootPolicy.kt",
