@@ -186,11 +186,11 @@ ProcessBuilder("su")
  -> authority proof cached only for that live shell generation
 ```
 
-Transport/session generation change invalidates cached authority. Transport failure invalidates the shared shell and **does not automatically replay a mutating command**, because the kernel effect may already have occurred.
+Transport/session generation change invalidates cached authority. A non-authoritative typed read-only observation may be re-issued once to obtain fresh kernel truth. A mutating command is **never automatically replayed**, because the kernel effect may already have occurred.
 
 Higher layers must not gain a generic privileged RPC/control API, root daemon/helper or whole-app-root execution merely to simplify this boundary.
 
-Callers now cross this boundary only as typed `RootObservation` or `RootMutation` effects. No PRODUCT root-policy/authority caller constructs a `["su", "-c", command]` invocation. The single persistent transport still performs the command framing underneath, preserves serialized execution and bounded output/deadlines, invalidates authority on shell-generation change, and never automatically replays an uncertain mutation.
+Callers now cross this boundary only as typed `RootObservation` or `RootMutation` effects. No PRODUCT root-policy/authority caller constructs a `["su", "-c", command]` invocation. The single persistent transport still performs the command framing underneath, preserves serialized execution and bounded output/deadlines, invalidates authority on shell-generation change, and never automatically replays an uncertain mutation. The policy executor may repeat only a non-authoritative `RootObservation`, once, and records both attempts in its bounded diagnostics.
 
 ## Acceptance status
 

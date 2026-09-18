@@ -255,7 +255,7 @@ class CellularRootPolicyTest {
 
     @Test
     fun incompleteRpdbSnapshotFailsClosedInsteadOfLookingEmpty() {
-        val process = FakePolicyProcess().apply { incompleteIpv4RuleReadAt = 2 }
+        val process = FakePolicyProcess().apply { incompleteIpv4RuleReads = setOf(2, 3) }
 
         val result = policy(process).reconcile(admitted = false, interfaceName = null)
 
@@ -436,7 +436,7 @@ class CellularRootPolicyTest {
         var ipv6JumpCount = 0
         var legacyIpv4Selector = false
         var legacyIpv6Selector = false
-        var incompleteIpv4RuleReadAt: Int? = null
+        var incompleteIpv4RuleReads: Set<Int> = emptySet()
         var blockAuthorityProbeUntilCleanupMutation = false
         var cleanupMutationObserved = false
         var uncertainIpv4JumpDeleteAfterMutation = false
@@ -471,7 +471,7 @@ class CellularRootPolicyTest {
                     RootCommandResult(
                         exitCode = 0,
                         stdout = ipv4Rules(),
-                        outputComplete = ipv4RuleReads != incompleteIpv4RuleReadAt,
+                        outputComplete = ipv4RuleReads !in incompleteIpv4RuleReads,
                     )
                 }
                 command == "ip -6 rule show" -> ok(ipv6Rules())
