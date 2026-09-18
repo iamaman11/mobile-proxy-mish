@@ -1,6 +1,6 @@
 # U4 Generation-bound Public Egress IP
 
-Status: **BOUND U4 EXECUTION / ACCEPTANCE PLAN**.
+Status: **CLOSED / PASS — ACCEPTED PRODUCT CONTRACT**.
 
 This document refines the U4 stage from `PRODUCT_ROADMAP.md`. U4 is not a capacity-scaling stage.
 
@@ -106,3 +106,32 @@ Capacity exploration belongs to U7 and is defined separately in `U7_CAPACITY_SCA
 ## Exit criteria
 
 U4 exits when the current Cellular generation has one bounded, exact-path, stale-safe public-egress-IP observation API with hosted contract coverage and physical DEVICE-1 evidence, ready for consumption by U5 rotation and U6 presentation.
+
+## Accepted closure
+
+Exit criteria are satisfied.
+
+Accepted PRODUCT candidate:
+
+```text
+7ba2f35233c418920ad97885eee9372f7e9117b9
+tree = c02f858882c1a6e2be1392a76410d3cd5d897f80
+```
+
+Evidence:
+
+- CI #708 = PASS;
+- Integration Android Preflight #353 = PASS;
+- Device Cycle #289 / run `35373265701` = PASS;
+- classification = `U2_RECOVERY_LIFECYCLE_PASS`;
+- exact candidate acceptance = `PASS`;
+- U4 semantic evidence = positive HTTPS, owner-bound DNS, ordinary PRODUCT-UID socket, stale-generation rejection, no default fallback, fresh-generation recovery, bounded repeated observations and `raw_ip_persisted=false`.
+
+Accepted protected PRODUCT main:
+
+```text
+64482bfa1c5ba6bb2980839b58046742c2b13f19
+tree = c02f858882c1a6e2be1392a76410d3cd5d897f80
+```
+
+The exact candidate and protected-main PRODUCT trees are byte-identical. U5 may consume this API; U4 must not be reopened by adding a second public-IP owner, a second DEVICE control plane or Android per-socket network binding.
