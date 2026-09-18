@@ -78,6 +78,35 @@ class CellularRootPolicyTest {
     }
 
     @Test
+    fun steadyExactMangleStateUsesOneEnsureReadPlusFinalVerificationPerFamily() {
+        val process = FakePolicyProcess()
+        val policy = policy(process)
+        assertEquals(
+            CellularRootPolicyResult.Enforced,
+            policy.reconcile(admitted = true, interfaceName = "rmnet_data0"),
+        )
+
+        process.commands.clear()
+
+        assertEquals(
+            CellularRootPolicyResult.Enforced,
+            policy.reconcile(admitted = true, interfaceName = "rmnet_data0"),
+        )
+
+        assertEquals(
+            2,
+            process.commands.count { it == "iptables -t mangle -S" },
+        )
+        assertEquals(
+            2,
+            process.commands.count { it == "ip6tables -t mangle -S" },
+        )
+        val diagnostic = policy.reconcileDiagnosticObservation()
+        assertEquals(0, diagnostic.lastIncompleteOrTimedOutCommands)
+        assertEquals(0, diagnostic.lastMutationFailures)
+    }
+
+    @Test
     fun ownerLossRemovesLookupButRetainsFlowMarkAndGuard() {
         val process = FakePolicyProcess()
         val policy = policy(process)

@@ -526,6 +526,13 @@ class CellularRootPolicy internal constructor(
             }
         }
 
+        // Steady exact state needs no second family snapshot here. Nothing in this
+        // function has mutated, and verifyFailClosedBase() performs one fresh authoritative
+        // post-mutation snapshot after both families and legacy cleanup complete.
+        if (chainExists && actualChainLines == expectedChainLines && jumpCount == 1) {
+            return null
+        }
+
         if (jumpCount == 0) {
             if (!commandSucceeded("$binary -t mangle $outputJump")) {
                 return CellularRootPolicyFailure.OutputJumpCreationFailed
