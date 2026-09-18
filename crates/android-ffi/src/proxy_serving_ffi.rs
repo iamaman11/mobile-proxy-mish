@@ -1,5 +1,4 @@
-use crate::runtime_boundary::CellularController;
-use crate::runtime_executor_ffi::NativeRuntimeExecutor;
+use crate::product_runtime_ffi::NativeProductRuntime;
 use crate::runtime_lifecycle_ffi::{
     ProxyServingFailure, ProxyServingSnapshotView, map_proxy_failure_out, map_proxy_snapshot,
 };
@@ -106,8 +105,7 @@ impl NativeProxyStartAttempt {
 /// Starts Proxy Serving directly against the exact Cellular Egress owner held by `cellular`.
 #[uniffi::export]
 pub fn start_native_proxy_runtime(
-    executor: Arc<NativeRuntimeExecutor>,
-    cellular: Arc<CellularController>,
+    product_runtime: Arc<NativeProductRuntime>,
     public_username: String,
     public_password: String,
     operation_timeout_ms: u64,
@@ -135,8 +133,8 @@ pub fn start_native_proxy_runtime(
                 );
             }
         };
-    let connector = match cellular
-        .runtime_handle()
+    let connector = match product_runtime
+        .cellular_handle()
         .outbound_connector(Duration::from_millis(operation_timeout_ms))
     {
         Ok(connector) => connector,
@@ -146,7 +144,7 @@ pub fn start_native_proxy_runtime(
             );
         }
     };
-    match ProxyServingRuntime::start(executor.runtime_handle(), plan, connector) {
+    match ProxyServingRuntime::start(product_runtime.executor_handle(), plan, connector) {
         Ok(inner) => NativeProxyStartAttempt::started(inner),
         Err(error) => NativeProxyStartAttempt::failed(error.lifecycle_failure()),
     }
@@ -167,10 +165,9 @@ mod tests {
 
     #[test]
     fn invalid_start_configuration_is_returned_as_typed_data() {
-        let executor = NativeRuntimeExecutor::new().expect("executor");
+        let product_runtime = NativeProductRuntime::new(10123, false).expect("product runtime");
         let attempt = start_native_proxy_runtime(
-            executor.clone(),
-            CellularController::new(),
+            product_runtime.clone(),
             "user".to_string(),
             "password".to_string(),
             0,
@@ -180,6 +177,6 @@ mod tests {
             attempt.failure(),
             Some(ProxyServingFailure::ProxyConfigurationRejected)
         );
-        executor.shutdown().expect("shutdown");
+        product_runtime.shutdown().expect("shutdown");
     }
 }
