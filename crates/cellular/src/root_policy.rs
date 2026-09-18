@@ -884,8 +884,8 @@ pub fn audit_mangle_output(
 
     fn visit<'a>(
         chain: &'a str,
-        rules_by_chain: &HashMap<&'a str, Vec<Vec<&'a str>>>,
-        user_chains: &HashSet<&'a str>,
+        rules_by_chain: &'a HashMap<&'a str, Vec<Vec<&'a str>>>,
+        user_chains: &'a HashSet<&'a str>,
         allowed: &HashSet<String>,
         candidate_mark: u64,
         states: &mut HashMap<&'a str, u8>,
