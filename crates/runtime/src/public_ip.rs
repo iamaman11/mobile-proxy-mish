@@ -124,6 +124,10 @@ impl PreparedPublicIpProbe {
         self.addresses.iter().map(ToString::to_string).collect()
     }
 
+    pub fn is_current(&self) -> bool {
+        self.ensure_current().is_ok()
+    }
+
     pub fn remaining_timeout_ms(&self) -> Result<u64, PublicIpProbeFailure> {
         self.ensure_current()?;
         let remaining = self
