@@ -102,9 +102,9 @@ class CellularE3InstrumentedTest {
             )
             requirePublicIpLiteral(initialPublicIp)
 
-            // U4 reuses the same PRODUCT Cellular owner/root-policy authority. The Android
-            // instrumentation does not resolve or select a network: the Rust-issued observation
-            // performs owner-bound DNS, ordinary PRODUCT-UID TLS/HTTPS and strict IP parsing.
+            // U4 reuses the same PRODUCT Cellular owner/root-policy authority. Android only invokes
+            // the bounded native operation: Rust performs owner-bound DNS, ordinary PRODUCT-UID
+            // Tokio TCP/TLS/HTTPS and strict generation-current IP parsing.
             val u4FdBefore = openFdCount()
             repeat(U4_REPEATED_OBSERVATIONS) {
                 val observation = runtime.observePublicEgressIp(U4_PUBLIC_IP_TIMEOUT_MILLIS)
