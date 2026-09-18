@@ -114,18 +114,32 @@ def main() -> None:
         "Mesh serving composition FFI must remain a thin Rust delegation",
     )
 
-    # U2 Mesh execution law: Transport owns admission/capacity; one existing Runtime Tokio tree
-    # executes listeners/sessions/relay; Android observes the Transport-owned counter only.
+    # U5 execution law: exactly one process-generation Tokio owner exists. Proxy/Mesh borrow its
+    # Handle; neither serving component may construct or destroy another runtime.
+    execution_owner = "crates/runtime/src/execution.rs"
+    for required in (
+        "pub struct RuntimeExecutor",
+        "Builder::new_multi_thread()",
+        'thread_name("mish-runtime-io")',
+        "IO_WORKER_THREADS",
+    ):
+        require_product(
+            execution_owner,
+            required,
+            "RuntimeExecutor must remain the one PRODUCT Tokio construction owner",
+        )
+
     for required in (
         "MeshExecutionOwner",
+        "handle: &Handle",
         "mpsc::sync_channel(expected_listeners)",
         "startup_rx.recv_timeout(remaining)",
         "sessions.try_admit()",
         "JoinSet",
+        "listeners.spawn_on(",
         "copy_bidirectional",
-        "runtime.handle()",
     ):
-        require_product(mesh_serving, required, "Mesh must execute deterministically on existing Tokio")
+        require_product(mesh_serving, required, "Mesh must execute deterministically on shared Tokio")
     for forbidden in (
         "std::thread::sleep",
         "std::thread::spawn",
@@ -137,6 +151,19 @@ def main() -> None:
             forbidden,
             "Mesh runtime mechanism must not poll, create OS workers/second Tokio, or mint capacity",
         )
+
+    proxy_runtime = "crates/runtime/src/proxy_runtime.rs"
+    for forbidden in ("Builder::new_multi_thread", "Mutex<Option<Runtime>>"):
+        forbid_product(
+            proxy_runtime,
+            forbidden,
+            "Proxy Serving must borrow the process RuntimeExecutor rather than own Tokio",
+        )
+    require_product(
+        proxy_runtime,
+        "executor: Arc<RuntimeExecutor>",
+        "Proxy Serving must retain the shared process RuntimeExecutor",
+    )
 
     transport = "crates/transport/src/lib.rs"
     for required in ("MeshSessionOwner", "MeshSessionLease", "MeshIngressExecutor"):
