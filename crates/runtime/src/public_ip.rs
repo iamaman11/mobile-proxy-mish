@@ -257,6 +257,42 @@ mod tests {
     }
 
     #[test]
+    fn prepare_without_current_owner_fails_before_dns() {
+        let owner = Arc::new(Mutex::new(CellularEgress::new()));
+        let invoked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let effect_invoked = Arc::clone(&invoked);
+        let resolver: Arc<dyn CellularDnsResolver> = Arc::new(
+            move |_authority: CellularNetworkAuthority,
+                  _hostname: &str|
+                  -> Result<Vec<IpAddr>, ProxyOutboundConnectError> {
+                effect_invoked.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)])
+            },
+        );
+
+        assert!(matches!(
+            PreparedPublicIpProbe::prepare(owner, resolver, Duration::from_secs(2)),
+            Err(PublicIpProbeFailure::NoCurrentCellular)
+        ));
+        assert!(!invoked.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn resolver_failure_is_typed_without_fallback() {
+        let resolver: Arc<dyn CellularDnsResolver> = Arc::new(
+            |_authority: CellularNetworkAuthority,
+             _hostname: &str|
+             -> Result<Vec<IpAddr>, ProxyOutboundConnectError> {
+                Err(ProxyOutboundConnectError::Failed)
+            },
+        );
+        assert!(matches!(
+            PreparedPublicIpProbe::prepare(admitted_owner(), resolver, Duration::from_secs(2)),
+            Err(PublicIpProbeFailure::DnsUnavailable)
+        ));
+    }
+
+    #[test]
     fn prepare_uses_current_owner_generation_and_ipv4_dns_candidates() {
         let probe =
             PreparedPublicIpProbe::prepare(admitted_owner(), resolver(), Duration::from_secs(2))
