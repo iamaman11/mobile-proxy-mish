@@ -1,4 +1,5 @@
 use crate::runtime_boundary::CellularController;
+use crate::runtime_executor_ffi::NativeRuntimeExecutor;
 use crate::runtime_lifecycle_ffi::{
     ProxyServingFailure, ProxyServingSnapshotView, map_proxy_failure_out, map_proxy_snapshot,
 };
@@ -105,6 +106,7 @@ impl NativeProxyStartAttempt {
 /// Starts Proxy Serving directly against the exact Cellular Egress owner held by `cellular`.
 #[uniffi::export]
 pub fn start_native_proxy_runtime(
+    executor: Arc<NativeRuntimeExecutor>,
     cellular: Arc<CellularController>,
     public_username: String,
     public_password: String,
@@ -144,7 +146,7 @@ pub fn start_native_proxy_runtime(
             );
         }
     };
-    match ProxyServingRuntime::start(plan, connector) {
+    match ProxyServingRuntime::start(executor.runtime_handle(), plan, connector) {
         Ok(inner) => NativeProxyStartAttempt::started(inner),
         Err(error) => NativeProxyStartAttempt::failed(error.lifecycle_failure()),
     }
@@ -165,7 +167,9 @@ mod tests {
 
     #[test]
     fn invalid_start_configuration_is_returned_as_typed_data() {
+        let executor = NativeRuntimeExecutor::new().expect("executor");
         let attempt = start_native_proxy_runtime(
+            executor.clone(),
             CellularController::new(),
             "user".to_string(),
             "password".to_string(),
@@ -176,5 +180,6 @@ mod tests {
             attempt.failure(),
             Some(ProxyServingFailure::ProxyConfigurationRejected)
         );
+        executor.shutdown().expect("shutdown");
     }
 }
