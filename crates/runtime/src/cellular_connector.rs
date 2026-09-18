@@ -346,7 +346,8 @@ fn connect_host_with<T>(
                 return Err(error);
             }
             if let Err(error) = validate_authority(owner, authority) {
-                if current_sequence != Some(authority.observation_sequence().raw()) {
+                let sequence_after_validation = current_owner_sequence(owner);
+                if sequence_after_validation != Some(authority.observation_sequence().raw()) {
                     DNS_DIAGNOSTICS
                         .discarded_stale
                         .fetch_add(1, Ordering::Relaxed);
@@ -508,6 +509,30 @@ mod tests {
         _hostname: &str,
     ) -> Result<Vec<IpAddr>, ProxyOutboundConnectError> {
         Ok(Vec::new())
+    }
+
+    #[test]
+    fn dns_tracker_observes_active_call_without_owning_admission() {
+        let tracker = DnsDiagnosticsTracker::new();
+        let owner = admitted_owner();
+        let authority = issue_authority(&owner).expect("authority");
+
+        let mut observation = tracker.start(authority);
+        let started = tracker.snapshot();
+        assert_eq!(started.started, 1);
+        assert_eq!(started.completed, 0);
+        assert_eq!(started.active, 1);
+        assert_eq!(started.peak_active, 1);
+        assert_eq!(started.last_started_owner_sequence, Some(1));
+
+        observation.complete(current_owner_sequence(&owner));
+        let completed = tracker.snapshot();
+        assert_eq!(completed.started, 1);
+        assert_eq!(completed.completed, 1);
+        assert_eq!(completed.active, 0);
+        assert_eq!(completed.completed_after_owner_change, 0);
+        assert_eq!(completed.last_completed_start_owner_sequence, Some(1));
+        assert_eq!(completed.last_completed_current_owner_sequence, Some(1));
     }
 
     #[test]
