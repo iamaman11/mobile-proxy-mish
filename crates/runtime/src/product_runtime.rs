@@ -15,6 +15,7 @@ use mish_cellular::{
 use mish_transport::{MeshTransportError, MeshTransportSnapshot, MeshVpnObservation};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::task::spawn_blocking;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,6 +147,7 @@ pub struct ProductRuntimeCoordinator {
     resolver: Arc<dyn CellularDnsResolver>,
     product_uid: u32,
     namespace: RootPolicyNamespace,
+    observer_generation: Arc<AtomicU64>,
     state: Mutex<ProductRuntimeState>,
 }
 
@@ -174,6 +176,7 @@ impl ProductRuntimeCoordinator {
             resolver,
             product_uid,
             namespace,
+            observer_generation: Arc::new(AtomicU64::new(lifecycle.generation())),
             state: Mutex::new(ProductRuntimeState {
                 lifecycle,
                 generation,
@@ -318,7 +321,11 @@ impl ProductRuntimeCoordinator {
             state.observers.cellular = Some(Arc::clone(&observer));
             Arc::clone(&state.generation)
         };
-        generation.policy().set_observer(observer);
+        bind_cellular_observer(
+            &generation,
+            observer,
+            Arc::clone(&self.observer_generation),
+        );
     }
 
     pub fn set_readiness_observer(&self, observer: ReadinessObserver) {
@@ -329,7 +336,11 @@ impl ProductRuntimeCoordinator {
             state.observers.readiness = Some(Arc::clone(&observer));
             Arc::clone(&state.generation)
         };
-        generation.readiness().set_observer(observer);
+        bind_readiness_observer(
+            &generation,
+            observer,
+            Arc::clone(&self.observer_generation),
+        );
     }
 
     pub fn set_proxy_observer(&self, observer: ProxyRuntimeObserver) {
@@ -340,7 +351,11 @@ impl ProductRuntimeCoordinator {
             state.observers.proxy = Some(Arc::clone(&observer));
             Arc::clone(&state.generation)
         };
-        generation.proxy().set_observer(observer);
+        bind_proxy_observer(
+            &generation,
+            observer,
+            Arc::clone(&self.observer_generation),
+        );
     }
 
     pub fn request_start(
@@ -385,6 +400,8 @@ impl ProductRuntimeCoordinator {
                     }
                 };
                 state.generation = Arc::clone(&generation);
+                self.observer_generation
+                    .store(generation.generation(), Ordering::Release);
                 Some((generation, state.observers.clone()))
             } else {
                 None
@@ -394,7 +411,11 @@ impl ProductRuntimeCoordinator {
         };
 
         if let Some((generation, observers)) = rebound {
-            bind_observers(&generation, observers);
+            bind_observers(
+            &generation,
+            observers,
+            Arc::clone(&self.observer_generation),
+        );
         }
 
         let owner = Arc::clone(self);
@@ -471,9 +492,15 @@ impl ProductRuntimeCoordinator {
                 }
             };
             state.generation = Arc::clone(&generation);
+                self.observer_generation
+                    .store(generation.generation(), Ordering::Release);
             (generation, state.observers.clone())
         };
-        bind_observers(&rebound.0, rebound.1);
+        bind_observers(
+            &rebound.0,
+            rebound.1,
+            Arc::clone(&self.observer_generation),
+        );
         Ok(true)
     }
 
@@ -601,6 +628,8 @@ impl ProductRuntimeCoordinator {
                 match self.build_generation(state.lifecycle.generation()) {
                     Ok(fresh) => {
                         state.generation = Arc::clone(&fresh);
+                        self.observer_generation
+                            .store(fresh.generation(), Ordering::Release);
                         Some((fresh, state.observers.clone()))
                     }
                     Err(_) => {
@@ -613,7 +642,11 @@ impl ProductRuntimeCoordinator {
             }
         };
         if let Some((generation, observers)) = rebound {
-            bind_observers(&generation, observers);
+            bind_observers(
+            &generation,
+            observers,
+            Arc::clone(&self.observer_generation),
+        );
         }
     }
 
@@ -648,6 +681,8 @@ impl ProductRuntimeCoordinator {
                 match self.build_generation(state.lifecycle.generation()) {
                     Ok(fresh) => {
                         state.generation = Arc::clone(&fresh);
+                        self.observer_generation
+                            .store(fresh.generation(), Ordering::Release);
                         rebound = Some((fresh, state.observers.clone()));
                     }
                     Err(_) => {
@@ -666,7 +701,11 @@ impl ProductRuntimeCoordinator {
         };
 
         if let Some((generation, observers)) = rebound {
-            bind_observers(&generation, observers);
+            bind_observers(
+            &generation,
+            observers,
+            Arc::clone(&self.observer_generation),
+        );
         }
 
         if let Some(input) = restart {
@@ -757,16 +796,59 @@ fn apply_mesh_observation(
     generation.mesh().snapshot()
 }
 
-fn bind_observers(generation: &ProductGeneration, observers: ProductObservers) {
+fn bind_observers(
+    generation: &ProductGeneration,
+    observers: ProductObservers,
+    observer_generation: Arc<AtomicU64>,
+) {
     if let Some(observer) = observers.cellular {
-        generation.policy().set_observer(observer);
+        bind_cellular_observer(generation, observer, Arc::clone(&observer_generation));
     }
     if let Some(observer) = observers.readiness {
-        generation.readiness().set_observer(observer);
+        bind_readiness_observer(generation, observer, Arc::clone(&observer_generation));
     }
     if let Some(observer) = observers.proxy {
-        generation.proxy().set_observer(observer);
+        bind_proxy_observer(generation, observer, observer_generation);
     }
+}
+
+fn bind_cellular_observer(
+    generation: &ProductGeneration,
+    observer: CellularPolicyObserver,
+    observer_generation: Arc<AtomicU64>,
+) {
+    let expected_generation = generation.generation();
+    generation.policy().set_observer(Arc::new(move |publication| {
+        if observer_generation.load(Ordering::Acquire) == expected_generation {
+            observer(publication);
+        }
+    }));
+}
+
+fn bind_readiness_observer(
+    generation: &ProductGeneration,
+    observer: ReadinessObserver,
+    observer_generation: Arc<AtomicU64>,
+) {
+    let expected_generation = generation.generation();
+    generation.readiness().set_observer(Arc::new(move |readiness| {
+        if observer_generation.load(Ordering::Acquire) == expected_generation {
+            observer(readiness);
+        }
+    }));
+}
+
+fn bind_proxy_observer(
+    generation: &ProductGeneration,
+    observer: ProxyRuntimeObserver,
+    observer_generation: Arc<AtomicU64>,
+) {
+    let expected_generation = generation.generation();
+    generation.proxy().set_observer(Arc::new(move |publication| {
+        if observer_generation.load(Ordering::Acquire) == expected_generation {
+            observer(publication);
+        }
+    }));
 }
 
 fn snapshot(state: &ProductRuntimeState) -> ProductRuntimeSnapshot {
