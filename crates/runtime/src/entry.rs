@@ -6,6 +6,8 @@
 mod execution;
 pub use execution::*;
 
+mod root_session;
+
 mod lifecycle;
 pub use lifecycle::*;
 
