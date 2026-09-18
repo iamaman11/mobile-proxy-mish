@@ -215,6 +215,7 @@ class CellularRuntimeBridge(
     fun stop() {
         if (closed.get() || !started.compareAndSet(true, false)) return
         observer.close()
+        productRuntime.invalidateCellularPlatformFacts()
     }
 
     override fun onEvent(event: CellularNetworkEvent) {
@@ -296,6 +297,7 @@ class CellularRuntimeBridge(
         if (!closed.compareAndSet(false, true)) return
         started.set(false)
         observer.close()
+        productRuntime.invalidateCellularPlatformFacts()
     }
 
     private companion object {
