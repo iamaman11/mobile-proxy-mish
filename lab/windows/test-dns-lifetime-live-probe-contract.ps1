@@ -27,6 +27,7 @@ foreach ($required in @(
     'LAB_DNS_LIFETIME_LOSS_NOT_OBSERVED',
     'LAB_DNS_LIFETIME_RECOVERY_SEQUENCE_UNOBSERVED',
     'U3_DNS_LIFETIME_LIVE_OBSERVATION_COMPLETE',
+    "readiness_state -ceq 'READY'",
     'last_started_owner_sequence',
     'completed_after_owner_change',
     'discarded_after_deadline',
