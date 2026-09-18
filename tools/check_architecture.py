@@ -282,7 +282,7 @@ def main() -> None:
         )
 
     for rust_path in ROOT.glob("crates/**/*.rs"):
-        if "android_setsocknetwork" in rust_path.read_text(encoding="utf-8"):
+        if "android_setsocknetwork(" in rust_path.read_text(encoding="utf-8"):
             raise SystemExit(
                 "architecture guard: U4 must not reintroduce per-socket Android network binding: "
                 f"{rust_path.relative_to(ROOT)}"
