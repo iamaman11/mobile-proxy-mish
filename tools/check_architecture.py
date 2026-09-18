@@ -257,7 +257,8 @@ def main() -> None:
     public_ip_android = "android/app/src/main/java/com/mobileproxymish/app/cellular/PublicIpProbeEffect.kt"
     for required in (
         "InetAddress.getByAddress(",
-        "SSLSocketFactory.getDefault().createSocket(",
+        "SSLSocketFactory.getDefault() as SSLSocketFactory",
+        "tlsFactory.createSocket(",
         "getDefaultHostnameVerifier().verify(",
         "ticket.remainingTimeoutMs()",
         "ticket.complete(body)",
