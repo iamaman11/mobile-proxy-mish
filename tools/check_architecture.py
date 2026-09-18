@@ -450,7 +450,8 @@ def main() -> None:
     ):
         forbid(lifecycle, obsolete, "external-child/private-bridge lifecycle semantics are obsolete")
 
-    # Readiness is one pure Rust terminal projection. Android only assembles facts and executes probe effects.
+    # Readiness is one pure Rust terminal projection. Android still assembles transitional facts and
+    # schedules refreshes, but ordinary CONNECT/TLS execution is already Rust/Tokio-owned.
     readiness = "crates/readiness/src/lib.rs"
     require(readiness, "pub enum Readiness", "Readiness must expose one terminal projection type")
     require(readiness, "pub fn project(", "Readiness must remain a pure projection function")
@@ -527,9 +528,8 @@ def main() -> None:
         "controller.completeProbe(ticket, outcome, elapsedMs)",
         "controller.project(facts, observation)",
         "readinessProbeBindingIfEligible(facts)",
-        "readinessProbeTarget()",
-        "egressProbeBudgetMs()",
-        "AuthenticatedEgressProbe",
+        "readinessProbeRefreshDelayMs()",
+        "productRuntime.executeReadinessProbe(",
     ):
         require(
             readiness_android,
@@ -541,25 +541,43 @@ def main() -> None:
         "candidateBinding(",
         "Android readiness adapter must not duplicate structural eligibility policy",
     )
-    probe_effect = "android/app/src/main/java/com/mobileproxymish/app/AuthenticatedEgressProbe.kt"
+    readiness_network = "crates/runtime/src/readiness_network.rs"
     for required in (
-        "InetSocketAddress(LOOPBACK, proxyHttpConnectPort().toInt())",
-        "Proxy-Authorization: Basic",
-        "it.startHandshake()",
-        "HttpsURLConnection.getDefaultHostnameVerifier().verify(target.hostname, it.session)",
+        "pub fn execute_readiness_probe(",
+        "TcpStream::connect(socket)",
+        "Proxy-Authorization: {authorization}",
+        "credentials.basic_authorization_value()",
+        "tls.connect(stream, target.hostname(), remaining)",
+        "DEFAULT_EGRESS_PROBE_BUDGET",
+        "MAX_CONNECT_HEADER_BYTES",
     ):
-        require(probe_effect, required, "bounded Android readiness effect contract must stay explicit")
+        require_product(
+            readiness_network,
+            required,
+            "readiness CONNECT/TLS execution must remain bounded on the shared Rust/Tokio runtime",
+        )
+    require_product(
+        product_ffi,
+        "pub fn execute_readiness_probe(",
+        "NativeProductRuntime must expose the one native readiness network effect",
+    )
     for forbidden in (
-        "InetSocketAddress(target.hostname",
-        "Socket(target.hostname",
-        "HttpURLConnection",
-        "java.net.URL",
+        "java.net.Socket",
+        "SSLSocket",
+        "HttpsURLConnection",
+        "readinessProbeTarget()",
+        "egressProbeBudgetMs()",
+        "AuthenticatedEgressProbe",
     ):
         forbid(
-            probe_effect,
+            readiness_android,
             forbidden,
-            "Android readiness must not resolve/connect the public hostname outside PRODUCT proxy",
+            "Android readiness adapter must not regain ordinary socket/TLS/endpoint execution",
         )
+    forbid_exists(
+        "android/app/src/main/java/com/mobileproxymish/app/AuthenticatedEgressProbe.kt",
+        "readiness ordinary CONNECT/TLS execution is Rust/Tokio-owned",
+    )
 
     # Stateful runtime coordination must not drift into the FFI seam.
     ffi = "crates/android-ffi/src/runtime_boundary.rs"
