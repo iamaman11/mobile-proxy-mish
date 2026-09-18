@@ -234,33 +234,57 @@ Protected main after acceptance is `470e26ba483e5596bb06069e982036247d738c61`; i
 
 ---
 
-# U3 — Recovery, observability and lifetime convergence — ACTIVE
+# U3 — Recovery, observability and lifetime convergence — CLOSED / PASS
 
-Only current-topology findings survive into this stage. Implement from evidence, not from historical mechanism assumptions.
+U3 is formally closed. No active U3 implementation PR remains, and no rejected/obsolete U3 branch is a valid base for later stages.
 
-Still-live questions from #134/S0:
+Accepted closing slices:
 
-- latest-state/coalesced Android reconciliation where callback backlog can delay the newest generation;
-- cleanup must supersede stale queued reconciliation rather than wait behind arbitrary backlog;
-- Android network-scoped DNS worker occupancy/cancellation under a stuck `android_getaddrinfofornetwork` call;
-- root-policy reconcile command count / duplicate snapshots / elapsed time;
-- one end-to-end startup/recovery/stop latency budget with per-stage observations;
-- long-effect lock scope only where direct tests prove exact identity remains safe;
-- readiness behavior for a silent upstream public-path failure that leaves structural facts unchanged;
-- bounded diagnostics for generations, recovery attempt/backoff, coalescing, root timing/count, DNS occupancy/rejects, capacity rejects and lifecycle durations;
-- after U2 proves the persistent Magisk boundary on DEVICE-1, remove the remaining shell-shaped internal API form such as `RootProcess.run(["su", "-c", command])` and expose narrow typed root effects instead, while retaining exactly one persistent `ProcessBuilder("su")` transport underneath;
-- the typed-root cleanup must preserve serialized execution, bounded output/deadlines, shell-generation authority invalidation, no automatic mutation replay after transport uncertainty, and fail-closed policy verification;
-- do not replace this cleanup with a generic privileged RPC service, root daemon/helper, second privilege state machine, or whole-app root execution.
+- PR #258 — owner-backed Mesh capacity reject diagnostics;
+- PR #259 — bounded generation/recovery diagnostics and consistent owner-backed projection;
+- PR #260 — typed `RootObservation` / `RootMutation` effects over the single persistent `ProcessBuilder("su")` transport; shell-shaped `RootProcess.run(["su","-c", ...])` PRODUCT calls removed;
+- PR #261 — deterministic recovery-instrumentation process handoff;
+- PR #262 — exactly one fresh retry for a non-authoritative read-only root observation; uncertain mutations remain non-replayable and reconcile only through fresh observation.
 
-Superseded by the native cutover and **not** carried forward as work items:
+Rejected optimization PR #244 (`u3/stable-mangle-verification`) remains rejected. It must not be revived, rebased or merged without new evidence demonstrating a current PRODUCT constraint.
 
-- sing-box child launch/PID/config lifecycle optimization;
-- private Cellular SOCKS bridge lifetime/resources;
-- old four-thread-per-full-path estimate spanning Mesh + private bridge;
-- stale private-bridge 16-session stress fixture;
-- duplicate Kotlin proxy recovery allow-lists after Rust becomes the canonical policy owner.
+Final accepted PRODUCT candidate:
 
-Optimization is accepted only when U2/U3 evidence demonstrates a real constraint.
+```text
+20b5177a3bd1c0ed5547e4813c5cb9cdfb1d928e
+tree = 5901ae41e431ee299c32dea2e8e528d300becce5
+```
+
+Hosted exact-head gates:
+
+- CI #672 / run `35362830544` = PASS;
+- Integration Android Preflight #317 / run `35362830236` = PASS.
+
+Canonical physical acceptance:
+
+```text
+Device Cycle #263
+run_id = 35363568653
+source_sha = 20b5177a3bd1c0ed5547e4813c5cb9cdfb1d928e
+classification = U2_RECOVERY_LIFECYCLE_PASS
+exact_candidate_acceptance = PASS
+```
+
+The physical evidence proves explicit instrumentation handoff; E3 positive/loss/recovery; established-flow, DNS and public-socket blocking during loss; no default fallback; fresh recovery generation; root-policy reconciliation and cleanup; restart READY; root policy authorized; Proxy healthy; Mesh admitted/epoch/ingress; and loopback + Mesh E2E PASS.
+
+The squash-merged protected PRODUCT main is:
+
+```text
+c779aa72f919af6fe1664bce9e111a5029965516
+tree = 5901ae41e431ee299c32dea2e8e528d300becce5
+```
+
+Therefore the physically accepted candidate tree and accepted protected-main tree are byte-identical.
+
+U3 closure changes no route/mark/priority/table semantics and introduces no second Tokio runtime/executor, Cellular owner, root daemon/helper/RPC/control plane, privileged state machine, mutable status store or Android-owned duplicate admission/recovery authority.
+
+Next stage: **U4 — Generation-bound Public Egress IP**. U4 starts only after U3 branch hygiene is complete, from fresh protected `main`, with one linear implementation branch/PR.
+
 
 ---
 
@@ -278,7 +302,9 @@ UI              -> projection only
 
 Requirements:
 
-- exact-network cellular DNS + current root-policy authorization;
+- current Cellular generation + current root-policy authorization;
+- owner-bound/network-scoped cellular DNS;
+- ordinary PRODUCT-UID public socket through the root-policy-gated current cellular route; no `Network.bindSocket` / `android_setsocknetwork` path pinning;
 - HTTPS/TLS, absolute deadline and tiny bounded response;
 - strict IP parsing;
 - generation/currentness rejection after cellular change;

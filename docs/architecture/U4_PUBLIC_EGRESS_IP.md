@@ -29,15 +29,16 @@ No new lifecycle, network or readiness owner is introduced.
 The probe must use the same allowed public-egress authority as PRODUCT traffic:
 
 ```text
-current Cellular generation
+current Cellular owner generation
  -> current root-policy authorization
- -> exact-network cellular DNS
- -> exact-network cellular socket
+ -> owner-bound/network-scoped cellular DNS
+ -> ordinary PRODUCT-UID public socket
+ -> root-policy-gated current cellular route
  -> TLS/HTTPS
  -> bounded public-IP endpoint
 ```
 
-It must never fall back to Android default networking, Wi-Fi or WARP for the public request.
+It must never fall back to Android default networking, Wi-Fi or WARP for the public request. Public-path authority comes from the current Cellular owner generation plus root-policy routing, not from Android per-socket network binding.
 
 ## Generation binding
 
@@ -50,8 +51,9 @@ If the Cellular owner changes while DNS/request/response work is in flight, the 
 The implementation must provide:
 
 - one deliberately selected public-IP endpoint owned in one place;
-- exact-network DNS;
-- exact-network socket creation;
+- owner-bound/network-scoped cellular DNS;
+- ordinary PRODUCT-UID public socket through the current root-policy-gated cellular route;
+- no `Network.bindSocket`, `android_setsocknetwork` or equivalent per-socket network pinning;
 - TLS certificate validation;
 - absolute end-to-end deadline;
 - tiny bounded response size;
