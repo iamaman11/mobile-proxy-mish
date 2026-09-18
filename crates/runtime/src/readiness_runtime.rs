@@ -1,0 +1,531 @@
+//! Process-generation readiness orchestration on the shared Tokio runtime.
+//!
+//! Leaf facts remain owned by Cellular, Proxy, Credentials and Mesh. This coordinator owns only
+//! the cross-owner readiness use-case: exact binding formation, probe freshness, async execution,
+//! refresh scheduling, stale completion rejection and publication into Mesh composition.
+
+use crate::readiness_network::execute_readiness_probe_async;
+use crate::{
+    CellularPolicyPublication, MeshCompositionCoordinator, RootPolicyResult, RuntimeExecutionError,
+    RuntimeExecutor,
+};
+use mish_application::{
+    DEFAULT_EGRESS_PROBE_BUDGET, DEFAULT_EGRESS_PROBE_REFRESH_DELAY, EgressProbeCoordinator,
+    ProbeTicket,
+};
+use mish_cellular::CellularAdmissionState;
+use mish_readiness::{
+    CellularOwnerGeneration, CellularReadinessFact, CredentialReadinessFact, CredentialVersion,
+    EgressProbeObservation, MeshAdmissionEpoch, MeshReadinessFact, ProbeBinding, ProbeEligibility,
+    ProductReadinessInput, ProxyReadinessFact, ProxyServingGeneration, Readiness,
+    RuntimeGeneration, RuntimeReadinessFact, probe_eligibility, project,
+};
+use mish_transport::{MeshAdmissionState, MeshTransportSnapshot};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
+use tokio::time::{Instant, sleep};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadinessRuntimeError {
+    InvalidRuntimeGeneration,
+    InvalidOwnerKey,
+    StateUnavailable,
+    ExecutorUnavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadinessDiagnosticSnapshot {
+    pub state: Readiness,
+    pub binding_eligible: bool,
+    pub probe_in_flight: bool,
+    pub refresh_pending: bool,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct ProbeCredentials {
+    version: CredentialVersion,
+    username: String,
+    password: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StructuralFacts {
+    cellular: Option<CellularReadinessFact>,
+    runtime: RuntimeReadinessFact,
+    proxy: Option<ProxyReadinessFact>,
+    credential: Option<CredentialReadinessFact>,
+    mesh: Option<MeshReadinessFact>,
+}
+
+struct ReadinessRuntimeState {
+    facts: StructuralFacts,
+    probe: EgressProbeCoordinator,
+    observation: Option<EgressProbeObservation>,
+    projected: Readiness,
+    probe_in_flight: bool,
+    refresh_epoch: u64,
+    refresh_pending: bool,
+    credentials: Option<ProbeCredentials>,
+    closed: bool,
+}
+
+pub struct ReadinessRuntimeCoordinator {
+    executor: Arc<RuntimeExecutor>,
+    mesh: Arc<MeshCompositionCoordinator>,
+    state: Mutex<ReadinessRuntimeState>,
+}
+
+impl ReadinessRuntimeCoordinator {
+    pub fn new(
+        executor: Arc<RuntimeExecutor>,
+        mesh: Arc<MeshCompositionCoordinator>,
+        runtime_generation: u64,
+    ) -> Result<Arc<Self>, ReadinessRuntimeError> {
+        let generation = RuntimeGeneration::new(runtime_generation)
+            .ok_or(ReadinessRuntimeError::InvalidRuntimeGeneration)?;
+        let runtime = RuntimeReadinessFact { generation };
+        let facts = StructuralFacts {
+            cellular: None,
+            runtime,
+            proxy: None,
+            credential: None,
+            mesh: None,
+        };
+        let probe = EgressProbeCoordinator::new();
+        let projected = project(input_for(facts, &probe, None));
+
+        Ok(Arc::new(Self {
+            executor,
+            mesh,
+            state: Mutex::new(ReadinessRuntimeState {
+                facts,
+                probe,
+                observation: None,
+                projected,
+                probe_in_flight: false,
+                refresh_epoch: 0,
+                refresh_pending: false,
+                credentials: None,
+                closed: false,
+            }),
+        }))
+    }
+
+    pub fn snapshot(&self) -> Readiness {
+        self.state().map_or(Readiness::Unknown, |state| state.projected)
+    }
+
+    pub fn diagnostic_snapshot(&self) -> ReadinessDiagnosticSnapshot {
+        self.state().map_or(
+            ReadinessDiagnosticSnapshot {
+                state: Readiness::Unknown,
+                binding_eligible: false,
+                probe_in_flight: false,
+                refresh_pending: false,
+            },
+            |state| ReadinessDiagnosticSnapshot {
+                state: state.projected,
+                binding_eligible: matches!(
+                    probe_eligibility(input_for(state.facts, &state.probe, state.observation)),
+                    ProbeEligibility::Eligible(_)
+                ),
+                probe_in_flight: state.probe_in_flight,
+                refresh_pending: state.refresh_pending,
+            },
+        )
+    }
+
+    pub fn observe_cellular(
+        self: &Arc<Self>,
+        publication: CellularPolicyPublication,
+    ) -> Result<(), ReadinessRuntimeError> {
+        let fact = publication.admission.last_sequence().map(|sequence| CellularReadinessFact {
+            owner_generation: CellularOwnerGeneration::new(sequence.raw())
+                .expect("Cellular observation sequence is non-zero"),
+            admitted: publication.admission.state() == CellularAdmissionState::Admitted,
+            root_policy_verified: matches!(publication.result, RootPolicyResult::Enforced),
+        });
+        self.update_structural(|state| state.facts.cellular = fact)
+    }
+
+    pub fn observe_mesh(
+        self: &Arc<Self>,
+        snapshot: MeshTransportSnapshot,
+    ) -> Result<(), ReadinessRuntimeError> {
+        let runtime_generation = self.runtime_generation()?;
+        let admission = snapshot.admission();
+        let epoch = admission
+            .admission_epoch()
+            .map(|raw| MeshAdmissionEpoch::new(raw).ok_or(ReadinessRuntimeError::InvalidOwnerKey))
+            .transpose()?;
+        let fact = MeshReadinessFact {
+            runtime_generation,
+            admission_epoch: epoch,
+            admitted: admission.state() == MeshAdmissionState::Admitted,
+            // Public ingress is an effect of READY, never an input to READY eligibility.
+            ingress_running: false,
+        };
+        self.update_structural(|state| state.facts.mesh = Some(fact))
+    }
+
+    pub fn observe_proxy_started(
+        self: &Arc<Self>,
+        credential_version: u64,
+        username: String,
+        password: String,
+    ) -> Result<(), ReadinessRuntimeError> {
+        let version = CredentialVersion::new(credential_version)
+            .ok_or(ReadinessRuntimeError::InvalidOwnerKey)?;
+        let runtime_generation = self.runtime_generation()?;
+        let serving_generation = ProxyServingGeneration::new(runtime_generation.raw())
+            .ok_or(ReadinessRuntimeError::InvalidOwnerKey)?;
+        self.update_structural(|state| {
+            state.facts.proxy = Some(ProxyReadinessFact {
+                runtime_generation,
+                serving_generation: Some(serving_generation),
+                credential_version: Some(version),
+                healthy: true,
+            });
+            state.facts.credential = Some(CredentialReadinessFact {
+                version,
+                active: true,
+            });
+            state.credentials = Some(ProbeCredentials {
+                version,
+                username,
+                password,
+            });
+        })
+    }
+
+    pub fn observe_proxy_stopped(
+        self: &Arc<Self>,
+    ) -> Result<(), ReadinessRuntimeError> {
+        self.update_structural(|state| {
+            if let Some(proxy) = state.facts.proxy.as_mut() {
+                proxy.healthy = false;
+                proxy.serving_generation = None;
+                proxy.credential_version = None;
+            }
+            state.credentials = None;
+        })
+    }
+
+    pub fn observe_credential(
+        self: &Arc<Self>,
+        version: Option<u64>,
+        active: bool,
+    ) -> Result<(), ReadinessRuntimeError> {
+        let credential = version
+            .map(|raw| {
+                CredentialVersion::new(raw)
+                    .map(|version| CredentialReadinessFact { version, active })
+                    .ok_or(ReadinessRuntimeError::InvalidOwnerKey)
+            })
+            .transpose()?;
+        self.update_structural(|state| {
+            state.facts.credential = credential;
+            if !active {
+                state.credentials = None;
+            }
+        })
+    }
+
+    pub fn shutdown(&self) {
+        let readiness = {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            if state.closed {
+                return;
+            }
+            state.closed = true;
+            state.refresh_epoch = state.refresh_epoch.wrapping_add(1);
+            state.refresh_pending = false;
+            state.probe_in_flight = false;
+            state.credentials = None;
+            let _ = state.probe.invalidate();
+            state.observation = None;
+            state.projected = Readiness::Unknown;
+            state.projected
+        };
+        let _ = self.mesh.set_readiness_ready(readiness == Readiness::Ready);
+    }
+
+    fn update_structural(
+        self: &Arc<Self>,
+        update: impl FnOnce(&mut ReadinessRuntimeState),
+    ) -> Result<(), ReadinessRuntimeError> {
+        let (readiness, ticket) = {
+            let mut state = self.state_mut()?;
+            if state.closed {
+                return Err(ReadinessRuntimeError::StateUnavailable);
+            }
+            let before = state.facts;
+            update(&mut state);
+            if state.facts == before {
+                return Ok(());
+            }
+
+            state.refresh_epoch = state.refresh_epoch.wrapping_add(1);
+            state.refresh_pending = false;
+            state.probe_in_flight = false;
+            state
+                .probe
+                .invalidate()
+                .map_err(|_| ReadinessRuntimeError::StateUnavailable)?;
+            state.observation = None;
+
+            let input = input_for(state.facts, &state.probe, None);
+            let eligibility = probe_eligibility(input);
+            state.projected = project(input);
+
+            let ticket = match eligibility {
+                ProbeEligibility::Eligible(binding) => {
+                    let credentials_current = state
+                        .credentials
+                        .as_ref()
+                        .is_some_and(|credentials| credentials.version == binding.credential_version);
+                    if credentials_current {
+                        let ticket = state
+                            .probe
+                            .begin(binding)
+                            .map_err(|_| ReadinessRuntimeError::StateUnavailable)?;
+                        state.probe_in_flight = true;
+                        Some(ticket)
+                    } else {
+                        None
+                    }
+                }
+                ProbeEligibility::NotReady | ProbeEligibility::Unknown => None,
+            };
+            (state.projected, ticket)
+        };
+
+        self.publish_readiness(readiness);
+        if let Some(ticket) = ticket {
+            self.spawn_probe(ticket)?;
+        }
+        Ok(())
+    }
+
+    fn spawn_probe(
+        self: &Arc<Self>,
+        ticket: ProbeTicket,
+    ) -> Result<(), ReadinessRuntimeError> {
+        let credentials = {
+            let state = self.state()?;
+            let credentials = state
+                .credentials
+                .as_ref()
+                .filter(|credentials| credentials.version == ticket.binding().credential_version)
+                .cloned()
+                .ok_or(ReadinessRuntimeError::StateUnavailable)?;
+            credentials
+        };
+        let this = Arc::clone(self);
+        self.executor
+            .spawn(async move {
+                let started = Instant::now();
+                let outcome = execute_readiness_probe_async(
+                    credentials.username,
+                    credentials.password,
+                )
+                .await;
+                let elapsed = started.elapsed();
+                this.complete_probe(ticket, outcome.ok(), elapsed);
+            })
+            .map(|_| ())
+            .map_err(map_execution_error)
+    }
+
+    fn complete_probe(
+        self: Arc<Self>,
+        ticket: ProbeTicket,
+        outcome: Option<mish_readiness::ProbeOutcome>,
+        elapsed: Duration,
+    ) {
+        let Some(outcome) = outcome else {
+            self.fail_probe(ticket);
+            return;
+        };
+
+        let (readiness, refresh) = {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            if state.closed {
+                return;
+            }
+            let Some(observation) = state.probe.complete_bounded(
+                ticket,
+                outcome,
+                elapsed,
+                DEFAULT_EGRESS_PROBE_BUDGET,
+            ) else {
+                return;
+            };
+            state.probe_in_flight = false;
+            state.observation = Some(observation);
+            let input = input_for(state.facts, &state.probe, state.observation);
+            state.projected = project(input);
+            let binding_current = matches!(
+                probe_eligibility(input),
+                ProbeEligibility::Eligible(binding) if binding == observation.binding
+            );
+            if binding_current {
+                state.refresh_epoch = state.refresh_epoch.wrapping_add(1);
+                state.refresh_pending = true;
+                Some((state.refresh_epoch, observation.binding))
+            } else {
+                state.refresh_pending = false;
+                None
+            }
+            .map(|refresh| (state.projected, Some(refresh)))
+            .unwrap_or((state.projected, None))
+        };
+
+        self.publish_readiness(readiness);
+        if let Some((epoch, binding)) = refresh {
+            self.spawn_refresh(epoch, binding);
+        }
+    }
+
+    fn fail_probe(self: Arc<Self>, ticket: ProbeTicket) {
+        let readiness = {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            if state.closed {
+                return;
+            }
+            let _ = state.probe.complete_bounded(
+                ticket,
+                mish_readiness::ProbeOutcome::TransportFailed,
+                DEFAULT_EGRESS_PROBE_BUDGET,
+                DEFAULT_EGRESS_PROBE_BUDGET,
+            );
+            state.probe_in_flight = false;
+            state.observation = None;
+            state.projected = project(input_for(state.facts, &state.probe, None));
+            state.projected
+        };
+        self.publish_readiness(readiness);
+    }
+
+    fn spawn_refresh(self: &Arc<Self>, epoch: u64, binding: ProbeBinding) {
+        let this = Arc::clone(self);
+        if self
+            .executor
+            .spawn(async move {
+                sleep(DEFAULT_EGRESS_PROBE_REFRESH_DELAY).await;
+                this.fire_refresh(epoch, binding);
+            })
+            .is_err()
+        {
+            if let Ok(mut state) = self.state.lock() {
+                if state.refresh_epoch == epoch {
+                    state.refresh_pending = false;
+                }
+            }
+        }
+    }
+
+    fn fire_refresh(self: Arc<Self>, epoch: u64, expected: ProbeBinding) {
+        let ticket = {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            if state.closed || !state.refresh_pending || state.refresh_epoch != epoch {
+                return;
+            }
+            let input = input_for(state.facts, &state.probe, state.observation);
+            let current = match probe_eligibility(input) {
+                ProbeEligibility::Eligible(binding) => binding,
+                ProbeEligibility::NotReady | ProbeEligibility::Unknown => {
+                    state.refresh_pending = false;
+                    return;
+                }
+            };
+            if current != expected {
+                state.refresh_pending = false;
+                return;
+            }
+            state.refresh_pending = false;
+            let Ok(ticket) = state.probe.begin(current) else {
+                return;
+            };
+            state.probe_in_flight = true;
+            ticket
+        };
+
+        // Stale-while-revalidate: do not republish UNKNOWN when issuing a same-binding refresh.
+        let _ = self.spawn_probe(ticket);
+    }
+
+    fn publish_readiness(&self, readiness: Readiness) {
+        let _ = self.mesh.set_readiness_ready(readiness == Readiness::Ready);
+    }
+
+    fn runtime_generation(&self) -> Result<RuntimeGeneration, ReadinessRuntimeError> {
+        self.state().map(|state| state.facts.runtime.generation)
+    }
+
+    fn state(&self) -> Result<MutexGuard<'_, ReadinessRuntimeState>, ReadinessRuntimeError> {
+        self.state
+            .lock()
+            .map_err(|_| ReadinessRuntimeError::StateUnavailable)
+    }
+
+    fn state_mut(&self) -> Result<MutexGuard<'_, ReadinessRuntimeState>, ReadinessRuntimeError> {
+        self.state()
+    }
+}
+
+fn input_for(
+    facts: StructuralFacts,
+    probe: &EgressProbeCoordinator,
+    observation: Option<EgressProbeObservation>,
+) -> ProductReadinessInput {
+    ProductReadinessInput {
+        cellular: facts.cellular,
+        runtime: Some(facts.runtime),
+        proxy: facts.proxy,
+        credential: facts.credential,
+        mesh: facts.mesh,
+        expected_freshness: probe.expected_freshness(),
+        probe: observation,
+    }
+}
+
+fn map_execution_error(_error: RuntimeExecutionError) -> ReadinessRuntimeError {
+    ReadinessRuntimeError::ExecutorUnavailable
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_generation_is_required() {
+        let executor = RuntimeExecutor::new().expect("executor");
+        let mesh = MeshCompositionCoordinator::new().expect("mesh");
+        assert!(matches!(
+            ReadinessRuntimeCoordinator::new(executor.clone(), mesh, 0),
+            Err(ReadinessRuntimeError::InvalidRuntimeGeneration)
+        ));
+        executor.shutdown().expect("shutdown");
+    }
+
+    #[test]
+    fn fresh_runtime_starts_unknown_and_never_opens_mesh() {
+        let executor = RuntimeExecutor::new().expect("executor");
+        let mesh = MeshCompositionCoordinator::new().expect("mesh");
+        let readiness =
+            ReadinessRuntimeCoordinator::new(executor.clone(), mesh.clone(), 1).expect("readiness");
+        assert_eq!(readiness.snapshot(), Readiness::Unknown);
+        assert!(!mesh.snapshot().expect("mesh snapshot").ingress_running());
+        readiness.shutdown();
+        executor.shutdown().expect("shutdown");
+    }
+}
