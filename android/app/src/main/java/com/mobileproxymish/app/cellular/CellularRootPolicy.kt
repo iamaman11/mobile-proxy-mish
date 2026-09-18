@@ -422,14 +422,6 @@ class CellularRootPolicy internal constructor(
         return PolicyIdentityResolution.Collision
     }
 
-    private fun auditReservedPolicySpace(): PolicySpaceAudit {
-        val ipv4Rules = ruleOutputOrNull(IPV4_RULE_SHOW) ?: return PolicySpaceAudit.Unavailable
-        val ipv6Rules = ruleOutputOrNull(IPV6_RULE_SHOW) ?: return PolicySpaceAudit.Unavailable
-        val ipv4Mangle = mangleOutputOrNull(IPTABLES) ?: return PolicySpaceAudit.Unavailable
-        val ipv6Mangle = mangleOutputOrNull(IP6TABLES) ?: return PolicySpaceAudit.Unavailable
-        return auditReservedPolicySpace(ipv4Rules, ipv6Rules, ipv4Mangle, ipv6Mangle)
-    }
-
     private fun auditReservedPolicySpace(
         ipv4Rules: List<String>,
         ipv6Rules: List<String>,
@@ -563,26 +555,51 @@ class CellularRootPolicy internal constructor(
             removeExactRule(legacyIpv6SelectorCheck(), legacyIpv6SelectorDelete())
 
     private fun verifyFailClosedBase(): Boolean {
-        val ipv4Rules = ruleOutputOrNull(IPV4_RULE_SHOW) ?: return false
-        val ipv6Rules = ruleOutputOrNull(IPV6_RULE_SHOW) ?: return false
-        return verifyMangleFamily(IPTABLES, ipv4OwnedChainLines(), ipv4OutputJump()) &&
-            verifyMangleFamily(IP6TABLES, ipv6OwnedChainLines(), ipv6OutputJump()) &&
-            ipv4Rules.any(::isOwnedIpv4Guard) &&
-            ipv6Rules.any(::isOwnedIpv6Guard) &&
-            ownedIpv4LookupTables(ipv4Rules).isEmpty() &&
-            auditReservedPolicySpace() == PolicySpaceAudit.Clean
+        // One fresh post-mutation snapshot is the authoritative verification boundary.
+        // Reuse these four observations only inside this pure verification pass; do not cache
+        // root state across mutations or across reconcile transactions.
+        val snapshot = readVerificationSnapshot() ?: return false
+        return verifyMangleFamily(
+            snapshot.ipv4Mangle,
+            ipv4OwnedChainLines(),
+            ipv4OutputJump(),
+        ) &&
+            verifyMangleFamily(
+                snapshot.ipv6Mangle,
+                ipv6OwnedChainLines(),
+                ipv6OutputJump(),
+            ) &&
+            snapshot.ipv4Rules.any(::isOwnedIpv4Guard) &&
+            snapshot.ipv6Rules.any(::isOwnedIpv6Guard) &&
+            ownedIpv4LookupTables(snapshot.ipv4Rules).isEmpty() &&
+            auditReservedPolicySpace(
+                snapshot.ipv4Rules,
+                snapshot.ipv6Rules,
+                snapshot.ipv4Mangle,
+                snapshot.ipv6Mangle,
+            ) == PolicySpaceAudit.Clean
+    }
+
+    private fun readVerificationSnapshot(): RootPolicyVerificationSnapshot? {
+        val ipv4Rules = ruleOutputOrNull(IPV4_RULE_SHOW) ?: return null
+        val ipv6Rules = ruleOutputOrNull(IPV6_RULE_SHOW) ?: return null
+        val ipv4Mangle = mangleOutputOrNull(IPTABLES) ?: return null
+        val ipv6Mangle = mangleOutputOrNull(IP6TABLES) ?: return null
+        return RootPolicyVerificationSnapshot(
+            ipv4Rules = ipv4Rules,
+            ipv6Rules = ipv6Rules,
+            ipv4Mangle = ipv4Mangle,
+            ipv6Mangle = ipv6Mangle,
+        )
     }
 
     private fun verifyMangleFamily(
-        binary: String,
+        lines: List<String>,
         expectedChainLines: List<String>,
         outputJump: String,
-    ): Boolean {
-        val lines = mangleOutputOrNull(binary) ?: return false
-        return lines.count { it == "-N $MISH_CHAIN" } == 1 &&
-            lines.count { it == outputJump } == 1 &&
-            lines.filter { it.startsWith("-A $MISH_CHAIN ") } == expectedChainLines
-    }
+    ): Boolean = lines.count { it == "-N $MISH_CHAIN" } == 1 &&
+        lines.count { it == outputJump } == 1 &&
+        lines.filter { it.startsWith("-A $MISH_CHAIN ") } == expectedChainLines
 
     private fun verifyExactCleanup(): Boolean {
         if (authority.probe() != RootAuthorityStatus.Ready) return false
@@ -796,6 +813,13 @@ class CellularRootPolicy internal constructor(
         )
     private val OWNED_IPV6_GUARD_REGEX: Regex
         get() = OWNED_IPV4_GUARD_REGEX
+
+    private data class RootPolicyVerificationSnapshot(
+        val ipv4Rules: List<String>,
+        val ipv6Rules: List<String>,
+        val ipv4Mangle: List<String>,
+        val ipv6Mangle: List<String>,
+    )
 
     private enum class PolicySpaceAudit { Clean, Collision, Unavailable }
     private enum class PolicyIdentityResolution { Selected, Collision, Unavailable }
