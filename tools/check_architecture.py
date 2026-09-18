@@ -826,12 +826,13 @@ def main() -> None:
         "observe_mesh_vpn_absent",
         "observe_mesh_unique_vpn",
         "observe_mesh_vpn_ambiguous",
-        "generation.mesh()",
+        "runtime.active_generation()",
+        "runtime.current_generation()",
     ):
         require_product(
             product_ffi,
             required,
-            "NativeProductRuntime must project Mesh through the sole Rust-owned ProductGeneration",
+            "NativeProductRuntime must project Mesh through the sole current Rust-owned generation",
         )
 
     # Proxy Serving is the sole owner of canonical product listener facts.
