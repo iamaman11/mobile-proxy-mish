@@ -204,6 +204,87 @@ impl ProductRuntimeCoordinator {
         Ok(Arc::clone(&state.generation))
     }
 
+    pub fn observe_network(
+        &self,
+        sequence: u64,
+        observation: NetworkObservation,
+        observed_handle: NetworkHandle,
+        interface_name: Option<String>,
+    ) -> Result<CellularAdmissionSnapshot, crate::CellularRuntimeError> {
+        let generation = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| crate::CellularRuntimeError::StateUnavailable)?;
+            state.platform_facts.record_cellular_observation(
+                sequence,
+                observation,
+                observed_handle,
+                interface_name.clone(),
+            );
+            if !matches!(
+                state.lifecycle.state(),
+                RuntimeLifecycleState::Starting | RuntimeLifecycleState::Running
+            ) {
+                return Err(crate::CellularRuntimeError::StateUnavailable);
+            }
+            Arc::clone(&state.generation)
+        };
+        generation
+            .policy()
+            .observe_network(observation, observed_handle, interface_name)
+    }
+
+    pub fn network_lost(
+        &self,
+        sequence: u64,
+        observed_handle: NetworkHandle,
+    ) -> Result<CellularAdmissionSnapshot, crate::CellularRuntimeError> {
+        let generation = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| crate::CellularRuntimeError::StateUnavailable)?;
+            state
+                .platform_facts
+                .record_cellular_loss(sequence, observed_handle);
+            if !matches!(
+                state.lifecycle.state(),
+                RuntimeLifecycleState::Starting | RuntimeLifecycleState::Running
+            ) {
+                return Err(crate::CellularRuntimeError::StateUnavailable);
+            }
+            Arc::clone(&state.generation)
+        };
+        let sequence = mish_cellular::ObservationSequence::new(sequence)
+            .ok_or(crate::CellularRuntimeError::StateUnavailable)?;
+        generation.policy().network_lost(sequence, observed_handle)
+    }
+
+    pub fn observe_mesh_vpn(
+        &self,
+        sequence: u64,
+        observation: MeshVpnObservation,
+    ) -> Result<MeshTransportSnapshot, MeshTransportError> {
+        let generation = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| MeshTransportError::StateUnavailable)?;
+            state
+                .platform_facts
+                .record_mesh(sequence, observation.clone());
+            if !matches!(
+                state.lifecycle.state(),
+                RuntimeLifecycleState::Starting | RuntimeLifecycleState::Running
+            ) {
+                return Err(MeshTransportError::StateUnavailable);
+            }
+            Arc::clone(&state.generation)
+        };
+        apply_mesh_observation(&generation, sequence, observation)
+    }
+
     pub fn set_cellular_observer(&self, observer: CellularPolicyObserver) {
         let generation = {
             let Ok(mut state) = self.state.lock() else {
