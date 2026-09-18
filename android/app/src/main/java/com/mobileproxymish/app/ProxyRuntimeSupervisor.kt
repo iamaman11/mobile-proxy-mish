@@ -97,17 +97,11 @@ class ProxyRuntimeSupervisor internal constructor(
         } catch (_: Exception) {
             null
         }
-        if (publicCredential == null) {
-            mutableSnapshot.value =
-                ProxyRuntimeSnapshot.Failed(ProxyServingFailure.EXTERNAL_CREDENTIAL_UNAVAILABLE)
-            return
-        }
-
         val publication = try {
             productRuntime.startProxyRuntime(
-                credentialVersion = publicCredential.version,
-                username = publicCredential.credentials.username,
-                password = publicCredential.credentials.password,
+                credentialVersion = publicCredential?.version,
+                username = publicCredential?.credentials?.username,
+                password = publicCredential?.credentials?.password,
             )
         } catch (_: LinkageError) {
             null
