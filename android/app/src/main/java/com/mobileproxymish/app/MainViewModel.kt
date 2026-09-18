@@ -4,12 +4,12 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.mobileproxymish.app.cellular.CellularBoundaryFailure
-import com.mobileproxymish.app.cellular.CellularRootPolicyFailure
 import com.mobileproxymish.app.cellular.CellularRuntimeSnapshot
 import com.mobileproxymish.ffi.CellularAdmissionReason
 import com.mobileproxymish.ffi.CellularAdmissionState
 import com.mobileproxymish.ffi.ProductReadinessState
 import com.mobileproxymish.ffi.ProxyServingFailure
+import com.mobileproxymish.ffi.RootPolicyFailureView
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -106,30 +106,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             rootPolicyReasonCode(reason.failure)
     }
 
-    private fun rootPolicyReasonCode(reason: CellularRootPolicyFailure): String = when (reason) {
-        CellularRootPolicyFailure.InvalidProductUid -> "cellular.root_policy_invalid_product_uid"
-        CellularRootPolicyFailure.InvalidInterface -> "cellular.root_policy_invalid_interface"
-        CellularRootPolicyFailure.ReservedPolicyCollision ->
+    private fun rootPolicyReasonCode(reason: RootPolicyFailureView): String = when (reason) {
+        RootPolicyFailureView.INVALID_INTERFACE ->
+            "cellular.root_policy_invalid_interface"
+        RootPolicyFailureView.RESERVED_POLICY_COLLISION ->
             "cellular.root_policy_reserved_policy_collision"
-        CellularRootPolicyFailure.RouteTableDiscoveryFailed ->
+        RootPolicyFailureView.OBSERVATION_UNAVAILABLE ->
+            "cellular.root_policy_observation_unavailable"
+        RootPolicyFailureView.OBSERVATION_INCOMPLETE ->
+            "cellular.root_policy_observation_incomplete"
+        RootPolicyFailureView.STRUCTURAL_MISMATCH ->
+            "cellular.root_policy_structural_mismatch"
+        RootPolicyFailureView.ROUTE_TABLE_DISCOVERY_FAILED ->
             "cellular.root_policy_route_table_discovery_failed"
-        CellularRootPolicyFailure.RuleMutationFailed ->
-            "cellular.root_policy_rule_mutation_failed"
-        CellularRootPolicyFailure.VerificationFailed ->
-            "cellular.root_policy_verification_failed"
-        CellularRootPolicyFailure.MangleChainCreationFailed ->
-            "cellular.root_policy_mangle_chain_creation_failed"
-        CellularRootPolicyFailure.OwnerNewMarkRuleFailed ->
-            "cellular.root_policy_owner_new_mark_rule_failed"
-        CellularRootPolicyFailure.OutputJumpCreationFailed ->
-            "cellular.root_policy_output_jump_creation_failed"
-        CellularRootPolicyFailure.MangleVerificationFailed ->
-            "cellular.root_policy_mangle_verification_failed"
-        CellularRootPolicyFailure.LookupRuleCreationFailed ->
+        RootPolicyFailureView.MUTATION_REJECTED ->
+            "cellular.root_policy_mutation_rejected"
+        RootPolicyFailureView.MUTATION_UNCERTAIN ->
+            "cellular.root_policy_mutation_uncertain"
+        RootPolicyFailureView.LOOKUP_RULE_CREATION_FAILED ->
             "cellular.root_policy_lookup_rule_creation_failed"
-        CellularRootPolicyFailure.RouteLookupVerificationFailed ->
+        RootPolicyFailureView.ROUTE_LOOKUP_VERIFICATION_FAILED ->
             "cellular.root_policy_route_lookup_verification_failed"
-        CellularRootPolicyFailure.ExactCleanupFailed ->
+        RootPolicyFailureView.EXACT_CLEANUP_FAILED ->
             "cellular.root_policy_exact_cleanup_failed"
     }
 
