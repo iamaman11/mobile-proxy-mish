@@ -62,13 +62,16 @@ def main() -> None:
         'echo "control_sha=$GITHUB_SHA"',
         "actions: read",
         "Exercise orchestration and installer contracts",
+        ".\\lab\\windows\\test-device-candidate-store.ps1",
         ".\\lab\\windows\\test-device-candidate.ps1",
         "Install -> verify installed exact bytes",
         "Download exact completed hosted candidate",
+        "Materialize exact hosted candidate in canonical Windows store",
+        "DEVICE_CANDIDATE_STORE_ROOT: C:\\\\mish-lab\\\\runner\\\\.state\\\\device-candidate\\\\versions",
         "Install exact signed candidate without rebuilding",
         "Verify installed APK bytes and signing identity",
         "verify-installed-candidate.ps1",
-        "mish-device-install-verification-v1.json",
+        "installed-verification-v2.json",
         'ref: ${{ needs.resolve.outputs.control_sha }}',
         "Launch -> canonical diagnostic -> STOP",
         "Explicitly restart app and wait for bounded stable state",
@@ -139,15 +142,41 @@ def main() -> None:
         if (ROOT / obsolete_path).exists():
             raise SystemExit(f"device cycle contract: obsolete path must not exist: {obsolete_path}")
 
+    materializer = "lab/windows/materialize-device-candidate.ps1"
+    for required in (
+        "C:\\mish-lab\\runner\\.state\\device-candidate\\versions",
+        "mish.device-candidate-local/v1",
+        "version_root",
+        "hosted_directory",
+        "signed_directory",
+        "receipts_directory",
+        "provenance.json",
+        "STORE_DIGEST_CONFLICT",
+    ):
+        require(materializer, required, "canonical durable candidate store drifted")
+    for forbidden in ("latest", "current"):
+        forbid_regex(materializer, rf"Join-Path\s+\$store\s+['\"]{forbidden}['\"]", "mutable candidate alias is forbidden")
+
+    installer = "lab/windows/install-device-candidate.ps1"
+    for required in (
+        "mish.device-candidate-install/v2",
+        "hosted_product_apk_sha256",
+        "lab_signed_product_apk_sha256",
+        "SignedOutputDirectory",
+    ):
+        require(installer, required, "hosted/LAB-signed identity split drifted")
+
     verifier = "lab/windows/verify-installed-candidate.ps1"
     for required in (
-        "mish.device-install-verification/v1",
+        "mish.device-install-verification/v2",
         "'shell', 'pm', 'path'",
         "@('pull', $basePaths[0], $pulledApk)",
         "Get-FileHash -Algorithm SHA256",
         "INSTALLED_APK_DIGEST_MISMATCH",
         "INSTALLED_APK_CERT_MISMATCH",
-        "exact_bytes_verified = $true",
+        "hosted_to_lab_signed_lineage_verified = $true",
+        "installed_matches_lab_signed_candidate = $true",
+        "exact_installed_bytes_verified = $true",
     ):
         require(verifier, required, "installed exact-byte verification drifted")
 

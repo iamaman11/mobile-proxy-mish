@@ -51,6 +51,60 @@ The artifact contains the debug PRODUCT APK, AndroidTest APK and `candidate.json
 
 Expired, superseded or mismatched artifacts fail closed; never silently substitute bytes from another commit.
 
+### Canonical Windows candidate version store
+
+The self-hosted Windows LAB uses one durable location for downloaded/installed development candidate versions:
+
+```text
+C:\mish-lab\runner\.state\device-candidate\versions\<SOURCE_SHA>\<ARTIFACT_ID>\
+  provenance.json
+  hosted\
+    candidate.json
+    mobile-proxy-mish-debug.apk
+    mobile-proxy-mish-debug-androidTest.apk
+  signed\
+    mobile-proxy-mish-debug-lab-signed.apk
+    mobile-proxy-mish-debug-androidTest-lab-signed.apk
+  receipts\
+    install-v2.json
+    installed-verification-v2.json
+```
+
+There is deliberately **no** `latest`, `current`, mutable pointer or source-SHA-only alias. A hosted workflow rerun may produce another artifact for the same source SHA, so the durable version coordinate is `SOURCE_SHA + ARTIFACT_ID`; `provenance.json` also records hosted run id, artifact name/digest and hosted APK digests.
+
+`$RUNNER_TEMP` is download/pull scratch space only. It is never a candidate-version authority and is safe to disappear after the job.
+
+The local store is a durable provenance/cache surface, **not a second candidate resolver**. A normal `full` or `install_only` Device Cycle must still resolve an eligible completed Integration Android Preflight run and exact GitHub artifact id/digest first, download that artifact, validate its `candidate.json`, then materialize the exact bytes into the canonical store. An expired/missing GitHub artifact must fail closed; the workflow must never silently install an older local copy.
+
+Candidate identity has three distinct layers:
+
+```text
+hosted source candidate
+  = exact APK bytes emitted by Integration Android Preflight
+  = candidate.json hosted_product_apk_sha256
+
+LAB-signed install candidate
+  = those exact hosted payload bytes signed by the persistent LAB signing identity
+  = install-v2.json lab_signed_product_apk_sha256
+
+installed base.apk
+  = bytes pulled back from DEVICE-1 after adb install
+  = installed-verification-v2.json installed_apk_sha256
+```
+
+The hosted APK SHA-256 and installed APK SHA-256 are normally different because LAB signing changes APK bytes. Exact installation proof is therefore **not** `hosted SHA == installed SHA`. It is the verified lineage:
+
+```text
+resolved GitHub artifact id/digest
+ -> hosted candidate.json + hosted APK digest verified
+ -> LAB signing produces recorded lab_signed_product_apk_sha256 + signing certificate
+ -> adb install
+ -> pulled installed base.apk SHA == lab_signed_product_apk_sha256
+ -> pulled installed certificate == recorded LAB signing certificate
+```
+
+Receipt wording must say `installed_matches_lab_signed_candidate`, never an ambiguous `installed_matches_accepted_candidate`.
+
 ## Protected-main Device Cycle
 
 `.github/workflows/device-cycle.yml` owns development physical execution.
@@ -120,10 +174,12 @@ successful exact hosted artifact already exists
  -> verify hosted run/artifact/digest provenance
  -> checkout exact CONTROL_SHA
  -> verify pinned PowerShell/runtime + DEVICE-1 prerequisites
- -> consume exact candidate when the mode installs
- -> adb install -r when mode requests installation
+ -> download exact hosted artifact into temporary staging
+ -> materialize exact bytes under C:\mish-lab\runner\.state\device-candidate\versions\<SOURCE_SHA>\<ARTIFACT_ID>
+ -> sign the hosted payload with the persistent LAB signing identity
+ -> adb install -r the recorded LAB-signed candidate
  -> read back installed base.apk
- -> installed base.apk SHA-256 == exact signed candidate SHA-256
+ -> installed base.apk SHA-256 == lab_signed_product_apk_sha256
  -> verify installed signing identity
  -> launch when mode requests it
  -> collect generation-consistent current-L8 diagnostics

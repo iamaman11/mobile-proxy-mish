@@ -6,6 +6,7 @@ param(
     [string]$AdbPath = 'C:\mish-lab\tools\android-sdk\platform-tools\adb.exe',
     [string]$AndroidSdkRoot = 'C:\mish-lab\tools\android-sdk',
     [string]$StateRoot = 'C:\mish-lab\runner\.state\device-candidate',
+    [string]$SignedOutputDirectory = '',
     [switch]$VerifyOnly
 )
 
@@ -302,8 +303,15 @@ else {
     ) 'SIGNING_FAILED' 'Persistent LAB device-candidate signing key could not be created.' | Out-Null
 }
 
-$signedProduct = Join-Path $root 'mobile-proxy-mish-debug-lab-signed.apk'
-$signedTest = Join-Path $root 'mobile-proxy-mish-debug-androidTest-lab-signed.apk'
+$signedRoot = if ([string]::IsNullOrWhiteSpace($SignedOutputDirectory)) {
+    $root
+}
+else {
+    [IO.Path]::GetFullPath($SignedOutputDirectory)
+}
+[IO.Directory]::CreateDirectory($signedRoot) | Out-Null
+$signedProduct = Join-Path $signedRoot 'mobile-proxy-mish-debug-lab-signed.apk'
+$signedTest = Join-Path $signedRoot 'mobile-proxy-mish-debug-androidTest-lab-signed.apk'
 foreach ($signed in @($signedProduct, $signedTest)) {
     Remove-Item -Force -LiteralPath $signed -ErrorAction SilentlyContinue
 }
@@ -372,6 +380,7 @@ elseif ($testInstallResult.ExitCode -ne 0 -or $testInstallResult.Text -notmatch 
 }
 
 [pscustomobject]@{
+    schema = 'mish.device-candidate-install/v2'
     result = 'PASS'
     mode = 'install'
     pr_number = $ExpectedPrNumber
@@ -379,10 +388,13 @@ elseif ($testInstallResult.ExitCode -ne 0 -or $testInstallResult.Text -notmatch 
     target_abi = [string]$manifest.target_abi
     application_id = $applicationId
     test_application_id = $testApplicationId
-    original_product_apk_sha256 = $productSha
-    signed_product_apk_sha256 = $signedProductSha
-    signed_android_test_apk_sha256 = $signedTestSha
+    hosted_product_apk_sha256 = $productSha
+    hosted_android_test_apk_sha256 = $testSha
+    lab_signed_product_apk_sha256 = $signedProductSha
+    lab_signed_android_test_apk_sha256 = $signedTestSha
     lab_signing_certificate_sha256 = $certSha
+    candidate_directory = $root
+    signed_output_directory = $signedRoot
     signing_state_root = $state
     installed = $true
     test_harness_installed = $true

@@ -5,8 +5,10 @@ on:
     paths:
       - '.github/workflows/device-cycle.yml'
       - '.github/workflows/integration-android-preflight.yml'
+      - 'lab/windows/materialize-device-candidate.ps1'
       - 'lab/windows/install-device-candidate.ps1'
       - 'lab/windows/verify-installed-candidate.ps1'
+      - 'lab/windows/test-device-candidate-store.ps1'
       - 'lab/windows/test-device-candidate.ps1'
       - 'lab/windows/start-device-app.ps1'
       - 'lab/windows/collect-device-diagnostic.ps1'
@@ -38,6 +40,7 @@ env:
   ADB_EXE: C:\\mish-lab\\tools\\android-sdk\\platform-tools\\adb.exe
   ANDROID_SDK_ROOT: C:\\mish-lab\\tools\\android-sdk
   DEVICE_CYCLE_PWSH_VERSION: '7.6.6'
+  DEVICE_CANDIDATE_STORE_ROOT: C:\\mish-lab\\runner\\.state\\device-candidate\\versions
 
 jobs:
   contract:
@@ -55,6 +58,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          .\lab\windows\test-device-candidate-store.ps1
           .\lab\windows\test-device-candidate.ps1
           .\lab\windows\test-device-cycle.ps1
           .\lab\windows\test-recovery-lifecycle-probe-contract.ps1
@@ -358,29 +362,55 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           artifact-ids: ${{ needs.resolve.outputs.artifact_id }}
-          path: ${{ runner.temp }}\\mish-device-candidate
+          path: ${{ runner.temp }}\\mish-device-candidate-download
           github-token: ${{ github.token }}
           repository: iamaman11/mobile-proxy-mish
           run-id: ${{ needs.resolve.outputs.hosted_run_id }}
           merge-multiple: false
 
+      - name: Materialize exact hosted candidate in canonical Windows store
+        id: candidate_store
+        shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $downloadedCandidate = Join-Path "$env:RUNNER_TEMP\\mish-device-candidate-download" '${{ needs.resolve.outputs.artifact_name }}'
+          $projectionJson = .\\lab\\windows\\materialize-device-candidate.ps1 `
+            -CandidateDirectory $downloadedCandidate `
+            -ExpectedPrNumber '${{ needs.resolve.outputs.pr_number }}' `
+            -ExpectedSourceSha '${{ needs.resolve.outputs.source_sha }}' `
+            -ArtifactId '${{ needs.resolve.outputs.artifact_id }}' `
+            -ArtifactName '${{ needs.resolve.outputs.artifact_name }}' `
+            -ArtifactDigest '${{ needs.resolve.outputs.artifact_digest }}' `
+            -HostedRunId '${{ needs.resolve.outputs.hosted_run_id }}' `
+            -StoreRoot $env:DEVICE_CANDIDATE_STORE_ROOT
+          $projection = $projectionJson | ConvertFrom-Json
+          "version_root=$($projection.version_root)" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_OUTPUT
+          "hosted_directory=$($projection.hosted_directory)" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_OUTPUT
+          "signed_directory=$($projection.signed_directory)" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_OUTPUT
+          "receipts_directory=$($projection.receipts_directory)" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_OUTPUT
+          "provenance_path=$($projection.provenance_path)" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_OUTPUT
+          Write-Host "MISH_DEVICE_CANDIDATE_VERSION_ROOT=$($projection.version_root)"
+
       - name: Install exact signed candidate without rebuilding
         shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
         run: |
           $ErrorActionPreference = 'Stop'
-          $receiptPath = "$env:RUNNER_TEMP\\mish-device-candidate-install.json"
+          $candidateDirectory = '${{ steps.candidate_store.outputs.hosted_directory }}'
+          $signedDirectory = '${{ steps.candidate_store.outputs.signed_directory }}'
+          $receiptsDirectory = '${{ steps.candidate_store.outputs.receipts_directory }}'
+          $receiptPath = Join-Path $receiptsDirectory 'install-v2.json'
           try {
-            $candidateDirectory = Join-Path "$env:RUNNER_TEMP\\mish-device-candidate" '${{ needs.resolve.outputs.artifact_name }}'
             $manifestPath = Join-Path $candidateDirectory 'candidate.json'
             if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
-              throw 'MISH_DEVICE_CYCLE_FAILURE|DOWNLOAD_LAYOUT_MISMATCH|Resolved artifact directory does not contain candidate.json.'
+              throw 'MISH_DEVICE_CYCLE_FAILURE|CANONICAL_STORE_LAYOUT_MISMATCH|Canonical hosted directory does not contain candidate.json.'
             }
             $receipt = & '.\\lab\\windows\\install-device-candidate.ps1' `
               -CandidateDirectory $candidateDirectory `
               -ExpectedPrNumber '${{ needs.resolve.outputs.pr_number }}' `
               -ExpectedSourceSha '${{ needs.resolve.outputs.source_sha }}' `
               -AdbPath $env:ADB_EXE `
-              -AndroidSdkRoot $env:ANDROID_SDK_ROOT
+              -AndroidSdkRoot $env:ANDROID_SDK_ROOT `
+              -SignedOutputDirectory $signedDirectory
             $receipt | Set-Content -Encoding UTF8 -LiteralPath $receiptPath
           }
           catch {
@@ -406,10 +436,10 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           .\\lab\\windows\\verify-installed-candidate.ps1 `
-            -InstallReceiptPath "$env:RUNNER_TEMP\\mish-device-candidate-install.json" `
+            -InstallReceiptPath (Join-Path '${{ steps.candidate_store.outputs.receipts_directory }}' 'install-v2.json') `
             -AdbPath $env:ADB_EXE `
             -AndroidSdkRoot $env:ANDROID_SDK_ROOT `
-            -ReceiptPath "$env:RUNNER_TEMP\\mish-device-install-verification-v1.json" | Out-Host
+            -ReceiptPath (Join-Path '${{ steps.candidate_store.outputs.receipts_directory }}' 'installed-verification-v2.json') | Out-Host
 
       - name: Record in-run install identity
         id: identity
@@ -423,8 +453,9 @@ jobs:
         with:
           name: mish-device-install-${{ needs.resolve.outputs.pr_number }}-${{ needs.resolve.outputs.source_sha }}
           path: |
-            ${{ runner.temp }}\\mish-device-candidate-install.json
-            ${{ runner.temp }}\\mish-device-install-verification-v1.json
+            ${{ steps.candidate_store.outputs.provenance_path }}
+            ${{ steps.candidate_store.outputs.receipts_directory }}\\install-v2.json
+            ${{ steps.candidate_store.outputs.receipts_directory }}\\installed-verification-v2.json
           if-no-files-found: warn
           retention-days: 7
 

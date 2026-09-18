@@ -159,6 +159,20 @@ def main() -> None:
     for required in ("libmish_android_ffi.so", "libsingbox.so"):
         require(product_verifier, required, "candidate verifier must enforce the native-only APK contract")
 
+    materializer = "lab/windows/materialize-device-candidate.ps1"
+    for required in (
+        "C:\\mish-lab\\runner\\.state\\device-candidate\\versions",
+        "mish.device-candidate-local/v1",
+        "artifact_id",
+        "artifact_digest",
+        "hosted_product_apk_sha256",
+        "version_root",
+        "hosted_directory",
+        "signed_directory",
+        "receipts_directory",
+    ):
+        require(materializer, required, "canonical Windows candidate-store contract drifted")
+
     installer = "lab/windows/install-device-candidate.ps1"
     for required in (
         "C:\\mish-lab\\runner\\.state\\device-candidate",
@@ -175,8 +189,11 @@ def main() -> None:
         "$testInstallResult = Invoke-AdbInstallBounded -Adb $adb -ApkPath $signedTest -TestOnly -TimeoutSeconds 90",
         "TEST_HARNESS_SIGNATURE_MIGRATION_REQUIRED",
         "test_harness_installed = $true",
-        "signed_product_apk_sha256",
-        "signed_android_test_apk_sha256",
+        "mish.device-candidate-install/v2",
+        "hosted_product_apk_sha256",
+        "hosted_android_test_apk_sha256",
+        "lab_signed_product_apk_sha256",
+        "lab_signed_android_test_apk_sha256",
         "lab_signing_certificate_sha256",
     ):
         require(installer, required, "DEVICE-1 installer contract drifted")
@@ -184,13 +201,15 @@ def main() -> None:
 
     verifier = "lab/windows/verify-installed-candidate.ps1"
     for required in (
-        "mish.device-install-verification/v1",
+        "mish.device-install-verification/v2",
         "'shell', 'pm', 'path'",
         "@('pull', $basePaths[0], $pulledApk)",
         "Get-FileHash -Algorithm SHA256",
         "INSTALLED_APK_DIGEST_MISMATCH",
         "INSTALLED_APK_CERT_MISMATCH",
-        "exact_bytes_verified = $true",
+        "hosted_to_lab_signed_lineage_verified = $true",
+        "installed_matches_lab_signed_candidate = $true",
+        "exact_installed_bytes_verified = $true",
     ):
         require(verifier, required, "post-install exact-byte verification contract drifted")
 
@@ -204,6 +223,8 @@ def main() -> None:
         "candidate artifact did not originate from Integration Android Preflight",
         "candidate build is not a completed successful PR preflight",
         'ref: ${{ needs.resolve.outputs.control_sha }}',
+        "Materialize exact hosted candidate in canonical Windows store",
+        "DEVICE_CANDIDATE_STORE_ROOT: C:\\\\mish-lab\\\\runner\\\\.state\\\\device-candidate\\\\versions",
         "Install exact signed candidate without rebuilding",
         "Verify installed APK bytes and signing identity",
         "Automatic start after build/main: **NO**",
@@ -231,6 +252,10 @@ def main() -> None:
         "Android 11 / API 30",
         "Android 23 and Android 26 are not supported PRODUCT compatibility floors",
         "The Windows LAB is a consumer, not a builder",
+        "C:\\mish-lab\\runner\\.state\\device-candidate\\versions",
+        "hosted source candidate",
+        "LAB-signed install candidate",
+        "installed base.apk",
         "never silently substitute bytes from another commit",
         "PRODUCT_SHA",
         "CONTROL_SHA",

@@ -3,12 +3,12 @@ param(
     [Parameter(Mandatory)][string] $InstallReceiptPath,
     [string] $AdbPath = 'C:\mish-lab\tools\android-sdk\platform-tools\adb.exe',
     [string] $AndroidSdkRoot = 'C:\mish-lab\tools\android-sdk',
-    [string] $ReceiptPath = (Join-Path $env:TEMP 'mish-device-install-verification-v1.json')
+    [string] $ReceiptPath = (Join-Path $env:TEMP 'mish-device-install-verification-v2.json')
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$schema = 'mish.device-install-verification/v1'
+$schema = 'mish.device-install-verification/v2'
 
 function Stop-Verification {
     param([Parameter(Mandatory)][string] $Category, [Parameter(Mandatory)][string] $Message)
@@ -49,18 +49,24 @@ try {
 catch {
     Stop-Verification 'INSTALL_RECEIPT_INVALID' 'Install receipt is not valid JSON.'
 }
-if ([string]$install.result -cne 'PASS' -or -not [bool]$install.installed) {
-    Stop-Verification 'INSTALL_NOT_CONFIRMED' 'Install receipt does not confirm a successful replacement install.'
+if ([string]$install.schema -cne 'mish.device-candidate-install/v2' -or
+    [string]$install.result -cne 'PASS' -or -not [bool]$install.installed) {
+    Stop-Verification 'INSTALL_NOT_CONFIRMED' 'Install receipt does not confirm a v2 successful replacement install.'
 }
 
 $applicationId = [string]$install.application_id
-$expectedSha = [string]$install.signed_product_apk_sha256
+$sourceSha = [string]$install.source_sha
+$hostedSha = [string]$install.hosted_product_apk_sha256
+$expectedSha = [string]$install.lab_signed_product_apk_sha256
 $expectedCert = [string]$install.lab_signing_certificate_sha256
 if ($applicationId -notmatch '^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$') {
     Stop-Verification 'INSTALL_RECEIPT_INVALID' 'Application id is invalid.'
 }
-if ($expectedSha -notmatch '^[0-9a-f]{64}$' -or $expectedCert -notmatch '^[0-9a-f]{64}$') {
-    Stop-Verification 'INSTALL_RECEIPT_INVALID' 'Expected APK or signing digest is invalid.'
+if ($sourceSha -notmatch '^[0-9a-f]{40}$' -or
+    $hostedSha -notmatch '^[0-9a-f]{64}$' -or
+    $expectedSha -notmatch '^[0-9a-f]{64}$' -or
+    $expectedCert -notmatch '^[0-9a-f]{64}$') {
+    Stop-Verification 'INSTALL_RECEIPT_INVALID' 'Source, hosted APK, LAB-signed APK or signing digest is invalid.'
 }
 
 $adb = Resolve-Executable $AdbPath
@@ -110,10 +116,15 @@ try {
     $receipt = [ordered]@{
         schema = $schema
         result = 'PASS'
+        source_sha = $sourceSha
         application_id = $applicationId
+        hosted_product_apk_sha256 = $hostedSha
+        lab_signed_product_apk_sha256 = $expectedSha
         installed_apk_sha256 = $installedSha
         signing_certificate_sha256 = $installedCert
-        exact_bytes_verified = $true
+        hosted_to_lab_signed_lineage_verified = $true
+        installed_matches_lab_signed_candidate = $true
+        exact_installed_bytes_verified = $true
     }
     $fullReceiptPath = [IO.Path]::GetFullPath($ReceiptPath)
     $parent = Split-Path -Parent $fullReceiptPath
