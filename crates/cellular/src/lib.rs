@@ -58,6 +58,15 @@ impl CellularNetworkAuthority {
     pub const fn network_handle(self) -> NetworkHandle {
         self.network
     }
+
+    /// Returns the owner observation sequence captured with this authority.
+    ///
+    /// This is an observability identity only. Currentness still belongs to
+    /// `CellularEgress::validate_network_authority`; consumers must not treat the
+    /// sequence as an independent admission decision.
+    pub const fn observation_sequence(self) -> ObservationSequence {
+        self.sequence
+    }
 }
 
 /// Fail-closed authority issuance/currentness errors owned by Cellular Egress.
