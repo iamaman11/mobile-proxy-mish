@@ -376,7 +376,14 @@ impl ProductRuntimeCoordinator {
                     state.lifecycle.start_submission_failed();
                     return Err(RuntimeExecutionError::StateUnavailable);
                 }
-                let generation = self.build_generation(state.lifecycle.generation())?;
+                let generation = match self.build_generation(state.lifecycle.generation()) {
+                    Ok(generation) => generation,
+                    Err(error) => {
+                        state.lifecycle.start_submission_failed();
+                        state.lifecycle.mark_stopped_generation_dirty();
+                        return Err(error);
+                    }
+                };
                 state.generation = Arc::clone(&generation);
                 Some((generation, state.observers.clone()))
             } else {
