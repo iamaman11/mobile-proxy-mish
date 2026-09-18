@@ -332,7 +332,7 @@ impl ProductRuntimeCoordinator {
 
         let (action, expected_generation, rebound) = {
             let mut state = self.state_mut()?;
-            if state.closed {
+            if state.closed || state.active_platform_mutation.is_some() {
                 return Err(RuntimeExecutionError::StateUnavailable);
             }
 
@@ -381,23 +381,56 @@ impl ProductRuntimeCoordinator {
         Ok(action)
     }
 
-    /// Commits one already-completed platform credential mutation into runtime identity.
+    /// Begins one stopped-only Android platform mutation transaction.
     ///
-    /// Kotlin may mutate Android Keystore/opaque storage only while STOPPED. It cannot choose the
-    /// next generation: this owner validates the lifecycle state, advances identity and replaces
-    /// the native generation atomically.
-    pub fn advance_stopped_generation_after_platform_mutation(
+    /// While the lease is active, explicit runtime start fails closed. This closes the previous
+    /// snapshot(STOPPED) -> platform mutation -> generation advance TOCTOU window without moving
+    /// Android Keystore/storage mechanics into Rust.
+    pub fn begin_stopped_platform_mutation(
         &self,
+    ) -> Result<Option<u64>, RuntimeExecutionError> {
+        let mut state = self.state_mut()?;
+        if state.closed
+            || state.active_platform_mutation.is_some()
+            || !state.lifecycle.can_mutate_stopped_generation()
+        {
+            return Ok(None);
+        }
+        let Some(next) = state.platform_mutation_epoch.checked_add(1) else {
+            state.lifecycle.mark_stopped_generation_dirty();
+            return Ok(None);
+        };
+        state.platform_mutation_epoch = next;
+        state.active_platform_mutation = Some(next);
+        Ok(Some(next))
+    }
+
+    /// Completes one exact stopped-only platform mutation lease.
+    ///
+    /// A failed/uncertain Android effect marks the stopped generation dirty. A successful effect
+    /// advances generation identity and installs a fresh native generation under this same stable
+    /// process handle.
+    pub fn complete_stopped_platform_mutation(
+        &self,
+        lease: u64,
+        succeeded: bool,
     ) -> Result<bool, RuntimeExecutionError> {
-        let (generation, observers) = {
+        let rebound = {
             let mut state = self.state_mut()?;
-            if state.closed || !state.lifecycle.can_mutate_stopped_generation() {
+            if state.closed || state.active_platform_mutation != Some(lease) {
+                return Ok(false);
+            }
+            state.active_platform_mutation = None;
+
+            if !succeeded || !state.lifecycle.can_mutate_stopped_generation() {
+                state.lifecycle.mark_stopped_generation_dirty();
                 return Ok(false);
             }
             if !state.lifecycle.advance_stopped_generation() {
                 state.lifecycle.mark_stopped_generation_dirty();
                 return Ok(false);
             }
+
             let generation = match self.build_generation(state.lifecycle.generation()) {
                 Ok(generation) => generation,
                 Err(_) => {
@@ -408,7 +441,7 @@ impl ProductRuntimeCoordinator {
             state.generation = Arc::clone(&generation);
             (generation, state.observers.clone())
         };
-        bind_observers(&generation, observers);
+        bind_observers(&rebound.0, rebound.1);
         Ok(true)
     }
 
