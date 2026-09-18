@@ -65,6 +65,80 @@ internal class CellularInterfaceHints {
     }
 }
 
+internal data class CellularReconcileDiagnostic(
+    val requested: Long,
+    val executed: Long,
+    val coalesced: Long,
+    val pending: Boolean,
+    val drainScheduled: Boolean,
+)
+
+internal class LatestCellularReconcileQueue<T> {
+    private var latest: T? = null
+    private var drainScheduled = false
+    private var requested = 0L
+    private var executed = 0L
+    private var coalesced = 0L
+
+    /**
+     * Publishes only the newest requested owner generation. Returns true only when the caller
+     * must schedule the single drain task.
+     */
+    @Synchronized
+    fun offer(value: T): Boolean {
+        requested += 1
+        if (latest != null) coalesced += 1
+        latest = value
+        if (drainScheduled) return false
+        drainScheduled = true
+        return true
+    }
+
+    @Synchronized
+    fun takeLatest(): T? {
+        val value = latest
+        latest = null
+        return value
+    }
+
+    /**
+     * Completes one drain task. If a newer request arrived while it ran, atomically reserves
+     * exactly one successor drain task.
+     */
+    @Synchronized
+    fun finishDrain(): Boolean {
+        drainScheduled = false
+        if (latest == null) return false
+        drainScheduled = true
+        return true
+    }
+
+    @Synchronized
+    fun recordExecuted() {
+        executed += 1
+    }
+
+    @Synchronized
+    fun cancelPending() {
+        latest = null
+    }
+
+    @Synchronized
+    fun diagnostic(): CellularReconcileDiagnostic = CellularReconcileDiagnostic(
+        requested = requested,
+        executed = executed,
+        coalesced = coalesced,
+        pending = latest != null,
+        drainScheduled = drainScheduled,
+    )
+}
+
+private data class CellularPolicyReconcileRequest(
+    val controller: CellularController,
+    val admission: CellularAdmissionView,
+    val interfaceName: String?,
+)
+
 internal fun sameCellularOwnerGeneration(
     expected: CellularAdmissionView,
     current: CellularAdmissionView,
@@ -115,6 +189,7 @@ class CellularRuntimeBridge(
     }
     private val rootRecoveryPending = AtomicBoolean(false)
     private val rootRecoveryBackoff = RootAuthorityRecoveryBackoff()
+    private val latestReconcile = LatestCellularReconcileQueue<CellularPolicyReconcileRequest>()
 
     val snapshot: StateFlow<CellularRuntimeSnapshot>
         get() = mutableSnapshot.asStateFlow()
@@ -222,17 +297,44 @@ class CellularRuntimeBridge(
             interfaceHints.observed(admittedHandle, interfaceName)
         }
 
-        val capturedInterface = interfaceName
-        submitPolicyWork {
-            if (!closed.get()) {
+        enqueueLatestReconcile(
+            CellularPolicyReconcileRequest(
+                controller = activeController,
+                admission = admission,
+                interfaceName = interfaceName,
+            ),
+        )
+    }
+
+    private fun enqueueLatestReconcile(request: CellularPolicyReconcileRequest) {
+        if (closed.get()) return
+        if (!latestReconcile.offer(request)) return
+        submitPolicyWork(::drainLatestReconcile)
+    }
+
+    private fun drainLatestReconcile() {
+        val request = latestReconcile.takeLatest()
+        try {
+            if (request != null && !closed.get()) {
                 reconcileOwnerGeneration(
-                    activeController = activeController,
-                    admission = admission,
-                    interfaceName = capturedInterface,
+                    activeController = request.controller,
+                    admission = request.admission,
+                    interfaceName = request.interfaceName,
                 )
+                latestReconcile.recordExecuted()
+            }
+        } finally {
+            val scheduleAgain = latestReconcile.finishDrain()
+            if (closed.get()) {
+                latestReconcile.cancelPending()
+            } else if (scheduleAgain) {
+                submitPolicyWork(::drainLatestReconcile)
             }
         }
     }
+
+    internal fun reconcileDiagnosticObservation(): CellularReconcileDiagnostic =
+        latestReconcile.diagnostic()
 
     private fun reconcileOwnerGeneration(
         activeController: CellularController,
@@ -555,6 +657,9 @@ class CellularRuntimeBridge(
         rootRecoveryScheduler.shutdownNow()
         runCatching { controller?.closeRootPolicyGate() }
         observer.close()
+        // No stale callback backlog is allowed to sit in front of exact teardown. At most the
+        // currently executing policy effect may complete before the cleanup Callable.
+        latestReconcile.cancelPending()
         val cleanup = try {
             // The lambda returns the cleanup fact. Use Callable explicitly: the Runnable overload
             // returns a Future whose value is always null, which would turn a successful exact
