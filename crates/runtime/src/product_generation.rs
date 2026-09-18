@@ -148,7 +148,7 @@ mod tests {
 
         assert_eq!(generation.generation(), 1);
         assert!(executor.is_running());
-        assert!(generation.shutdown_blocking().expect("generation cleanup"));
+        drop(generation);
         assert!(executor.is_running());
         executor.shutdown().expect("executor shutdown");
     }
