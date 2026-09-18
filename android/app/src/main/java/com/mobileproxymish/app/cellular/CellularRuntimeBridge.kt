@@ -77,7 +77,7 @@ internal data class CellularRootPolicyReconcileDiagnostic(
  *
  * Rust owns Cellular admission/currentness, root-policy transaction/recovery and generation
  * coalescing. Android only observes ConnectivityManager, resolves LinkProperties for the exact
- * callback network handle when needed, performs the U4 TLS effect, and projects native facts.
+ * callback network handle when needed, forwards bounded native operations, and projects native facts.
  */
 class CellularRuntimeBridge(
     context: Context,
@@ -157,14 +157,14 @@ class CellularRuntimeBridge(
     }
 
     /**
-     * One synchronous bounded public-egress observation. Rust owns endpoint, generation/currentness,
-     * owner-bound DNS, deadline and final IP parsing; Android executes only the TLS/socket effect.
+     * One synchronous bounded public-egress observation. Rust/Tokio owns owner-bound DNS,
+     * TCP/TLS/HTTPS, deadline/currentness and final IP parsing; Android receives only the result.
      */
     internal fun observePublicEgressIp(
         timeoutMs: Long = PUBLIC_IP_OBSERVATION_TIMEOUT_MS,
     ): PublicIpObservationView {
         check(!closed.get()) { "cellular runtime is closed" }
-        return PublicIpProbeEffect(productRuntime).observe(timeoutMs)
+        return productRuntime.observePublicEgressIp(timeoutMs.toULong())
     }
 
     fun start() {
