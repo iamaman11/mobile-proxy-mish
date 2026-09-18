@@ -597,6 +597,26 @@ impl NativeProductRuntime {
 
 }
 
+fn map_runtime_snapshot(snapshot: ProductRuntimeSnapshot) -> RuntimeLifecycleSnapshotView {
+    RuntimeLifecycleSnapshotView {
+        state: map_lifecycle_state(snapshot.state),
+        generation: snapshot.generation,
+        generation_requires_replacement: snapshot.generation_requires_replacement,
+    }
+}
+
+fn unavailable_proxy_publication() -> ProxyRuntimePublicationView {
+    ProxyRuntimePublicationView {
+        state: ProxyServingState::Failed,
+        failure: Some(ProxyServingFailure::RuntimeStateUnavailable),
+        serving_generation: None,
+        credential_version: None,
+        recovery_pending: false,
+        recovery_attempts_since_success: 0,
+        recovery_next_delay_ms: 0,
+    }
+}
+
 fn map_proxy_publication(publication: ProxyRuntimePublication) -> ProxyRuntimePublicationView {
     ProxyRuntimePublicationView {
         state: match publication.state {
