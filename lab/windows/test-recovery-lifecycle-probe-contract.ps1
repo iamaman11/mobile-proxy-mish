@@ -58,13 +58,15 @@ foreach ($required in @(
     '$postE3Read = Wait-MishDnsLifetimeObservation',
     '$dnsLifetimeEvidence.post_e3_snapshot_attempts = [int]$postE3Read.attempts',
     '$dnsLifetimeEvidence.post_e3_wait_elapsed_ms = [int64]$postE3Read.elapsed_ms',
+    "measurement_status = 'NOT_EVALUATED'",
+    "'POST_INSTRUMENTATION_UNAVAILABLE'",
+    "'OBSERVED'",
     '$dnsLifetimeEvidence.after_e3_before_restart = $postE3Read.observation',
     '$dnsLifetimeEvidence.same_process =',
     "comparison_scope = 'NOT_OBSERVED'",
     "'SAME_PROCESS'",
     "'PROCESS_BOUNDARY'",
     'LAB_DNS_LIFETIME_BASELINE_INVALID',
-    'LAB_DNS_LIFETIME_POST_E3_INVALID',
     'active = [int64]$dns.active',
     'peak_active = [int64]$dns.peak_active',
     'max_native_elapsed_ms = [int64]$dns.max_native_elapsed_ms',
@@ -97,6 +99,9 @@ if ($postE3WaitIndex -lt 0 -or $explicitRestartIndex -lt 0 -or $postE3WaitIndex 
 
 if ($source.Contains('LAB_DNS_LIFETIME_PROCESS_CHANGED')) {
     throw 'A PRODUCT PID change after instrumentation is DNS measurement scope evidence, not a recovery acceptance failure.'
+}
+if ($source.Contains("Stop-MishRecovery 'LAB_DNS_LIFETIME_POST_E3_INVALID'")) {
+    throw 'Unavailable post-instrumentation DNS measurement must not block PRODUCT recovery acceptance.'
 }
 
 $preDnsIndex = $source.IndexOf('$dnsLifetimeEvidence.before_e3 = $preDnsObservation', [StringComparison]::Ordinal)
