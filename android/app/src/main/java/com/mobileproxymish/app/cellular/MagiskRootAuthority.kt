@@ -12,11 +12,11 @@ package com.mobileproxymish.app.cellular
  * process-generation privilege proof. RPDB/mangle policy remains owned by `CellularRootPolicy`.
  */
 class MagiskRootAuthority private constructor(
-    private val process: RootProcess = SuProcess(),
+    private val transport: RootCommandTransport = SuProcess(),
     private val bootstrap: RootSessionBootstrap = RootSessionBootstrap.None,
 ) {
     constructor() : this(
-        process = SuProcess(),
+        transport = SuProcess(),
         bootstrap = RootSessionBootstrap.currentProcess(),
     )
 
@@ -27,13 +27,13 @@ class MagiskRootAuthority private constructor(
     fun probe(): RootAuthorityStatus {
         terminalStatus?.let { return it }
 
-        val currentGeneration = process.sessionGeneration()
+        val currentGeneration = transport.sessionGeneration()
         if (currentGeneration != null && currentGeneration == readyGeneration) {
             return RootAuthorityStatus.Ready
         }
         readyGeneration = null
 
-        val identity = process.run(listOf("su", "-c", "id -u"))
+        val identity = transport.execute(RootObservation("id -u"))
         if (identity.timedOut) {
             return RootAuthorityStatus.InteractiveGrantRequired.also { terminalStatus = it }
         }
@@ -52,7 +52,7 @@ class MagiskRootAuthority private constructor(
 
         // uid=0 alone is insufficient. The typed policy adapter must be able to inspect a complete
         // RPDB snapshot before it may mutate exact PRODUCT rules.
-        val rules = process.run(listOf("su", "-c", "ip -4 rule show"))
+        val rules = transport.execute(RootObservation("ip -4 rule show"))
         if (
             rules.timedOut ||
             !rules.outputComplete ||
@@ -64,17 +64,17 @@ class MagiskRootAuthority private constructor(
 
         // One process-generation bootstrap may remove only exact stale PRODUCT owner jumps left by
         // a legitimate package UID change. Unknown/malformed policy stays untouched/fail-closed.
-        if (!bootstrap.reconcile(process)) {
+        if (!bootstrap.reconcile(transport)) {
             return RootAuthorityStatus.Incomplete
         }
 
-        readyGeneration = process.sessionGeneration()
+        readyGeneration = transport.sessionGeneration()
         return RootAuthorityStatus.Ready
     }
 
     internal companion object {
-        fun forTesting(process: RootProcess): MagiskRootAuthority = MagiskRootAuthority(
-            process = process,
+        fun forTesting(transport: RootCommandTransport): MagiskRootAuthority = MagiskRootAuthority(
+            transport = transport,
             bootstrap = RootSessionBootstrap.None,
         )
     }

@@ -68,10 +68,10 @@ class CellularRootPolicyTransitionTest {
     private fun policy(process: TransitionProcess): CellularRootPolicy = CellularRootPolicy(
         productUid = UID,
         authority = MagiskRootAuthority.forTesting(process),
-        process = process,
+        transport = process,
     )
 
-    private class TransitionProcess : RootProcess {
+    private class TransitionProcess : RootCommandTransport {
         var ipv4Guard = false
         var ipv6Guard = false
         var ipv4ChainExists = false
@@ -86,8 +86,8 @@ class CellularRootPolicyTransitionTest {
         val commands = mutableListOf<String>()
         private var ipv4AppendAttempts = 0
 
-        override fun run(arguments: List<String>): RootProcessResult {
-            val command = arguments.last()
+        override fun execute(effect: RootEffect): RootCommandResult {
+            val command = effect.command
             commands += command
             return when {
                 command == "id -u" -> ok("0\n")
@@ -146,7 +146,7 @@ class CellularRootPolicyTransitionTest {
             }
         }
 
-        private fun createChain(ipv4: Boolean): RootProcessResult {
+        private fun createChain(ipv4: Boolean): RootCommandResult {
             if (ipv4) {
                 if (ipv4ChainExists) return fail()
                 ipv4ChainExists = true
@@ -157,7 +157,7 @@ class CellularRootPolicyTransitionTest {
             return ok()
         }
 
-        private fun flushChain(ipv4: Boolean): RootProcessResult {
+        private fun flushChain(ipv4: Boolean): RootCommandResult {
             if (ipv4) {
                 if (!ipv4ChainExists || ipv4JumpCount != 0) return fail()
                 ipv4ChainRules.clear()
@@ -168,7 +168,7 @@ class CellularRootPolicyTransitionTest {
             return ok()
         }
 
-        private fun appendIpv4(command: String): RootProcessResult {
+        private fun appendIpv4(command: String): RootCommandResult {
             if (!ipv4ChainExists || ipv4JumpCount != 0) return fail()
             ipv4AppendAttempts += 1
             if (failIpv4AppendAttempt == ipv4AppendAttempts) return fail()
@@ -176,7 +176,7 @@ class CellularRootPolicyTransitionTest {
             return ok()
         }
 
-        private fun appendIpv6(command: String): RootProcessResult {
+        private fun appendIpv6(command: String): RootCommandResult {
             if (!ipv6ChainExists || ipv6JumpCount != 0) return fail()
             ipv6ChainRules += command.removePrefix("ip6tables -t mangle ")
             return ok()
@@ -206,8 +206,8 @@ class CellularRootPolicyTransitionTest {
             ipv6ChainRules.forEach { append(it).append('\n') }
         }
 
-        private fun ok(stdout: String = ""): RootProcessResult = RootProcessResult(0, stdout)
-        private fun fail(stdout: String = ""): RootProcessResult = RootProcessResult(1, stdout)
+        private fun ok(stdout: String = ""): RootCommandResult = RootCommandResult(0, stdout)
+        private fun fail(stdout: String = ""): RootCommandResult = RootCommandResult(1, stdout)
     }
 
     private companion object {

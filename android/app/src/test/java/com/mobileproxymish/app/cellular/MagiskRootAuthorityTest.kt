@@ -8,21 +8,21 @@ import org.junit.Test
 class MagiskRootAuthorityTest {
     @Test
     fun readyRequiresRootAndRpdbRead() {
-        val authority = MagiskRootAuthority.forTesting(
-            FakeProcess(
-                RootProcessResult(0, "0\n"),
-                RootProcessResult(0, "0: from all lookup local\n"),
-            ),
+        val process = FakeProcess(
+            RootCommandResult(0, "0\n"),
+            RootCommandResult(0, "0: from all lookup local\n"),
         )
+        val authority = MagiskRootAuthority.forTesting(process)
 
         assertEquals(RootAuthorityStatus.Ready, authority.probe())
+        assertTrue(process.effects.all { it is RootObservation })
     }
 
     @Test
     fun readyIsCachedForSameRootSessionGeneration() {
         val process = FakeProcess(
-            RootProcessResult(0, "0\n"),
-            RootProcessResult(0, "0: from all lookup local\n"),
+            RootCommandResult(0, "0\n"),
+            RootCommandResult(0, "0: from all lookup local\n"),
         ).apply { generation = 7L }
         val authority = MagiskRootAuthority.forTesting(process)
 
@@ -34,10 +34,10 @@ class MagiskRootAuthorityTest {
     @Test
     fun newRootSessionGenerationRequiresFreshAuthorityProof() {
         val process = FakeProcess(
-            RootProcessResult(0, "0\n"),
-            RootProcessResult(0, "0: from all lookup local\n"),
-            RootProcessResult(0, "0\n"),
-            RootProcessResult(0, "0: from all lookup local\n"),
+            RootCommandResult(0, "0\n"),
+            RootCommandResult(0, "0: from all lookup local\n"),
+            RootCommandResult(0, "0\n"),
+            RootCommandResult(0, "0: from all lookup local\n"),
         ).apply { generation = 7L }
         val authority = MagiskRootAuthority.forTesting(process)
 
@@ -49,7 +49,7 @@ class MagiskRootAuthorityTest {
 
     @Test
     fun deniedIsTerminalForCurrentAppProcess() {
-        val process = FakeProcess(RootProcessResult(1, "denied"))
+        val process = FakeProcess(RootCommandResult(1, "denied"))
         val authority = MagiskRootAuthority.forTesting(process)
 
         assertEquals(RootAuthorityStatus.Denied, authority.probe())
@@ -60,7 +60,7 @@ class MagiskRootAuthorityTest {
     @Test
     fun provenNonZeroDenialIsTerminalEvenWhenOutputWasTruncated() {
         val process = FakeProcess(
-            RootProcessResult(
+            RootCommandResult(
                 exitCode = 1,
                 stdout = "",
                 outputComplete = false,
@@ -75,7 +75,7 @@ class MagiskRootAuthorityTest {
 
     @Test
     fun unansweredInteractiveGrantIsTerminalForCurrentAppProcess() {
-        val process = FakeProcess(RootProcessResult(-1, "", timedOut = true))
+        val process = FakeProcess(RootCommandResult(-1, "", timedOut = true))
         val authority = MagiskRootAuthority.forTesting(process)
 
         assertEquals(RootAuthorityStatus.InteractiveGrantRequired, authority.probe())
@@ -95,7 +95,7 @@ class MagiskRootAuthorityTest {
     @Test
     fun prematureNonZeroSuExitPreservesDenialEvidence() {
         assertEquals(
-            RootProcessResult(
+            RootCommandResult(
                 exitCode = 1,
                 stdout = "permission denied\n",
             ),
@@ -110,7 +110,7 @@ class MagiskRootAuthorityTest {
     @Test
     fun prematureZeroSuExitNeverClaimsCommandCompletion() {
         assertEquals(
-            RootProcessResult(
+            RootCommandResult(
                 exitCode = -1,
                 stdout = "",
                 outputComplete = false,
@@ -126,7 +126,7 @@ class MagiskRootAuthorityTest {
     @Test
     fun incompleteIdentityOutputNeverGrantsRootAuthority() {
         val process = FakeProcess(
-            RootProcessResult(0, "0\n", outputComplete = false),
+            RootCommandResult(0, "0\n", outputComplete = false),
         )
         val authority = MagiskRootAuthority.forTesting(process)
 
@@ -138,8 +138,8 @@ class MagiskRootAuthorityTest {
     fun incompleteRpdbOutputNeverGrantsRootAuthority() {
         val authority = MagiskRootAuthority.forTesting(
             FakeProcess(
-                RootProcessResult(0, "0\n"),
-                RootProcessResult(
+                RootCommandResult(0, "0\n"),
+                RootCommandResult(
                     0,
                     "0: from all lookup local\n",
                     outputComplete = false,
@@ -150,14 +150,17 @@ class MagiskRootAuthorityTest {
         assertEquals(RootAuthorityStatus.Incomplete, authority.probe())
     }
 
-    private class FakeProcess(vararg results: RootProcessResult) : RootProcess {
+    private class FakeProcess(vararg results: RootCommandResult) : RootCommandTransport {
         private val results = ArrayDeque(results.toList())
         var calls = 0
             private set
         var generation: Long? = null
 
-        override fun run(arguments: List<String>): RootProcessResult {
+        val effects = mutableListOf<RootEffect>()
+
+        override fun execute(effect: RootEffect): RootCommandResult {
             calls += 1
+            effects += effect
             return results.removeFirst()
         }
 

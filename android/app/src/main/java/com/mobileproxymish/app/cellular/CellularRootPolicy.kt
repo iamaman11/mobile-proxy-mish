@@ -91,7 +91,7 @@ sealed interface CellularRootPolicyResult {
 class CellularRootPolicy internal constructor(
     private val productUid: Int,
     private val authority: MagiskRootAuthority,
-    private val process: RootProcess,
+    private val transport: RootCommandTransport,
     // A local debug package has a distinct Android UID. It must never claim or clean the
     // release package's global root-policy objects during DEVICE-1 diagnostics.
     private val debugIsolation: Boolean = false,
@@ -101,7 +101,7 @@ class CellularRootPolicy internal constructor(
     internal constructor(productUid: Int, debugIsolation: Boolean) :
         this(productUid, MagiskRootAuthority(), SuProcess(), debugIsolation)
 
-    private val executor = RootPolicyExecutor(process)
+    private val executor = RootPolicyExecutor(transport)
     private val routeInspector = DirectCellularRouteInspector(executor)
     private var activeIdentity: PolicyIdentity? = null
     /** Sanitized teardown stage for lifecycle/E3 evidence; never contains commands or addresses. */

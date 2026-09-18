@@ -29,9 +29,9 @@ class RootPolicySeamsTest {
     @Test
     fun executorRejectsIncompleteAuthoritativeOutput() {
         val executor = RootPolicyExecutor(
-            ScriptedRootProcess(
+            ScriptedRootCommandTransport(
                 mutableMapOf(
-                    "ip -4 rule show" to RootProcessResult(
+                    "ip -4 rule show" to RootCommandResult(
                         exitCode = 0,
                         stdout = "1000: from all lookup 100\n",
                         outputComplete = false,
@@ -47,7 +47,7 @@ class RootPolicySeamsTest {
         val observation = "ip -4 rule show"
         val mutation = "ip -4 rule add pref 9501 fwmark 0x200000/0x200000 unreachable"
         val executor = RootPolicyExecutor(
-            ScriptedRootProcess(
+            ScriptedRootCommandTransport(
                 mutableMapOf(
                     observation to ok("1000: from all lookup 100\n"),
                     mutation to ok(""),
@@ -75,15 +75,15 @@ class RootPolicySeamsTest {
         val absent = "iptables -t mangle -C OUTPUT -j MISH_EGRESS_V1"
         val failedMutation = "iptables -t mangle -D OUTPUT -j MISH_EGRESS_V1"
         val executor = RootPolicyExecutor(
-            ScriptedRootProcess(
+            ScriptedRootCommandTransport(
                 mutableMapOf(
-                    incomplete to RootProcessResult(
+                    incomplete to RootCommandResult(
                         exitCode = 0,
                         stdout = "",
                         outputComplete = false,
                     ),
-                    absent to RootProcessResult(exitCode = 1, stdout = ""),
-                    failedMutation to RootProcessResult(exitCode = 1, stdout = ""),
+                    absent to RootCommandResult(exitCode = 1, stdout = ""),
+                    failedMutation to RootCommandResult(exitCode = 1, stdout = ""),
                 ),
             ),
         )
@@ -106,7 +106,7 @@ class RootPolicySeamsTest {
     fun routeInspectorFailsClosedOnAmbiguityAndVerifiesExactInterface() {
         val ambiguous = DirectCellularRouteInspector(
             RootPolicyExecutor(
-                ScriptedRootProcess(
+                ScriptedRootCommandTransport(
                     mutableMapOf(
                         "ip -4 rule show" to ok("1000: from all lookup 100\n1001: from all lookup 101\n"),
                         "ip -4 route show table 100 default" to ok("default dev rmnet_data0\n"),
@@ -117,7 +117,7 @@ class RootPolicySeamsTest {
         )
         assertNull(ambiguous.discoverValidatedIpv4Table("rmnet_data0", "ip -4 rule show"))
 
-        val process = ScriptedRootProcess(
+        val process = ScriptedRootCommandTransport(
             mutableMapOf(
                 "ip -4 rule show" to ok("1000: from all lookup 100\n"),
                 "ip -4 route show table 100 default" to ok("default via 10.0.0.1 dev rmnet_data0\n"),
@@ -130,12 +130,34 @@ class RootPolicySeamsTest {
         assertFalse(inspector.verifyIpv4Path("rmnet_data1", "0x200000"))
     }
 
-    private class ScriptedRootProcess(
-        private val results: MutableMap<String, RootProcessResult>,
-    ) : RootProcess {
-        override fun run(arguments: List<String>): RootProcessResult {
-            require(arguments.size == 3 && arguments[0] == "su" && arguments[1] == "-c")
-            return results[arguments[2]] ?: RootProcessResult(
+    @Test
+    fun executorUsesTypedObservationAndMutationEffects() {
+        val observation = "ip -4 rule show"
+        val mutation = "ip -4 rule add pref 9501 fwmark 0x200000/0x200000 unreachable"
+        val transport = ScriptedRootCommandTransport(
+            mutableMapOf(
+                observation to ok("1000: from all lookup 100\n"),
+                mutation to ok(""),
+            ),
+        )
+        val executor = RootPolicyExecutor(transport)
+
+        assertEquals(listOf("1000: from all lookup 100"), executor.lines(observation))
+        assertTrue(executor.commandSucceeded(mutation))
+
+        assertEquals(2, transport.effects.size)
+        assertTrue(transport.effects[0] is RootObservation)
+        assertTrue(transport.effects[1] is RootMutation)
+    }
+
+    private class ScriptedRootCommandTransport(
+        private val results: MutableMap<String, RootCommandResult>,
+    ) : RootCommandTransport {
+        val effects = mutableListOf<RootEffect>()
+
+        override fun execute(effect: RootEffect): RootCommandResult {
+            effects += effect
+            return results[effect.command] ?: RootCommandResult(
                 exitCode = 1,
                 stdout = "",
             )
@@ -143,6 +165,6 @@ class RootPolicySeamsTest {
     }
 
     private companion object {
-        fun ok(stdout: String) = RootProcessResult(exitCode = 0, stdout = stdout)
+        fun ok(stdout: String) = RootCommandResult(exitCode = 0, stdout = stdout)
     }
 }

@@ -15,10 +15,10 @@ import com.mobileproxymish.app.BuildConfig
  * collision audit.
  */
 internal fun interface RootSessionBootstrap {
-    fun reconcile(process: RootProcess): Boolean
+    fun reconcile(transport: RootCommandTransport): Boolean
 
     data object None : RootSessionBootstrap {
-        override fun reconcile(process: RootProcess): Boolean = true
+        override fun reconcile(transport: RootCommandTransport): Boolean = true
     }
 
     companion object {
@@ -41,16 +41,16 @@ internal class MishRootSessionBootstrap(
         """^-A OUTPUT -m owner --uid-owner ([1-9][0-9]*) -j ${Regex.escape(mishChain)}$""",
     )
 
-    override fun reconcile(process: RootProcess): Boolean =
-        reconcileFamily(process, "iptables", ipv4 = true) &&
-            reconcileFamily(process, "ip6tables", ipv4 = false)
+    override fun reconcile(transport: RootCommandTransport): Boolean =
+        reconcileFamily(transport, "iptables", ipv4 = true) &&
+            reconcileFamily(transport, "ip6tables", ipv4 = false)
 
     private fun reconcileFamily(
-        process: RootProcess,
+        transport: RootCommandTransport,
         binary: String,
         ipv4: Boolean,
     ): Boolean {
-        val before = readMangle(process, binary) ?: return false
+        val before = readMangle(transport, binary) ?: return false
         val staleUids = before
             .mapNotNull { line -> exactOwnerJump.matchEntire(line)?.groupValues?.get(1)?.toIntOrNull() }
             .filter { it != productUid }
@@ -64,16 +64,17 @@ internal class MishRootSessionBootstrap(
         if (!isExactKnownProductState(before, ipv4)) return true
 
         for (staleUid in staleUids) {
-            val delete = runRoot(
-                process,
-                "$binary -t mangle -D OUTPUT -m owner --uid-owner $staleUid -j $mishChain",
+            val delete = transport.execute(
+                RootMutation(
+                    "$binary -t mangle -D OUTPUT -m owner --uid-owner $staleUid -j $mishChain",
+                ),
             )
             if (delete.timedOut || !delete.outputComplete || delete.exitCode != 0) {
                 return false
             }
         }
 
-        val after = readMangle(process, binary) ?: return false
+        val after = readMangle(transport, binary) ?: return false
         return after.none { line ->
             val uid = exactOwnerJump.matchEntire(line)?.groupValues?.get(1)?.toIntOrNull()
             uid != null && uid != productUid
@@ -128,12 +129,10 @@ internal class MishRootSessionBootstrap(
         else -> emptyList()
     }
 
-    private fun readMangle(process: RootProcess, binary: String): List<String>? {
-        val result = runRoot(process, "$binary -t mangle -S")
+    private fun readMangle(transport: RootCommandTransport, binary: String): List<String>? {
+        val result = transport.execute(RootObservation("$binary -t mangle -S"))
         if (result.timedOut || !result.outputComplete || result.exitCode != 0) return null
         return result.stdout.lineSequence().map(String::trim).filter(String::isNotEmpty).toList()
     }
 
-    private fun runRoot(process: RootProcess, command: String): RootProcessResult =
-        process.run(listOf("su", "-c", command))
 }
