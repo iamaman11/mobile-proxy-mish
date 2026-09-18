@@ -1251,6 +1251,122 @@ mod tests {
     }
 
     #[test]
+    fn reachable_malformed_mark_and_chain_cycle_fail_closed_as_ambiguous() {
+        let allowed = HashSet::new();
+        assert_eq!(
+            audit_mangle_output(
+                &["-A OUTPUT -j MARK --set-xmark not-a-mark".into()],
+                &allowed,
+                RELEASE_MISH_CHAIN,
+                0x20_0000,
+            ),
+            MangleAuditResult::Ambiguous
+        );
+        assert_eq!(
+            audit_mangle_output(
+                &[
+                    "-N FIRST".into(),
+                    "-N SECOND".into(),
+                    "-A OUTPUT -j FIRST".into(),
+                    "-A FIRST -j SECOND".into(),
+                    "-A SECOND -j FIRST".into(),
+                ],
+                &allowed,
+                RELEASE_MISH_CHAIN,
+                0x20_0000,
+            ),
+            MangleAuditResult::Ambiguous
+        );
+    }
+
+    #[test]
+    fn stale_uid_bootstrap_requires_exact_known_product_contract() {
+        let mut contract = release(10123);
+        let snapshot = empty_snapshot();
+        let PolicyIdentityResolution::Selected(_) = contract.resolve_identity(&snapshot) else {
+            panic!("identity");
+        };
+
+        let mut lines = vec![format!("-N {}", contract.chain_name())];
+        lines.extend(contract.ipv4_owned_chain_lines().expect("chain"));
+        lines.push(format!(
+            "-A OUTPUT -m owner --uid-owner 10001 -j {}",
+            contract.chain_name()
+        ));
+
+        assert_eq!(contract.stale_owner_jump_uids(&lines), vec![10001]);
+        assert!(contract.is_exact_known_product_state(&lines, true));
+
+        lines.push(format!("-A INPUT -j {}", contract.chain_name()));
+        assert!(
+            !contract.is_exact_known_product_state(&lines, true),
+            "foreign reference must prevent stale-UID cleanup authority"
+        );
+    }
+
+    #[test]
+    fn fail_closed_verification_requires_exact_guards_and_no_lookup() {
+        let mut contract = release(10123);
+        let initial = empty_snapshot();
+        let PolicyIdentityResolution::Selected(identity) = contract.resolve_identity(&initial)
+        else {
+            panic!("identity");
+        };
+        let mark = identity.mark_hex();
+        let guard = format!(
+            "{}: from all fwmark {}/{} unreachable",
+            identity.guard_priority(),
+            mark,
+            mark
+        );
+        let mut snapshot = RootPolicySnapshot::new(
+            vec![guard.clone()],
+            vec![guard],
+            {
+                let mut lines = vec![format!("-N {}", contract.chain_name())];
+                lines.extend(contract.ipv4_owned_chain_lines().expect("ipv4 chain"));
+                lines.push(contract.output_jump());
+                lines
+            },
+            {
+                let mut lines = vec![format!("-N {}", contract.chain_name())];
+                lines.extend(contract.ipv6_owned_chain_lines().expect("ipv6 chain"));
+                lines.push(contract.output_jump());
+                lines
+            },
+        );
+
+        assert_eq!(contract.verify_fail_closed_base(&snapshot), Ok(()));
+
+        snapshot.ipv4_rules.push(format!(
+            "{}: from all fwmark {}/{} lookup 1052",
+            identity.lookup_priority(),
+            mark,
+            mark
+        ));
+        assert_eq!(
+            contract.verify_fail_closed_base(&snapshot),
+            Err(RootPolicyStructuralFailure::LookupStillPresent)
+        );
+    }
+
+    #[test]
+    fn unsafe_interface_and_table_tokens_never_enter_commands() {
+        assert!(!is_safe_interface_name("rmnet0;reboot"));
+        assert!(!is_safe_interface_name("rmnet data0"));
+        assert!(!is_safe_table_token("100;reboot"));
+        assert!(!is_safe_table_token("bad/table"));
+
+        let mut contract = release(10123);
+        let initial = empty_snapshot();
+        let PolicyIdentityResolution::Selected(_) = contract.resolve_identity(&initial) else {
+            panic!("identity");
+        };
+        assert_eq!(contract.ipv4_lookup_add("100;reboot"), None);
+        assert_eq!(contract.ipv4_lookup_delete("bad/table"), None);
+    }
+
+    #[test]
     fn route_validation_is_exact_and_safe() {
         assert!(route_has_default_on_interface(
             &["default via 10.0.0.1 dev rmnet_data0".into()],
