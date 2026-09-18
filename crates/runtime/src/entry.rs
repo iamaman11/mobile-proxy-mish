@@ -8,6 +8,8 @@ pub use execution::*;
 
 mod tls_client;
 
+mod public_ip_network;
+
 mod root_session;
 
 mod root_policy_effect;
