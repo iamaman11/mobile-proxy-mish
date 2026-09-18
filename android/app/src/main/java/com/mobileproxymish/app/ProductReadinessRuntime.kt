@@ -238,6 +238,11 @@ internal class ProductReadinessRuntime(
             mutableState.value = projectUnknown()
             return
         }
+
+        // Same-binding refresh is bounded stale-while-revalidate: preserve the last terminal
+        // Rust-projected state until this probe completes. Publishing UNKNOWN here would
+        // fail-close Mesh ingress on every healthy periodic refresh. Structural owner changes use
+        // the separate invalidation path above and never receive this grace.
         executeProbe(ticket)
     }
 
