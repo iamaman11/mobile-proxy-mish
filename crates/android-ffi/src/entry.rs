@@ -4,6 +4,9 @@ pub use runtime_boundary::*;
 mod runtime_executor_ffi;
 pub use runtime_executor_ffi::*;
 
+mod product_runtime_ffi;
+pub use product_runtime_ffi::*;
+
 mod credentials_ffi;
 pub use credentials_ffi::*;
 
