@@ -316,7 +316,7 @@ class MishRuntimeController internal constructor(
             )
             val meshRuntime = MeshIngressRuntimeBridge(
                 context = appContext,
-                proxyRuntime = proxyRuntime,
+                productRuntime = productRuntime,
             )
             val readinessRuntime = ProductReadinessRuntime(
                 runtimeGeneration = runtimeGeneration,
