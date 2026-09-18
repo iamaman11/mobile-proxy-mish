@@ -56,4 +56,7 @@ pub use proxy_coordinator::*;
 
 mod product_generation;
 pub use product_generation::*;
+
+mod product_runtime;
+pub use product_runtime::*;
 pub use proxy_runtime::*;
