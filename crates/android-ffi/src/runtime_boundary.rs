@@ -419,7 +419,7 @@ fn map_public_ip_effect_failure(
     }
 }
 
-fn map_public_ip_failure(failure: RuntimePublicIpProbeFailure) -> PublicIpProbeError {
+pub(crate) fn map_public_ip_failure(failure: RuntimePublicIpProbeFailure) -> PublicIpProbeError {
     match failure {
         RuntimePublicIpProbeFailure::NoCurrentCellular => PublicIpProbeError::NoCurrentCellular,
         RuntimePublicIpProbeFailure::RootPolicyUnavailable => {
