@@ -627,33 +627,97 @@ def main() -> None:
     ):
         forbid(diagnostics, mutation, "diagnostics must remain observation-only")
 
-    # Root authority proof and root-shell transport are separate responsibilities.
-    authority = "android/app/src/main/java/com/mobileproxymish/app/cellular/MagiskRootAuthority.kt"
-    transport_path = "android/app/src/main/java/com/mobileproxymish/app/cellular/RootCommandTransport.kt"
-    require(authority, "class MagiskRootAuthority", "Magisk authority proof must remain explicit")
-    forbid(authority, "ProcessBuilder", "Magisk authority must not own root-shell process transport")
-    require(transport_path, "internal interface RootCommandTransport", "root transport boundary must remain explicit")
-    require(transport_path, "internal sealed interface RootEffect", "root callers must use typed effects")
-    require(transport_path, "internal class RootObservation", "read-only root effects must be typed")
-    require(transport_path, "internal class RootMutation", "mutating root effects must be typed")
-    require(transport_path, 'ProcessBuilder("su")', "one persistent su transport must remain explicit")
-    require(transport_path, "sharedSession", "root transport must remain process-wide and generation-aware")
-    for obsolete in (
-        "interface RootProcess",
-        "fun run(arguments: List<String>)",
-        'listOf("su", "-c"',
+    # U5 root ownership is one-way: policy semantics live in mish-cellular, while the one
+    # persistent root session + policy execution/recovery live under the process Tokio owner.
+    root_session = "crates/runtime/src/root_session.rs"
+    root_effect = "crates/runtime/src/root_policy_effect.rs"
+    root_runtime = "crates/runtime/src/root_policy_runtime.rs"
+    cellular_policy = "crates/runtime/src/cellular_policy_coordinator.rs"
+    product_ffi = "crates/android-ffi/src/product_runtime_ffi.rs"
+
+    for required in (
+        "struct RootSessionManager",
+        "RootCommandKind",
+        "RootCommand::observation",
+        "RootCommand::mutation",
+        'arg("exec su 2>&1")',
+        "COMMAND_TIMEOUT",
+        "MAX_OUTPUT_BYTES",
     ):
-        forbid(transport_path, obsolete, "shell-shaped root transport API must stay removed")
-    for typed_client in (
-        authority,
-        "android/app/src/main/java/com/mobileproxymish/app/cellular/RootPolicyExecutor.kt",
-        "android/app/src/main/java/com/mobileproxymish/app/cellular/RootSessionBootstrap.kt",
+        require_product(root_session, required, "Rust runtime must own one typed persistent root session")
+    for forbidden in ("std::thread", "ProcessBuilder", 'listOf("su", "-c"'):
+        forbid_product(root_session, forbidden, "native root transport must not regain Android or per-command shell machinery")
+
+    require_product(
+        root_effect,
+        "if result.timed_out || !result.output_complete",
+        "read-only root observations must retain one bounded fresh retry path",
+    )
+    require_product(
+        root_effect,
+        "RootPolicyEffectFailure::MutationUncertain",
+        "uncertain root mutation must stay distinct from authoritative rejection",
+    )
+    forbid_product(
+        root_effect,
+        "sleep(",
+        "root-policy effect executor must not own recovery timing",
+    )
+
+    for required in (
+        "RootPolicyRuntime",
+        "MutationUncertain",
+        "cleanup_exact",
+        "probe_authority",
+        "remove_all_output_jumps",
+    ):
+        require_product(root_runtime, required, "Rust root-policy runtime must own transaction semantics")
+    for required in (
+        "CellularPolicyCoordinator",
+        "await_root_policy_quiesced_async",
+        "schedule_recovery",
+        "RECOVERY_DELAYS_MS",
+        "CellularPolicyPublication",
+    ):
+        require_product(cellular_policy, required, "Tokio coordinator must own root-policy reconciliation and recovery")
+
+    for required in (
+        "pub struct NativeProductRuntime",
+        "CellularPolicyCoordinator::new",
+        "RuntimeExecutor::new",
+        "observe_cellular_policy",
+    ):
+        require_product(product_ffi, required, "Android must receive one opaque native PRODUCT generation handle")
+
+    for obsolete_path in (
         "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRootPolicy.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/cellular/DirectCellularRouteInspector.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/cellular/MagiskRootAuthority.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/cellular/MangleOutputCollisionAudit.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/cellular/RootAuthorityRecoveryBackoff.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/cellular/RootCommandTransport.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/cellular/RootPolicyExecutor.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/cellular/RootPolicySnapshot.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/cellular/RootSessionBootstrap.kt",
     ):
-        forbid(typed_client, 'listOf("su", "-c"', "typed root clients must not construct su -c invocations")
-    executor = "android/app/src/main/java/com/mobileproxymish/app/cellular/RootPolicyExecutor.kt"
-    require(executor, "transport.execute(RootObservation(command))", "root-policy observations must stay typed")
-    require(executor, "transport.execute(RootMutation(command))", "root-policy mutations must stay typed")
+        forbid_exists(obsolete_path, "Kotlin must not regain a second root-policy/root-session control plane")
+
+    cellular_bridge = "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRuntimeBridge.kt"
+    for forbidden in (
+        "Executors.",
+        "ScheduledExecutorService",
+        "RootCommandTransport",
+        "CellularRootPolicy(",
+        "RootAuthorityRecoveryBackoff",
+        "LatestCellularReconcileQueue",
+        "authorizeRootPolicy(",
+        "closeRootPolicyGate(",
+    ):
+        forbid(
+            cellular_bridge,
+            forbidden,
+            "Android Cellular bridge must stay an observation/effect adapter only",
+        )
 
     # L8 native cutover is one-way: obsolete Android sing-box bytes/build adapters may not return.
     forbid("Cargo.toml", "sing-box-adapter", "workspace must not contain the obsolete proxy adapter")
