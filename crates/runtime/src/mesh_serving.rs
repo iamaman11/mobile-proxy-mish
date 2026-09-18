@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 use tokio::io::copy_bidirectional;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::runtime::Runtime;
+use tokio::runtime::Handle;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
@@ -55,7 +55,7 @@ impl MeshExecutionOwner {
 
     pub(crate) fn start(
         &self,
-        runtime: &Runtime,
+        handle: &Handle,
         endpoint: Ipv4Addr,
         mappings: &[MeshPortForward],
         sessions: Arc<MeshSessionOwner>,
@@ -98,7 +98,7 @@ impl MeshExecutionOwner {
 
         let mut async_bound = Vec::with_capacity(bound.len());
         {
-            let _enter = runtime.enter();
+            let _enter = handle.enter();
             for (listener, mapping) in bound {
                 let listener = TcpListener::from_std(listener)
                     .map_err(|_| MeshIngressError::ListenerConfigurationFailed)?;
@@ -121,7 +121,7 @@ impl MeshExecutionOwner {
                     Arc::clone(&live_listeners),
                     startup_tx.clone(),
                 ),
-                runtime.handle(),
+                handle,
             );
         }
         drop(startup_tx);
@@ -146,7 +146,7 @@ impl MeshExecutionOwner {
         for _ in 0..expected_listeners {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() || startup_rx.recv_timeout(remaining).is_err() {
-                let _ = self.stop(Some(runtime));
+                let _ = self.stop(Some(handle));
                 return Err(MeshIngressError::ExecutorUnavailable);
             }
         }
@@ -154,12 +154,12 @@ impl MeshExecutionOwner {
         if self.is_healthy() {
             Ok(())
         } else {
-            let _ = self.stop(Some(runtime));
+            let _ = self.stop(Some(handle));
             Err(MeshIngressError::ExecutorUnavailable)
         }
     }
 
-    pub(crate) fn stop(&self, runtime: Option<&Runtime>) -> Result<(), MeshIngressError> {
+    pub(crate) fn stop(&self, handle: Option<&Handle>) -> Result<(), MeshIngressError> {
         let mut generation = {
             let mut state = self
                 .generation
@@ -174,14 +174,14 @@ impl MeshExecutionOwner {
         generation.sessions.revoke();
         let _ = generation.stop.send(true);
 
-        let Some(runtime) = runtime else {
+        let Some(handle) = handle else {
             return Err(MeshIngressError::ExecutorUnavailable);
         };
 
         // Let each retained listener observe the stop signal and drain its own retained session
         // JoinSet. Aborting the outer listener first would drop that nested JoinSet before its
         // explicit abort+join path can run, making active-session cleanup scheduler-dependent.
-        let drained = runtime.block_on(async {
+        let drained = handle.block_on(async {
             timeout(MESH_SHUTDOWN_TIMEOUT, async {
                 while generation.listeners.join_next().await.is_some() {}
             })
@@ -328,7 +328,7 @@ mod tests {
 
     const TEST_TIMEOUT: Duration = Duration::from_secs(3);
 
-    fn test_runtime() -> Runtime {
+    fn test_runtime() -> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_io()
@@ -418,7 +418,7 @@ mod tests {
         wait_until(Instant::now() + TEST_TIMEOUT, || {
             sessions.active_sessions() == 0
         });
-        execution.stop(Some(&runtime)).expect("clean Mesh stop");
+        execution.stop(Some(runtime.handle())).expect("clean Mesh stop");
     }
 
     #[test]
@@ -524,7 +524,7 @@ mod tests {
         wait_until(Instant::now() + TEST_TIMEOUT, || {
             sessions.active_sessions() == 0
         });
-        execution.stop(Some(&runtime)).expect("clean Mesh stop");
+        execution.stop(Some(runtime.handle())).expect("clean Mesh stop");
         assert!(!execution.is_running());
     }
 
@@ -548,7 +548,7 @@ mod tests {
         wait_until(Instant::now() + TEST_TIMEOUT, || {
             sessions.active_sessions() == 0
         });
-        execution.stop(Some(&runtime)).expect("stop");
+        execution.stop(Some(runtime.handle())).expect("stop");
     }
 
     #[test]
@@ -584,7 +584,7 @@ mod tests {
             sessions.active_sessions() == 1
         });
 
-        execution.stop(Some(&runtime)).expect("cancel generation");
+        execution.stop(Some(runtime.handle())).expect("cancel generation");
         assert_eq!(sessions.active_sessions(), 0);
         assert!(!execution.is_healthy());
         drop(client);
@@ -599,7 +599,7 @@ mod tests {
             )
             .expect("fresh generation on same process runtime");
         assert!(execution.is_healthy());
-        execution.stop(Some(&runtime)).expect("second stop");
+        execution.stop(Some(runtime.handle())).expect("second stop");
         assert_eq!(next_sessions.active_sessions(), 0);
         backend_thread.join().expect("backend thread");
     }
