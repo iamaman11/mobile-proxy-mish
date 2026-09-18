@@ -32,15 +32,27 @@ pub struct CellularDnsDiagnosticSnapshot {
     pub active: u64,
     pub peak_active: u64,
     pub slow_completions: u64,
-    pub failed: u64,
+    pub resolver_failed: u64,
     pub discarded_after_deadline: u64,
     pub completed_after_owner_change: u64,
     pub discarded_stale: u64,
+    pub authority_validation_failed: u64,
+    pub unusable_result: u64,
     pub accepted_current: u64,
     pub max_native_elapsed_ms: u64,
     pub last_started_owner_sequence: Option<u64>,
     pub last_completed_start_owner_sequence: Option<u64>,
     pub last_completed_current_owner_sequence: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DnsResultDisposition {
+    ResolverFailed,
+    DiscardedAfterDeadline,
+    DiscardedStale,
+    AuthorityValidationFailed,
+    UnusableResult,
+    AcceptedCurrent,
 }
 
 struct DnsDiagnosticsTracker {
@@ -49,10 +61,12 @@ struct DnsDiagnosticsTracker {
     active: AtomicU64,
     peak_active: AtomicU64,
     slow_completions: AtomicU64,
-    failed: AtomicU64,
+    resolver_failed: AtomicU64,
     discarded_after_deadline: AtomicU64,
     completed_after_owner_change: AtomicU64,
     discarded_stale: AtomicU64,
+    authority_validation_failed: AtomicU64,
+    unusable_result: AtomicU64,
     accepted_current: AtomicU64,
     max_native_elapsed_ms: AtomicU64,
     last_started_owner_sequence: AtomicU64,
@@ -68,16 +82,30 @@ impl DnsDiagnosticsTracker {
             active: AtomicU64::new(0),
             peak_active: AtomicU64::new(0),
             slow_completions: AtomicU64::new(0),
-            failed: AtomicU64::new(0),
+            resolver_failed: AtomicU64::new(0),
             discarded_after_deadline: AtomicU64::new(0),
             completed_after_owner_change: AtomicU64::new(0),
             discarded_stale: AtomicU64::new(0),
+            authority_validation_failed: AtomicU64::new(0),
+            unusable_result: AtomicU64::new(0),
             accepted_current: AtomicU64::new(0),
             max_native_elapsed_ms: AtomicU64::new(0),
             last_started_owner_sequence: AtomicU64::new(0),
             last_completed_start_owner_sequence: AtomicU64::new(0),
             last_completed_current_owner_sequence: AtomicU64::new(0),
         }
+    }
+
+    fn record_disposition(&self, disposition: DnsResultDisposition) {
+        let counter = match disposition {
+            DnsResultDisposition::ResolverFailed => &self.resolver_failed,
+            DnsResultDisposition::DiscardedAfterDeadline => &self.discarded_after_deadline,
+            DnsResultDisposition::DiscardedStale => &self.discarded_stale,
+            DnsResultDisposition::AuthorityValidationFailed => &self.authority_validation_failed,
+            DnsResultDisposition::UnusableResult => &self.unusable_result,
+            DnsResultDisposition::AcceptedCurrent => &self.accepted_current,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
     }
 
     fn start(&self, authority: CellularNetworkAuthority) -> DnsCallObservation<'_> {
@@ -104,10 +132,12 @@ impl DnsDiagnosticsTracker {
             active: self.active.load(Ordering::Relaxed),
             peak_active: self.peak_active.load(Ordering::Relaxed),
             slow_completions: self.slow_completions.load(Ordering::Relaxed),
-            failed: self.failed.load(Ordering::Relaxed),
+            resolver_failed: self.resolver_failed.load(Ordering::Relaxed),
             discarded_after_deadline: self.discarded_after_deadline.load(Ordering::Relaxed),
             completed_after_owner_change: self.completed_after_owner_change.load(Ordering::Relaxed),
             discarded_stale: self.discarded_stale.load(Ordering::Relaxed),
+            authority_validation_failed: self.authority_validation_failed.load(Ordering::Relaxed),
+            unusable_result: self.unusable_result.load(Ordering::Relaxed),
             accepted_current: self.accepted_current.load(Ordering::Relaxed),
             max_native_elapsed_ms: self.max_native_elapsed_ms.load(Ordering::Relaxed),
             last_started_owner_sequence: non_zero(
@@ -332,37 +362,34 @@ fn connect_host_with<T>(
             let addresses = match resolved {
                 Ok(addresses) => addresses,
                 Err(error) => {
-                    DNS_DIAGNOSTICS.failed.fetch_add(1, Ordering::Relaxed);
+                    DNS_DIAGNOSTICS.record_disposition(DnsResultDisposition::ResolverFailed);
                     return Err(error);
                 }
             };
             if let Err(error) = ensure_deadline(deadline) {
-                DNS_DIAGNOSTICS
-                    .discarded_after_deadline
-                    .fetch_add(1, Ordering::Relaxed);
+                DNS_DIAGNOSTICS.record_disposition(DnsResultDisposition::DiscardedAfterDeadline);
                 return Err(error);
             }
             if let Err(error) = validate_authority(owner, authority) {
                 let sequence_after_validation = current_owner_sequence(owner);
-                if sequence_after_validation != Some(authority.observation_sequence().raw()) {
-                    DNS_DIAGNOSTICS
-                        .discarded_stale
-                        .fetch_add(1, Ordering::Relaxed);
+                if sequence_after_validation
+                    .is_some_and(|sequence| sequence != authority.observation_sequence().raw())
+                {
+                    DNS_DIAGNOSTICS.record_disposition(DnsResultDisposition::DiscardedStale);
                 } else {
-                    DNS_DIAGNOSTICS.failed.fetch_add(1, Ordering::Relaxed);
+                    DNS_DIAGNOSTICS
+                        .record_disposition(DnsResultDisposition::AuthorityValidationFailed);
                 }
                 return Err(error);
             }
             let candidates = match bounded_ipv4_candidates(addresses) {
                 Ok(candidates) => candidates,
                 Err(error) => {
-                    DNS_DIAGNOSTICS.failed.fetch_add(1, Ordering::Relaxed);
+                    DNS_DIAGNOSTICS.record_disposition(DnsResultDisposition::UnusableResult);
                     return Err(error);
                 }
             };
-            DNS_DIAGNOSTICS
-                .accepted_current
-                .fetch_add(1, Ordering::Relaxed);
+            DNS_DIAGNOSTICS.record_disposition(DnsResultDisposition::AcceptedCurrent);
             candidates
         }
     };
@@ -530,6 +557,45 @@ mod tests {
         assert_eq!(completed.completed_after_owner_change, 0);
         assert_eq!(completed.last_completed_start_owner_sequence, Some(1));
         assert_eq!(completed.last_completed_current_owner_sequence, Some(1));
+    }
+
+    #[test]
+    fn dns_tracker_records_owner_change_without_becoming_authority() {
+        let tracker = DnsDiagnosticsTracker::new();
+        let owner = admitted_owner();
+        let authority = issue_authority(&owner).expect("authority");
+
+        let mut observation = tracker.start(authority);
+        owner
+            .lock()
+            .expect("owner")
+            .lost(sequence(2), handle(42));
+        observation.complete(current_owner_sequence(&owner));
+
+        let completed = tracker.snapshot();
+        assert_eq!(completed.completed_after_owner_change, 1);
+        assert_eq!(completed.last_completed_start_owner_sequence, Some(1));
+        assert_eq!(completed.last_completed_current_owner_sequence, Some(2));
+    }
+
+    #[test]
+    fn dns_result_dispositions_are_independent_and_unambiguous() {
+        let tracker = DnsDiagnosticsTracker::new();
+
+        tracker.record_disposition(DnsResultDisposition::ResolverFailed);
+        tracker.record_disposition(DnsResultDisposition::DiscardedAfterDeadline);
+        tracker.record_disposition(DnsResultDisposition::DiscardedStale);
+        tracker.record_disposition(DnsResultDisposition::AuthorityValidationFailed);
+        tracker.record_disposition(DnsResultDisposition::UnusableResult);
+        tracker.record_disposition(DnsResultDisposition::AcceptedCurrent);
+
+        let snapshot = tracker.snapshot();
+        assert_eq!(snapshot.resolver_failed, 1);
+        assert_eq!(snapshot.discarded_after_deadline, 1);
+        assert_eq!(snapshot.discarded_stale, 1);
+        assert_eq!(snapshot.authority_validation_failed, 1);
+        assert_eq!(snapshot.unusable_result, 1);
+        assert_eq!(snapshot.accepted_current, 1);
     }
 
     #[test]
