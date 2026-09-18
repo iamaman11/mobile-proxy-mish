@@ -89,7 +89,7 @@ internal fun renderMishDiagnosticSnapshotV2(facts: MishDiagnosticFactsV2): Strin
                 put("active", dns?.active?.toLong() ?: JSONObject.NULL)
                 put("peak_active", dns?.peakActive?.toLong() ?: JSONObject.NULL)
                 put("slow_completions", dns?.slowCompletions?.toLong() ?: JSONObject.NULL)
-                put("failed", dns?.failed?.toLong() ?: JSONObject.NULL)
+                put("resolver_failed", dns?.resolverFailed?.toLong() ?: JSONObject.NULL)
                 put(
                     "discarded_after_deadline",
                     dns?.discardedAfterDeadline?.toLong() ?: JSONObject.NULL,
@@ -99,6 +99,11 @@ internal fun renderMishDiagnosticSnapshotV2(facts: MishDiagnosticFactsV2): Strin
                     dns?.completedAfterOwnerChange?.toLong() ?: JSONObject.NULL,
                 )
                 put("discarded_stale", dns?.discardedStale?.toLong() ?: JSONObject.NULL)
+                put(
+                    "authority_validation_failed",
+                    dns?.authorityValidationFailed?.toLong() ?: JSONObject.NULL,
+                )
+                put("unusable_result", dns?.unusableResult?.toLong() ?: JSONObject.NULL)
                 put("accepted_current", dns?.acceptedCurrent?.toLong() ?: JSONObject.NULL)
                 put(
                     "max_native_elapsed_ms",
