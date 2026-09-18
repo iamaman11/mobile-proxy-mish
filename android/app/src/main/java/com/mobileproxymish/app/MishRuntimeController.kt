@@ -8,19 +8,12 @@ import com.mobileproxymish.ffi.MeshAdmissionView
 import com.mobileproxymish.ffi.NativeProductRuntime
 import com.mobileproxymish.ffi.NativeReadinessObserver
 import com.mobileproxymish.ffi.ProductReadinessState
-import com.mobileproxymish.ffi.ProxyServingFailure
 import com.mobileproxymish.ffi.RuntimeLifecycleController
 import com.mobileproxymish.ffi.RuntimeLifecycleState
 import com.mobileproxymish.ffi.RuntimeStartAction
 import com.mobileproxymish.ffi.RuntimeStopAction
-import com.mobileproxymish.ffi.proxyRecoveryDelayMs
-import com.mobileproxymish.ffi.proxyServingFailureRecoverable
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
-import java.util.concurrent.ScheduledExecutorService
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -67,15 +60,10 @@ class MishRuntimeController internal constructor(
     private val lifecycleExecutor = Executors.newSingleThreadExecutor { task ->
         Thread(task, "mish-runtime-lifecycle").apply { isDaemon = true }
     }
-    private val recoveryScheduler: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor { task ->
-        Thread(task, "mish-runtime-recovery-effect").apply { isDaemon = true }
-    }
     private val observationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val externalCredentialStore = ExternalProxyCredentialStore(appContext)
     private val generation = MutableStateFlow(newGeneration())
     private val stopCallbacks = mutableListOf<(Boolean) -> Unit>()
-    private val automaticRecoveryPending = AtomicBoolean(false)
-    private val automaticRecoveryAttempts = AtomicInteger(0)
 
     @OptIn(ExperimentalCoroutinesApi::class)
     val cellularSnapshot: StateFlow<CellularRuntimeSnapshot> = generation
@@ -132,12 +120,12 @@ class MishRuntimeController internal constructor(
 
     internal fun recoveryDiagnosticObservation(): RuntimeRecoveryDiagnosticObservation =
         synchronized(lock) {
-            val attempts = automaticRecoveryAttempts.get().coerceAtLeast(0)
+            val proxy = generation.value.productRuntime.proxyRuntimeSnapshot()
             RuntimeRecoveryDiagnosticObservation(
                 runtimeGeneration = lifecycle.generation(),
-                proxyRecoveryPending = automaticRecoveryPending.get(),
-                proxyRecoveryAttemptsScheduled = attempts,
-                proxyRecoveryNextDelayMs = proxyRecoveryDelayMs(attempts.toUInt()).toLong(),
+                proxyRecoveryPending = proxy.recoveryPending,
+                proxyRecoveryAttemptsScheduled = proxy.recoveryAttemptsSinceSuccess.toInt(),
+                proxyRecoveryNextDelayMs = proxy.recoveryNextDelayMs.toLong(),
             )
         }
 
@@ -275,24 +263,6 @@ class MishRuntimeController internal constructor(
         if (restart) start()
     }
 
-    /** Execute only the Rust-owned proxy recovery policy; the typed reason is already owner-owned. */
-    private fun scheduleProxyRecoveryIfAllowed(reason: ProxyServingFailure) {
-        if (!proxyServingFailureRecoverable(reason)) return
-        if (!isRunning || !automaticRecoveryPending.compareAndSet(false, true)) return
-        val attempt = automaticRecoveryAttempts.getAndIncrement().coerceAtLeast(0).toUInt()
-        val delayMs = proxyRecoveryDelayMs(attempt).toLong()
-        recoveryScheduler.schedule({
-            if (!isRunning || proxySnapshot.value !is ProxyRuntimeSnapshot.Failed) {
-                automaticRecoveryPending.set(false)
-                return@schedule
-            }
-            stop { clean ->
-                automaticRecoveryPending.set(false)
-                if (clean) start()
-            }
-        }, delayMs, TimeUnit.MILLISECONDS)
-    }
-
     private fun submit(block: () -> Unit): Boolean = try {
         lifecycleExecutor.execute(block)
         true
@@ -314,7 +284,6 @@ class MishRuntimeController internal constructor(
             val proxyRuntime = ProxyRuntimeSupervisor(
                 productRuntime = productRuntime,
                 publicCredentials = externalCredentialStore,
-                onFailureObserved = ::scheduleProxyRecoveryIfAllowed,
             )
             val meshRuntime = MeshIngressRuntimeBridge(
                 context = appContext,
