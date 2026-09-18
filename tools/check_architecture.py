@@ -90,29 +90,55 @@ def main() -> None:
         "every typed Proxy Serving failure must flow through the one Rust-owned recovery policy",
     )
 
-    # Cross-owner runtime composition decisions belong to Rust, not Android adapters.
+    # Cross-owner Mesh composition decisions belong to Rust/runtime, not Android adapters.
     mesh_serving = "crates/runtime/src/mesh_serving.rs"
     require(
         mesh_serving,
         "pub const fn mesh_ingress_serving_allowed",
-        "Rust runtime must own Mesh ingress serving eligibility",
+        "Rust runtime must own the pure Mesh ingress eligibility predicate",
     )
+    mesh_composition = "crates/runtime/src/mesh_composition.rs"
+    for required in (
+        "pub struct MeshCompositionCoordinator",
+        "mesh_ingress_serving_allowed(",
+        "transport.start_ingress(",
+        "transport.stop_ingress()",
+        "set_readiness_ready",
+        "install_proxy",
+        "clear_proxy",
+    ):
+        require_product(
+            mesh_composition,
+            required,
+            "Rust runtime must own cross-owner Mesh ingress realization",
+        )
+
     mesh_android = "android/app/src/main/java/com/mobileproxymish/app/MeshIngressRuntimeBridge.kt"
-    require(
-        mesh_android,
+    for forbidden in (
         "meshIngressServingAllowed(",
-        "Android Mesh adapter must delegate serving eligibility to Rust",
-    )
-    forbid(
-        mesh_android,
-        "internal fun meshIngressServingAllowed",
-        "Android Mesh adapter must not duplicate cross-owner serving policy",
-    )
-    require(
-        "crates/android-ffi/src/runtime_composition_ffi.rs",
-        "owner_mesh_ingress_serving_allowed",
-        "Mesh serving composition FFI must remain a thin Rust delegation",
-    )
+        "MeshTransportController",
+        "currentNativeRuntimeHandle",
+        "startIngress(",
+        "stopIngress(",
+        "proxyRuntime.snapshot",
+        "ingressLock",
+    ):
+        forbid(
+            mesh_android,
+            forbidden,
+            "Android Mesh adapter must not decide or execute ingress lifecycle",
+        )
+    for required in (
+        "AndroidVpnObserver(",
+        "productRuntime.observeMeshVpn",
+        "productRuntime.setMeshReadinessReady(",
+        "productRuntime.meshAdmissionSnapshot()",
+    ):
+        require(
+            mesh_android,
+            required,
+            "Android Mesh adapter must remain raw VPN/readiness projection only",
+        )
 
     # U5 execution law: exactly one process-generation Tokio owner exists. Proxy/Mesh borrow its
     # Handle; neither serving component may construct or destroy another runtime.
@@ -199,7 +225,7 @@ def main() -> None:
         "Runtime must consume Transport-owned Mesh contracts through the typed seam",
     )
     for required in (
-        "val owner = activeController.admissionSnapshot()",
+        "ownerSnapshotOrNull()?.let",
         "activeSessions = owner.activeSessions",
         "capacityRejects = owner.capacityRejects",
     ):
@@ -533,24 +559,43 @@ def main() -> None:
     )
 
     mesh_ffi = "crates/android-ffi/src/transport_ffi.rs"
-    require(
-        mesh_ffi,
-        "MeshTransportCoordinator",
-        "Mesh FFI must delegate runtime coordination to the Transport owner",
-    )
-    require(
-        mesh_ffi,
+    for forbidden in (
+        "pub struct MeshTransportController",
+        "MeshTransportCoordinator::new",
+        "start_ingress(",
+        "stop_ingress(",
         "process_runtime: Arc<NativeProxyRuntime>",
-        "Mesh FFI composition must receive the existing opaque native runtime",
-    )
-    for symbol in (
-        "struct MeshTransportState",
-        "MeshEndpointOwner",
-        "MeshIngressRuntime",
-        "ingress_epoch",
-        "cleanup_failed",
     ):
-        forbid(mesh_ffi, symbol, "Mesh lifecycle state must not drift into android-ffi")
+        forbid(
+            mesh_ffi,
+            forbidden,
+            "UniFFI must not expose a second constructible Mesh owner/control plane",
+        )
+    for required in (
+        "pub enum MeshAdmissionState",
+        "pub struct MeshAdmissionView",
+        "pub(crate) fn map_view",
+        "pub(crate) fn map_transport_error",
+    ):
+        require(
+            mesh_ffi,
+            required,
+            "Mesh FFI must be projection/error mapping only",
+        )
+    for required in (
+        "MeshCompositionCoordinator::new",
+        "observe_mesh_vpn_absent",
+        "observe_mesh_unique_vpn",
+        "observe_mesh_vpn_ambiguous",
+        "set_mesh_readiness_ready",
+        "install_proxy_for_mesh",
+        "clear_proxy_for_mesh",
+    ):
+        require_product(
+            product_ffi,
+            required,
+            "NativeProductRuntime must own the sole Mesh composition handle",
+        )
 
     # Proxy Serving is the sole owner of canonical product listener facts.
     proxy = "crates/proxy/src/lib.rs"
