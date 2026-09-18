@@ -371,15 +371,16 @@ impl ProxyRuntimeCoordinator {
         let result = spawn_blocking(move || {
             start_candidate(executor, cellular, credentials, timeout)
         })
-        .await
-        .ok()
-        .and_then(Result::ok);
+        .await;
 
         match result {
-            Some(runtime) => {
+            Ok(Ok(runtime)) => {
                 let _ = self.finish_started(runtime, credential_version);
             }
-            None => {
+            Ok(Err(failure)) => {
+                let _ = self.publish_start_failure(failure);
+            }
+            Err(_) => {
                 let _ = self.publish_start_failure(ProxyServingFailure::ExecutorUnavailable);
             }
         }
@@ -479,7 +480,9 @@ fn publication(state: &ProxyCoordinatorState) -> ProxyRuntimePublication {
         credential_version: state.credential_version,
         recovery_pending: state.recovery_pending,
         recovery_attempts_since_success: state.recovery_attempts,
-        recovery_next_delay_ms: proxy_recovery_delay_ms(state.recovery_attempts),
+        recovery_next_delay_ms: proxy_recovery_delay_ms(
+            state.recovery_attempts.saturating_sub(1),
+        ),
     }
 }
 
