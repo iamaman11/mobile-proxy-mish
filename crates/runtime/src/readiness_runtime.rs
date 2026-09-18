@@ -39,6 +39,10 @@ pub type ReadinessObserver = Arc<dyn Fn(Readiness) + Send + Sync + 'static>;
 
 pub struct ReadinessDiagnosticSnapshot {
     pub state: Readiness,
+    pub root_policy_verified: bool,
+    pub proxy_healthy: bool,
+    pub credential_active: bool,
+    pub mesh_admitted: bool,
     pub binding_eligible: bool,
     pub probe_in_flight: bool,
     pub refresh_pending: bool,
@@ -135,12 +139,32 @@ impl ReadinessRuntimeCoordinator {
         self.state().map_or(
             ReadinessDiagnosticSnapshot {
                 state: Readiness::Unknown,
+                root_policy_verified: false,
+                proxy_healthy: false,
+                credential_active: false,
+                mesh_admitted: false,
                 binding_eligible: false,
                 probe_in_flight: false,
                 refresh_pending: false,
             },
             |state| ReadinessDiagnosticSnapshot {
                 state: state.projected,
+                root_policy_verified: state
+                    .facts
+                    .cellular
+                    .is_some_and(|cellular| cellular.root_policy_verified),
+                proxy_healthy: state
+                    .facts
+                    .proxy
+                    .is_some_and(|proxy| proxy.healthy),
+                credential_active: state
+                    .facts
+                    .credential
+                    .is_some_and(|credential| credential.active),
+                mesh_admitted: state
+                    .facts
+                    .mesh
+                    .is_some_and(|mesh| mesh.admitted),
                 binding_eligible: matches!(
                     probe_eligibility(input_for(state.facts, &state.probe, state.observation)),
                     ProbeEligibility::Eligible(_)
