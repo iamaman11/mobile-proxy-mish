@@ -97,7 +97,12 @@ internal class PublicIpProbeEffect(
                 socket.getOutputStream().flush()
                 socket.soTimeout = remainingTimeoutInt(ticket)
                 val response = readBounded(socket.getInputStream(), HTTP_RESPONSE_MAX_BYTES)
-                return parseHttp200Body(response)
+                return parseHttp200Body(
+                    response = response,
+                    maxBodyBytes = ticket.responseBodyMaxBytes()
+                        .coerceAtMost(Int.MAX_VALUE.toULong())
+                        .toInt(),
+                )
             }
         } catch (failure: Throwable) {
             runCatching { raw.close() }
@@ -142,7 +147,11 @@ internal fun parseNumericIpv4Address(value: String): ByteArray {
     }
 }
 
-internal fun parseHttp200Body(response: ByteArray): String {
+internal fun parseHttp200Body(
+    response: ByteArray,
+    maxBodyBytes: Int,
+): String {
+    require(maxBodyBytes > 0) { "public IP body bound must be positive" }
     val text = response.toString(Charsets.US_ASCII)
     val separator = text.indexOf("\r\n\r\n")
     if (separator < 0) throw PublicIpResponseMalformedException()
@@ -157,7 +166,7 @@ internal fun parseHttp200Body(response: ByteArray): String {
     }
 
     val body = text.substring(separator + 4)
-    if (body.toByteArray(Charsets.US_ASCII).size > 64) {
+    if (body.toByteArray(Charsets.US_ASCII).size > maxBodyBytes) {
         throw PublicIpResponseTooLargeException()
     }
     return body
