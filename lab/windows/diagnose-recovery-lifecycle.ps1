@@ -225,6 +225,7 @@ $lossEvidence = [ordered]@{
 }
 $cellularEvidence = [ordered]@{}
 $dnsLifetimeEvidence = [ordered]@{
+    measurement_status = 'NOT_EVALUATED'
     same_process = $false
     comparison_scope = 'NOT_OBSERVED'
     before_e3 = $null
@@ -342,15 +343,22 @@ try {
     $dnsLifetimeEvidence.post_e3_snapshot_attempts = [int]$postE3Read.attempts
     $dnsLifetimeEvidence.post_e3_wait_elapsed_ms = [int64]$postE3Read.elapsed_ms
     if ($null -eq $postE3Read.observation) {
-        Stop-MishRecovery 'LAB_DNS_LIFETIME_POST_E3_INVALID' 'No coherent native DNS observation was available within the bounded post-E3 read window.'
-    }
-    $dnsLifetimeEvidence.after_e3_before_restart = $postE3Read.observation
-    $dnsLifetimeEvidence.same_process =
-        [int]$postE3Read.observation.pid -eq [int]$preDnsObservation.pid
-    $dnsLifetimeEvidence.comparison_scope = if ([bool]$dnsLifetimeEvidence.same_process) {
-        'SAME_PROCESS'
+        # E3/recovery acceptance is owned by the exact PRODUCT instrumentation and the canonical
+        # post-restart diagnostic below. A post-instrumentation DNS snapshot is optional U3
+        # measurement evidence: absence here must never manufacture either DNS PASS or recovery
+        # failure. Keep the measurement explicitly NOT_EVALUATED and continue to the real restart
+        # acceptance boundary.
+        $dnsLifetimeEvidence.measurement_status = 'POST_INSTRUMENTATION_UNAVAILABLE'
     } else {
-        'PROCESS_BOUNDARY'
+        $dnsLifetimeEvidence.after_e3_before_restart = $postE3Read.observation
+        $dnsLifetimeEvidence.measurement_status = 'OBSERVED'
+        $dnsLifetimeEvidence.same_process =
+            [int]$postE3Read.observation.pid -eq [int]$preDnsObservation.pid
+        $dnsLifetimeEvidence.comparison_scope = if ([bool]$dnsLifetimeEvidence.same_process) {
+            'SAME_PROCESS'
+        } else {
+            'PROCESS_BOUNDARY'
+        }
     }
 
     & (Join-Path $PSScriptRoot 'start-device-app.ps1') `
