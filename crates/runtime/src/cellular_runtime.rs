@@ -6,7 +6,8 @@
 
 use crate::{
     CellularDnsDiagnosticSnapshot, CellularDnsResolver, CellularOutboundRuntimeConnector,
-    cellular_dns_diagnostic_snapshot,
+    PreparedPublicIpProbe, PublicEgressIpObservation, PublicIpProbeEffectFailure,
+    PublicIpProbeFailure, cellular_dns_diagnostic_snapshot,
 };
 use mish_cellular::{
     CellularAdmissionSnapshot, CellularAdmissionState, CellularEgress, NetworkHandle,
@@ -47,6 +48,30 @@ impl CellularRuntimeCoordinator {
 
     pub fn dns_diagnostic_snapshot(&self) -> CellularDnsDiagnosticSnapshot {
         cellular_dns_diagnostic_snapshot()
+    }
+
+    /// Begins one bounded generation-bound public-IP observation using the same root-policy
+    /// authorization and owner-bound DNS authority as PRODUCT proxy egress. The returned ticket
+    /// carries no socket and owns no lifecycle; Android performs only the ordinary UID TLS effect.
+    pub fn prepare_public_ip_probe(
+        &self,
+        operation_timeout: Duration,
+    ) -> Result<RuntimePublicIpProbe, PublicIpProbeFailure> {
+        validate_operation_timeout(operation_timeout)
+            .map_err(|_| PublicIpProbeFailure::DeadlineExceeded)?;
+        let _permit = self
+            .root_policy_effect_gate
+            .acquire()
+            .ok_or(PublicIpProbeFailure::RootPolicyUnavailable)?;
+        let inner = PreparedPublicIpProbe::prepare(
+            Arc::clone(&self.owner),
+            Arc::clone(&self.resolver),
+            operation_timeout,
+        )?;
+        Ok(RuntimePublicIpProbe {
+            inner,
+            effect_gate: Arc::clone(&self.root_policy_effect_gate),
+        })
     }
 
     pub fn observe_network(
@@ -170,6 +195,10 @@ impl RootPolicyEffectGate {
         true
     }
 
+    fn is_ready(&self) -> bool {
+        self.state.lock().is_ok_and(|state| state.ready)
+    }
+
     fn acquire(self: &Arc<Self>) -> Option<RootPolicyEffectPermit> {
         let mut state = self.state.lock().ok()?;
         if !state.ready {
@@ -206,6 +235,73 @@ impl Drop for RootPolicyEffectPermit {
                 self.gate.quiesced.notify_all();
             }
         }
+    }
+}
+
+pub struct RuntimePublicIpProbe {
+    inner: PreparedPublicIpProbe,
+    effect_gate: Arc<RootPolicyEffectGate>,
+}
+
+impl RuntimePublicIpProbe {
+    pub const fn host(&self) -> &'static str {
+        self.inner.host()
+    }
+
+    pub const fn port(&self) -> u16 {
+        self.inner.port()
+    }
+
+    pub const fn path(&self) -> &'static str {
+        self.inner.path()
+    }
+
+    pub const fn response_body_max_bytes(&self) -> usize {
+        self.inner.response_body_max_bytes()
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.inner.generation()
+    }
+
+    pub fn numeric_addresses(&self) -> Vec<String> {
+        self.inner.numeric_addresses()
+    }
+
+    pub fn is_current(&self) -> bool {
+        self.ensure_current_policy().is_ok()
+    }
+
+    pub fn remaining_timeout_ms(&self) -> Result<u64, PublicIpProbeFailure> {
+        self.ensure_current_policy()?;
+        self.inner.remaining_timeout_ms()
+    }
+
+    pub fn complete(
+        &self,
+        raw_body: &str,
+    ) -> Result<PublicEgressIpObservation, PublicIpProbeFailure> {
+        self.ensure_current_policy()?;
+        let observation = self.inner.complete(raw_body)?;
+        self.ensure_current_policy()?;
+        Ok(observation)
+    }
+
+    pub fn effect_failed(&self, effect: PublicIpProbeEffectFailure) -> PublicIpProbeFailure {
+        match self.ensure_current_policy() {
+            Ok(()) => self.inner.effect_failed(effect),
+            Err(failure) => failure,
+        }
+    }
+
+    fn ensure_current_policy(&self) -> Result<(), PublicIpProbeFailure> {
+        if !self.inner.is_current() {
+            return Err(PublicIpProbeFailure::StaleGeneration);
+        }
+        if !self.effect_gate.is_ready() {
+            return Err(PublicIpProbeFailure::RootPolicyUnavailable);
+        }
+        Ok(())
     }
 }
 
@@ -294,6 +390,38 @@ mod tests {
             !runtime
                 .authorize_root_policy(sequence(1), handle(42))
                 .expect("stale")
+        );
+    }
+
+    #[test]
+    fn public_ip_ticket_rejects_same_generation_after_root_policy_gate_closes() {
+        let runtime = coordinator();
+        runtime
+            .observe_network(NetworkObservation::new(
+                sequence(1),
+                handle(42),
+                true,
+                true,
+                true,
+                true,
+            ))
+            .expect("observe");
+        assert!(
+            runtime
+                .authorize_root_policy(sequence(1), handle(42))
+                .expect("authorize")
+        );
+
+        let probe = runtime
+            .prepare_public_ip_probe(Duration::from_secs(2))
+            .expect("probe");
+        assert!(probe.is_current());
+
+        runtime.close_root_policy_gate().expect("close gate");
+        assert!(!probe.is_current());
+        assert_eq!(
+            probe.complete("198.51.100.42"),
+            Err(PublicIpProbeFailure::RootPolicyUnavailable)
         );
     }
 

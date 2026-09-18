@@ -224,6 +224,90 @@ def main() -> None:
                     f"network fallback: {relative} contains {fallback!r}"
                 )
 
+
+    # U4 public-egress IP remains one Cellular-owner observation, not a second network stack.
+    public_ip = "crates/runtime/src/public_ip.rs"
+    for required in (
+        'PUBLIC_IP_ENDPOINT_HOST: &str = "checkip.amazonaws.com"',
+        "PreparedPublicIpProbe",
+        "resolve_current_domain(",
+        "validate_authority(&self.owner, self.authority)",
+        "PUBLIC_IP_RESPONSE_BODY_MAX_BYTES",
+        "StaleGeneration",
+    ):
+        require(
+            public_ip,
+            required,
+            "U4 public IP must stay generation-bound to the existing Cellular owner path",
+        )
+
+    public_ip_runtime = "crates/runtime/src/cellular_runtime.rs"
+    for required in (
+        "RuntimePublicIpProbe",
+        "ensure_current_policy",
+        "self.effect_gate.is_ready()",
+        "PublicIpProbeFailure::RootPolicyUnavailable",
+    ):
+        require(
+            public_ip_runtime,
+            required,
+            "U4 completion must revalidate the existing root-policy gate without a second owner",
+        )
+
+    public_ip_android = "android/app/src/main/java/com/mobileproxymish/app/cellular/PublicIpProbeEffect.kt"
+    for required in (
+        "InetAddress.getByAddress(",
+        "SSLSocketFactory.getDefault() as SSLSocketFactory",
+        "tlsFactory.createSocket(",
+        "getDefaultHostnameVerifier().verify(",
+        "ticket.remainingTimeoutMs()",
+        "ticket.complete(body)",
+    ):
+        require(
+            public_ip_android,
+            required,
+            "Android U4 adapter must remain a narrow bounded TLS/HTTPS effect",
+        )
+
+    public_ip_physical = (
+        "android/app/src/androidTest/java/com/mobileproxymish/app/cellular/"
+        "CellularE3InstrumentedTest.kt"
+    )
+    for required in (
+        "runtime.observePublicEgressIp(",
+        ".preparePublicIpProbe(",
+        "u4StaleTicket.isCurrent()",
+        'u4StaleTicket.complete("198.51.100.77")',
+        "phase=u4 positive_https=true owner_bound_dns=true ordinary_uid_socket=true",
+        "stale_generation_rejected=true no_default_fallback=true",
+        "fresh_generation=true repeated_observations_bounded=true raw_ip_persisted=false",
+    ):
+        require(
+            public_ip_physical,
+            required,
+            "U4 physical proof must ride the existing exact-candidate recovery lifecycle",
+        )
+
+    endpoint_literal = "checkip.amazonaws.com"
+    endpoint_owners = []
+    for product_path in list(ROOT.glob("crates/**/*.rs")) + list(
+        ROOT.glob("android/app/src/main/java/**/*.kt")
+    ):
+        if endpoint_literal in product_path.read_text(encoding="utf-8"):
+            endpoint_owners.append(str(product_path.relative_to(ROOT)))
+    if endpoint_owners != [public_ip]:
+        raise SystemExit(
+            "architecture guard: U4 public-IP endpoint literal must have one PRODUCT owner; "
+            f"observed={endpoint_owners}"
+        )
+
+    for rust_path in ROOT.glob("crates/**/*.rs"):
+        if "android_setsocknetwork(" in rust_path.read_text(encoding="utf-8"):
+            raise SystemExit(
+                "architecture guard: U4 must not reintroduce per-socket Android network binding: "
+                f"{rust_path.relative_to(ROOT)}"
+            )
+
     # Native Proxy Serving owns one explicit Tokio task tree and one lifecycle snapshot.
     proxy_runtime = "crates/runtime/src/proxy_runtime.rs"
     for required in (

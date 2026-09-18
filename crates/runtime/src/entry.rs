@@ -12,6 +12,9 @@ pub use cellular_connector::*;
 mod cellular_runtime;
 pub use cellular_runtime::*;
 
+mod public_ip;
+pub use public_ip::*;
+
 mod mesh_serving;
 pub use mesh_serving::*;
 

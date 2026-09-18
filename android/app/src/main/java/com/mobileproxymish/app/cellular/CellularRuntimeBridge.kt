@@ -7,6 +7,7 @@ import com.mobileproxymish.ffi.CellularAdmissionState
 import com.mobileproxymish.ffi.CellularAdmissionView
 import com.mobileproxymish.ffi.CellularController
 import com.mobileproxymish.ffi.CellularDnsDiagnosticView
+import com.mobileproxymish.ffi.PublicIpObservationView
 import java.io.Closeable
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
@@ -233,6 +234,19 @@ class CellularRuntimeBridge(
         null
     } catch (_: Exception) {
         null
+    }
+
+    /**
+     * One synchronous bounded public-egress observation. Rust remains the owner of endpoint,
+     * generation/currentness, DNS authority, deadline and strict IP parsing; this bridge delegates
+     * only the Android TLS/socket effect and keeps no duplicate public-IP state.
+     */
+    internal fun observePublicEgressIp(
+        timeoutMs: Long = PUBLIC_IP_OBSERVATION_TIMEOUT_MS,
+    ): PublicIpObservationView {
+        check(!closed.get()) { "cellular runtime is closed" }
+        val activeController = controller ?: error("Cellular Egress owner is unavailable")
+        return PublicIpProbeEffect(activeController).observe(timeoutMs)
     }
 
     fun start() {
@@ -734,5 +748,6 @@ class CellularRuntimeBridge(
     private companion object {
         const val CLOSE_TIMEOUT_SECONDS = 60L
         const val EFFECT_DRAIN_TIMEOUT_MS = 20_000L
+        const val PUBLIC_IP_OBSERVATION_TIMEOUT_MS = 15_000L
     }
 }
