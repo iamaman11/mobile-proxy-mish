@@ -233,17 +233,16 @@ class CellularE3InstrumentedTest {
             )
             val recoveryFunctionalElapsedMs = SystemClock.elapsedRealtime() - recoveryStartedAt
 
-            // Deliberate shutdown follows the real composition dependency order: the proxy
-            // runtime releases its private Cellular bridge before root-policy quiescence and
-            // cleanup. Verification remains read-only after the production adapters stop.
+            // D2 exact shutdown uses the one stable native process handle. Android platform
+            // observers are closed by the facade; Rust owns Proxy/root/readiness/Mesh drain.
             val stopStartedAt = SystemClock.elapsedRealtime()
-            val proxyCloseStartedAt = SystemClock.elapsedRealtime()
-            application.proxyRuntime.close()
-            val proxyCloseElapsedMs = SystemClock.elapsedRealtime() - proxyCloseStartedAt
-
-            val cellularCloseStartedAt = SystemClock.elapsedRealtime()
-            runtime.close()
-            val cellularCloseElapsedMs = SystemClock.elapsedRealtime() - cellularCloseStartedAt
+            val nativeShutdownStartedAt = SystemClock.elapsedRealtime()
+            assertTrue(
+                "stable native runtime shutdown must clean the current generation",
+                application.runtimeController.shutdownProcessExact(),
+            )
+            val nativeShutdownElapsedMs =
+                SystemClock.elapsedRealtime() - nativeShutdownStartedAt
             runtimeClosed = true
 
             val cleanupVerifyStartedAt = SystemClock.elapsedRealtime()
@@ -257,8 +256,7 @@ class CellularE3InstrumentedTest {
                     "loss_fail_closed_elapsed_ms=$lossFailClosedElapsedMs " +
                     "recovery_owner_elapsed_ms=$recoveryOwnerElapsedMs " +
                     "recovery_functional_elapsed_ms=$recoveryFunctionalElapsedMs " +
-                    "proxy_close_elapsed_ms=$proxyCloseElapsedMs " +
-                    "cellular_close_elapsed_ms=$cellularCloseElapsedMs " +
+                    "native_shutdown_elapsed_ms=$nativeShutdownElapsedMs " +
                     "cleanup_verify_elapsed_ms=$cleanupVerifyElapsedMs " +
                     "stop_total_elapsed_ms=$stopTotalElapsedMs",
             )
@@ -277,8 +275,11 @@ class CellularE3InstrumentedTest {
                 runCatching { executeMobileDataTransition("enable") }
             }
             if (!runtimeClosed) {
-                application.proxyRuntime.close()
-                val cleanupFailure = runCatching { runtime.close() }.exceptionOrNull()
+                val cleanupFailure = runCatching {
+                    check(application.runtimeController.shutdownProcessExact()) {
+                        "stable native runtime cleanup was incomplete"
+                    }
+                }.exceptionOrNull()
                 if (cleanupFailure != null) {
                     println(
                         "E3_SAFE_FAILURE stage=root_policy_cleanup " +
