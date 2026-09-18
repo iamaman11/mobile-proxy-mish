@@ -75,7 +75,7 @@ function Get-MishCycleFailureKind {
 
 function Test-MishSupportedFullProbe {
     param([Parameter(Mandatory)][string] $Probe)
-    return $Probe -in @('capacity_resources', 'recovery_lifecycle', 'dns_lifetime_live')
+    return $Probe -in @('capacity_resources', 'recovery_lifecycle', 'dns_lifetime_live', 'public_ip_u4')
 }
 
 $launch = Read-OptionalJson -Path $LaunchReceiptPath
@@ -191,6 +191,7 @@ $report = [ordered]@{
             if ($RequestedProbe -ceq 'capacity_resources') { 'FULL_BASELINE_PLUS_CAPACITY_RESOURCES' }
             elseif ($RequestedProbe -ceq 'recovery_lifecycle') { 'FULL_BASELINE_PLUS_RECOVERY_LIFECYCLE' }
             elseif ($RequestedProbe -ceq 'dns_lifetime_live') { 'FULL_BASELINE_PLUS_DNS_LIFETIME_OBSERVATION' }
+            elseif ($RequestedProbe -ceq 'public_ip_u4') { 'FULL_BASELINE_PLUS_U4_PUBLIC_IP' }
             else { 'FULL_BASELINE' }
         }
         'install_only' { 'INSTALL_ONLY' }
