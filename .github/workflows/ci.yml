@@ -40,6 +40,14 @@ jobs:
         shell: pwsh
         run: ./lab/windows/test-capacity-probe-contract.ps1
 
+      - name: Verify diagnostic protocol probe helpers
+        shell: pwsh
+        run: ./lab/windows/test-diagnostic-connect-probe.ps1
+
+      - name: Verify physical protocol parity contract
+        shell: pwsh
+        run: ./lab/windows/test-protocol-parity-probe-contract.ps1
+
   changes:
     name: PRODUCT Change Classification
     if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.base.ref == 'main' && github.event.pull_request.draft == false) }}
