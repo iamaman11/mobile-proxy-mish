@@ -297,6 +297,34 @@ class CellularRootPolicyTest {
     }
 
     @Test
+    fun uncertainIpv4JumpDetachConfirmedAbsentContinuesExactCleanupWithoutReplay() {
+        val process = FakePolicyProcess()
+        val policy = policy(process)
+        assertEquals(
+            CellularRootPolicyResult.Enforced,
+            policy.reconcile(admitted = true, interfaceName = "rmnet_data0"),
+        )
+        process.uncertainIpv4JumpDeleteAfterMutation = true
+        process.commands.clear()
+
+        assertTrue(policy.cleanupExactOwnedRules())
+        assertNull(policy.cleanupFailureStage())
+
+        assertEquals(
+            1,
+            process.commands.count { it == IPV4_JUMP_DELETE },
+            "uncertain mutation must be confirmed read-only, never replayed",
+        )
+        assertNull(process.ipv4Lookup)
+        assertEquals(0, process.ipv4JumpCount)
+        assertFalse(process.ipv4ChainExists)
+        assertNull(process.ipv4Guard)
+        assertEquals(0, process.ipv6JumpCount)
+        assertFalse(process.ipv6ChainExists)
+        assertNull(process.ipv6Guard)
+    }
+
+    @Test
     fun failedIpv4JumpDetachPreservesReferencedChainAndGuardWhileIpv6StillCleans() {
         val process = FakePolicyProcess()
         val policy = policy(process)
@@ -411,6 +439,7 @@ class CellularRootPolicyTest {
         var incompleteIpv4RuleReadAt: Int? = null
         var blockAuthorityProbeUntilCleanupMutation = false
         var cleanupMutationObserved = false
+        var uncertainIpv4JumpDeleteAfterMutation = false
         var failIpv4JumpDelete = false
         var failIpv6JumpDelete = false
         val ipv4ChainRules = mutableListOf<String>()
@@ -465,7 +494,16 @@ class CellularRootPolicyTest {
                         fail()
                     } else if (ipv4JumpCount > 0) {
                         ipv4JumpCount -= 1
-                        ok()
+                        if (uncertainIpv4JumpDeleteAfterMutation) {
+                            RootProcessResult(
+                                exitCode = -1,
+                                stdout = "",
+                                timedOut = true,
+                                outputComplete = false,
+                            )
+                        } else {
+                            ok()
+                        }
                     } else {
                         fail()
                     }
