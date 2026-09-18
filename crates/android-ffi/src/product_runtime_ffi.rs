@@ -753,7 +753,7 @@ mod tests {
 
     #[test]
     fn invalid_uid_is_rejected_before_runtime_construction() {
-        let error = match NativeProductRuntime::new(0, false, 1) {
+        let error = match NativeProductRuntime::new(0, false) {
             Ok(_) => panic!("zero UID must be rejected"),
             Err(error) => error,
         };
