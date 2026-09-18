@@ -319,6 +319,7 @@ class MishRuntimeController internal constructor(
                 productRuntime = productRuntime,
             )
             val readinessRuntime = ProductReadinessRuntime(
+                productRuntime = productRuntime,
                 runtimeGeneration = runtimeGeneration,
                 cellularRuntime = cellularRuntime,
                 proxyRuntime = proxyRuntime,
