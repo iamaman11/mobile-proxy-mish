@@ -122,11 +122,20 @@ impl ProxyRuntimeCoordinator {
     pub fn start(
         self: &Arc<Self>,
         credential_version: u64,
-        credentials: ProxyCredentialMaterial,
+        username: String,
+        password: String,
     ) -> ProxyRuntimePublication {
         if credential_version == 0 {
             return self.publish_start_failure(ProxyServingFailure::ProxyConfigurationRejected);
         }
+        let credentials = match ProxyCredentialMaterial::new(username, password) {
+            Ok(credentials) => credentials,
+            Err(_) => {
+                return self.publish_start_failure(
+                    ProxyServingFailure::ProxyConfigurationRejected,
+                );
+            }
+        };
 
         let starting = {
             let Ok(mut state) = self.state.lock() else {
@@ -560,9 +569,7 @@ mod tests {
             readiness,
             Duration::from_secs(1),
         );
-        let credentials =
-            ProxyCredentialMaterial::new("user", "password").expect("credentials");
-        let snapshot = proxy.start(0, credentials);
+        let snapshot = proxy.start(0, "user".to_owned(), "password".to_owned());
         assert_eq!(
             snapshot.failure,
             Some(ProxyServingFailure::ProxyConfigurationRejected)
