@@ -791,4 +791,93 @@ mod tests {
         );
         runtime.executor.shutdown().expect("executor shutdown");
     }
+
+    #[test]
+    fn platform_facts_compact_to_current_cellular_set_and_latest_vpn_snapshot() {
+        let mut facts = ProductPlatformFacts::default();
+        let handle_11 = NetworkHandle::new(11).expect("handle");
+        let handle_12 = NetworkHandle::new(12).expect("handle");
+        let sequence_1 = mish_cellular::ObservationSequence::new(1).expect("sequence");
+        let sequence_2 = mish_cellular::ObservationSequence::new(2).expect("sequence");
+
+        facts.record_cellular_observation(
+            1,
+            NetworkObservation::new(sequence_1, handle_11, true, true, true, true),
+            handle_11,
+            Some("rmnet0".to_owned()),
+        );
+        facts.record_cellular_observation(
+            2,
+            NetworkObservation::new(sequence_2, handle_12, true, true, true, true),
+            handle_12,
+            Some("rmnet1".to_owned()),
+        );
+        facts.record_cellular_loss(3, handle_12);
+        facts.record_cellular_loss(2, handle_11);
+
+        let replay = facts.cellular_replay();
+        assert_eq!(replay.len(), 1);
+        assert_eq!(replay[0].observed_handle, handle_11);
+        assert_eq!(replay[0].sequence, 1);
+
+        facts.record_mesh(4, MeshVpnObservation::Absent);
+        facts.record_mesh(
+            3,
+            MeshVpnObservation::UniqueVpn {
+                local_ipv4: vec![std::net::Ipv4Addr::new(100, 96, 2, 4)],
+            },
+        );
+        let mesh = facts.mesh.expect("mesh fact");
+        assert_eq!(mesh.sequence, 4);
+        assert_eq!(mesh.observation, MeshVpnObservation::Absent);
+    }
+
+    #[test]
+    fn stopped_platform_mutation_lease_blocks_start_and_fail_closes_uncertain_effect() {
+        let runtime = ProductRuntimeCoordinator::new(
+            Arc::new(EmptyResolver),
+            10_123,
+            RootPolicyNamespace::Debug,
+        )
+        .expect("runtime");
+        let lease = runtime
+            .begin_stopped_platform_mutation()
+            .expect("lease call")
+            .expect("lease");
+
+        assert_eq!(
+            runtime.request_start(None, None, None),
+            Err(RuntimeExecutionError::StateUnavailable),
+        );
+        assert!(!runtime
+            .complete_stopped_platform_mutation(lease, false)
+            .expect("complete"));
+        assert!(runtime.snapshot().generation_requires_replacement);
+        runtime.executor.shutdown().expect("executor shutdown");
+    }
+
+    #[test]
+    fn successful_stopped_platform_mutation_advances_native_generation_once() {
+        let runtime = ProductRuntimeCoordinator::new(
+            Arc::new(EmptyResolver),
+            10_123,
+            RootPolicyNamespace::Debug,
+        )
+        .expect("runtime");
+        let lease = runtime
+            .begin_stopped_platform_mutation()
+            .expect("lease call")
+            .expect("lease");
+
+        assert!(runtime
+            .complete_stopped_platform_mutation(lease, true)
+            .expect("complete"));
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.generation, 2);
+        assert!(!snapshot.generation_requires_replacement);
+        assert!(!runtime
+            .complete_stopped_platform_mutation(lease, true)
+            .expect("stale complete"));
+        runtime.executor.shutdown().expect("executor shutdown");
+    }
 }
