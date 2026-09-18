@@ -157,6 +157,7 @@ def main() -> None:
         "AndroidVpnObserver(",
         "productRuntime.observeMeshVpn",
         "productRuntime.meshAdmissionSnapshot()",
+        "productRuntime.invalidateMeshPlatformFact()",
     ):
         require(
             mesh_android,
@@ -774,7 +775,10 @@ def main() -> None:
         "run_stop",
         "ProductPlatformFacts",
         "record_cellular_observation",
+        "last_cellular_loss",
         "pub fn observe_mesh_vpn(",
+        "invalidate_cellular_platform_facts",
+        "invalidate_mesh_platform_fact",
         "replay_platform_facts",
         "pub fn begin_stopped_platform_mutation(",
         "pub fn complete_stopped_platform_mutation(",
@@ -793,6 +797,8 @@ def main() -> None:
         "pub fn stop_runtime(",
         "pub fn begin_stopped_platform_mutation(",
         "pub fn complete_stopped_platform_mutation(",
+        "pub fn invalidate_cellular_platform_facts(",
+        "pub fn invalidate_mesh_platform_fact(",
         "pub fn observe_proxy_runtime(",
         "pub fn proxy_runtime_snapshot(",
     ):
@@ -1031,6 +1037,17 @@ def main() -> None:
         forbid_exists(obsolete_path, "Kotlin must not regain a second root-policy/root-session control plane")
 
     cellular_bridge = "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRuntimeBridge.kt"
+    cellular_observer = "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularNetworkObserver.kt"
+    require(
+        cellular_observer,
+        "lastObserved = null",
+        "a restarted Android Cellular observation session must re-emit an identical current fact",
+    )
+    require(
+        cellular_bridge,
+        "productRuntime.invalidateCellularPlatformFacts()",
+        "stopping Android Cellular observation must invalidate stable raw-fact replay state",
+    )
     for forbidden in (
         "Executors.",
         "ScheduledExecutorService",
