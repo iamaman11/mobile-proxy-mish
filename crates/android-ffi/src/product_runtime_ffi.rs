@@ -390,8 +390,7 @@ impl NativeProductRuntime {
         &self,
         sequence: u64,
     ) -> Result<MeshAdmissionView, MeshTransportBoundaryError> {
-        let snapshot = self
-            .mesh
+        let snapshot = self.generation.mesh()
             .observe_vpn(sequence, MeshVpnObservation::Absent)
             .map_err(map_transport_error)?;
         self.generation.readiness()
@@ -412,8 +411,7 @@ impl NativeProductRuntime {
                     .map_err(|_| MeshTransportBoundaryError::InvalidVpnObservation)
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let snapshot = self
-            .mesh
+        let snapshot = self.generation.mesh()
             .observe_vpn(
                 sequence,
                 MeshVpnObservation::UniqueVpn {
@@ -431,8 +429,7 @@ impl NativeProductRuntime {
         &self,
         sequence: u64,
     ) -> Result<MeshAdmissionView, MeshTransportBoundaryError> {
-        let snapshot = self
-            .mesh
+        let snapshot = self.generation.mesh()
             .observe_vpn(sequence, MeshVpnObservation::AmbiguousVpn)
             .map_err(map_transport_error)?;
         self.generation.readiness()
@@ -446,16 +443,13 @@ impl NativeProductRuntime {
             return Ok(());
         }
 
-        let proxy_clean = self.generation.proxy().shutdown().failure != Some(OwnerProxyServingFailure::ShutdownFailed);
-        self.generation.readiness().shutdown();
-        let mesh_clean = self.generation.mesh().shutdown().is_ok();
-        let policy_clean = self
-            .policy
-            .shutdown_blocking(&self.executor)
-            .map_err(NativeProductRuntimeError::from);
+        let generation_clean = self
+            .generation
+            .shutdown_blocking()
+            .map_err(NativeProductRuntimeError::from)?;
         let executor_clean = self.executor.shutdown().map_err(NativeProductRuntimeError::from);
 
-        if proxy_clean && mesh_clean && policy_clean? && executor_clean.is_ok() {
+        if generation_clean && executor_clean.is_ok() {
             Ok(())
         } else {
             let _ = executor_clean;
