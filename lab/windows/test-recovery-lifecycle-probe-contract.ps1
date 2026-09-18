@@ -55,14 +55,16 @@ foreach ($required in @(
     'Wait-MishDnsLifetimeObservation',
     '[ValidateRange(1, 30)][int] $TimeoutSeconds = 10',
     '[ValidateRange(50, 5000)][int] $PollMilliseconds = 250',
-    '$postE3Read = Wait-MishDnsLifetimeObservation -ExpectedPid ([int]$preDnsObservation.pid)',
+    '$postE3Read = Wait-MishDnsLifetimeObservation',
     '$dnsLifetimeEvidence.post_e3_snapshot_attempts = [int]$postE3Read.attempts',
     '$dnsLifetimeEvidence.post_e3_wait_elapsed_ms = [int64]$postE3Read.elapsed_ms',
     '$dnsLifetimeEvidence.after_e3_before_restart = $postE3Read.observation',
-    '$dnsLifetimeEvidence.same_process = $true',
+    '$dnsLifetimeEvidence.same_process =',
+    "comparison_scope = 'NOT_OBSERVED'",
+    "'SAME_PROCESS'",
+    "'PROCESS_BOUNDARY'",
     'LAB_DNS_LIFETIME_BASELINE_INVALID',
     'LAB_DNS_LIFETIME_POST_E3_INVALID',
-    'LAB_DNS_LIFETIME_PROCESS_CHANGED',
     'active = [int64]$dns.active',
     'peak_active = [int64]$dns.peak_active',
     'max_native_elapsed_ms = [int64]$dns.max_native_elapsed_ms',
@@ -87,16 +89,20 @@ foreach ($required in @(
     }
 }
 
-$postE3WaitIndex = $source.IndexOf('$postE3Read = Wait-MishDnsLifetimeObservation -ExpectedPid ([int]$preDnsObservation.pid)', [StringComparison]::Ordinal)
+$postE3WaitIndex = $source.IndexOf('$postE3Read = Wait-MishDnsLifetimeObservation', [StringComparison]::Ordinal)
 $explicitRestartIndex = $source.IndexOf('& (Join-Path $PSScriptRoot ''start-device-app.ps1'')', [StringComparison]::Ordinal)
 if ($postE3WaitIndex -lt 0 -or $explicitRestartIndex -lt 0 -or $postE3WaitIndex -ge $explicitRestartIndex) {
-    throw 'Recovery/lifecycle control must capture bounded same-process DNS lifetime facts before the explicit PRODUCT restart.'
+    throw 'Recovery/lifecycle control must capture bounded DNS process-boundary evidence before the explicit PRODUCT restart.'
+}
+
+if ($source.Contains('LAB_DNS_LIFETIME_PROCESS_CHANGED')) {
+    throw 'A PRODUCT PID change after instrumentation is DNS measurement scope evidence, not a recovery acceptance failure.'
 }
 
 $preDnsIndex = $source.IndexOf('$dnsLifetimeEvidence.before_e3 = $preDnsObservation', [StringComparison]::Ordinal)
 $postDnsIndex = $source.IndexOf('$dnsLifetimeEvidence.after_e3_before_restart = $postE3Read.observation', [StringComparison]::Ordinal)
 if ($preDnsIndex -lt 0 -or $postDnsIndex -le $preDnsIndex) {
-    throw 'Recovery/lifecycle control must preserve ordered before-E3 and after-E3 DNS observations.'
+    throw 'Recovery/lifecycle control must preserve ordered before-E3 and after-E3 DNS observations without implying cross-PID counter continuity.'
 }
 
 $installerSource = Get-Content -Raw -LiteralPath $installerPath
