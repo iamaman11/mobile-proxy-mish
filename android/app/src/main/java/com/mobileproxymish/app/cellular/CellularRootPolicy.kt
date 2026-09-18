@@ -656,11 +656,20 @@ class CellularRootPolicy internal constructor(
     }
 
     private fun removeExactOutputJumps(binary: String, outputJump: String): Boolean {
+        val deleteCommand = "$binary -t mangle ${outputJump.replaceFirst("-A ", "-D ")}"
         repeat(MAX_RECONCILE_PASSES) {
             val lines = mangleOutputOrNull(binary) ?: return false
             if (lines.none { it == outputJump }) return true
-            if (!commandSucceeded("$binary -t mangle ${outputJump.replaceFirst("-A ", "-D ")}")) {
-                return false
+
+            // A failed mutation result is not authoritative proof that the kernel mutation did
+            // not happen. SuProcess deliberately never replays mutations automatically because a
+            // command may have reached the kernel before transport/output failed. Re-observe first:
+            // if the exact jump is already absent, teardown succeeded; if it is still present, the
+            // next bounded pass may retry the exact delete. Chain/guard cleanup remains gated on
+            // authoritative jump absence, preserving the fail-closed dependency order.
+            if (!commandSucceeded(deleteCommand)) {
+                val afterFailure = mangleOutputOrNull(binary) ?: return false
+                if (afterFailure.none { it == outputJump }) return true
             }
         }
         return mangleOutputOrNull(binary)?.none { it == outputJump } == true
