@@ -40,8 +40,14 @@ No mutable readiness database or local status registry is introduced.
 The bootstrap owns only these machine-level locations:
 
 ```text
-C:\mish-lab\runner\   # GitHub Actions runner + its _work checkout
+C:\mish-lab\runner\   # GitHub Actions runner + durable runner-owned state
 C:\mish-lab\tools\    # pinned machine-level toolchains/caches
+
+DEVICE candidate versions are retained under the runner-owned durable state, never under `_work` or `$RUNNER_TEMP`:
+
+C:\mish-lab\runner\.state\device-candidate\versions\<SOURCE_SHA>\<ARTIFACT_ID>\
+
+This path is a durable provenance/cache surface only. GitHub artifact resolution remains authoritative for every normal install; no local `latest/current` candidate alias exists.
 ```
 
 A human clone, if one exists, is not evidence identity and is not used by the physical workflow.
