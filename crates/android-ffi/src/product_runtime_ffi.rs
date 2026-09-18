@@ -374,6 +374,14 @@ impl NativeProductRuntime {
             .map_err(|_| CellularBridgeError::OwnerUnavailable)
     }
 
+    pub fn invalidate_cellular_platform_facts(
+        &self,
+    ) -> Result<(), NativeProductRuntimeError> {
+        self.runtime
+            .invalidate_cellular_platform_facts()
+            .map_err(Into::into)
+    }
+
     pub fn dns_diagnostic_snapshot(&self) -> CellularDnsDiagnosticView {
         self.runtime
             .current_generation()
@@ -465,6 +473,14 @@ impl NativeProductRuntime {
             .policy()
             .root_policy_diagnostic_blocking(&generation.executor())
             .map(map_root_policy_diagnostic)
+            .map_err(Into::into)
+    }
+
+    pub fn invalidate_mesh_platform_fact(
+        &self,
+    ) -> Result<(), NativeProductRuntimeError> {
+        self.runtime
+            .invalidate_mesh_platform_fact()
             .map_err(Into::into)
     }
 
