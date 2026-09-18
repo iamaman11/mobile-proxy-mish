@@ -116,6 +116,43 @@ function Read-MishSnapshot {
     }
 }
 
+function Get-MishDnsLifetimeObservation {
+    param([Parameter(Mandatory)] $Snapshot)
+
+    if (
+        $null -eq $Snapshot -or
+        -not [bool]$Snapshot.consistent -or
+        $null -eq $Snapshot.cellular -or
+        $null -eq $Snapshot.cellular.dns -or
+        -not [bool]$Snapshot.cellular.dns.available
+    ) {
+        return $null
+    }
+
+    $dns = $Snapshot.cellular.dns
+    return [ordered]@{
+        pid = [int]$Snapshot.pid
+        captured_elapsed_ms = [int64]$Snapshot.captured_elapsed_ms
+        slow_threshold_ms = [int64]$dns.slow_threshold_ms
+        started = [int64]$dns.started
+        completed = [int64]$dns.completed
+        active = [int64]$dns.active
+        peak_active = [int64]$dns.peak_active
+        slow_completions = [int64]$dns.slow_completions
+        resolver_failed = [int64]$dns.resolver_failed
+        discarded_after_deadline = [int64]$dns.discarded_after_deadline
+        completed_after_owner_change = [int64]$dns.completed_after_owner_change
+        discarded_stale = [int64]$dns.discarded_stale
+        authority_validation_failed = [int64]$dns.authority_validation_failed
+        unusable_result = [int64]$dns.unusable_result
+        accepted_current = [int64]$dns.accepted_current
+        max_native_elapsed_ms = [int64]$dns.max_native_elapsed_ms
+        last_started_owner_sequence = $dns.last_started_owner_sequence
+        last_completed_start_owner_sequence = $dns.last_completed_start_owner_sequence
+        last_completed_current_owner_sequence = $dns.last_completed_current_owner_sequence
+    }
+}
+
 function Get-MishBoundedText {
     param(
         [AllowEmptyString()][string] $Text,
@@ -154,6 +191,11 @@ $lossEvidence = [ordered]@{
     reason = 'NO_SUPPORTED_DETERMINISTIC_UNATTENDED_TRIGGER_ON_DEVICE_1'
 }
 $cellularEvidence = [ordered]@{}
+$dnsLifetimeEvidence = [ordered]@{
+    same_process = $false
+    before_e3 = $null
+    after_e3_before_restart = $null
+}
 $restartEvidence = [ordered]@{}
 $harnessCleanup = [ordered]@{
     package_id = $script:TestPackage
@@ -197,6 +239,12 @@ try {
     ) {
         Stop-MishRecovery 'LAB_RECOVERY_PRECONDITION_NOT_READY' 'Baseline owner/network facts are not ready for recovery/lifecycle acceptance.'
     }
+
+    $preDnsObservation = Get-MishDnsLifetimeObservation -Snapshot $preSnapshot
+    if ($null -eq $preDnsObservation) {
+        Stop-MishRecovery 'LAB_DNS_LIFETIME_BASELINE_INVALID' 'Baseline canonical snapshot omitted a consistent native DNS observation.'
+    }
+    $dnsLifetimeEvidence.before_e3 = $preDnsObservation
 
     $testPackagePath = Invoke-MishAdb -Arguments @('shell', 'pm', 'path', $script:TestPackage) -TimeoutSeconds 20
     $pathRows = @($testPackagePath.StdOut -split "`r?`n" | Where-Object { $_ -match '^package:.+/base\.apk$' })
@@ -249,6 +297,20 @@ try {
             Stop-MishRecovery 'U2_CELLULAR_E3_EVIDENCE_INCOMPLETE' "Cellular E3 PASS output omitted required $required evidence."
         }
     }
+
+    # Capture the process-wide native DNS facts before the explicit force-stop/start below.
+    # Restart creates a fresh process and would erase the very old-generation occupancy facts U3
+    # needs to observe. This is read-only evidence; no DNS result is accepted/rejected here.
+    $postE3Snapshot = Read-MishSnapshot
+    $postE3DnsObservation = Get-MishDnsLifetimeObservation -Snapshot $postE3Snapshot
+    if ($null -eq $postE3DnsObservation) {
+        Stop-MishRecovery 'LAB_DNS_LIFETIME_POST_E3_INVALID' 'Post-E3 canonical snapshot omitted a consistent native DNS observation.'
+    }
+    if ([int]$postE3DnsObservation.pid -ne [int]$preDnsObservation.pid) {
+        Stop-MishRecovery 'LAB_DNS_LIFETIME_PROCESS_CHANGED' 'Native DNS lifetime observation crossed a PRODUCT process boundary before the explicit restart.'
+    }
+    $dnsLifetimeEvidence.same_process = $true
+    $dnsLifetimeEvidence.after_e3_before_restart = $postE3DnsObservation
 
     & (Join-Path $PSScriptRoot 'start-device-app.ps1') `
         -AdbPath $AdbPath `
@@ -364,6 +426,7 @@ finally {
         classification = $classification
         mesh_vpn_loss_recovery = $lossEvidence
         cellular_e3 = $cellularEvidence
+        dns_lifetime = $dnsLifetimeEvidence
         restart = $restartEvidence
         test_harness = $harnessCleanup
         lab_effects = [ordered]@{
