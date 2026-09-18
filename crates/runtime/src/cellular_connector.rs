@@ -256,14 +256,17 @@ pub(crate) struct PreparedCellularDnsTarget {
 /// the single `CellularEgress` owner around the Android network-scoped DNS effect.
 pub(crate) fn resolve_current_domain(
     owner: &Arc<Mutex<CellularEgress>>,
-    resolver: &dyn CellularDnsResolver,
     domain: &str,
     deadline: Instant,
+    resolve: impl FnOnce(
+        CellularNetworkAuthority,
+        &str,
+    ) -> Result<Vec<IpAddr>, ProxyOutboundConnectError>,
 ) -> Result<PreparedCellularDnsTarget, ProxyOutboundConnectError> {
     ensure_deadline(deadline)?;
     let authority = issue_authority(owner)?;
     let mut observation = DNS_DIAGNOSTICS.start(authority);
-    let resolved = resolver.resolve(authority, domain);
+    let resolved = resolve(authority, domain);
     let current_sequence = current_owner_sequence(owner);
     observation.complete(current_sequence);
     let addresses = match resolved {
@@ -411,9 +414,12 @@ fn connect_host_with<T>(
         ProxyTargetHost::Ipv4(address) => vec![IpAddr::V4(*address)],
         ProxyTargetHost::Ipv6(_) => return Err(ProxyOutboundConnectError::Rejected),
         ProxyTargetHost::Domain(domain) => {
-            let prepared = resolve_current_domain(owner, &|authority, hostname| {
-                resolve(authority, hostname, deadline)
-            }, domain, deadline)?;
+            let prepared = resolve_current_domain(
+                owner,
+                domain,
+                deadline,
+                |authority, hostname| resolve(authority, hostname, deadline),
+            )?;
             if prepared.authority != authority {
                 return Err(ProxyOutboundConnectError::Unavailable);
             }
