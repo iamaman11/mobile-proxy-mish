@@ -243,6 +243,14 @@ impl NativeProductRuntime {
             .map_err(Into::into)
     }
 
+    pub fn advance_stopped_generation_after_platform_mutation(
+        &self,
+    ) -> Result<bool, NativeProductRuntimeError> {
+        self.runtime
+            .advance_stopped_generation_after_platform_mutation()
+            .map_err(Into::into)
+    }
+
     pub fn observe_cellular_policy(&self, observer: Arc<dyn NativeCellularPolicyObserver>) {
         let callback: CellularPolicyObserver = Arc::new(move |publication| {
             observer.on_cellular_policy_publication(map_policy_publication(publication));
