@@ -184,6 +184,10 @@ impl RootPolicyContract {
         self.active_identity
     }
 
+    pub fn clear_active_identity(&mut self) {
+        self.active_identity = None;
+    }
+
     pub const fn chain_name(&self) -> &'static str {
         match self.namespace {
             RootPolicyNamespace::Release => RELEASE_MISH_CHAIN,
