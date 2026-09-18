@@ -51,7 +51,7 @@ impl RootCommand {
         self.kind
     }
 
-    fn command(&self) -> &str {
+    pub(crate) fn command(&self) -> &str {
         &self.command
     }
 }
