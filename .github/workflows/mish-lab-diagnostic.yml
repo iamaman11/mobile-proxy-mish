@@ -110,8 +110,8 @@ jobs:
     timeout-minutes: 10
     env:
       ADB_EXE: C:\\mish-lab\\tools\\android-sdk\\platform-tools\\adb.exe
-      ACCEPTED_U2_SOURCE_SHA: '6c5391957882ad2d16614a2ee4a66289a0cc4b7d'
-      ACCEPTED_U2_INSTALLED_APK_SHA256: '96b7724610a35b3863c780d2f702ba06df1cd3aa89e85e599398897e119bf1cc'
+      CURRENT_ACCEPTED_SOURCE_SHA: '07b61e2de90bedb4c9179a5e92b9e51e309b2478'
+      CURRENT_ACCEPTED_INSTALLED_APK_SHA256: 'b779fda8551a2bbe3ba06e791f92361cac88dcb878ec6755dab80882fbcd9a2f'
     steps:
       - name: Checkout protected main diagnostic bridge
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -139,7 +139,7 @@ jobs:
         shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
         run: |
           $ErrorActionPreference = 'Stop'
-          .\lab\windows\diagnose-protocol-parity.ps1 -AdbPath "$env:ADB_EXE" -PackageName 'com.mobileproxymish.app.debug' -ExpectedInstalledApkSha256 "$env:ACCEPTED_U2_INSTALLED_APK_SHA256" -ExpectedSourceSha "$env:ACCEPTED_U2_SOURCE_SHA" -EvidencePath "$env:RUNNER_TEMP\mish-protocol-parity-v1.json"
+          .\lab\windows\diagnose-protocol-parity.ps1 -AdbPath "$env:ADB_EXE" -PackageName 'com.mobileproxymish.app.debug' -ExpectedInstalledApkSha256 "$env:CURRENT_ACCEPTED_INSTALLED_APK_SHA256" -ExpectedSourceSha "$env:CURRENT_ACCEPTED_SOURCE_SHA" -EvidencePath "$env:RUNNER_TEMP\mish-protocol-parity-v1.json"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Publish protocol parity summary
