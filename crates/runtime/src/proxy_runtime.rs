@@ -602,7 +602,12 @@ mod tests {
             ProxyCredentialMaterial::new("user", "password").expect("credentials"),
         )
         .expect("explicit non-wildcard plan");
-        let error = match ProxyServingRuntime::start(plan, Arc::new(RejectingConnector)) {
+        let executor = RuntimeExecutor::new().expect("executor");
+        let error = match ProxyServingRuntime::start(
+            Arc::clone(&executor),
+            plan,
+            Arc::new(RejectingConnector),
+        ) {
             Ok(runtime) => {
                 let _ = runtime.stop();
                 panic!("non-loopback plan must fail");
@@ -614,6 +619,7 @@ mod tests {
             error.lifecycle_failure(),
             ProxyServingFailure::ProxyConfigurationRejected
         );
+        executor.shutdown().expect("executor shutdown");
     }
 
     #[test]
@@ -708,8 +714,13 @@ mod tests {
             ProxyCredentialMaterial::new("runtime-user", "runtime-password").expect("credentials");
         let plan = ProxyServingPlan::canonical(Ipv4Addr::LOCALHOST.into(), credentials)
             .expect("canonical plan");
-        let runtime =
-            ProxyServingRuntime::start(plan, Arc::new(RejectingConnector)).expect("runtime");
+        let executor = RuntimeExecutor::new().expect("executor");
+        let runtime = ProxyServingRuntime::start(
+            Arc::clone(&executor),
+            plan,
+            Arc::new(RejectingConnector),
+        )
+        .expect("runtime");
         assert!(runtime.is_healthy());
         assert_eq!(runtime.snapshot().state(), ProxyServingState::Running);
         assert_eq!(runtime.snapshot().failure(), None);
@@ -718,5 +729,6 @@ mod tests {
         assert_eq!(runtime.snapshot().state(), ProxyServingState::Stopped);
         assert_eq!(runtime.snapshot().failure(), None);
         assert_eq!(runtime.active_sessions(), 0);
+        executor.shutdown().expect("executor shutdown");
     }
 }
