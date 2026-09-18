@@ -65,6 +65,7 @@ struct CoordinatorState {
     last_policy_result: Option<RootPolicyResult>,
     last_publication: Option<CellularPolicyPublication>,
     observer: Option<CellularPolicyObserver>,
+    internal_observers: Vec<CellularPolicyObserver>,
     closed: bool,
 }
 
@@ -108,6 +109,7 @@ impl CellularPolicyCoordinator {
                 last_policy_result: None,
                 last_publication: None,
                 observer: None,
+                internal_observers: Vec::new(),
                 closed: false,
             }),
         }))
@@ -129,6 +131,23 @@ impl CellularPolicyCoordinator {
                 return;
             };
             state.observer = Some(Arc::clone(&observer));
+            state.last_publication
+        };
+        if let Some(publication) = publication {
+            notify_observer(Some((observer, publication)));
+        }
+    }
+
+    /// Registers an internal runtime observer without displacing the Android projection observer.
+    ///
+    /// Readiness and other native composition must subscribe here rather than polling or asking
+    /// Kotlin to relay already-native owner facts.
+    pub fn add_internal_observer(&self, observer: CellularPolicyObserver) {
+        let publication = {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            state.internal_observers.push(Arc::clone(&observer));
             state.last_publication
         };
         if let Some(publication) = publication {
@@ -451,15 +470,22 @@ impl CellularPolicyCoordinator {
 
     fn publish(&self, admission: CellularAdmissionSnapshot, result: RootPolicyResult) {
         let publication = CellularPolicyPublication { admission, result };
-        let observer = {
+        let observers = {
             let Ok(mut state) = self.state.lock() else {
                 return;
             };
             state.last_policy_result = Some(result);
             state.last_publication = Some(publication);
-            state.observer.clone()
+            state
+                .observer
+                .iter()
+                .cloned()
+                .chain(state.internal_observers.iter().cloned())
+                .collect::<Vec<_>>()
         };
-        notify_observer(observer.map(|observer| (observer, publication)));
+        for observer in observers {
+            notify_observer(Some((observer, publication)));
+        }
     }
 
     fn reset_recovery(&self) {
