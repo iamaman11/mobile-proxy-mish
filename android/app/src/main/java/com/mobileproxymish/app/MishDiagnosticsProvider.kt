@@ -31,6 +31,11 @@ internal data class MishDiagnosticFactsV2(
     val cellularReason: String,
     val cellularAdmitted: Boolean,
     val cellularBoundaryFailure: String?,
+    val cellularReconcileRequested: Long,
+    val cellularReconcileExecuted: Long,
+    val cellularReconcileCoalesced: Long,
+    val cellularReconcilePending: Boolean,
+    val cellularReconcileDrainScheduled: Boolean,
     val rootAuthorityObservation: String,
     val rootPolicyAuthorized: Boolean,
     val proxyState: String,
@@ -64,6 +69,13 @@ internal fun renderMishDiagnosticSnapshotV2(facts: MishDiagnosticFactsV2): Strin
             put("reason", facts.cellularReason)
             put("admitted", facts.cellularAdmitted)
             putNullable("boundary_failure", facts.cellularBoundaryFailure)
+            put("reconcile", JSONObject().apply {
+                put("requested", facts.cellularReconcileRequested)
+                put("executed", facts.cellularReconcileExecuted)
+                put("coalesced", facts.cellularReconcileCoalesced)
+                put("pending", facts.cellularReconcilePending)
+                put("drain_scheduled", facts.cellularReconcileDrainScheduled)
+            })
         })
         put("root", JSONObject().apply {
             put("authority_observation", facts.rootAuthorityObservation)
@@ -142,6 +154,7 @@ class MishDiagnosticsProvider : ContentProvider() {
         val runtimeRunningBefore = runtime.isRunning
 
         val cellularBefore = runtime.cellularSnapshot.value
+        val cellularReconcileBefore = cellularGeneration.reconcileDiagnosticObservation()
         val proxyBefore = runtime.proxySnapshot.value
         val readinessBefore = runtime.readinessSnapshot.value
         val meshBefore = runtime.meshSnapshot.value
@@ -152,6 +165,7 @@ class MishDiagnosticsProvider : ContentProvider() {
         val meshActiveSessions = meshGeneration.diagnosticActiveSessions()
 
         val cellularAfter = runtime.cellularSnapshot.value
+        val cellularReconcileAfter = cellularGeneration.reconcileDiagnosticObservation()
         val proxyAfter = runtime.proxySnapshot.value
         val readinessAfter = runtime.readinessSnapshot.value
         val meshAfter = runtime.meshSnapshot.value
@@ -164,6 +178,7 @@ class MishDiagnosticsProvider : ContentProvider() {
         val consistent = sameGeneration &&
             runtimeRunningBefore == runtimeRunningAfter &&
             cellularBefore == cellularAfter &&
+            cellularReconcileBefore == cellularReconcileAfter &&
             proxyBefore == proxyAfter &&
             readinessBefore == readinessAfter &&
             meshBefore == meshAfter
@@ -204,6 +219,11 @@ class MishDiagnosticsProvider : ContentProvider() {
                 cellularReason = cellularReason,
                 cellularAdmitted = cellularAdmitted,
                 cellularBoundaryFailure = boundaryFailure?.diagnosticCode(),
+                cellularReconcileRequested = cellularReconcileAfter.requested,
+                cellularReconcileExecuted = cellularReconcileAfter.executed,
+                cellularReconcileCoalesced = cellularReconcileAfter.coalesced,
+                cellularReconcilePending = cellularReconcileAfter.pending,
+                cellularReconcileDrainScheduled = cellularReconcileAfter.drainScheduled,
                 rootAuthorityObservation = rootAuthorityObservation,
                 rootPolicyAuthorized = readinessDiagnostic.rootPolicyVerified,
                 proxyState = proxyState,

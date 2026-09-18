@@ -76,7 +76,7 @@ U2 physical evidence subsequently exposed one incomplete closure item: pre-L8 si
 
 ---
 
-# U2 — Native DEVICE-1 Acceptance and physical re-baseline — ACTIVE
+# U2 — Native DEVICE-1 Acceptance and physical re-baseline — COMPLETED
 
 This is the first authoritative physical baseline for the final direct native topology. Old resource numbers and process identities from the sing-box/private-bridge/thread-per-session architecture are not current-product truth.
 
@@ -216,9 +216,25 @@ DEVICE-1 diagnostics are current-product health diagnostics. Canonical acceptanc
 
 Exit: exact native topology, including one process-wide Tokio execution model for long-lived Mesh + Proxy session work, is physically proven and mechanically guarded against regression; the current resource/recovery baseline is recorded without secret/raw-IP leakage. The Magisk/su privilege boundary is considered physically accepted only after the replacement-install, restart and repeated-recovery evidence above passes.
 
+## U2 closure evidence
+
+U2 closed on exact PRODUCT head `6c5391957882ad2d16614a2ee4a66289a0cc4b7d` with canonical Device Cycle run `35289244271` / run number `222` and classification `U2_RECOVERY_LIFECYCLE_PASS`.
+
+The accepted physical evidence includes:
+
+- post-Tokio capacity/resource acceptance at 64 with deterministic 65th rejection;
+- positive / loss / recovery Cellular E3 phases;
+- loss blocks established flow, DNS and public sockets with no default fallback;
+- fresh recovery generation, exact root-policy reconciliation and cleanup;
+- fresh post-restart READY with root policy authorized, Proxy healthy, Mesh admitted/epoch/ingress, owner sessions 0/0 and loopback + Mesh E2E PASS.
+
+PR #235 fixed dependency-safe root-policy teardown and was accepted on that exact candidate. PR #236 made installed DEVICE bytes authoritative after host install timeout. PR #237 made E3 evidence deterministic and debug-namespace exact.
+
+Protected main after acceptance is `470e26ba483e5596bb06069e982036247d738c61`; its Git tree is byte-identical to the physically accepted head.
+
 ---
 
-# U3 — Recovery, observability and lifetime convergence
+# U3 — Recovery, observability and lifetime convergence — ACTIVE
 
 Only current-topology findings survive into this stage. Implement from evidence, not from historical mechanism assumptions.
 
