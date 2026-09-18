@@ -49,6 +49,10 @@ def main() -> None:
         "full accepts only the explicit optional capacity_resources probe",
         "install_only/diagnose_only do not accept a probe",
         "capacity_resources",
+        "recovery_lifecycle",
+        "dns_lifetime_live",
+        "Explicit U3 DNS lifetime - live same-process observation",
+        "diagnose-dns-lifetime-live.ps1",
         'echo "control_sha=$GITHUB_SHA"',
         "actions: read",
         "Exercise orchestration and installer contracts",
@@ -192,6 +196,35 @@ def main() -> None:
     for forbidden in ("sing-box", "'shell', 'su'", "'shell', 'kill'", "'shell', 'pkill'", "'shell', 'am', 'force-stop'"):
         forbid(protocol_probe, forbidden, "U2 protocol probe must remain read-only, non-root and current-PRODUCT-only")
 
+    dns_probe = "lab/windows/diagnose-dns-lifetime-live.ps1"
+    for required in (
+        "mish.lab.dns-lifetime-live/v1",
+        "Invoke-MishExternalProxyCredentialProvisioning",
+        "Open-MishExternalProxyCredentialLease",
+        "cmd', 'phone', 'data'",
+        "LAB_DNS_LIFETIME_PROCESS_CHANGED",
+        "LAB_DNS_LIFETIME_RECOVERY_SEQUENCE_UNOBSERVED",
+        "U3_DNS_LIFETIME_LIVE_OBSERVATION_COMPLETE",
+        "last_started_owner_sequence",
+        "completed_after_owner_change",
+        "discarded_after_deadline",
+        "discarded_stale",
+        "quiescent_after_recovery",
+        "observation_only = $true",
+        "same_process = $true",
+    ):
+        require(dns_probe, required, "U3 DNS lifetime observation must stay bounded and same-process")
+    for forbidden in (
+        "'shell', 'su'",
+        "'shell', 'iptables'",
+        "'shell', 'ip6tables'",
+        "am', 'instrument'",
+        "airplane-mode",
+        "gradle ",
+        "cargo build",
+    ):
+        forbid(dns_probe, forbidden, "DNS lifetime observation must not become a second PRODUCT/root/build path")
+
     capacity_probe = "lab/windows/diagnose-capacity-resources.ps1"
     for required in (
         "mish.diagnostics/v2",
@@ -260,6 +293,9 @@ def main() -> None:
         "RequestedProbe",
         "loopback_connect",
         "capacity_resources",
+        "recovery_lifecycle",
+        "dns_lifetime_live",
+        "FULL_BASELINE_PLUS_DNS_LIFETIME_OBSERVATION",
         "Get-MishTargetedAcceptance",
         "protocol_matrix_pass",
         "acceptance_result",
@@ -279,6 +315,9 @@ def main() -> None:
         "Full PASS report must accept the exact current candidate and contain no automatic probe decision",
         "A collected but failing loopback matrix must not be promoted to a green probe",
         "A real capacity failure must reject the exact PRODUCT candidate",
+        "DNS lifetime observation PASS must remain measurement-only",
+        "DNS lifetime collection failure must remain LAB-only",
+        "A baseline PRODUCT failure must still outrank measurement-only DNS evidence",
         "Baseline PRODUCT failure must outrank absent capacity evidence",
         "diagnose-capacity-resources.ps1",
         "U2_CAPACITY_AND_RESOURCE_MEASUREMENTS_PASS",
@@ -294,6 +333,9 @@ def main() -> None:
         "No successful build, merge to main, label, or completed workflow starts DEVICE-1",
         "/mish-cycle full <PRODUCT_SHA>",
         "/mish-cycle full <PRODUCT_SHA> capacity_resources",
+        "/mish-cycle full <PRODUCT_SHA> recovery_lifecycle",
+        "/mish-cycle full <PRODUCT_SHA> dns_lifetime_live",
+        "measurement-only",
         "external Mesh endpoint",
         "owner-backed",
         "one GitHub Actions Device Cycle run",
