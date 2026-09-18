@@ -17,6 +17,8 @@ use mish_proxy::{ProxyConnectTarget, ProxyOutboundConnectError, ProxyOutboundCon
 use std::net::TcpStream;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Duration;
+use tokio::sync::Notify;
+use tokio::time::{Instant as TokioInstant, timeout as tokio_timeout};
 
 const OPERATION_TIMEOUT_MAX_MS: u64 = 120_000;
 
@@ -116,6 +118,14 @@ impl CellularRuntimeCoordinator {
             .ok_or(CellularRuntimeError::StateUnavailable)
     }
 
+    pub async fn await_root_policy_quiesced_async(
+        &self,
+        timeout: Duration,
+    ) -> Result<bool, CellularRuntimeError> {
+        validate_operation_timeout(timeout)?;
+        Ok(self.root_policy_effect_gate.wait_quiesced_async(timeout).await)
+    }
+
     pub fn authorize_root_policy(
         &self,
         sequence: ObservationSequence,
@@ -175,6 +185,7 @@ fn validate_operation_timeout(timeout: Duration) -> Result<(), CellularRuntimeEr
 struct RootPolicyEffectGate {
     state: Mutex<RootPolicyEffectGateState>,
     quiesced: Condvar,
+    async_quiesced: Notify,
 }
 
 #[derive(Default)]
@@ -191,6 +202,7 @@ impl RootPolicyEffectGate {
         state.ready = ready;
         if !ready && state.in_flight == 0 {
             self.quiesced.notify_all();
+            self.async_quiesced.notify_waiters();
         }
         true
     }
@@ -219,6 +231,26 @@ impl RootPolicyEffectGate {
             .ok()?;
         Some(state.in_flight == 0)
     }
+
+    async fn wait_quiesced_async(&self, timeout: Duration) -> bool {
+        let deadline = TokioInstant::now() + timeout;
+        loop {
+            if self.state.lock().is_ok_and(|state| state.in_flight == 0) {
+                return true;
+            }
+            let notified = self.async_quiesced.notified();
+            if self.state.lock().is_ok_and(|state| state.in_flight == 0) {
+                return true;
+            }
+            let now = TokioInstant::now();
+            if now >= deadline {
+                return false;
+            }
+            if tokio_timeout(deadline - now, notified).await.is_err() {
+                return false;
+            }
+        }
+    }
 }
 
 struct RootPolicyEffectPermit {
@@ -233,6 +265,7 @@ impl Drop for RootPolicyEffectPermit {
             state.in_flight -= 1;
             if state.in_flight == 0 {
                 self.gate.quiesced.notify_all();
+                self.gate.async_quiesced.notify_waiters();
             }
         }
     }
