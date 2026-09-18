@@ -23,7 +23,7 @@ MISH is an industrial rooted-Android mobile proxy appliance that is simple to op
 - one Cellular Egress owner;
 - one Runtime Lifecycle owner;
 - one process-wide Tokio execution owner for long-lived Mesh + Proxy work, while domain policy ownership remains split by capability;
-- exact-network cellular DNS and public sockets only;
+- owner-bound/network-scoped cellular DNS plus ordinary PRODUCT-UID public sockets through the root-policy-gated current cellular route;
 - Cloudflare One Agent remains the only Android VPN owner;
 - one process-wide persistent Magisk `su` transport, with authority cached per live shell generation;
 - narrow typed root effects above that transport; no generic shell/control API and no root daemon/helper;
