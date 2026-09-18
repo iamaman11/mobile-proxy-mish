@@ -1,4 +1,7 @@
 use crate::readiness_ffi::ProductReadinessState;
+use crate::runtime_lifecycle_ffi::{
+    ProxyServingFailure, ProxyServingState, map_proxy_failure_out,
+};
 use crate::runtime_boundary::{
     AndroidDnsResolver, CellularAdmissionView, CellularBridgeError, CellularController,
     CellularDnsDiagnosticView, PublicIpObservationView, PublicIpProbeError, PublicIpProbeTicket,
@@ -13,7 +16,10 @@ use mish_cellular::{
 use mish_runtime::{
     CellularPolicyCoordinator, CellularPolicyObserver, CellularPolicyPublication,
     CellularReconcileDiagnostic, CellularRuntimeCoordinator, MeshCompositionCoordinator,
-    ProxyServingRuntime, RootAuthorityStatus as OwnerRootAuthorityStatus,
+    ProxyRuntimeCoordinator, ProxyRuntimeObserver, ProxyRuntimePublication,
+    ProxyServingFailure as OwnerProxyServingFailure,
+    ProxyServingState as OwnerProxyServingState,
+    RootAuthorityStatus as OwnerRootAuthorityStatus,
     RootPolicyFailure as OwnerRootPolicyFailure,
     ReadinessDiagnosticSnapshot, ReadinessObserver, ReadinessRuntimeCoordinator,
     ReadinessRuntimeError, RootPolicyReconcileDiagnostic,
@@ -145,6 +151,22 @@ pub struct ReadinessDiagnosticView {
     pub refresh_pending: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct ProxyRuntimePublicationView {
+    pub state: ProxyServingState,
+    pub failure: Option<ProxyServingFailure>,
+    pub serving_generation: Option<u64>,
+    pub credential_version: Option<u64>,
+    pub recovery_pending: bool,
+    pub recovery_attempts_since_success: u32,
+    pub recovery_next_delay_ms: u64,
+}
+
+#[uniffi::export(foreign)]
+pub trait NativeProxyRuntimeObserver: Send + Sync {
+    fn on_proxy_runtime(&self, publication: ProxyRuntimePublicationView);
+}
+
 #[uniffi::export(foreign)]
 pub trait NativeReadinessObserver: Send + Sync {
     fn on_readiness(&self, readiness: ProductReadinessState);
@@ -168,43 +190,8 @@ pub struct NativeProductRuntime {
     policy: Arc<CellularPolicyCoordinator>,
     mesh: Arc<MeshCompositionCoordinator>,
     readiness: Arc<ReadinessRuntimeCoordinator>,
+    proxy: Arc<ProxyRuntimeCoordinator>,
     closed: AtomicBool,
-}
-
-impl NativeProductRuntime {
-    pub(crate) fn executor_handle(&self) -> Arc<RuntimeExecutor> {
-        Arc::clone(&self.executor)
-    }
-
-    pub(crate) fn cellular_handle(&self) -> Arc<CellularRuntimeCoordinator> {
-        Arc::clone(&self.cellular)
-    }
-
-    pub(crate) fn install_proxy_for_mesh(
-        self: &Arc<Self>,
-        proxy: Arc<ProxyServingRuntime>,
-        credential_version: u64,
-        username: String,
-        password: String,
-    ) -> Result<(), MeshTransportBoundaryError> {
-        let snapshot = self.mesh.install_proxy(proxy).map_err(map_transport_error)?;
-        self.readiness
-            .observe_mesh(snapshot)
-            .map_err(map_readiness_runtime_to_mesh)?;
-        self.readiness
-            .observe_proxy_started(credential_version, username, password)
-            .map_err(map_readiness_runtime_to_mesh)
-    }
-
-    pub(crate) fn clear_proxy_for_mesh(self: &Arc<Self>) -> Result<(), MeshTransportBoundaryError> {
-        self.readiness
-            .observe_proxy_stopped()
-            .map_err(map_readiness_runtime_to_mesh)?;
-        let snapshot = self.mesh.clear_proxy().map_err(map_transport_error)?;
-        self.readiness
-            .observe_mesh(snapshot)
-            .map_err(map_readiness_runtime_to_mesh)
-    }
 }
 
 #[uniffi::export]
@@ -248,6 +235,13 @@ impl NativeProductRuntime {
         policy.add_internal_observer(Arc::new(move |publication| {
             let _ = readiness_cellular.observe_cellular(publication);
         }));
+        let proxy = ProxyRuntimeCoordinator::new(
+            Arc::clone(&executor),
+            Arc::clone(&cellular),
+            Arc::clone(&mesh),
+            Arc::clone(&readiness),
+            Duration::from_secs(15),
+        );
 
         Ok(Arc::new(Self {
             executor,
@@ -256,6 +250,7 @@ impl NativeProductRuntime {
             policy,
             mesh,
             readiness,
+            proxy,
             closed: AtomicBool::new(false),
         }))
     }
@@ -289,6 +284,51 @@ impl NativeProductRuntime {
 
     pub fn readiness_diagnostic_snapshot(&self) -> ReadinessDiagnosticView {
         map_readiness_diagnostic(self.readiness.diagnostic_snapshot())
+    }
+
+    pub fn observe_proxy_runtime(&self, observer: Arc<dyn NativeProxyRuntimeObserver>) {
+        let callback: ProxyRuntimeObserver = Arc::new(move |publication| {
+            observer.on_proxy_runtime(map_proxy_publication(publication));
+        });
+        self.proxy.set_observer(callback);
+    }
+
+    pub fn proxy_runtime_snapshot(&self) -> ProxyRuntimePublicationView {
+        map_proxy_publication(self.proxy.snapshot())
+    }
+
+    pub fn start_proxy_runtime(
+        self: &Arc<Self>,
+        credential_version: u64,
+        username: String,
+        password: String,
+    ) -> ProxyRuntimePublicationView {
+        if self.closed.load(Ordering::Acquire) {
+            return map_proxy_publication(self.proxy.snapshot());
+        }
+        let credentials = match mish_proxy::ProxyCredentialMaterial::new(username, password) {
+            Ok(credentials) => credentials,
+            Err(_) => {
+                return ProxyRuntimePublicationView {
+                    state: ProxyServingState::Failed,
+                    failure: Some(ProxyServingFailure::ProxyConfigurationRejected),
+                    serving_generation: None,
+                    credential_version: None,
+                    recovery_pending: false,
+                    recovery_attempts_since_success: 0,
+                    recovery_next_delay_ms: 1_000,
+                };
+            }
+        };
+        map_proxy_publication(self.proxy.start(credential_version, credentials))
+    }
+
+    pub fn stop_proxy_runtime(self: &Arc<Self>) -> ProxyRuntimePublicationView {
+        map_proxy_publication(self.proxy.stop())
+    }
+
+    pub fn proxy_active_sessions(&self) -> u32 {
+        self.proxy.active_sessions()
     }
 
     pub fn admission_snapshot(&self) -> Result<CellularAdmissionView, CellularBridgeError> {
@@ -445,6 +485,7 @@ impl NativeProductRuntime {
             return Ok(());
         }
 
+        let proxy_clean = self.proxy.shutdown().failure != Some(OwnerProxyServingFailure::ShutdownFailed);
         self.readiness.shutdown();
         let mesh_clean = self.mesh.shutdown().is_ok();
         let policy_clean = self
@@ -453,7 +494,7 @@ impl NativeProductRuntime {
             .map_err(NativeProductRuntimeError::from);
         let executor_clean = self.executor.shutdown().map_err(NativeProductRuntimeError::from);
 
-        if mesh_clean && policy_clean? && executor_clean.is_ok() {
+        if proxy_clean && mesh_clean && policy_clean? && executor_clean.is_ok() {
             Ok(())
         } else {
             let _ = executor_clean;
@@ -463,6 +504,23 @@ impl NativeProductRuntime {
 
     pub fn is_running(&self) -> bool {
         !self.closed.load(Ordering::Acquire) && self.executor.is_running()
+    }
+}
+
+fn map_proxy_publication(publication: ProxyRuntimePublication) -> ProxyRuntimePublicationView {
+    ProxyRuntimePublicationView {
+        state: match publication.state {
+            OwnerProxyServingState::Stopped => ProxyServingState::Stopped,
+            OwnerProxyServingState::Starting => ProxyServingState::Starting,
+            OwnerProxyServingState::Running => ProxyServingState::Running,
+            OwnerProxyServingState::Failed => ProxyServingState::Failed,
+        },
+        failure: publication.failure.map(map_proxy_failure_out),
+        serving_generation: publication.serving_generation,
+        credential_version: publication.credential_version,
+        recovery_pending: publication.recovery_pending,
+        recovery_attempts_since_success: publication.recovery_attempts_since_success,
+        recovery_next_delay_ms: publication.recovery_next_delay_ms,
     }
 }
 
