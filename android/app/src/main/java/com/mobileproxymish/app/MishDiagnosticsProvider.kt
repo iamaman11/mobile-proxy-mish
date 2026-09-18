@@ -13,6 +13,7 @@ import com.mobileproxymish.app.cellular.CellularBoundaryFailure
 import com.mobileproxymish.app.cellular.CellularRootPolicyReconcileDiagnostic
 import com.mobileproxymish.app.cellular.CellularRuntimeSnapshot
 import com.mobileproxymish.ffi.CellularAdmissionState
+import com.mobileproxymish.ffi.CellularDnsDiagnosticView
 import com.mobileproxymish.ffi.ProductReadinessState
 import java.nio.charset.StandardCharsets
 import org.json.JSONObject
@@ -37,6 +38,7 @@ internal data class MishDiagnosticFactsV2(
     val cellularReconcileCoalesced: Long,
     val cellularReconcilePending: Boolean,
     val cellularReconcileDrainScheduled: Boolean,
+    val dnsObservation: CellularDnsDiagnosticView?,
     val rootAuthorityObservation: String,
     val rootPolicyAuthorized: Boolean,
     val rootReconcile: CellularRootPolicyReconcileDiagnostic,
@@ -77,6 +79,43 @@ internal fun renderMishDiagnosticSnapshotV2(facts: MishDiagnosticFactsV2): Strin
                 put("coalesced", facts.cellularReconcileCoalesced)
                 put("pending", facts.cellularReconcilePending)
                 put("drain_scheduled", facts.cellularReconcileDrainScheduled)
+            })
+            put("dns", JSONObject().apply {
+                val dns = facts.dnsObservation
+                put("available", dns != null)
+                put("slow_threshold_ms", dns?.slowThresholdMs?.toLong() ?: JSONObject.NULL)
+                put("started", dns?.started?.toLong() ?: JSONObject.NULL)
+                put("completed", dns?.completed?.toLong() ?: JSONObject.NULL)
+                put("active", dns?.active?.toLong() ?: JSONObject.NULL)
+                put("peak_active", dns?.peakActive?.toLong() ?: JSONObject.NULL)
+                put("slow_completions", dns?.slowCompletions?.toLong() ?: JSONObject.NULL)
+                put("failed", dns?.failed?.toLong() ?: JSONObject.NULL)
+                put(
+                    "discarded_after_deadline",
+                    dns?.discardedAfterDeadline?.toLong() ?: JSONObject.NULL,
+                )
+                put(
+                    "completed_after_owner_change",
+                    dns?.completedAfterOwnerChange?.toLong() ?: JSONObject.NULL,
+                )
+                put("discarded_stale", dns?.discardedStale?.toLong() ?: JSONObject.NULL)
+                put("accepted_current", dns?.acceptedCurrent?.toLong() ?: JSONObject.NULL)
+                put(
+                    "max_native_elapsed_ms",
+                    dns?.maxNativeElapsedMs?.toLong() ?: JSONObject.NULL,
+                )
+                put(
+                    "last_started_owner_sequence",
+                    dns?.lastStartedOwnerSequence?.toLong() ?: JSONObject.NULL,
+                )
+                put(
+                    "last_completed_start_owner_sequence",
+                    dns?.lastCompletedStartOwnerSequence?.toLong() ?: JSONObject.NULL,
+                )
+                put(
+                    "last_completed_current_owner_sequence",
+                    dns?.lastCompletedCurrentOwnerSequence?.toLong() ?: JSONObject.NULL,
+                )
             })
         })
         put("root", JSONObject().apply {
@@ -190,6 +229,7 @@ class MishDiagnosticsProvider : ContentProvider() {
         val cellularBefore = runtime.cellularSnapshot.value
         val cellularReconcileBefore = cellularGeneration.reconcileDiagnosticObservation()
         val rootReconcileBefore = cellularGeneration.rootPolicyReconcileDiagnosticObservation()
+        val dnsBefore = cellularGeneration.dnsDiagnosticObservation()
         val proxyBefore = runtime.proxySnapshot.value
         val readinessBefore = runtime.readinessSnapshot.value
         val meshBefore = runtime.meshSnapshot.value
@@ -202,6 +242,7 @@ class MishDiagnosticsProvider : ContentProvider() {
         val cellularAfter = runtime.cellularSnapshot.value
         val cellularReconcileAfter = cellularGeneration.reconcileDiagnosticObservation()
         val rootReconcileAfter = cellularGeneration.rootPolicyReconcileDiagnosticObservation()
+        val dnsAfter = cellularGeneration.dnsDiagnosticObservation()
         val proxyAfter = runtime.proxySnapshot.value
         val readinessAfter = runtime.readinessSnapshot.value
         val meshAfter = runtime.meshSnapshot.value
@@ -216,6 +257,7 @@ class MishDiagnosticsProvider : ContentProvider() {
             cellularBefore == cellularAfter &&
             cellularReconcileBefore == cellularReconcileAfter &&
             rootReconcileBefore == rootReconcileAfter &&
+            dnsBefore == dnsAfter &&
             proxyBefore == proxyAfter &&
             readinessBefore == readinessAfter &&
             meshBefore == meshAfter
@@ -261,6 +303,7 @@ class MishDiagnosticsProvider : ContentProvider() {
                 cellularReconcileCoalesced = cellularReconcileAfter.coalesced,
                 cellularReconcilePending = cellularReconcileAfter.pending,
                 cellularReconcileDrainScheduled = cellularReconcileAfter.drainScheduled,
+                dnsObservation = dnsAfter,
                 rootAuthorityObservation = rootAuthorityObservation,
                 rootPolicyAuthorized = readinessDiagnostic.rootPolicyVerified,
                 rootReconcile = rootReconcileAfter,
