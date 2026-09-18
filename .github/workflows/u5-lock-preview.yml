@@ -25,3 +25,6 @@ jobs:
           echo '--- BEGIN CARGO LOCK DIFF ---'
           git diff -- Cargo.lock
           echo '--- END CARGO LOCK DIFF ---'
+          echo '--- BEGIN GENERATED CARGO LOCK ---'
+          cat Cargo.lock
+          echo '--- END GENERATED CARGO LOCK ---'
