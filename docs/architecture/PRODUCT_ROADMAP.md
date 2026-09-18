@@ -288,7 +288,7 @@ Next stage: **U4 — Generation-bound Public Egress IP**. U4 starts only after U
 
 ---
 
-# U4 — Generation-bound Public Egress IP
+# U4 — Generation-bound Public Egress IP — CLOSED / PASS
 
 Add one bounded public-IP observation through the exact PRODUCT cellular path.
 
@@ -311,6 +311,53 @@ Requirements:
 - no Android default/Wi-Fi/WARP fallback;
 - one deliberately selected endpoint, not scattered service literals;
 - raw public IP may be shown locally but is not persisted to logs/GitHub/analytics; durable evidence stores only changed/unchanged/failure.
+
+## U4 closure evidence
+
+U4 is closed on physically accepted exact PRODUCT head:
+
+```text
+7ba2f35233c418920ad97885eee9372f7e9117b9
+tree = c02f858882c1a6e2be1392a76410d3cd5d897f80
+```
+
+Hosted exact-head gates:
+
+- CI #708 = PASS;
+- Integration Android Preflight #353 = PASS.
+
+Canonical physical acceptance:
+
+```text
+Device Cycle #289
+run_id = 35373265701
+source_sha = 7ba2f35233c418920ad97885eee9372f7e9117b9
+classification = U2_RECOVERY_LIFECYCLE_PASS
+exact_candidate_acceptance = PASS
+```
+
+The existing accepted `recovery_lifecycle` physically proved U4 without adding a second DEVICE control plane. Its exact-head `CellularE3InstrumentedTest` proved:
+
+- bounded positive HTTPS observations on the current owner generation;
+- owner-bound/network-scoped DNS and ordinary PRODUCT-UID socket semantics;
+- stale ticket rejection after a real cellular loss generation;
+- no default/Wi-Fi/WARP fallback while Cellular Egress is not admitted;
+- fresh-generation observation after recovery;
+- repeated observations remain bounded;
+- `raw_ip_persisted=false`.
+
+The squash-merged protected PRODUCT main is:
+
+```text
+64482bfa1c5ba6bb2980839b58046742c2b13f19
+tree = c02f858882c1a6e2be1392a76410d3cd5d897f80
+```
+
+Therefore the physically accepted candidate tree and accepted protected-main tree are byte-identical.
+
+U4 introduces no second Cellular owner, networking stack, Tokio runtime/executor, readiness/lifecycle owner, Android per-socket network binding, fallback public-egress path, rotation owner or UI state owner.
+
+Next stage: **U5 — First-class IP Rotation**.
 
 ---
 
