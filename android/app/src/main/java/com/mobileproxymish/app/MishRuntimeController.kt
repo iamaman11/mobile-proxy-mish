@@ -137,26 +137,27 @@ class MishRuntimeController internal constructor(
     internal fun revokeExternalCredentialWhileStopped(): Boolean =
         mutateExternalCredentialWhileStopped(externalCredentialStore::revokeWhileStopped)
 
-    private fun mutateExternalCredentialWhileStopped(mutation: () -> Boolean): Boolean {
-        val lease = runCatching {
-            productRuntime.beginStoppedPlatformMutation()
-        }.getOrNull() ?: return false
+    private fun mutateExternalCredentialWhileStopped(mutation: () -> Boolean): Boolean =
+        synchronized(platformEffectsLock) {
+            val lease = runCatching {
+                productRuntime.beginStoppedPlatformMutation()
+            }.getOrNull() ?: return@synchronized false
 
-        val succeeded = runCatching(mutation).getOrDefault(false)
-        return runCatching {
-            productRuntime.completeStoppedPlatformMutation(
-                lease = lease,
-                succeeded = succeeded,
-            )
-        }.getOrDefault(false)
-    }
+            val succeeded = runCatching(mutation).getOrDefault(false)
+            runCatching {
+                productRuntime.completeStoppedPlatformMutation(
+                    lease = lease,
+                    succeeded = succeeded,
+                )
+            }.getOrDefault(false)
+        }
 
     /** Final process cleanup seam retained for instrumentation; Service stop uses stop(), not this. */
-    internal fun shutdownProcessExact(): Boolean {
+    internal fun shutdownProcessExact(): Boolean = synchronized(platformEffectsLock) {
         var clean = true
         if (runCatching(meshRuntime::close).isFailure) clean = false
         if (runCatching(cellularRuntime::close).isFailure) clean = false
         if (runCatching { productRuntime.shutdown() }.isFailure) clean = false
-        return clean
+        clean
     }
 }
