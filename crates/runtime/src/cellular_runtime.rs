@@ -4,6 +4,9 @@
 //! effect gate. Proxy Serving consumes the same owner directly through a narrow connector; there is
 //! no private loopback bridge, duplicate cellular owner, DNS fallback or proxy-specific root path.
 
+use crate::public_ip_network::execute_public_ip_probe;
+use crate::tls_client::ProductTlsClient;
+use crate::RuntimeExecutor;
 use crate::{
     CellularDnsDiagnosticSnapshot, CellularDnsResolver, CellularOutboundRuntimeConnector,
     PreparedPublicIpProbe, PublicEgressIpObservation, PublicIpProbeEffectFailure,
@@ -75,6 +78,21 @@ impl CellularRuntimeCoordinator {
             effect_gate: Arc::clone(&self.root_policy_effect_gate),
             permit: Mutex::new(Some(permit)),
         })
+    }
+
+    /// Executes one generation-bound public-IP observation entirely on the shared PRODUCT Tokio
+    /// runtime. Owner-bound DNS, root-policy currentness, TCP/TLS/HTTPS and final parsing remain
+    /// within Rust; Android receives only the typed terminal observation.
+    pub fn observe_public_egress_ip(
+        &self,
+        executor: &RuntimeExecutor,
+        operation_timeout: Duration,
+    ) -> Result<PublicEgressIpObservation, PublicIpProbeFailure> {
+        let tls = ProductTlsClient::new().map_err(|_| PublicIpProbeFailure::TlsHandshake)?;
+        let probe = self.prepare_public_ip_probe(operation_timeout)?;
+        executor
+            .block_on(execute_public_ip_probe(probe, &tls))
+            .map_err(|_| PublicIpProbeFailure::Io)?
     }
 
     pub fn observe_network(
