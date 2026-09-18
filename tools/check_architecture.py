@@ -101,8 +101,8 @@ def main() -> None:
     for required in (
         "pub struct MeshCompositionCoordinator",
         "mesh_ingress_serving_allowed(",
-        "transport.start_ingress(",
-        "transport.stop_ingress()",
+        ".start_ingress(epoch, &mappings, executor)",
+        "self.transport.stop_ingress()",
         "set_readiness_ready",
         "install_proxy",
         "clear_proxy",
