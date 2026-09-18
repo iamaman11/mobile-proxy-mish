@@ -29,6 +29,13 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 
 /** Runs every generation cleanup effect in dependency order and reports aggregate success. */
+internal data class RuntimeRecoveryDiagnosticObservation(
+    val runtimeGeneration: ULong,
+    val proxyRecoveryPending: Boolean,
+    val proxyRecoveryAttemptsScheduled: Int,
+    val proxyRecoveryNextDelayMs: Long,
+)
+
 internal fun closeRuntimeGenerationExact(
     closeMesh: () -> Unit,
     closeProxy: () -> Unit,
@@ -119,6 +126,17 @@ class MishRuntimeController internal constructor(
     /** Read-only bounded snapshot for the permission-gated Windows provisioning transaction. */
     internal fun currentExternalCredentialProvisioningSnapshot(): ExternalProxyCredentialSnapshot? =
         externalCredentialStore.currentProvisioningSnapshot()
+
+    internal fun recoveryDiagnosticObservation(): RuntimeRecoveryDiagnosticObservation =
+        synchronized(lock) {
+            val attempts = automaticRecoveryAttempts.get().coerceAtLeast(0)
+            RuntimeRecoveryDiagnosticObservation(
+                runtimeGeneration = lifecycle.generation(),
+                proxyRecoveryPending = automaticRecoveryPending.get(),
+                proxyRecoveryAttemptsScheduled = attempts,
+                proxyRecoveryNextDelayMs = proxyRecoveryDelayMs(attempts.toUInt()).toLong(),
+            )
+        }
 
     val isRunning: Boolean
         get() = synchronized(lock) { lifecycle.state() != RuntimeLifecycleState.STOPPED }
