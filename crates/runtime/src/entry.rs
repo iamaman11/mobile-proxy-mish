@@ -10,6 +10,9 @@ mod tls_client;
 
 mod public_ip_network;
 
+mod readiness_network;
+pub use readiness_network::*;
+
 mod root_session;
 
 mod root_policy_effect;
