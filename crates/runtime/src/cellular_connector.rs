@@ -12,10 +12,214 @@ use mish_proxy::{
 };
 use std::fmt;
 use std::net::{IpAddr, SocketAddr, TcpStream};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const MAX_IPV4_CANDIDATES: usize = 8;
+const DNS_SLOW_OBSERVATION_THRESHOLD: Duration = Duration::from_secs(5);
+
+/// Process-wide read-only facts about the synchronous native DNS seam.
+///
+/// These atomics observe execution only; they do not participate in admission, cancellation,
+/// generation selection, retries or result acceptance. Process scope is intentional because a
+/// started `spawn_blocking` operation can outlive the runtime generation that started it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CellularDnsDiagnosticSnapshot {
+    pub slow_threshold_ms: u64,
+    pub started: u64,
+    pub completed: u64,
+    pub active: u64,
+    pub peak_active: u64,
+    pub slow_completions: u64,
+    pub resolver_failed: u64,
+    pub discarded_after_deadline: u64,
+    pub completed_after_owner_change: u64,
+    pub discarded_stale: u64,
+    pub authority_validation_failed: u64,
+    pub unusable_result: u64,
+    pub accepted_current: u64,
+    pub max_native_elapsed_ms: u64,
+    pub last_started_owner_sequence: Option<u64>,
+    pub last_completed_start_owner_sequence: Option<u64>,
+    pub last_completed_current_owner_sequence: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DnsResultDisposition {
+    ResolverFailed,
+    DiscardedAfterDeadline,
+    DiscardedStale,
+    AuthorityValidationFailed,
+    UnusableResult,
+    AcceptedCurrent,
+}
+
+struct DnsDiagnosticsTracker {
+    started: AtomicU64,
+    completed: AtomicU64,
+    active: AtomicU64,
+    peak_active: AtomicU64,
+    slow_completions: AtomicU64,
+    resolver_failed: AtomicU64,
+    discarded_after_deadline: AtomicU64,
+    completed_after_owner_change: AtomicU64,
+    discarded_stale: AtomicU64,
+    authority_validation_failed: AtomicU64,
+    unusable_result: AtomicU64,
+    accepted_current: AtomicU64,
+    max_native_elapsed_ms: AtomicU64,
+    last_started_owner_sequence: AtomicU64,
+    last_completed_start_owner_sequence: AtomicU64,
+    last_completed_current_owner_sequence: AtomicU64,
+}
+
+impl DnsDiagnosticsTracker {
+    const fn new() -> Self {
+        Self {
+            started: AtomicU64::new(0),
+            completed: AtomicU64::new(0),
+            active: AtomicU64::new(0),
+            peak_active: AtomicU64::new(0),
+            slow_completions: AtomicU64::new(0),
+            resolver_failed: AtomicU64::new(0),
+            discarded_after_deadline: AtomicU64::new(0),
+            completed_after_owner_change: AtomicU64::new(0),
+            discarded_stale: AtomicU64::new(0),
+            authority_validation_failed: AtomicU64::new(0),
+            unusable_result: AtomicU64::new(0),
+            accepted_current: AtomicU64::new(0),
+            max_native_elapsed_ms: AtomicU64::new(0),
+            last_started_owner_sequence: AtomicU64::new(0),
+            last_completed_start_owner_sequence: AtomicU64::new(0),
+            last_completed_current_owner_sequence: AtomicU64::new(0),
+        }
+    }
+
+    fn record_disposition(&self, disposition: DnsResultDisposition) {
+        let counter = match disposition {
+            DnsResultDisposition::ResolverFailed => &self.resolver_failed,
+            DnsResultDisposition::DiscardedAfterDeadline => &self.discarded_after_deadline,
+            DnsResultDisposition::DiscardedStale => &self.discarded_stale,
+            DnsResultDisposition::AuthorityValidationFailed => &self.authority_validation_failed,
+            DnsResultDisposition::UnusableResult => &self.unusable_result,
+            DnsResultDisposition::AcceptedCurrent => &self.accepted_current,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn start(&self, authority: CellularNetworkAuthority) -> DnsCallObservation<'_> {
+        let start_sequence = authority.observation_sequence().raw();
+        self.started.fetch_add(1, Ordering::Relaxed);
+        self.last_started_owner_sequence
+            .store(start_sequence, Ordering::Relaxed);
+        let active = self.active.fetch_add(1, Ordering::Relaxed) + 1;
+        update_max(&self.peak_active, active);
+        DnsCallObservation {
+            tracker: self,
+            started_at: Instant::now(),
+            start_sequence,
+            completed: false,
+        }
+    }
+
+    fn snapshot(&self) -> CellularDnsDiagnosticSnapshot {
+        CellularDnsDiagnosticSnapshot {
+            slow_threshold_ms: u64::try_from(DNS_SLOW_OBSERVATION_THRESHOLD.as_millis())
+                .unwrap_or(u64::MAX),
+            started: self.started.load(Ordering::Relaxed),
+            completed: self.completed.load(Ordering::Relaxed),
+            active: self.active.load(Ordering::Relaxed),
+            peak_active: self.peak_active.load(Ordering::Relaxed),
+            slow_completions: self.slow_completions.load(Ordering::Relaxed),
+            resolver_failed: self.resolver_failed.load(Ordering::Relaxed),
+            discarded_after_deadline: self.discarded_after_deadline.load(Ordering::Relaxed),
+            completed_after_owner_change: self.completed_after_owner_change.load(Ordering::Relaxed),
+            discarded_stale: self.discarded_stale.load(Ordering::Relaxed),
+            authority_validation_failed: self.authority_validation_failed.load(Ordering::Relaxed),
+            unusable_result: self.unusable_result.load(Ordering::Relaxed),
+            accepted_current: self.accepted_current.load(Ordering::Relaxed),
+            max_native_elapsed_ms: self.max_native_elapsed_ms.load(Ordering::Relaxed),
+            last_started_owner_sequence: non_zero(
+                self.last_started_owner_sequence.load(Ordering::Relaxed),
+            ),
+            last_completed_start_owner_sequence: non_zero(
+                self.last_completed_start_owner_sequence
+                    .load(Ordering::Relaxed),
+            ),
+            last_completed_current_owner_sequence: non_zero(
+                self.last_completed_current_owner_sequence
+                    .load(Ordering::Relaxed),
+            ),
+        }
+    }
+}
+
+struct DnsCallObservation<'a> {
+    tracker: &'a DnsDiagnosticsTracker,
+    started_at: Instant,
+    start_sequence: u64,
+    completed: bool,
+}
+
+impl DnsCallObservation<'_> {
+    fn complete(&mut self, current_owner_sequence: Option<u64>) {
+        if self.completed {
+            return;
+        }
+        let elapsed = self.started_at.elapsed();
+        let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+        self.tracker.active.fetch_sub(1, Ordering::Relaxed);
+        self.tracker.completed.fetch_add(1, Ordering::Relaxed);
+        self.tracker
+            .last_completed_start_owner_sequence
+            .store(self.start_sequence, Ordering::Relaxed);
+        self.tracker
+            .last_completed_current_owner_sequence
+            .store(current_owner_sequence.unwrap_or(0), Ordering::Relaxed);
+        if current_owner_sequence != Some(self.start_sequence) {
+            self.tracker
+                .completed_after_owner_change
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        if elapsed >= DNS_SLOW_OBSERVATION_THRESHOLD {
+            self.tracker
+                .slow_completions
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        update_max(&self.tracker.max_native_elapsed_ms, elapsed_ms);
+        self.completed = true;
+    }
+}
+
+impl Drop for DnsCallObservation<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.tracker.active.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+}
+
+fn update_max(target: &AtomicU64, candidate: u64) {
+    let mut current = target.load(Ordering::Relaxed);
+    while candidate > current {
+        match target.compare_exchange_weak(current, candidate, Ordering::Relaxed, Ordering::Relaxed)
+        {
+            Ok(_) => break,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
+const fn non_zero(value: u64) -> Option<u64> {
+    if value == 0 { None } else { Some(value) }
+}
+
+static DNS_DIAGNOSTICS: DnsDiagnosticsTracker = DnsDiagnosticsTracker::new();
+
+pub fn cellular_dns_diagnostic_snapshot() -> CellularDnsDiagnosticSnapshot {
+    DNS_DIAGNOSTICS.snapshot()
+}
 
 pub trait CellularDnsResolver: Send + Sync + 'static {
     fn resolve(
@@ -151,10 +355,42 @@ fn connect_host_with<T>(
         ProxyTargetHost::Ipv6(_) => return Err(ProxyOutboundConnectError::Rejected),
         ProxyTargetHost::Domain(domain) => {
             ensure_deadline(deadline)?;
-            let addresses = resolve(authority, domain, deadline)?;
-            ensure_deadline(deadline)?;
-            validate_authority(owner, authority)?;
-            bounded_ipv4_candidates(addresses)?
+            let mut observation = DNS_DIAGNOSTICS.start(authority);
+            let resolved = resolve(authority, domain, deadline);
+            let current_sequence = current_owner_sequence(owner);
+            observation.complete(current_sequence);
+            let addresses = match resolved {
+                Ok(addresses) => addresses,
+                Err(error) => {
+                    DNS_DIAGNOSTICS.record_disposition(DnsResultDisposition::ResolverFailed);
+                    return Err(error);
+                }
+            };
+            if let Err(error) = ensure_deadline(deadline) {
+                DNS_DIAGNOSTICS.record_disposition(DnsResultDisposition::DiscardedAfterDeadline);
+                return Err(error);
+            }
+            if let Err(error) = validate_authority(owner, authority) {
+                let sequence_after_validation = current_owner_sequence(owner);
+                if sequence_after_validation
+                    .is_some_and(|sequence| sequence != authority.observation_sequence().raw())
+                {
+                    DNS_DIAGNOSTICS.record_disposition(DnsResultDisposition::DiscardedStale);
+                } else {
+                    DNS_DIAGNOSTICS
+                        .record_disposition(DnsResultDisposition::AuthorityValidationFailed);
+                }
+                return Err(error);
+            }
+            let candidates = match bounded_ipv4_candidates(addresses) {
+                Ok(candidates) => candidates,
+                Err(error) => {
+                    DNS_DIAGNOSTICS.record_disposition(DnsResultDisposition::UnusableResult);
+                    return Err(error);
+                }
+            };
+            DNS_DIAGNOSTICS.record_disposition(DnsResultDisposition::AcceptedCurrent);
+            candidates
         }
     };
 
@@ -248,6 +484,15 @@ fn validate_authority(
         .map_err(map_authority_error)
 }
 
+fn current_owner_sequence(owner: &Arc<Mutex<CellularEgress>>) -> Option<u64> {
+    owner
+        .lock()
+        .ok()?
+        .admission()
+        .last_sequence()
+        .map(|sequence| sequence.raw())
+}
+
 fn map_authority_error(error: CellularNetworkAuthorityError) -> ProxyOutboundConnectError {
     match error {
         CellularNetworkAuthorityError::NoAdmittedNetwork
@@ -288,6 +533,66 @@ mod tests {
         _hostname: &str,
     ) -> Result<Vec<IpAddr>, ProxyOutboundConnectError> {
         Ok(Vec::new())
+    }
+
+    #[test]
+    fn dns_tracker_observes_active_call_without_owning_admission() {
+        let tracker = DnsDiagnosticsTracker::new();
+        let owner = admitted_owner();
+        let authority = issue_authority(&owner).expect("authority");
+
+        let mut observation = tracker.start(authority);
+        let started = tracker.snapshot();
+        assert_eq!(started.started, 1);
+        assert_eq!(started.completed, 0);
+        assert_eq!(started.active, 1);
+        assert_eq!(started.peak_active, 1);
+        assert_eq!(started.last_started_owner_sequence, Some(1));
+
+        observation.complete(current_owner_sequence(&owner));
+        let completed = tracker.snapshot();
+        assert_eq!(completed.started, 1);
+        assert_eq!(completed.completed, 1);
+        assert_eq!(completed.active, 0);
+        assert_eq!(completed.completed_after_owner_change, 0);
+        assert_eq!(completed.last_completed_start_owner_sequence, Some(1));
+        assert_eq!(completed.last_completed_current_owner_sequence, Some(1));
+    }
+
+    #[test]
+    fn dns_tracker_records_owner_change_without_becoming_authority() {
+        let tracker = DnsDiagnosticsTracker::new();
+        let owner = admitted_owner();
+        let authority = issue_authority(&owner).expect("authority");
+
+        let mut observation = tracker.start(authority);
+        owner.lock().expect("owner").lost(sequence(2), handle(42));
+        observation.complete(current_owner_sequence(&owner));
+
+        let completed = tracker.snapshot();
+        assert_eq!(completed.completed_after_owner_change, 1);
+        assert_eq!(completed.last_completed_start_owner_sequence, Some(1));
+        assert_eq!(completed.last_completed_current_owner_sequence, Some(2));
+    }
+
+    #[test]
+    fn dns_result_dispositions_are_independent_and_unambiguous() {
+        let tracker = DnsDiagnosticsTracker::new();
+
+        tracker.record_disposition(DnsResultDisposition::ResolverFailed);
+        tracker.record_disposition(DnsResultDisposition::DiscardedAfterDeadline);
+        tracker.record_disposition(DnsResultDisposition::DiscardedStale);
+        tracker.record_disposition(DnsResultDisposition::AuthorityValidationFailed);
+        tracker.record_disposition(DnsResultDisposition::UnusableResult);
+        tracker.record_disposition(DnsResultDisposition::AcceptedCurrent);
+
+        let snapshot = tracker.snapshot();
+        assert_eq!(snapshot.resolver_failed, 1);
+        assert_eq!(snapshot.discarded_after_deadline, 1);
+        assert_eq!(snapshot.discarded_stale, 1);
+        assert_eq!(snapshot.authority_validation_failed, 1);
+        assert_eq!(snapshot.unusable_result, 1);
+        assert_eq!(snapshot.accepted_current, 1);
     }
 
     #[test]
