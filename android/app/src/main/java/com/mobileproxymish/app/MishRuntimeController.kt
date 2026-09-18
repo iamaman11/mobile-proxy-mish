@@ -32,6 +32,7 @@ class MishRuntimeController internal constructor(
 ) {
     private val appContext = context.applicationContext
     private val externalCredentialStore = ExternalProxyCredentialStore(appContext)
+    private val platformEffectsLock = Any()
     private val debugIsolation = appContext.packageName.endsWith(".debug") &&
         (appContext.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
 
@@ -97,7 +98,7 @@ class MishRuntimeController internal constructor(
     val isRunning: Boolean
         get() = productRuntime.runtimeLifecycleSnapshot().state != RuntimeLifecycleState.STOPPED
 
-    fun start(): Boolean {
+    fun start(): Boolean = synchronized(platformEffectsLock) {
         val credential = runCatching { externalCredentialStore.currentCredential() }.getOrNull()
         val accepted = runCatching {
             productRuntime.startRuntime(
@@ -106,9 +107,9 @@ class MishRuntimeController internal constructor(
                 password = credential?.credentials?.password,
             )
         }.isSuccess
-        if (!accepted) return false
+        if (!accepted) return@synchronized false
 
-        return try {
+        try {
             cellularRuntime.start()
             meshRuntime.start()
             true
@@ -120,12 +121,14 @@ class MishRuntimeController internal constructor(
         }
     }
 
-    fun stop(): Boolean {
+    fun stop(): Boolean = synchronized(platformEffectsLock) {
+        // Rust must enter STOPPING before platform observation is removed, so a concurrent start
+        // can only become the native queued-restart decision rather than observe stale RUNNING.
+        val nativeAccepted = runCatching { productRuntime.stopRuntime() }.isSuccess
         var platformClean = true
         if (runCatching(meshRuntime::stop).isFailure) platformClean = false
         if (runCatching(cellularRuntime::stop).isFailure) platformClean = false
-        val nativeAccepted = runCatching { productRuntime.stopRuntime() }.isSuccess
-        return platformClean && nativeAccepted
+        platformClean && nativeAccepted
     }
 
     internal fun rotateExternalCredentialWhileStopped(): Boolean =
