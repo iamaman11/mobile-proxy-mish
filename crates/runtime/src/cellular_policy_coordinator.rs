@@ -13,6 +13,7 @@ use mish_cellular::{
     ObservationSequence, RootPolicyNamespace,
 };
 use std::collections::HashMap;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::time::sleep;
@@ -42,6 +43,15 @@ pub struct RootRecoveryDiagnostic {
     pub next_delay_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CellularPolicyPublication {
+    pub admission: CellularAdmissionSnapshot,
+    pub result: RootPolicyResult,
+}
+
+pub type CellularPolicyObserver =
+    Arc<dyn Fn(CellularPolicyPublication) + Send + Sync + 'static>;
+
 struct CoordinatorState {
     latest: Option<ReconcileRequest>,
     drain_scheduled: bool,
@@ -53,6 +63,8 @@ struct CoordinatorState {
     recovery_attempts: u32,
     recovery_epoch: u64,
     last_policy_result: Option<RootPolicyResult>,
+    last_publication: Option<CellularPolicyPublication>,
+    observer: Option<CellularPolicyObserver>,
     closed: bool,
 }
 
@@ -94,6 +106,8 @@ impl CellularPolicyCoordinator {
                 recovery_attempts: 0,
                 recovery_epoch: 0,
                 last_policy_result: None,
+                last_publication: None,
+                observer: None,
                 closed: false,
             }),
         }))
@@ -101,6 +115,25 @@ impl CellularPolicyCoordinator {
 
     pub fn cellular(&self) -> Arc<CellularRuntimeCoordinator> {
         Arc::clone(&self.cellular)
+    }
+
+
+    pub fn start(self: &Arc<Self>) -> Result<(), CellularRuntimeError> {
+        let admission = self.cellular.admission_snapshot()?;
+        self.enqueue_owner_generation(admission)
+    }
+
+    pub fn set_observer(&self, observer: CellularPolicyObserver) {
+        let publication = {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            state.observer = Some(Arc::clone(&observer));
+            state.last_publication
+        };
+        if let Some(publication) = publication {
+            notify_observer(Some((observer, publication)));
+        }
     }
 
     pub fn observe_network(
@@ -291,10 +324,6 @@ impl CellularPolicyCoordinator {
             return;
         }
 
-        if let Ok(mut state) = self.state.lock() {
-            state.last_policy_result = Some(result);
-        }
-
         match result {
             RootPolicyResult::Enforced => {
                 let Some(sequence) = request.admission.last_sequence() else {
@@ -309,18 +338,22 @@ impl CellularPolicyCoordinator {
                     .unwrap_or(false)
                 {
                     self.reset_recovery();
+                    self.publish(request.admission, result);
                 }
             }
             RootPolicyResult::FailClosed(None)
                 if request.admission.state() != CellularAdmissionState::Admitted =>
             {
                 self.reset_recovery();
+                self.publish(request.admission, result);
             }
             retryable if retryable.retryable() => {
+                self.publish(request.admission, retryable);
                 self.schedule_recovery(request);
             }
-            _ => {
+            terminal => {
                 self.reset_recovery();
+                self.publish(request.admission, terminal);
             }
         }
     }
@@ -391,6 +424,19 @@ impl CellularPolicyCoordinator {
         }
     }
 
+    fn publish(&self, admission: CellularAdmissionSnapshot, result: RootPolicyResult) {
+        let publication = CellularPolicyPublication { admission, result };
+        let observer = {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            state.last_policy_result = Some(result);
+            state.last_publication = Some(publication);
+            state.observer.clone()
+        };
+        notify_observer(observer.map(|observer| (observer, publication)));
+    }
+
     fn reset_recovery(&self) {
         if let Ok(mut state) = self.state.lock() {
             state.recovery_epoch = state.recovery_epoch.wrapping_add(1);
@@ -400,12 +446,24 @@ impl CellularPolicyCoordinator {
     }
 }
 
+fn notify_observer(notification: Option<(CellularPolicyObserver, CellularPolicyPublication)>) {
+    if let Some((observer, publication)) = notification {
+        let _ = catch_unwind(AssertUnwindSafe(|| observer(publication)));
+    }
+}
+
 fn same_generation(
     expected: CellularAdmissionSnapshot,
     current: CellularAdmissionSnapshot,
 ) -> bool {
-    expected.last_sequence().is_some()
-        && expected.last_sequence() == current.last_sequence()
+    if expected.last_sequence().is_none() {
+        return expected.state() == CellularAdmissionState::Unknown
+            && current.state() == CellularAdmissionState::Unknown
+            && current.last_sequence().is_none()
+            && expected.admitted_network().is_none()
+            && current.admitted_network().is_none();
+    }
+    expected.last_sequence() == current.last_sequence()
         && expected.state() == current.state()
         && expected.admitted_network() == current.admitted_network()
 }
@@ -420,6 +478,23 @@ fn recovery_delay_ms(attempt: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn initial_unknown_generation_is_current_only_until_first_owner_event() {
+        let expected = mish_cellular::CellularEgress::new().admission();
+        assert!(same_generation(expected, expected));
+
+        let mut owner = mish_cellular::CellularEgress::new();
+        owner.observe(NetworkObservation::new(
+            ObservationSequence::new(1).expect("sequence"),
+            NetworkHandle::new(42).expect("network"),
+            true,
+            true,
+            true,
+            true,
+        ));
+        assert!(!same_generation(expected, owner.admission()));
+    }
 
     #[test]
     fn recovery_backoff_is_immediate_once_then_bounded() {
