@@ -324,7 +324,8 @@ impl RootPolicyContract {
         }
 
         let previous = self.active_identity;
-        for candidate in self.candidates().iter().copied() {
+        let candidates = self.candidates().to_vec();
+        for candidate in candidates {
             self.active_identity = Some(candidate);
             let found = snapshot
                 .ipv4_rules
@@ -465,10 +466,11 @@ impl RootPolicyContract {
 
     pub fn legacy_selector_line(&self) -> String {
         format!(
-            "-A OUTPUT -m owner --uid-owner {} -m conntrack --ctstate NEW -j MARK --set-xmark {0}/{0}",
+            "-A OUTPUT -m owner --uid-owner {} -m conntrack --ctstate NEW -j MARK --set-xmark {}/{}",
+            self.product_uid,
+            self.legacy_mark_hex(),
             self.legacy_mark_hex(),
         )
-        .replacen("{0}", self.legacy_mark_hex(), 2)
     }
 
     pub fn legacy_selector_check(&self, binary: &str) -> String {
@@ -492,9 +494,10 @@ impl RootPolicyContract {
     pub fn ipv4_guard_add(&self) -> Option<String> {
         self.active_identity.map(|identity| {
             format!(
-                "ip -4 rule add pref {} fwmark {0}/{0} unreachable",
-                identity.mark_hex(),
+                "ip -4 rule add pref {} fwmark {}/{} unreachable",
                 identity.guard_priority(),
+                identity.mark_hex(),
+                identity.mark_hex(),
             )
         })
     }
@@ -502,9 +505,10 @@ impl RootPolicyContract {
     pub fn ipv6_guard_add(&self) -> Option<String> {
         self.active_identity.map(|identity| {
             format!(
-                "ip -6 rule add pref {} fwmark {0}/{0} unreachable",
-                identity.mark_hex(),
+                "ip -6 rule add pref {} fwmark {}/{} unreachable",
                 identity.guard_priority(),
+                identity.mark_hex(),
+                identity.mark_hex(),
             )
         })
     }
@@ -512,9 +516,10 @@ impl RootPolicyContract {
     pub fn ipv4_guard_delete(&self) -> Option<String> {
         self.active_identity.map(|identity| {
             format!(
-                "ip -4 rule del pref {} fwmark {0}/{0} unreachable",
-                identity.mark_hex(),
+                "ip -4 rule del pref {} fwmark {}/{} unreachable",
                 identity.guard_priority(),
+                identity.mark_hex(),
+                identity.mark_hex(),
             )
         })
     }
@@ -522,9 +527,10 @@ impl RootPolicyContract {
     pub fn ipv6_guard_delete(&self) -> Option<String> {
         self.active_identity.map(|identity| {
             format!(
-                "ip -6 rule del pref {} fwmark {0}/{0} unreachable",
-                identity.mark_hex(),
+                "ip -6 rule del pref {} fwmark {}/{} unreachable",
                 identity.guard_priority(),
+                identity.mark_hex(),
+                identity.mark_hex(),
             )
         })
     }
@@ -569,7 +575,8 @@ impl RootPolicyContract {
             let tokens = line.split_whitespace().collect::<Vec<_>>();
             let mark = token_after(&tokens, "fwmark");
             let table = token_after(&tokens, "lookup");
-            if mark == Some(mark_spec(identity)) {
+            let expected_mark = mark_spec(identity);
+            if mark == Some(expected_mark.as_str()) {
                 if let Some(table) = table.filter(|table| is_safe_table_token(table)) {
                     if !result.iter().any(|existing| existing == table) {
                         result.push(table.to_owned());
@@ -600,7 +607,8 @@ impl RootPolicyContract {
             return false;
         }
         let tokens = line.split_whitespace().collect::<Vec<_>>();
-        token_after(&tokens, "fwmark") == Some(mark_spec(identity))
+        let expected_mark = mark_spec(identity);
+        token_after(&tokens, "fwmark") == Some(expected_mark.as_str())
             && tokens.iter().any(|token| *token == "unreachable")
     }
 
@@ -630,7 +638,8 @@ impl RootPolicyContract {
             return false;
         }
         let tokens = line.split_whitespace().collect::<Vec<_>>();
-        token_after(&tokens, "fwmark") == Some(mark_spec(identity))
+        let expected_mark = mark_spec(identity);
+        token_after(&tokens, "fwmark") == Some(expected_mark.as_str())
             && token_after(&tokens, "lookup").is_some_and(is_safe_table_token)
     }
 
@@ -639,7 +648,8 @@ impl RootPolicyContract {
             return false;
         }
         let tokens = line.split_whitespace().collect::<Vec<_>>();
-        token_after(&tokens, "fwmark") == Some(mark_spec(identity))
+        let expected_mark = mark_spec(identity);
+        token_after(&tokens, "fwmark") == Some(expected_mark.as_str())
             && tokens.iter().any(|token| *token == "unreachable")
     }
 
@@ -987,9 +997,9 @@ fn rpdb_priority(line: &str) -> Option<u32> {
         .and_then(|(raw, _)| raw.parse::<u32>().ok())
 }
 
-fn mark_spec(identity: PolicyIdentity) -> &'static str {
+fn mark_spec(identity: PolicyIdentity) -> String {
     // All accepted policy identities deliberately use mark == mask.
-    identity.mark_hex()
+    format!("{0}/{0}", identity.mark_hex())
 }
 
 fn mark_spec_touches(spec: &str, reserved_mark: u64) -> Option<bool> {
