@@ -6,15 +6,14 @@ import com.mobileproxymish.ffi.CellularAdmissionState
 import com.mobileproxymish.ffi.EgressProbeObservationView
 import com.mobileproxymish.ffi.MeshAdmissionState
 import com.mobileproxymish.ffi.MeshAdmissionView
+import com.mobileproxymish.ffi.NativeProductRuntime
 import com.mobileproxymish.ffi.ProbeBindingView
 import com.mobileproxymish.ffi.ProbeTicketView
 import com.mobileproxymish.ffi.ProductReadinessController
 import com.mobileproxymish.ffi.ProductReadinessFactsView
 import com.mobileproxymish.ffi.ProductReadinessState
-import com.mobileproxymish.ffi.egressProbeBudgetMs
 import com.mobileproxymish.ffi.readinessProbeBindingIfEligible
 import com.mobileproxymish.ffi.readinessProbeRefreshDelayMs
-import com.mobileproxymish.ffi.readinessProbeTarget
 import java.io.Closeable
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
@@ -35,12 +34,12 @@ import kotlinx.coroutines.flow.onEach
 /**
  * Thin Android composition adapter for the Rust Readiness/Application contracts.
  *
- * Rust owns freshness, probe eligibility, refresh cadence and terminal readiness projection. This
- * adapter only assembles immutable owner projections, schedules the next requested refresh, executes
- * Android CONNECT+TLS effects through `AuthenticatedEgressProbe`, and returns typed observations. The public hostname is never
- * resolved by Android: native Proxy Serving preserves it until the exact Cellular DNS owner.
+ * Rust owns freshness, probe eligibility, network execution and terminal readiness projection.
+ * This transitional adapter still assembles immutable owner projections and schedules refreshes;
+ * CONNECT/TLS executes on the shared native Tokio runtime and Android never resolves the target.
  */
 internal class ProductReadinessRuntime(
+    private val productRuntime: NativeProductRuntime,
     private val runtimeGeneration: ULong,
     private val cellularRuntime: CellularRuntimeBridge,
     private val proxyRuntime: ProxyRuntimeSupervisor,
@@ -56,9 +55,6 @@ internal class ProductReadinessRuntime(
     private val refreshLock = Any()
     private val probeIssueLock = Any()
     private var refreshFuture: ScheduledFuture<*>? = null
-    private val probeEffect = AuthenticatedEgressProbe { freshness ->
-        !closed.get() && controller.expectedFreshness() == freshness
-    }
     private val mutableState = MutableStateFlow(projectUnknown())
     private var observationJob: Job? = null
     private var lastStructuralFacts: ProductReadinessFactsView? = null
@@ -119,7 +115,6 @@ internal class ProductReadinessRuntime(
                 }
             }
         }
-        probeEffect.cancel()
 
         if (invalidationFailed) {
             mutableState.value = projectUnknown()
@@ -145,19 +140,6 @@ internal class ProductReadinessRuntime(
     private fun executeProbe(ticket: ProbeTicketView) {
         if (closed.get() || controller.expectedFreshness() != ticket.freshness) return
 
-        val target = try {
-            readinessProbeTarget()
-        } catch (_: Exception) {
-            runCatching { controller.invalidateProbe() }
-            mutableState.value = projectUnknown()
-            return
-        }
-        val budgetMs = egressProbeBudgetMs().toLong()
-        if (budgetMs <= 0L) {
-            runCatching { controller.invalidateProbe() }
-            mutableState.value = projectUnknown()
-            return
-        }
         val credential = credentialStore.currentCredential()
         if (credential == null || credential.version != ticket.binding.credentialVersion) {
             runCatching { controller.invalidateProbe() }
@@ -166,12 +148,18 @@ internal class ProductReadinessRuntime(
         }
 
         val started = System.nanoTime()
-        val outcome = probeEffect.execute(
-            freshness = ticket.freshness,
-            target = target,
-            credentials = credential.credentials,
-            budgetMs = budgetMs,
-        )
+        val outcome = try {
+            productRuntime.executeReadinessProbe(
+                publicUsername = credential.credentials.username,
+                publicPassword = credential.credentials.password,
+            )
+        } catch (_: Exception) {
+            synchronized(probeIssueLock) {
+                runCatching { controller.invalidateProbe() }
+            }
+            mutableState.value = projectOrUnknown(currentFacts(), null)
+            return
+        }
         val elapsedMs = TimeUnit.NANOSECONDS
             .toMillis(System.nanoTime() - started)
             .coerceAtLeast(0L)
@@ -338,7 +326,6 @@ internal class ProductReadinessRuntime(
         synchronized(probeIssueLock) {
             runCatching { controller.invalidateProbe() }
         }
-        probeEffect.cancel()
         probeExecutor.shutdownNow()
         val stopped = try {
             probeExecutor.awaitTermination(PROBE_CLOSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
