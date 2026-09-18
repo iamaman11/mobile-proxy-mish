@@ -209,7 +209,7 @@ internal class ProductReadinessRuntime(
         if (closed.get()) return
         val facts = currentFacts()
         val binding = eligibleBinding(facts) ?: return
-        if (binding != expectedBinding) return
+        if (!readinessRefreshBindingStillCurrent(expectedBinding, binding)) return
 
         val ticket = try {
             controller.beginProbe(binding)
@@ -334,6 +334,11 @@ internal class ProductReadinessRuntime(
         const val PROBE_CLOSE_TIMEOUT_SECONDS = 2L
     }
 }
+
+internal fun readinessRefreshBindingStillCurrent(
+    expected: ProbeBindingView,
+    current: ProbeBindingView?,
+): Boolean = current == expected
 
 internal data class ProductReadinessDiagnostic(
     val cellularState: String,
