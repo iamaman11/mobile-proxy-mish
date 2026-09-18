@@ -111,7 +111,7 @@ pub struct RootPolicyRuntime {
 }
 
 impl RootPolicyRuntime {
-    pub fn new(
+    pub(crate) fn new(
         session: Arc<RootSessionManager>,
         product_uid: u32,
         namespace: RootPolicyNamespace,
