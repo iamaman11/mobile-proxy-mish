@@ -241,6 +241,19 @@ def main() -> None:
             "U4 public IP must stay generation-bound to the existing Cellular owner path",
         )
 
+    public_ip_runtime = "crates/runtime/src/cellular_runtime.rs"
+    for required in (
+        "RuntimePublicIpProbe",
+        "ensure_current_policy",
+        "self.effect_gate.is_ready()",
+        "PublicIpProbeFailure::RootPolicyUnavailable",
+    ):
+        require(
+            public_ip_runtime,
+            required,
+            "U4 completion must revalidate the existing root-policy gate without a second owner",
+        )
+
     public_ip_android = "android/app/src/main/java/com/mobileproxymish/app/cellular/PublicIpProbeEffect.kt"
     for required in (
         "InetAddress.getByAddress(",
