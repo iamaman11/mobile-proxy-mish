@@ -422,6 +422,7 @@ try {
                 [bool]$observation.root_policy_authorized -and
                 [string]$observation.proxy_state -ceq 'RUNNING' -and
                 [bool]$observation.proxy_healthy -and
+                [string]$observation.readiness_state -ceq 'READY' -and
                 $null -ne $observation.last_started_owner_sequence -and
                 [int64]$observation.last_started_owner_sequence -gt $beforeOwnerSequence -and
                 [int64]$observation.started -gt [int64]$beforeLoss.started
