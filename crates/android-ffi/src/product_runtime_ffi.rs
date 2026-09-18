@@ -14,9 +14,8 @@ use mish_cellular::{
     NetworkHandle, NetworkObservation, ObservationSequence, RootPolicyNamespace,
 };
 use mish_runtime::{
-    CellularPolicyCoordinator, CellularPolicyObserver, CellularPolicyPublication,
-    CellularReconcileDiagnostic, CellularRuntimeCoordinator, MeshCompositionCoordinator,
-    ProxyRuntimeCoordinator, ProxyRuntimeObserver, ProxyRuntimePublication,
+    CellularPolicyObserver, CellularPolicyPublication, CellularReconcileDiagnostic,
+    ProductGeneration, ProxyRuntimeObserver, ProxyRuntimePublication,
     ProxyServingFailure as OwnerProxyServingFailure,
     ProxyServingState as OwnerProxyServingState,
     RootAuthorityStatus as OwnerRootAuthorityStatus,
@@ -185,12 +184,8 @@ pub trait NativeCellularPolicyObserver: Send + Sync {
 #[derive(uniffi::Object)]
 pub struct NativeProductRuntime {
     executor: Arc<RuntimeExecutor>,
-    cellular: Arc<CellularRuntimeCoordinator>,
+    generation: Arc<ProductGeneration>,
     cellular_view: Arc<CellularController>,
-    policy: Arc<CellularPolicyCoordinator>,
-    mesh: Arc<MeshCompositionCoordinator>,
-    readiness: Arc<ReadinessRuntimeCoordinator>,
-    proxy: Arc<ProxyRuntimeCoordinator>,
     closed: AtomicBool,
 }
 
@@ -210,47 +205,24 @@ impl NativeProductRuntime {
         }
 
         let executor = RuntimeExecutor::new()?;
-        let cellular = CellularRuntimeCoordinator::new(Arc::new(AndroidDnsResolver));
         let namespace = if debug_isolation {
             RootPolicyNamespace::Debug
         } else {
             RootPolicyNamespace::Release
         };
-        let policy = CellularPolicyCoordinator::new(
+        let generation = ProductGeneration::new(
             Arc::clone(&executor),
-            Arc::clone(&cellular),
+            Arc::new(AndroidDnsResolver),
             product_uid,
             namespace,
-        )?;
-        let cellular_view = CellularController::from_runtime(Arc::clone(&cellular));
-        let mesh = MeshCompositionCoordinator::new()
-            .map_err(|_| NativeProductRuntimeError::StateUnavailable)?;
-        let readiness = ReadinessRuntimeCoordinator::new(
-            Arc::clone(&executor),
-            Arc::clone(&mesh),
             runtime_generation,
-        )
-        .map_err(|_| NativeProductRuntimeError::StateUnavailable)?;
-        let readiness_cellular = Arc::clone(&readiness);
-        policy.add_internal_observer(Arc::new(move |publication| {
-            let _ = readiness_cellular.observe_cellular(publication);
-        }));
-        let proxy = ProxyRuntimeCoordinator::new(
-            Arc::clone(&executor),
-            Arc::clone(&cellular),
-            Arc::clone(&mesh),
-            Arc::clone(&readiness),
-            Duration::from_secs(15),
-        );
+        )?;
+        let cellular_view = CellularController::from_runtime(generation.cellular());
 
         Ok(Arc::new(Self {
             executor,
-            cellular,
+            generation,
             cellular_view,
-            policy,
-            mesh,
-            readiness,
-            proxy,
             closed: AtomicBool::new(false),
         }))
     }
