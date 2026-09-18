@@ -912,11 +912,11 @@ def main() -> None:
 
     for required in (
         "pub struct NativeProductRuntime",
-        "CellularPolicyCoordinator::new",
+        "ProductGeneration::new",
         "RuntimeExecutor::new",
         "observe_cellular_policy",
     ):
-        require_product(product_ffi, required, "Android must receive one opaque native PRODUCT generation handle")
+        require_product(product_ffi, required, "Android must receive one opaque native PRODUCT process handle")
 
     for obsolete_path in (
         "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRootPolicy.kt",
