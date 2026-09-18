@@ -1,6 +1,6 @@
 package com.mobileproxymish.app.cellular
 
-import com.mobileproxymish.ffi.CellularController
+import com.mobileproxymish.ffi.NativeProductRuntime
 import com.mobileproxymish.ffi.PublicIpEffectFailure
 import com.mobileproxymish.ffi.PublicIpObservationView
 import com.mobileproxymish.ffi.PublicIpProbeTicket
@@ -25,11 +25,11 @@ import javax.net.ssl.SSLSocketFactory
  * owner-bound cellular DNS seam.
  */
 internal class PublicIpProbeEffect(
-    private val controller: CellularController,
+    private val productRuntime: NativeProductRuntime,
 ) {
     fun observe(timeoutMs: Long): PublicIpObservationView {
         require(timeoutMs in 1..MAX_TIMEOUT_MS) { "public IP timeout must be bounded" }
-        val ticket = controller.preparePublicIpProbe(timeoutMs.toULong())
+        val ticket = productRuntime.preparePublicIpProbe(timeoutMs.toULong())
         val body = try {
             executeHttps(ticket)
         } catch (failure: Throwable) {
