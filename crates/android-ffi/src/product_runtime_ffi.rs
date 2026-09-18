@@ -302,33 +302,6 @@ impl NativeProductRuntime {
             .unwrap_or_else(|_| unavailable_proxy_publication())
     }
 
-    /// Transitional direct seam until the Android lifecycle facade is switched to start_runtime().
-    pub fn start_proxy_runtime(
-        &self,
-        credential_version: Option<u64>,
-        username: Option<String>,
-        password: Option<String>,
-    ) -> ProxyRuntimePublicationView {
-        self.runtime
-            .active_generation()
-            .map(|generation| {
-                map_proxy_publication(
-                    generation
-                        .proxy()
-                        .start(credential_version, username, password),
-                )
-            })
-            .unwrap_or_else(|_| unavailable_proxy_publication())
-    }
-
-    /// Transitional direct seam until the Android lifecycle facade is switched to stop_runtime().
-    pub fn stop_proxy_runtime(&self) -> ProxyRuntimePublicationView {
-        self.runtime
-            .current_generation()
-            .map(|generation| map_proxy_publication(generation.proxy().stop()))
-            .unwrap_or_else(|_| unavailable_proxy_publication())
-    }
-
     pub fn proxy_active_sessions(&self) -> u32 {
         self.runtime
             .current_generation()
