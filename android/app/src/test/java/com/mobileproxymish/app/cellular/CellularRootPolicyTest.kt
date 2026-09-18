@@ -297,6 +297,55 @@ class CellularRootPolicyTest {
     }
 
     @Test
+    fun jumpDeleteReportedFailureAcceptsAuthoritativeObservedAbsence() {
+        val process = FakePolicyProcess()
+        val policy = policy(process)
+        assertEquals(
+            CellularRootPolicyResult.Enforced,
+            policy.reconcile(admitted = true, interfaceName = "rmnet_data0"),
+        )
+        process.failNextIpv4JumpDeleteAfterRemoval = true
+        process.commands.clear()
+
+        policy.close()
+
+        assertEquals(0, process.ipv4JumpCount)
+        assertFalse(process.ipv4ChainExists)
+        assertNull(process.ipv4Guard)
+        assertEquals(1, process.commands.count { it == IPV4_JUMP_DELETE })
+        val deleteIndex = process.commands.indexOf(IPV4_JUMP_DELETE)
+        assertTrue(
+            process.commands.drop(deleteIndex + 1).contains("iptables -t mangle -S"),
+        )
+    }
+
+    @Test
+    fun transientJumpDeleteFailureRetriesOnlyAfterAuthoritativeReobservation() {
+        val process = FakePolicyProcess()
+        val policy = policy(process)
+        assertEquals(
+            CellularRootPolicyResult.Enforced,
+            policy.reconcile(admitted = true, interfaceName = "rmnet_data0"),
+        )
+        process.ipv4JumpDeleteFailuresRemaining = 1
+        process.commands.clear()
+
+        policy.close()
+
+        assertEquals(0, process.ipv4JumpCount)
+        assertFalse(process.ipv4ChainExists)
+        assertNull(process.ipv4Guard)
+        val firstDelete = process.commands.indexOf(IPV4_JUMP_DELETE)
+        val secondDelete = process.commands.indexOf(IPV4_JUMP_DELETE, firstDelete + 1)
+        assertTrue(firstDelete >= 0)
+        assertTrue(secondDelete > firstDelete)
+        assertTrue(
+            process.commands.subList(firstDelete + 1, secondDelete)
+                .contains("iptables -t mangle -S"),
+        )
+    }
+
+    @Test
     fun failedIpv4JumpDetachPreservesReferencedChainAndGuardWhileIpv6StillCleans() {
         val process = FakePolicyProcess()
         val policy = policy(process)
@@ -413,6 +462,8 @@ class CellularRootPolicyTest {
         var cleanupMutationObserved = false
         var failIpv4JumpDelete = false
         var failIpv6JumpDelete = false
+        var failNextIpv4JumpDeleteAfterRemoval = false
+        var ipv4JumpDeleteFailuresRemaining = 0
         val ipv4ChainRules = mutableListOf<String>()
         val ipv6ChainRules = mutableListOf<String>()
         val foreignIpv4Rpdb = mutableListOf<String>()
@@ -461,13 +512,22 @@ class CellularRootPolicyTest {
                     if (!ipv6ChainExists) fail() else { ipv6JumpCount += 1; ok() }
                 }
                 command == IPV4_JUMP_DELETE -> {
-                    if (failIpv4JumpDelete) {
-                        fail()
-                    } else if (ipv4JumpCount > 0) {
-                        ipv4JumpCount -= 1
-                        ok()
-                    } else {
-                        fail()
+                    when {
+                        failIpv4JumpDelete -> fail()
+                        ipv4JumpDeleteFailuresRemaining > 0 -> {
+                            ipv4JumpDeleteFailuresRemaining -= 1
+                            fail()
+                        }
+                        failNextIpv4JumpDeleteAfterRemoval && ipv4JumpCount > 0 -> {
+                            failNextIpv4JumpDeleteAfterRemoval = false
+                            ipv4JumpCount -= 1
+                            fail()
+                        }
+                        ipv4JumpCount > 0 -> {
+                            ipv4JumpCount -= 1
+                            ok()
+                        }
+                        else -> fail()
                     }
                 }
                 command == IPV6_JUMP_DELETE -> {
