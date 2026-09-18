@@ -74,21 +74,19 @@ def main() -> None:
         "RuntimeCleanupDisposition(",
         "cleanup disposition policy belongs to crates/runtime",
     )
-    require(
-        runtime_controller,
-        "proxyServingFailureRecoverable(reason)",
-        "proxy recovery classification must remain delegated to the Rust runtime owner",
-    )
-    require(
-        runtime_controller,
-        "proxyRecoveryDelayMs(attempt)",
-        "proxy recovery backoff must remain delegated to the Rust runtime owner",
-    )
-    require(
-        runtime_controller,
-        "onFailureObserved = ::scheduleProxyRecoveryIfAllowed",
-        "every typed Proxy Serving failure must flow through the one Rust-owned recovery policy",
-    )
+    for forbidden in (
+        "mish-runtime-recovery-effect",
+        "automaticRecoveryPending",
+        "automaticRecoveryAttempts",
+        "scheduleProxyRecoveryIfAllowed",
+        "proxyServingFailureRecoverable(",
+        "proxyRecoveryDelayMs(",
+    ):
+        forbid(
+            runtime_controller,
+            forbidden,
+            "Kotlin must not own or execute Proxy recovery policy, timers or retry state",
+        )
 
     # Cross-owner Mesh composition decisions belong to Rust/runtime, not Android adapters.
     mesh_serving = "crates/runtime/src/mesh_serving.rs"
@@ -651,27 +649,63 @@ def main() -> None:
         "UniFFI must not expose a second mutable Proxy Serving lifecycle controller",
     )
     forbid(lifecycle_ffi, "RuntimeProcessLifecycle", "child-process lifecycle must not return to FFI")
-    proxy_serving_ffi = "crates/android-ffi/src/proxy_serving_ffi.rs"
-    require(
-        proxy_serving_ffi,
-        "NativeProxyStartAttempt",
-        "expected native proxy startup failures must cross FFI as typed data",
+    proxy_coordinator = "crates/runtime/src/proxy_coordinator.rs"
+    for required in (
+        "pub struct ProxyRuntimeCoordinator",
+        "proxy_serving_failure_recoverable",
+        "proxy_recovery_delay_ms",
+        "tokio::time::sleep",
+        "set_terminal_observer",
+        "next_serving_generation",
+        "recovery_epoch",
+        "ReadinessRuntimeCoordinator",
+        "MeshCompositionCoordinator",
+    ):
+        require_product(
+            proxy_coordinator,
+            required,
+            "Rust/Tokio must own Proxy serving generation, terminal failure and bounded recovery",
+        )
+    for forbidden in (
+        "std::thread::sleep",
+        "ScheduledExecutorService",
+        "Executors.",
+    ):
+        forbid_product(
+            proxy_coordinator,
+            forbidden,
+            "Proxy recovery must run on the shared Tokio executor only",
+        )
+
+    for required in (
+        "ProxyRuntimeCoordinator::new",
+        "pub fn observe_proxy_runtime(",
+        "pub fn proxy_runtime_snapshot(",
+        "pub fn start_proxy_runtime(",
+        "pub fn stop_proxy_runtime(",
+    ):
+        require_product(
+            product_ffi,
+            required,
+            "NativeProductRuntime must expose one Rust-owned Proxy coordinator projection/control seam",
+        )
+    forbid_exists(
+        "crates/android-ffi/src/proxy_serving_ffi.rs",
+        "separate NativeProxyRuntime lifecycle handle must stay deleted",
     )
-    require(
-        proxy_serving_ffi,
-        "pub fn snapshot(&self) -> ProxyServingSnapshotView",
-        "UniFFI must project the runtime-owned Proxy Serving snapshot read-only",
+    forbid_exists(
+        "crates/android-ffi/src/proxy_recovery_ffi.rs",
+        "Proxy recovery policy must not be exported back to Kotlin",
     )
-    require(
-        proxy_serving_ffi,
-        "error.lifecycle_failure()",
-        "runtime owner must classify native startup mechanism failures before FFI",
-    )
-    require(
-        proxy_serving_ffi,
-        "pub(crate) fn runtime_handle(&self) -> Arc<ProxyServingRuntime>",
-        "FFI must expose only a Rust-private opaque handle to the existing process runtime",
-    )
+    for forbidden in (
+        "proxy_serving_ffi",
+        "proxy_recovery_ffi",
+    ):
+        forbid(
+            "crates/android-ffi/src/entry.rs",
+            forbidden,
+            "obsolete Proxy FFI modules must stay deleted",
+        )
 
     mesh_ffi = "crates/android-ffi/src/transport_ffi.rs"
     for forbidden in (
@@ -702,8 +736,7 @@ def main() -> None:
         "observe_mesh_vpn_absent",
         "observe_mesh_unique_vpn",
         "observe_mesh_vpn_ambiguous",
-        "install_proxy_for_mesh",
-        "clear_proxy_for_mesh",
+        "ProxyRuntimeCoordinator::new",
     ):
         require_product(
             product_ffi,
@@ -740,21 +773,30 @@ def main() -> None:
         ".markStopped()",
     ):
         forbid(proxy_android, second_owner, "Android proxy adapter must not drive Proxy Serving lifecycle state")
-    require(
-        proxy_android,
-        "val startFailure = attempt.failure()",
-        "Android proxy adapter must publish Rust-owned typed startup failures",
-    )
-    require(
-        proxy_android,
-        "newRuntime.snapshot()",
-        "Android proxy adapter must project the immutable Rust-owned runtime snapshot",
-    )
-    require(
-        proxy_android,
-        "onFailureObserved(reason)",
-        "startup and post-start failures must share one typed recovery-notification path",
-    )
+    for required in (
+        "productRuntime.observeProxyRuntime(",
+        "productRuntime.startProxyRuntime(",
+        "productRuntime.stopProxyRuntime()",
+        "productRuntime.proxyRuntimeSnapshot()",
+    ):
+        require(
+            proxy_android,
+            required,
+            "Android Proxy adapter must only invoke/project the single native Proxy coordinator",
+        )
+    for forbidden in (
+        "NativeProxyRuntime?",
+        "startNativeProxyRuntime(",
+        "onFailureObserved",
+        "activeRuntimeToken",
+        "nextRuntimeToken",
+        "synchronized(lock)",
+    ):
+        forbid(
+            proxy_android,
+            forbidden,
+            "Android Proxy adapter must not regain serving-generation or recovery ownership",
+        )
 
     # Diagnostics v2 observes current owner facts only. It must never become a repair/control path.
     diagnostics = "android/app/src/main/java/com/mobileproxymish/app/MishDiagnosticsProvider.kt"
