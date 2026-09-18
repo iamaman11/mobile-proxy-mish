@@ -83,8 +83,16 @@ internal class RootPolicyExecutor(
     }
 
     private fun runObservation(command: String): RootCommandResult {
-        val result = transport.execute(RootObservation(command))
+        var result = transport.execute(RootObservation(command))
         recordObservation(command, result)
+
+        // A read-only effect is safe to re-observe after a non-authoritative transport result.
+        // Mutations deliberately do not share this path: an uncertain mutation may already have
+        // reached the kernel and must be reconciled by fresh observation instead of replayed.
+        if (result.timedOut || !result.outputComplete) {
+            result = transport.execute(RootObservation(command))
+            recordObservation(command, result)
+        }
         return result
     }
 

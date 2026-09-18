@@ -43,6 +43,62 @@ class RootPolicySeamsTest {
     }
 
     @Test
+    fun executorRetriesIncompleteReadOnlyObservationOnce() {
+        val effects = mutableListOf<RootEffect>()
+        var calls = 0
+        val executor = RootPolicyExecutor(
+            object : RootCommandTransport {
+                override fun execute(effect: RootEffect): RootCommandResult {
+                    effects += effect
+                    calls += 1
+                    return if (calls == 1) {
+                        RootCommandResult(
+                            exitCode = 0,
+                            stdout = "1000: from all lookup 100\n",
+                            outputComplete = false,
+                        )
+                    } else {
+                        RootCommandResult(
+                            exitCode = 0,
+                            stdout = "1000: from all lookup 100\n",
+                        )
+                    }
+                }
+            },
+        )
+
+        assertEquals(listOf("1000: from all lookup 100"), executor.lines("ip -4 rule show"))
+        assertEquals(2, calls)
+        assertTrue(effects.all { it is RootObservation })
+    }
+
+    @Test
+    fun executorNeverRetriesUncertainMutation() {
+        val effects = mutableListOf<RootEffect>()
+        val executor = RootPolicyExecutor(
+            object : RootCommandTransport {
+                override fun execute(effect: RootEffect): RootCommandResult {
+                    effects += effect
+                    return RootCommandResult(
+                        exitCode = -1,
+                        stdout = "",
+                        timedOut = true,
+                        outputComplete = false,
+                    )
+                }
+            },
+        )
+
+        assertFalse(
+            executor.commandSucceeded(
+                "iptables -t mangle -D OUTPUT -m owner --uid-owner 12345 -j MISH_EGRESS_V1",
+            ),
+        )
+        assertEquals(1, effects.size)
+        assertTrue(effects.single() is RootMutation)
+    }
+
+    @Test
     fun executorDiagnosticWindowCountsObservationsMutationsAndExactDuplicateReads() {
         val observation = "ip -4 rule show"
         val mutation = "ip -4 rule add pref 9501 fwmark 0x200000/0x200000 unreachable"
@@ -94,11 +150,11 @@ class RootPolicySeamsTest {
         assertFalse(executor.commandSucceeded(failedMutation))
         val diagnostic = executor.finishDiagnosticWindow()
 
-        assertEquals(3, diagnostic.commands)
-        assertEquals(2, diagnostic.observationCommands)
+        assertEquals(4, diagnostic.commands)
+        assertEquals(3, diagnostic.observationCommands)
         assertEquals(1, diagnostic.mutationCommands)
-        assertEquals(0, diagnostic.duplicateObservations)
-        assertEquals(1, diagnostic.incompleteOrTimedOutCommands)
+        assertEquals(1, diagnostic.duplicateObservations)
+        assertEquals(2, diagnostic.incompleteOrTimedOutCommands)
         assertEquals(1, diagnostic.mutationFailures)
     }
 
