@@ -160,7 +160,7 @@ pub struct ProxyServingSnapshotView {
     pub failure: Option<ProxyServingFailure>,
 }
 
-fn map_lifecycle_state(state: OwnerRuntimeLifecycleState) -> RuntimeLifecycleState {
+pub(crate) fn map_lifecycle_state(state: OwnerRuntimeLifecycleState) -> RuntimeLifecycleState {
     match state {
         OwnerRuntimeLifecycleState::Stopped => RuntimeLifecycleState::Stopped,
         OwnerRuntimeLifecycleState::Starting => RuntimeLifecycleState::Starting,
@@ -169,7 +169,7 @@ fn map_lifecycle_state(state: OwnerRuntimeLifecycleState) -> RuntimeLifecycleSta
     }
 }
 
-fn map_start_action(action: OwnerRuntimeStartAction) -> RuntimeStartAction {
+pub(crate) fn map_start_action(action: OwnerRuntimeStartAction) -> RuntimeStartAction {
     match action {
         OwnerRuntimeStartAction::StartNow => RuntimeStartAction::StartNow,
         OwnerRuntimeStartAction::AlreadyActive => RuntimeStartAction::AlreadyActive,
@@ -177,7 +177,7 @@ fn map_start_action(action: OwnerRuntimeStartAction) -> RuntimeStartAction {
     }
 }
 
-fn map_stop_action(action: OwnerRuntimeStopAction) -> RuntimeStopAction {
+pub(crate) fn map_stop_action(action: OwnerRuntimeStopAction) -> RuntimeStopAction {
     match action {
         OwnerRuntimeStopAction::StopNow => RuntimeStopAction::StopNow,
         OwnerRuntimeStopAction::AlreadyStopped => RuntimeStopAction::AlreadyStopped,
