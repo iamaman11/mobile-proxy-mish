@@ -109,10 +109,10 @@ jobs:
           elif mode == 'full':
               if len(parts) == 3:
                   probe = 'none'
-              elif len(parts) == 4 and parts[3] in {'capacity_resources', 'recovery_lifecycle', 'dns_lifetime_live'}:
+              elif len(parts) == 4 and parts[3] in {'capacity_resources', 'recovery_lifecycle', 'dns_lifetime_live', 'public_ip_u4'}:
                   probe = parts[3]
               else:
-                  raise SystemExit('full accepts only the explicit optional capacity_resources probe, recovery_lifecycle, or dns_lifetime_live')
+                  raise SystemExit('full accepts only the explicit optional capacity_resources probe, recovery_lifecycle, dns_lifetime_live, or public_ip_u4')
           else:
               if len(parts) != 3:
                   raise SystemExit('install_only/diagnose_only do not accept a probe')
@@ -527,6 +527,17 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           .\lab\windows\diagnose-dns-lifetime-live.ps1 `
+            -AdbPath $env:ADB_EXE `
+            -PackageName $env:PACKAGE_NAME `
+            -EvidencePath "$env:RUNNER_TEMP\\mish-targeted-probe-v1.json"
+
+      - name: Explicit U4 generation-bound public IP
+        if: ${{ needs.resolve.outputs.mode == 'full' && needs.resolve.outputs.probe == 'public_ip_u4' && steps.baseline.outcome == 'success' }}
+        continue-on-error: true
+        shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\diagnose-public-ip-u4.ps1 `
             -AdbPath $env:ADB_EXE `
             -PackageName $env:PACKAGE_NAME `
             -EvidencePath "$env:RUNNER_TEMP\\mish-targeted-probe-v1.json"
