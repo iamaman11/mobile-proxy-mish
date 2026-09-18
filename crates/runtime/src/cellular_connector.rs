@@ -266,8 +266,9 @@ impl From<CellularDnsPrepareError> for ProxyOutboundConnectError {
             CellularDnsPrepareError::AuthorityUnavailable
             | CellularDnsPrepareError::DeadlineExceeded
             | CellularDnsPrepareError::StaleAuthority => ProxyOutboundConnectError::Unavailable,
-            CellularDnsPrepareError::ResolverFailed
-            | CellularDnsPrepareError::UnusableResult => ProxyOutboundConnectError::Failed,
+            CellularDnsPrepareError::ResolverFailed | CellularDnsPrepareError::UnusableResult => {
+                ProxyOutboundConnectError::Failed
+            }
         }
     }
 }
