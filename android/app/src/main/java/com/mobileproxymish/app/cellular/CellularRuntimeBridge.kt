@@ -196,6 +196,11 @@ class CellularRuntimeBridge(
         }
     }
 
+    fun stop() {
+        if (closed.get() || !started.compareAndSet(true, false)) return
+        observer.close()
+    }
+
     override fun onEvent(event: CellularNetworkEvent) {
         if (closed.get()) return
 
@@ -273,6 +278,7 @@ class CellularRuntimeBridge(
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
+        started.set(false)
         observer.close()
     }
 
