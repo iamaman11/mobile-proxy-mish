@@ -1,5 +1,6 @@
 use mish_application::{
-    DEFAULT_EGRESS_PROBE_BUDGET, EgressProbeCoordinator, EgressProbeError, ProbeTicket,
+    DEFAULT_EGRESS_PROBE_BUDGET, DEFAULT_EGRESS_PROBE_REFRESH_DELAY, EgressProbeCoordinator,
+    EgressProbeError, ProbeTicket,
 };
 use mish_configuration::ReadinessProbeTarget;
 use mish_proxy::HTTP_CONNECT_PORT;
@@ -101,6 +102,11 @@ impl std::error::Error for ReadinessBoundaryError {}
 #[uniffi::export]
 pub fn egress_probe_budget_ms() -> u64 {
     DEFAULT_EGRESS_PROBE_BUDGET.as_millis() as u64
+}
+
+#[uniffi::export]
+pub fn readiness_probe_refresh_delay_ms() -> u64 {
+    DEFAULT_EGRESS_PROBE_REFRESH_DELAY.as_millis() as u64
 }
 
 #[uniffi::export]
@@ -416,6 +422,12 @@ mod tests {
             mesh_admission_epoch: 41,
             credential_version: 51,
         }
+    }
+
+    #[test]
+    fn refresh_delay_is_owned_by_rust_application_policy() {
+        assert_eq!(readiness_probe_refresh_delay_ms(), 60_000);
+        assert!(readiness_probe_refresh_delay_ms() > egress_probe_budget_ms());
     }
 
     #[test]

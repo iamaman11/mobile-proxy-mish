@@ -13,6 +13,16 @@ use std::time::{Duration, Instant};
 /// CONNECT/auth and TLS bookkeeping. This is an operation deadline, not a readiness TTL.
 pub const DEFAULT_EGRESS_PROBE_BUDGET: Duration = Duration::from_secs(20);
 
+/**
+ * Low-duty-cycle refresh for one already-coherent readiness binding.
+ *
+ * This is readiness/application policy, not an Android timer owner. Android may schedule one
+ * delayed effect using this value; every refresh still obtains a new Rust-owned freshness ticket
+ * and is rejected if owner identity changes before completion. The delay is intentionally longer
+ * than the probe budget so one slow probe cannot overlap the next refresh.
+ */
+pub const DEFAULT_EGRESS_PROBE_REFRESH_DELAY: Duration = Duration::from_secs(60);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EgressProbeError {
     ZeroBudget,
@@ -178,6 +188,12 @@ mod tests {
             mesh_admission_epoch: MeshAdmissionEpoch::new(4).expect("mesh"),
             credential_version: CredentialVersion::new(5).expect("credential"),
         }
+    }
+
+    #[test]
+    fn readiness_refresh_delay_is_bounded_and_exceeds_one_probe_budget() {
+        assert_eq!(DEFAULT_EGRESS_PROBE_REFRESH_DELAY, Duration::from_secs(60));
+        assert!(DEFAULT_EGRESS_PROBE_REFRESH_DELAY > DEFAULT_EGRESS_PROBE_BUDGET);
     }
 
     #[test]
