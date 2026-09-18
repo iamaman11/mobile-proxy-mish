@@ -242,6 +242,7 @@ impl MeshPortForward {
 pub struct MeshSessionOwner {
     accepting: AtomicBool,
     active: AtomicUsize,
+    capacity_rejects: AtomicUsize,
 }
 
 impl MeshSessionOwner {
@@ -249,6 +250,7 @@ impl MeshSessionOwner {
         Arc::new(Self {
             accepting: AtomicBool::new(true),
             active: AtomicUsize::new(0),
+            capacity_rejects: AtomicUsize::new(0),
         })
     }
 
@@ -260,6 +262,11 @@ impl MeshSessionOwner {
         let mut current = self.active.load(Ordering::Acquire);
         loop {
             if current >= MAX_MESH_SESSIONS {
+                let _ = self.capacity_rejects.fetch_update(
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                    |observed| observed.checked_add(1),
+                );
                 return None;
             }
             match self.active.compare_exchange_weak(
@@ -293,6 +300,10 @@ impl MeshSessionOwner {
 
     pub fn active_sessions(&self) -> usize {
         self.active.load(Ordering::Acquire)
+    }
+
+    pub fn capacity_rejects(&self) -> usize {
+        self.capacity_rejects.load(Ordering::Acquire)
     }
 }
 
@@ -442,10 +453,14 @@ mod tests {
             leases.push(sessions.try_admit().expect("within Mesh budget"));
         }
         assert_eq!(sessions.active_sessions(), MAX_MESH_SESSIONS);
+        assert_eq!(sessions.capacity_rejects(), 0);
         assert!(
             sessions.try_admit().is_none(),
             "65th session must be rejected"
         );
+        assert_eq!(sessions.capacity_rejects(), 1);
+        assert!(sessions.try_admit().is_none());
+        assert_eq!(sessions.capacity_rejects(), 2);
 
         drop(leases.pop());
         assert_eq!(sessions.active_sessions(), MAX_MESH_SESSIONS - 1);
@@ -455,6 +470,11 @@ mod tests {
         sessions.revoke();
         assert!(!sessions.is_accepting());
         assert!(sessions.try_admit().is_none());
+        assert_eq!(
+            sessions.capacity_rejects(),
+            2,
+            "revocation rejection is not a capacity rejection"
+        );
         drop(leases);
         assert_eq!(sessions.active_sessions(), 0);
     }

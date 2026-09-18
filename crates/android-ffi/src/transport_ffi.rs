@@ -32,6 +32,7 @@ pub struct MeshAdmissionView {
     pub last_sequence: Option<u64>,
     pub ingress_running: bool,
     pub active_sessions: u64,
+    pub capacity_rejects: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Error)]
@@ -186,6 +187,7 @@ fn map_view(snapshot: OwnerTransportSnapshot) -> MeshAdmissionView {
         last_sequence: admission.last_sequence(),
         ingress_running: snapshot.ingress_running(),
         active_sessions: snapshot.active_sessions() as u64,
+        capacity_rejects: snapshot.capacity_rejects() as u64,
     }
 }
 
