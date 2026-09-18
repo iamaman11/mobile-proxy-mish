@@ -266,7 +266,7 @@ impl CellularPolicyCoordinator {
         admission: CellularAdmissionSnapshot,
     ) -> Result<(), CellularRuntimeError> {
         let request = {
-            let mut state = self.state.lock().map_err(|_| CellularRuntimeError::StateUnavailable)?;
+            let state = self.state.lock().map_err(|_| CellularRuntimeError::StateUnavailable)?;
             if state.closed {
                 return Err(CellularRuntimeError::StateUnavailable);
             }
