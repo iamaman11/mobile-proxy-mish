@@ -211,6 +211,37 @@ impl ProductRuntimeCoordinator {
         Ok(action)
     }
 
+    /// Commits one already-completed platform credential mutation into runtime identity.
+    ///
+    /// Kotlin may mutate Android Keystore/opaque storage only while STOPPED. It cannot choose the
+    /// next generation: this owner validates the lifecycle state, advances identity and replaces
+    /// the native generation atomically.
+    pub fn advance_stopped_generation_after_platform_mutation(
+        &self,
+    ) -> Result<bool, RuntimeExecutionError> {
+        let (generation, observers) = {
+            let mut state = self.state_mut()?;
+            if state.closed || !state.lifecycle.can_mutate_stopped_generation() {
+                return Ok(false);
+            }
+            if !state.lifecycle.advance_stopped_generation() {
+                state.lifecycle.mark_stopped_generation_dirty();
+                return Ok(false);
+            }
+            let generation = match self.build_generation(state.lifecycle.generation()) {
+                Ok(generation) => generation,
+                Err(_) => {
+                    state.lifecycle.mark_stopped_generation_dirty();
+                    return Ok(false);
+                }
+            };
+            state.generation = Arc::clone(&generation);
+            (generation, state.observers.clone())
+        };
+        bind_observers(&generation, observers);
+        Ok(true)
+    }
+
     pub fn request_stop(
         self: &Arc<Self>,
     ) -> Result<RuntimeStopAction, RuntimeExecutionError> {
