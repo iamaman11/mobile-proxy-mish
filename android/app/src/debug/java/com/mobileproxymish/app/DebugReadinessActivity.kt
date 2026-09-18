@@ -4,12 +4,12 @@ import android.app.Activity
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
-import com.mobileproxymish.app.cellular.MagiskRootAuthority
 import com.mobileproxymish.ffi.ProductReadinessState
 
 /**
- * DEVICE-1 debug-only normal-process observer. It accepts no extras and reports no endpoint,
- * identifier, route, DNS value, credential, or probe response. Release manifests exclude it.
+ * DEVICE-1 debug-only normal-process projection. It accepts no extras and performs no independent
+ * root/network authority probe; all PRODUCT facts come from canonical runtime owner projections.
+ * Release manifests exclude it.
  */
 class DebugReadinessActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -27,7 +27,6 @@ class DebugReadinessActivity : Activity() {
             val proxySnapshot = runtime.currentProxyRuntime.snapshot.value
             val proxyFailure = (proxySnapshot as? ProxyRuntimeSnapshot.Failed)?.reason
             val proxyFailureCode = proxyFailure?.name ?: "NONE"
-            val rootAuthority = MagiskRootAuthority().probe()
             val mesh = runtime.meshSnapshot.value
             val ingressFailure = runtime.currentMeshRuntime.diagnosticIngressFailure()
             Log.i(TAG, "state=${runtime.readinessSnapshot.value}")
@@ -36,7 +35,6 @@ class DebugReadinessActivity : Activity() {
             Log.i(TAG, "cellular_reason=${diagnostic.cellularReason}")
             Log.i(TAG, "cellular_admitted=${diagnostic.cellularAdmitted}")
             Log.i(TAG, "root_policy=${diagnostic.rootPolicyVerified}")
-            Log.i(TAG, "app_root_authority=$rootAuthority")
             Log.i(TAG, "proxy_healthy=${diagnostic.proxyHealthy}")
             Log.i(TAG, "proxy_lifecycle=${proxySnapshot.javaClass.simpleName}")
             Log.i(TAG, "proxy_failure=$proxyFailureCode")
