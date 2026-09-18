@@ -4,7 +4,7 @@
 //! the cross-owner readiness use-case: exact binding formation, probe freshness, async execution,
 //! refresh scheduling, stale completion rejection and publication into Mesh composition.
 
-use crate::readiness_network::execute_readiness_probe_async;
+use crate::readiness_network::{ReadinessNetworkError, execute_readiness_probe_async};
 use crate::{
     CellularPolicyPublication, MeshCompositionCoordinator, RootPolicyResult, RuntimeExecutionError,
     RuntimeExecutor,
@@ -331,9 +331,10 @@ impl ReadinessRuntimeCoordinator {
                     credentials.username,
                     credentials.password,
                 )
-                .await;
+                .await
+                .unwrap_or_else(map_network_error);
                 let elapsed = started.elapsed();
-                this.complete_probe(ticket, outcome.ok(), elapsed);
+                this.complete_probe(ticket, outcome, elapsed);
             })
             .map(|_| ())
             .map_err(map_execution_error)
@@ -342,14 +343,9 @@ impl ReadinessRuntimeCoordinator {
     fn complete_probe(
         self: Arc<Self>,
         ticket: ProbeTicket,
-        outcome: Option<mish_readiness::ProbeOutcome>,
+        outcome: mish_readiness::ProbeOutcome,
         elapsed: Duration,
     ) {
-        let Some(outcome) = outcome else {
-            self.fail_probe(ticket);
-            return;
-        };
-
         let (readiness, refresh) = {
             let Ok(mut state) = self.state.lock() else {
                 return;
@@ -373,44 +369,21 @@ impl ReadinessRuntimeCoordinator {
                 probe_eligibility(input),
                 ProbeEligibility::Eligible(binding) if binding == observation.binding
             );
-            if binding_current {
+            let refresh = if binding_current {
                 state.refresh_epoch = state.refresh_epoch.wrapping_add(1);
                 state.refresh_pending = true;
                 Some((state.refresh_epoch, observation.binding))
             } else {
                 state.refresh_pending = false;
                 None
-            }
-            .map(|refresh| (state.projected, Some(refresh)))
-            .unwrap_or((state.projected, None))
+            };
+            (state.projected, refresh)
         };
 
         self.publish_readiness(readiness);
         if let Some((epoch, binding)) = refresh {
             self.spawn_refresh(epoch, binding);
         }
-    }
-
-    fn fail_probe(self: Arc<Self>, ticket: ProbeTicket) {
-        let readiness = {
-            let Ok(mut state) = self.state.lock() else {
-                return;
-            };
-            if state.closed {
-                return;
-            }
-            let _ = state.probe.complete_bounded(
-                ticket,
-                mish_readiness::ProbeOutcome::TransportFailed,
-                DEFAULT_EGRESS_PROBE_BUDGET,
-                DEFAULT_EGRESS_PROBE_BUDGET,
-            );
-            state.probe_in_flight = false;
-            state.observation = None;
-            state.projected = project(input_for(state.facts, &state.probe, None));
-            state.projected
-        };
-        self.publish_readiness(readiness);
     }
 
     fn spawn_refresh(self: &Arc<Self>, epoch: u64, binding: ProbeBinding) {
@@ -500,6 +473,15 @@ fn input_for(
 
 fn map_execution_error(_error: RuntimeExecutionError) -> ReadinessRuntimeError {
     ReadinessRuntimeError::ExecutorUnavailable
+}
+
+fn map_network_error(error: ReadinessNetworkError) -> mish_readiness::ProbeOutcome {
+    match error {
+        ReadinessNetworkError::TlsConfiguration => mish_readiness::ProbeOutcome::TlsFailed,
+        ReadinessNetworkError::InvalidTarget
+        | ReadinessNetworkError::InvalidCredentials
+        | ReadinessNetworkError::ExecutorUnavailable => mish_readiness::ProbeOutcome::TransportFailed,
+    }
 }
 
 #[cfg(test)]
