@@ -157,6 +157,8 @@ resolve provenance
 
 With no probe argument this is the normal baseline. With `capacity_resources`, the canonical baseline must first PASS, then the same run executes one bounded capacity/resource acceptance from the Windows LAB through the real external Mesh endpoint. With `recovery_lifecycle`, the same run exercises the exact accepted recovery/E3 contract. With `dns_lifetime_live`, the baseline must PASS first and the same run collects bounded live same-process DNS lifetime evidence; that observation remains measurement-only and cannot by itself produce exact PRODUCT acceptance.
 
+For `recovery_lifecycle`, the baseline process-to-instrumentation boundary is explicit: after the PASS baseline snapshot, LAB performs a non-root `am force-stop` of the PRODUCT package and proves the old package PID absent before starting the exact androidTest instrumentation. This prevents overlapping process generations from concurrently reconciling or cleaning the same PRODUCT-owned kernel policy. LAB still does not mutate RPDB/iptables or substitute its own root-policy actions.
+
 The capacity probe is deliberately correlated to the implementation owners:
 
 ```text

@@ -294,6 +294,30 @@ def main() -> None:
     if terminal_proxy < 0 or root_authority < 0 or terminal_proxy > root_authority:
         raise SystemExit("device cycle contract: terminal Proxy failure must outrank downstream non-observation")
 
+    recovery_probe = "lab/windows/diagnose-recovery-lifecycle.ps1"
+    for required in (
+        "Stop-MishProductProcessForInstrumentation",
+        "'shell', 'am', 'force-stop', $PackageName",
+        "'shell', 'pidof', $PackageName",
+        "LAB_INSTRUMENTATION_HANDOFF_FORCE_STOP_FAILED",
+        "LAB_INSTRUMENTATION_HANDOFF_PROCESS_STILL_ALIVE",
+        "instrumentation_handoff = $instrumentationHandoff",
+        "'shell', 'am', 'instrument'",
+    ):
+        require(
+            recovery_probe,
+            required,
+            "recovery/lifecycle instrumentation handoff must stay explicit and single-process",
+        )
+    recovery_source = read(recovery_probe)
+    handoff = recovery_source.find("$handoff = Stop-MishProductProcessForInstrumentation")
+    instrument = recovery_source.find("'shell', 'am', 'instrument'")
+    if handoff < 0 or instrument < 0 or handoff >= instrument:
+        raise SystemExit(
+            "device cycle contract: baseline PRODUCT process must be stopped before recovery instrumentation"
+        )
+    forbid(recovery_probe, "'shell', 'su'", "recovery handoff must not become a LAB root-policy path")
+
     report = "lab/windows/new-device-cycle-report.ps1"
     for required in (
         "ControlSha",
