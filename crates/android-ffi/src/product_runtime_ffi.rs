@@ -138,6 +138,10 @@ pub struct RootPolicyReconcileDiagnosticView {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
 pub struct ReadinessDiagnosticView {
     pub state: ProductReadinessState,
+    pub root_policy_verified: bool,
+    pub proxy_healthy: bool,
+    pub credential_active: bool,
+    pub mesh_admitted: bool,
     pub binding_eligible: bool,
     pub probe_in_flight: bool,
     pub refresh_pending: bool,
@@ -501,6 +505,10 @@ fn map_readiness_state(readiness: mish_readiness::Readiness) -> ProductReadiness
 fn map_readiness_diagnostic(snapshot: ReadinessDiagnosticSnapshot) -> ReadinessDiagnosticView {
     ReadinessDiagnosticView {
         state: map_readiness_state(snapshot.state),
+        root_policy_verified: snapshot.root_policy_verified,
+        proxy_healthy: snapshot.proxy_healthy,
+        credential_active: snapshot.credential_active,
+        mesh_admitted: snapshot.mesh_admitted,
         binding_eligible: snapshot.binding_eligible,
         probe_in_flight: snapshot.probe_in_flight,
         refresh_pending: snapshot.refresh_pending,
