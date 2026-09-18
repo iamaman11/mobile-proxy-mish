@@ -335,10 +335,12 @@ class CellularRootPolicyTest {
         assertEquals(0, process.ipv4JumpCount)
         assertFalse(process.ipv4ChainExists)
         assertNull(process.ipv4Guard)
-        val firstDelete = process.commands.indexOf(IPV4_JUMP_DELETE)
-        val secondDelete = process.commands.indexOf(IPV4_JUMP_DELETE, firstDelete + 1)
-        assertTrue(firstDelete >= 0)
-        assertTrue(secondDelete > firstDelete)
+        val deleteIndices = process.commands.withIndex()
+            .filter { it.value == IPV4_JUMP_DELETE }
+            .map { it.index }
+        assertEquals(2, deleteIndices.size)
+        val firstDelete = deleteIndices[0]
+        val secondDelete = deleteIndices[1]
         assertTrue(
             process.commands.subList(firstDelete + 1, secondDelete)
                 .contains("iptables -t mangle -S"),
