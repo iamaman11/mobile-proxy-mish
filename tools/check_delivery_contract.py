@@ -128,6 +128,11 @@ def main() -> None:
         "cancel-in-progress: true",
         "Checkout exact PR head",
         "ref: ${{ github.event.pull_request.head.sha }}",
+        "Classify preflight build scope",
+        "build_required=false",
+        "android/*|crates/*|Cargo.toml|Cargo.lock|rust-toolchain.toml|tools/verify_android_candidate.py)",
+        "Architecture constitution",
+        "steps.scope.outputs.build_required == 'true'",
         "Fast Kotlin compile and lint",
         "Rust workspace quality gate",
         "cargo fmt --all --check",
@@ -139,6 +144,12 @@ def main() -> None:
         "device-candidate-pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}",
         "retention-days: 7",
         "Local build required: **NO**",
+        "      - name: Set up JDK 17\n        if: ${{ steps.scope.outputs.build_required == 'true' }}",
+        "      - name: Unit test and assemble host gate\n        if: ${{ steps.scope.outputs.build_required == 'true' && github.event.pull_request.draft == false }}",
+        "      - name: Stage exact-head device candidate\n        if: ${{ steps.scope.outputs.build_required == 'true' && github.event.pull_request.draft == false }}",
+        "      - name: Upload exact-head device candidate\n        if: ${{ steps.scope.outputs.build_required == 'true' && github.event.pull_request.draft == false }}",
+        "Static-only preflight summary",
+        "Device candidate staged: **NO**",
     ):
         require(producer, required, "hosted exact-head candidate producer contract drifted")
     forbid(producer, "fix/root-policy-reconciliation", "candidate producer must target protected main after convergence")
