@@ -677,8 +677,35 @@ def main() -> None:
             "Proxy recovery must run on the shared Tokio executor only",
         )
 
+    product_generation = "crates/runtime/src/product_generation.rs"
     for required in (
+        "pub struct ProductGeneration",
+        "CellularRuntimeCoordinator::new",
+        "CellularPolicyCoordinator::new",
+        "MeshCompositionCoordinator::new",
+        "ReadinessRuntimeCoordinator::new",
         "ProxyRuntimeCoordinator::new",
+        "pub fn shutdown_blocking(",
+    ):
+        require_product(
+            product_generation,
+            required,
+            "mish-runtime ProductGeneration must own the per-generation PRODUCT composition graph",
+        )
+    for forbidden in (
+        "CellularRuntimeCoordinator::new",
+        "CellularPolicyCoordinator::new",
+        "MeshCompositionCoordinator::new",
+        "ReadinessRuntimeCoordinator::new",
+        "ProxyRuntimeCoordinator::new",
+    ):
+        forbid_product(
+            product_ffi,
+            forbidden,
+            "android-ffi must not assemble the PRODUCT generation object graph",
+        )
+    for required in (
+        "ProductGeneration::new",
         "pub fn observe_proxy_runtime(",
         "pub fn proxy_runtime_snapshot(",
         "pub fn start_proxy_runtime(",
@@ -687,7 +714,7 @@ def main() -> None:
         require_product(
             product_ffi,
             required,
-            "NativeProductRuntime must expose one Rust-owned Proxy coordinator projection/control seam",
+            "NativeProductRuntime must expose one projection/control seam over the Rust-owned generation",
         )
     forbid_exists(
         "crates/android-ffi/src/proxy_serving_ffi.rs",
@@ -732,16 +759,15 @@ def main() -> None:
             "Mesh FFI must be projection/error mapping only",
         )
     for required in (
-        "MeshCompositionCoordinator::new",
         "observe_mesh_vpn_absent",
         "observe_mesh_unique_vpn",
         "observe_mesh_vpn_ambiguous",
-        "ProxyRuntimeCoordinator::new",
+        "generation.mesh()",
     ):
         require_product(
             product_ffi,
             required,
-            "NativeProductRuntime must own the sole Mesh composition handle",
+            "NativeProductRuntime must project Mesh through the sole Rust-owned ProductGeneration",
         )
 
     # Proxy Serving is the sole owner of canonical product listener facts.
