@@ -13,7 +13,7 @@ use mish_cellular::{
 };
 use mish_proxy::ProxyOutboundConnectError;
 use mish_runtime::{
-    CellularDnsResolver, CellularRuntimeCoordinator, CellularRuntimeError, PreparedPublicIpProbe,
+    CellularDnsResolver, CellularRuntimeCoordinator, CellularRuntimeError, RuntimePublicIpProbe,
     PublicIpProbeEffectFailure as RuntimePublicIpProbeEffectFailure,
     PublicIpProbeFailure as RuntimePublicIpProbeFailure,
 };
@@ -170,7 +170,7 @@ pub struct PublicIpObservationView {
 
 #[derive(uniffi::Object)]
 pub struct PublicIpProbeTicket {
-    inner: PreparedPublicIpProbe,
+    inner: RuntimePublicIpProbe,
 }
 
 #[uniffi::export]
