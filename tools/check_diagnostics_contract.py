@@ -20,6 +20,9 @@ def main() -> None:
     manifest = (ROOT / "android/app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
     provider = (ROOT / "android/app/src/main/java/com/mobileproxymish/app/MishDiagnosticsProvider.kt").read_text(encoding="utf-8")
     proxy_adapter = (ROOT / "android/app/src/main/java/com/mobileproxymish/app/ProxyRuntimeSupervisor.kt").read_text(encoding="utf-8")
+    runtime_controller = (ROOT / "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt").read_text(encoding="utf-8")
+    cellular_bridge = (ROOT / "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRuntimeBridge.kt").read_text(encoding="utf-8")
+    root_backoff = (ROOT / "android/app/src/main/java/com/mobileproxymish/app/cellular/RootAuthorityRecoveryBackoff.kt").read_text(encoding="utf-8")
     mesh_adapter = (ROOT / "android/app/src/main/java/com/mobileproxymish/app/MeshIngressRuntimeBridge.kt").read_text(encoding="utf-8")
     proxy_ffi = (ROOT / "crates/android-ffi/src/proxy_serving_ffi.rs").read_text(encoding="utf-8")
     transport_ffi = (ROOT / "crates/android-ffi/src/transport_ffi.rs").read_text(encoding="utf-8")
@@ -40,6 +43,30 @@ def main() -> None:
     require(provider, 'READY_AT_POLICY_AUTHORIZATION', "non-mutating root observation")
     for forbidden in ("ProcessBuilder(", "settings put", "airplane-mode enable", "airplane-mode disable", "adb install"):
         forbid(provider, forbidden, "diagnostic mutation/control surface")
+
+    # U3 bounded diagnostics must project existing owner identities and recovery cadence without
+    # creating a parallel status database or a second retry owner.
+    for needle, label in (
+        ('put("generation", facts.runtimeRecovery.runtimeGeneration.toLong())', "runtime generation"),
+        ('put("owner_sequence", facts.cellularOwnerSequence?.toLong() ?: JSONObject.NULL)', "Cellular owner sequence"),
+        ('put("serving_generation", facts.proxyServingGeneration ?: JSONObject.NULL)', "Proxy serving generation"),
+        ('put("version", facts.credentialVersion?.toLong() ?: JSONObject.NULL)', "credential version"),
+        ('put("observation_sequence", facts.meshObservationSequence?.toLong() ?: JSONObject.NULL)', "Mesh observation sequence"),
+        ('put("admission_epoch", facts.meshAdmissionEpoch?.toLong() ?: JSONObject.NULL)', "Mesh admission epoch"),
+        ('put("attempts_since_reset", facts.rootRecovery.attemptsSinceReset)', "root recovery attempt"),
+        ('put("next_delay_ms", facts.rootRecovery.nextDelayMs)', "root recovery backoff"),
+        ('put("attempts_scheduled", facts.runtimeRecovery.proxyRecoveryAttemptsScheduled)', "proxy recovery attempt"),
+        ('put("next_delay_ms", facts.runtimeRecovery.proxyRecoveryNextDelayMs)', "proxy recovery backoff"),
+    ):
+        require(provider, needle, label)
+
+    require(proxy_adapter, "servingGeneration = activeRuntimeToken", "Proxy generation natural-owner projection")
+    require(runtime_controller, "proxyRecoveryAttemptsScheduled = attempts", "existing proxy recovery attempt projection")
+    require(runtime_controller, "proxyRecoveryNextDelayMs = proxyRecoveryDelayMs(attempts.toUInt()).toLong()", "Rust-owned proxy backoff projection")
+    require(cellular_bridge, "rootRecoveryBackoff.diagnostic()", "existing root backoff projection")
+    require(root_backoff, "fun diagnostic(): RootAuthorityRecoveryDiagnostic", "read-only root recovery diagnostic")
+    forbid(provider, "MutableMap", "parallel mutable diagnostics database")
+    forbid(provider, "AtomicLong(", "parallel diagnostics generation counter")
 
     # Capacity is an owner fact, not an Android/LAB inference. The canonical snapshot projects the
     # two existing Rust owner counters directly and introduces no parallel Android accounting.
