@@ -13,7 +13,7 @@ use mish_cellular::{
 };
 use mish_proxy::ProxyOutboundConnectError;
 use mish_runtime::{
-    CellularDnsResolver, CellularRuntimeCoordinator, CellularRuntimeError,
+    CellularDnsResolver, CellularRuntimeCoordinator,
     PublicIpProbeEffectFailure as RuntimePublicIpProbeEffectFailure,
     PublicIpProbeFailure as RuntimePublicIpProbeFailure, RuntimePublicIpProbe,
 };
@@ -68,27 +68,6 @@ impl std::error::Error for CellularBridgeError {}
 
 /// Effect-level Android runtime errors that genuinely cross the FFI exception channel.
 /// Expected Proxy Serving start failures use the typed `NativeProxyStartAttempt` data path instead.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Error)]
-pub enum AndroidRuntimeError {
-    InvalidOperationTimeout,
-    ConnectorUnavailable,
-    RuntimeStateUnavailable,
-    ShutdownTimedOut,
-}
-impl fmt::Display for AndroidRuntimeError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::InvalidOperationTimeout => {
-                "runtime operation timeout is outside the accepted range"
-            }
-            Self::ConnectorUnavailable => "cellular outbound connector could not start",
-            Self::RuntimeStateUnavailable => "native runtime state is unavailable",
-            Self::ShutdownTimedOut => "native runtime did not stop within the bounded timeout",
-        })
-    }
-}
-impl std::error::Error for AndroidRuntimeError {}
-
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct CellularDnsDiagnosticView {
     pub slow_threshold_ms: u64,
@@ -245,38 +224,25 @@ impl CellularDnsResolver for AndroidDnsResolver {
     }
 }
 
-#[derive(uniffi::Object)]
-pub struct CellularController {
+pub(crate) struct CellularController {
     runtime: Arc<CellularRuntimeCoordinator>,
 }
 
 impl CellularController {
-    pub(crate) fn from_runtime(runtime: Arc<CellularRuntimeCoordinator>) -> Arc<Self> {
-        Arc::new(Self { runtime })
+    pub(crate) fn from_runtime(runtime: Arc<CellularRuntimeCoordinator>) -> Self {
+        Self { runtime }
     }
 
-    pub(crate) fn runtime_handle(&self) -> Arc<CellularRuntimeCoordinator> {
-        Arc::clone(&self.runtime)
-    }
-}
-
-#[uniffi::export]
-impl CellularController {
-    #[uniffi::constructor]
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self {
-            runtime: CellularRuntimeCoordinator::new(Arc::new(AndroidDnsResolver)),
-        })
-    }
-
-    pub fn admission_snapshot(&self) -> Result<CellularAdmissionView, CellularBridgeError> {
+    pub(crate) fn admission_snapshot(
+        &self,
+    ) -> Result<CellularAdmissionView, CellularBridgeError> {
         self.runtime
             .admission_snapshot()
             .map(map_snapshot)
             .map_err(|_| CellularBridgeError::OwnerUnavailable)
     }
 
-    pub fn dns_diagnostic_snapshot(&self) -> CellularDnsDiagnosticView {
+    pub(crate) fn dns_diagnostic_snapshot(&self) -> CellularDnsDiagnosticView {
         let snapshot = self.runtime.dns_diagnostic_snapshot();
         CellularDnsDiagnosticView {
             slow_threshold_ms: snapshot.slow_threshold_ms,
@@ -299,7 +265,7 @@ impl CellularController {
         }
     }
 
-    pub fn prepare_public_ip_probe(
+    pub(crate) fn prepare_public_ip_probe(
         &self,
         timeout_ms: u64,
     ) -> Result<Arc<PublicIpProbeTicket>, PublicIpProbeError> {
@@ -307,74 +273,6 @@ impl CellularController {
             .prepare_public_ip_probe(Duration::from_millis(timeout_ms))
             .map(|inner| Arc::new(PublicIpProbeTicket { inner }))
             .map_err(map_public_ip_failure)
-    }
-
-    pub fn close_root_policy_gate(&self) -> Result<(), AndroidRuntimeError> {
-        self.runtime.close_root_policy_gate().map_err(Into::into)
-    }
-
-    pub fn await_root_policy_quiesced(&self, timeout_ms: u64) -> Result<bool, AndroidRuntimeError> {
-        self.runtime
-            .await_root_policy_quiesced(Duration::from_millis(timeout_ms))
-            .map_err(Into::into)
-    }
-
-    pub fn authorize_root_policy(
-        &self,
-        sequence: u64,
-        network_handle: u64,
-    ) -> Result<bool, AndroidRuntimeError> {
-        let Some(sequence) = ObservationSequence::new(sequence) else {
-            return Ok(false);
-        };
-        let Some(network_handle) = NetworkHandle::new(network_handle) else {
-            return Ok(false);
-        };
-        self.runtime
-            .authorize_root_policy(sequence, network_handle)
-            .map_err(Into::into)
-    }
-
-    pub fn observe_network(
-        &self,
-        sequence: u64,
-        network_handle: u64,
-        is_cellular: bool,
-        has_internet: bool,
-        is_validated: bool,
-        is_not_vpn: bool,
-    ) -> Result<CellularAdmissionView, CellularBridgeError> {
-        let sequence = ObservationSequence::new(sequence)
-            .ok_or(CellularBridgeError::InvalidObservationSequence)?;
-        let network_handle =
-            NetworkHandle::new(network_handle).ok_or(CellularBridgeError::InvalidNetworkHandle)?;
-        let observation = NetworkObservation::new(
-            sequence,
-            network_handle,
-            is_cellular,
-            has_internet,
-            is_validated,
-            is_not_vpn,
-        );
-        self.runtime
-            .observe_network(observation)
-            .map(map_snapshot)
-            .map_err(|_| CellularBridgeError::OwnerUnavailable)
-    }
-
-    pub fn network_lost(
-        &self,
-        sequence: u64,
-        network_handle: u64,
-    ) -> Result<CellularAdmissionView, CellularBridgeError> {
-        let sequence = ObservationSequence::new(sequence)
-            .ok_or(CellularBridgeError::InvalidObservationSequence)?;
-        let network_handle =
-            NetworkHandle::new(network_handle).ok_or(CellularBridgeError::InvalidNetworkHandle)?;
-        self.runtime
-            .network_lost(sequence, network_handle)
-            .map(map_snapshot)
-            .map_err(|_| CellularBridgeError::OwnerUnavailable)
     }
 }
 
@@ -450,54 +348,3 @@ fn map_android_network_error(error: AndroidNetworkError) -> ProxyOutboundConnect
     }
 }
 
-impl From<CellularRuntimeError> for AndroidRuntimeError {
-    fn from(error: CellularRuntimeError) -> Self {
-        match error {
-            CellularRuntimeError::InvalidOperationTimeout => Self::InvalidOperationTimeout,
-            CellularRuntimeError::ConnectorUnavailable => Self::ConnectorUnavailable,
-            CellularRuntimeError::StateUnavailable => Self::RuntimeStateUnavailable,
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn foreign_controller_starts_unknown() {
-        let controller = CellularController::new();
-        assert_eq!(
-            controller.admission_snapshot().expect("snapshot"),
-            CellularAdmissionView {
-                state: CellularAdmissionState::Unknown,
-                reason: Some(CellularAdmissionReason::NoObservation),
-                admitted_network_handle: None,
-                last_sequence: None,
-            }
-        );
-    }
-
-    #[test]
-    fn foreign_observation_delegates_admission_to_natural_owner() {
-        let controller = CellularController::new();
-        let view = controller
-            .observe_network(1, 42, true, true, true, true)
-            .expect("valid observation");
-        assert_eq!(view.state, CellularAdmissionState::Admitted);
-        assert_eq!(view.admitted_network_handle, Some(42));
-    }
-
-    #[test]
-    fn stale_generation_cannot_reopen_root_policy_effect_gate() {
-        let controller = CellularController::new();
-        controller
-            .observe_network(1, 42, true, true, true, true)
-            .expect("first observation");
-        assert!(controller.authorize_root_policy(1, 42).expect("authorize"));
-        controller
-            .observe_network(2, 43, true, true, true, true)
-            .expect("newer observation");
-        assert!(!controller.authorize_root_policy(1, 42).expect("stale"));
-    }
-}
