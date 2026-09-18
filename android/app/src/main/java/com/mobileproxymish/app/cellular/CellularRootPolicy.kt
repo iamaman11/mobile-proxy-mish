@@ -40,13 +40,15 @@ internal enum class CellularRootPolicyCleanupFailure {
 
 internal data class CellularRootPolicyReconcileDiagnostic(
     val attempts: Long = 0,
-    val totalPolicyCommands: Long = 0,
+    val totalExecutorCommands: Long = 0,
     val totalObservationCommands: Long = 0,
     val totalMutationCommands: Long = 0,
     val totalDuplicateObservations: Long = 0,
-    val lastElapsedMs: Long = 0,
-    val maxElapsedMs: Long = 0,
-    val lastPolicyCommands: Int = 0,
+    val lastReconcileElapsedMs: Long = 0,
+    val maxReconcileElapsedMs: Long = 0,
+    val lastPolicyEffectElapsedMs: Long = 0,
+    val maxPolicyEffectElapsedMs: Long = 0,
+    val lastExecutorCommands: Int = 0,
     val lastObservationCommands: Int = 0,
     val lastMutationCommands: Int = 0,
     val lastDuplicateObservations: Int = 0,
@@ -115,13 +117,18 @@ class CellularRootPolicy internal constructor(
         admitted: Boolean,
         interfaceName: String?,
     ): CellularRootPolicyResult {
-        val startedNanos = System.nanoTime()
+        val reconcileStartedNanos = System.nanoTime()
+        var policyEffectStartedNanos: Long? = null
         executor.beginDiagnosticWindow()
         try {
             val authorityStatus = authority.probe()
             if (authorityStatus != RootAuthorityStatus.Ready) {
                 return CellularRootPolicyResult.AuthorityUnavailable(authorityStatus)
             }
+            // The executor window deliberately excludes Magisk authority/bootstrap commands.
+            // Keep a separate policy-effect elapsed value so command counts and timing are not
+            // accidentally interpreted as measuring different boundaries.
+            policyEffectStartedNanos = System.nanoTime()
             if (productUid <= 0) {
                 return CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.InvalidProductUid)
             }
@@ -202,20 +209,29 @@ class CellularRootPolicy internal constructor(
 
             return CellularRootPolicyResult.Enforced
         } finally {
-            val elapsedMs = ((System.nanoTime() - startedNanos) / 1_000_000L).coerceAtLeast(0L)
+            val finishedNanos = System.nanoTime()
+            val reconcileElapsedMs =
+                ((finishedNanos - reconcileStartedNanos) / 1_000_000L).coerceAtLeast(0L)
+            val policyEffectElapsedMs = policyEffectStartedNanos?.let { started ->
+                ((finishedNanos - started) / 1_000_000L).coerceAtLeast(0L)
+            } ?: 0L
             val window = executor.finishDiagnosticWindow()
             val previous = reconcileDiagnostic
             reconcileDiagnostic = previous.copy(
                 attempts = previous.attempts + 1,
-                totalPolicyCommands = previous.totalPolicyCommands + window.commands,
+                totalExecutorCommands = previous.totalExecutorCommands + window.commands,
                 totalObservationCommands =
                     previous.totalObservationCommands + window.observationCommands,
                 totalMutationCommands = previous.totalMutationCommands + window.mutationCommands,
                 totalDuplicateObservations =
                     previous.totalDuplicateObservations + window.duplicateObservations,
-                lastElapsedMs = elapsedMs,
-                maxElapsedMs = maxOf(previous.maxElapsedMs, elapsedMs),
-                lastPolicyCommands = window.commands,
+                lastReconcileElapsedMs = reconcileElapsedMs,
+                maxReconcileElapsedMs =
+                    maxOf(previous.maxReconcileElapsedMs, reconcileElapsedMs),
+                lastPolicyEffectElapsedMs = policyEffectElapsedMs,
+                maxPolicyEffectElapsedMs =
+                    maxOf(previous.maxPolicyEffectElapsedMs, policyEffectElapsedMs),
+                lastExecutorCommands = window.commands,
                 lastObservationCommands = window.observationCommands,
                 lastMutationCommands = window.mutationCommands,
                 lastDuplicateObservations = window.duplicateObservations,
