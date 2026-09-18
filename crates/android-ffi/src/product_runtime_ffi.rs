@@ -206,7 +206,7 @@ impl NativeProductRuntime {
     }
 
     pub fn observe_network(
-        self: Arc<Self>,
+        &self,
         sequence: u64,
         network_handle: u64,
         is_cellular: bool,
@@ -234,7 +234,7 @@ impl NativeProductRuntime {
     }
 
     pub fn network_lost(
-        self: Arc<Self>,
+        &self,
         sequence: u64,
         network_handle: u64,
     ) -> Result<CellularAdmissionView, CellularBridgeError> {
@@ -412,9 +412,10 @@ mod tests {
 
     #[test]
     fn invalid_uid_is_rejected_before_runtime_construction() {
-        assert_eq!(
-            NativeProductRuntime::new(0, false).unwrap_err(),
-            NativeProductRuntimeError::InvalidProductUid
-        );
+        let error = match NativeProductRuntime::new(0, false) {
+            Ok(_) => panic!("zero UID must be rejected"),
+            Err(error) => error,
+        };
+        assert_eq!(error, NativeProductRuntimeError::InvalidProductUid);
     }
 }
