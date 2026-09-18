@@ -21,6 +21,7 @@ use mish_readiness::{
     RuntimeGeneration, RuntimeReadinessFact, probe_eligibility, project,
 };
 use mish_transport::{MeshAdmissionState, MeshTransportSnapshot};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use tokio::time::{Instant, sleep};
@@ -34,6 +35,8 @@ pub enum ReadinessRuntimeError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub type ReadinessObserver = Arc<dyn Fn(Readiness) + Send + Sync + 'static>;
+
 pub struct ReadinessDiagnosticSnapshot {
     pub state: Readiness,
     pub binding_eligible: bool,
@@ -66,6 +69,7 @@ struct ReadinessRuntimeState {
     refresh_epoch: u64,
     refresh_pending: bool,
     credentials: Option<ProbeCredentials>,
+    observer: Option<ReadinessObserver>,
     closed: bool,
 }
 
@@ -106,6 +110,7 @@ impl ReadinessRuntimeCoordinator {
                 refresh_epoch: 0,
                 refresh_pending: false,
                 credentials: None,
+                observer: None,
                 closed: false,
             }),
         }))
@@ -113,6 +118,17 @@ impl ReadinessRuntimeCoordinator {
 
     pub fn snapshot(&self) -> Readiness {
         self.state().map_or(Readiness::Unknown, |state| state.projected)
+    }
+
+    pub fn set_observer(&self, observer: ReadinessObserver) {
+        let current = {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            state.observer = Some(Arc::clone(&observer));
+            state.projected
+        };
+        notify_readiness(Some((observer, current)));
     }
 
     pub fn diagnostic_snapshot(&self) -> ReadinessDiagnosticSnapshot {
@@ -455,6 +471,12 @@ impl ReadinessRuntimeCoordinator {
 
     fn publish_readiness(&self, readiness: Readiness) {
         let _ = self.mesh.set_readiness_ready(readiness == Readiness::Ready);
+        let observer = self
+            .state
+            .lock()
+            .ok()
+            .and_then(|state| state.observer.clone());
+        notify_readiness(observer.map(|observer| (observer, readiness)));
     }
 
     fn runtime_generation(&self) -> Result<RuntimeGeneration, ReadinessRuntimeError> {
@@ -485,6 +507,12 @@ fn input_for(
         mesh: facts.mesh,
         expected_freshness: probe.expected_freshness(),
         probe: observation,
+    }
+}
+
+fn notify_readiness(notification: Option<(ReadinessObserver, Readiness)>) {
+    if let Some((observer, readiness)) = notification {
+        let _ = catch_unwind(AssertUnwindSafe(|| observer(readiness)));
     }
 }
 
