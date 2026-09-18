@@ -64,7 +64,7 @@ foreach ($required in @(
     'Invoke-MishExternalProxyCredentialProvisioning',
     'Open-MishExternalProxyCredentialLease',
     "@('forward', 'tcp:0', 'tcp:3128')",
-    "@('forward', '--remove', \"tcp:$forwardPort\")",
+    '@(''forward'', ''--remove'', "tcp:$forwardPort")',
     'active = [int64]$dns.active',
     'peak_active = [int64]$dns.peak_active',
     'max_native_elapsed_ms = [int64]$dns.max_native_elapsed_ms',
