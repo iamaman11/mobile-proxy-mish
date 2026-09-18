@@ -122,6 +122,9 @@ def main() -> None:
         "stopIngress(",
         "proxyRuntime.snapshot",
         "ingressLock",
+        "setMeshReadinessReady(",
+        "requireEgressReadiness(",
+        "applyReadiness(",
     ):
         forbid(
             mesh_android,
@@ -131,7 +134,6 @@ def main() -> None:
     for required in (
         "AndroidVpnObserver(",
         "productRuntime.observeMeshVpn",
-        "productRuntime.setMeshReadinessReady(",
         "productRuntime.meshAdmissionSnapshot()",
     ):
         require(
@@ -520,30 +522,38 @@ def main() -> None:
         "mod readiness_eligibility_ffi;",
         "readiness eligibility UniFFI boundary must remain generated",
     )
-    readiness_android = "android/app/src/main/java/com/mobileproxymish/app/ProductReadinessRuntime.kt"
+    readiness_runtime = "crates/runtime/src/readiness_runtime.rs"
     for required in (
-        "ProductReadinessController()",
-        "controller.invalidateProbe()",
-        "controller.beginProbe(binding)",
-        "controller.completeProbe(ticket, outcome, elapsedMs)",
-        "controller.project(facts, observation)",
-        "readinessProbeBindingIfEligible(facts)",
-        "readinessProbeRefreshDelayMs()",
-        "productRuntime.executeReadinessProbe(",
+        "pub struct ReadinessRuntimeCoordinator",
+        "EgressProbeCoordinator",
+        "execute_readiness_probe_async",
+        "observe_cellular",
+        "observe_mesh",
+        "observe_proxy_started",
+        "observe_proxy_stopped",
+        "DEFAULT_EGRESS_PROBE_REFRESH_DELAY",
+        "self.mesh.set_readiness_ready",
+        "ProbeEligibility::Eligible",
     ):
-        require(
-            readiness_android,
+        require_product(
+            readiness_runtime,
             required,
-            "Android readiness adapter must remain Rust-directed and effect-only",
+            "Readiness scheduling/currentness/composition must remain on the shared Rust/Tokio runtime",
         )
-    forbid(
-        readiness_android,
-        "candidateBinding(",
-        "Android readiness adapter must not duplicate structural eligibility policy",
-    )
+    for forbidden in (
+        "std::thread",
+        "ScheduledExecutorService",
+        "Executors.",
+    ):
+        forbid_product(
+            readiness_runtime,
+            forbidden,
+            "native readiness must not create a second scheduler/thread owner",
+        )
+
     readiness_network = "crates/runtime/src/readiness_network.rs"
     for required in (
-        "pub fn execute_readiness_probe(",
+        "pub(crate) async fn execute_readiness_probe_async(",
         "TcpStream::connect(socket)",
         "Proxy-Authorization: {authorization}",
         "credentials.basic_authorization_value()",
@@ -556,28 +566,54 @@ def main() -> None:
             required,
             "readiness CONNECT/TLS execution must remain bounded on the shared Rust/Tokio runtime",
         )
-    require_product(
-        product_ffi,
-        "pub fn execute_readiness_probe(",
-        "NativeProductRuntime must expose the one native readiness network effect",
-    )
-    for forbidden in (
-        "java.net.Socket",
-        "SSLSocket",
-        "HttpsURLConnection",
-        "readinessProbeTarget()",
-        "egressProbeBudgetMs()",
-        "AuthenticatedEgressProbe",
+
+    for required in (
+        "ReadinessRuntimeCoordinator::new",
+        "policy.add_internal_observer",
+        "pub fn observe_readiness(",
+        "pub fn readiness_snapshot(",
+        "pub fn readiness_diagnostic_snapshot(",
     ):
-        forbid(
-            readiness_android,
-            forbidden,
-            "Android readiness adapter must not regain ordinary socket/TLS/endpoint execution",
+        require_product(
+            product_ffi,
+            required,
+            "NativeProductRuntime must own native readiness composition and projection",
         )
+    for forbidden in (
+        "pub fn execute_readiness_probe(",
+        "pub fn set_mesh_readiness_ready(",
+    ):
+        forbid_product(
+            product_ffi,
+            forbidden,
+            "Android FFI must not expose transitional readiness execution/control surfaces",
+        )
+
+    forbid_exists(
+        "android/app/src/main/java/com/mobileproxymish/app/ProductReadinessRuntime.kt",
+        "Kotlin readiness scheduler/runtime must be deleted after native cutover",
+    )
     forbid_exists(
         "android/app/src/main/java/com/mobileproxymish/app/AuthenticatedEgressProbe.kt",
         "readiness ordinary CONNECT/TLS execution is Rust/Tokio-owned",
     )
+    for kotlin_path in ROOT.glob("android/app/src/main/java/**/*.kt"):
+        kotlin = kotlin_path.read_text(encoding="utf-8")
+        for forbidden in (
+            "mish-readiness-probe",
+            "probeExecutor",
+            "refreshFuture",
+            "scheduleRefresh(",
+            "executeScheduledRefresh(",
+            "ProductReadinessController()",
+            "readinessProbeBindingIfEligible(",
+            "readinessProbeRefreshDelayMs()",
+        ):
+            if forbidden in kotlin:
+                raise SystemExit(
+                    "architecture guard: Kotlin must not regain readiness scheduling/composition: "
+                    f"{kotlin_path.relative_to(ROOT)} contains {forbidden!r}"
+                )
 
     # Stateful runtime coordination must not drift into the FFI seam.
     ffi = "crates/android-ffi/src/runtime_boundary.rs"
@@ -651,7 +687,6 @@ def main() -> None:
         "observe_mesh_vpn_absent",
         "observe_mesh_unique_vpn",
         "observe_mesh_vpn_ambiguous",
-        "set_mesh_readiness_ready",
         "install_proxy_for_mesh",
         "clear_proxy_for_mesh",
     ):
@@ -826,7 +861,7 @@ def main() -> None:
         forbid(
             cellular_bridge,
             forbidden,
-            "Android Cellular bridge must stay an observation/effect adapter only",
+            "Android Cellular bridge must stay an observation/presentation adapter only",
         )
 
     # L8 native cutover is one-way: obsolete Android sing-box bytes/build adapters may not return.
