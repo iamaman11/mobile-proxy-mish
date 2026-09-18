@@ -106,9 +106,7 @@ impl DnsDiagnosticsTracker {
             slow_completions: self.slow_completions.load(Ordering::Relaxed),
             failed: self.failed.load(Ordering::Relaxed),
             discarded_after_deadline: self.discarded_after_deadline.load(Ordering::Relaxed),
-            completed_after_owner_change: self
-                .completed_after_owner_change
-                .load(Ordering::Relaxed),
+            completed_after_owner_change: self.completed_after_owner_change.load(Ordering::Relaxed),
             discarded_stale: self.discarded_stale.load(Ordering::Relaxed),
             accepted_current: self.accepted_current.load(Ordering::Relaxed),
             max_native_elapsed_ms: self.max_native_elapsed_ms.load(Ordering::Relaxed),
@@ -175,12 +173,8 @@ impl Drop for DnsCallObservation<'_> {
 fn update_max(target: &AtomicU64, candidate: u64) {
     let mut current = target.load(Ordering::Relaxed);
     while candidate > current {
-        match target.compare_exchange_weak(
-            current,
-            candidate,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        ) {
+        match target.compare_exchange_weak(current, candidate, Ordering::Relaxed, Ordering::Relaxed)
+        {
             Ok(_) => break,
             Err(actual) => current = actual,
         }
