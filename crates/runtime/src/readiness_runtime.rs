@@ -34,9 +34,9 @@ pub enum ReadinessRuntimeError {
     ExecutorUnavailable,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub type ReadinessObserver = Arc<dyn Fn(Readiness) + Send + Sync + 'static>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReadinessDiagnosticSnapshot {
     pub state: Readiness,
     pub root_policy_verified: bool,
