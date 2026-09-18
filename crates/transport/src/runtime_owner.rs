@@ -32,6 +32,7 @@ pub struct MeshTransportSnapshot {
     admission: MeshAdmissionSnapshot,
     ingress_running: bool,
     active_sessions: usize,
+    capacity_rejects: usize,
 }
 
 impl MeshTransportSnapshot {
@@ -45,6 +46,10 @@ impl MeshTransportSnapshot {
 
     pub const fn active_sessions(self) -> usize {
         self.active_sessions
+    }
+
+    pub const fn capacity_rejects(self) -> usize {
+        self.capacity_rejects
     }
 }
 
@@ -201,6 +206,10 @@ fn snapshot_locked(state: &MeshTransportState) -> MeshTransportSnapshot {
             .sessions
             .as_ref()
             .map_or(0, |sessions| sessions.active_sessions()),
+        capacity_rejects: state
+            .sessions
+            .as_ref()
+            .map_or(0, |sessions| sessions.capacity_rejects()),
     }
 }
 

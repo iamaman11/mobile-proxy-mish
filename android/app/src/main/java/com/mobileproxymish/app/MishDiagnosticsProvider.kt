@@ -61,6 +61,7 @@ internal data class MishDiagnosticFactsV2(
     val meshIngressRunning: Boolean,
     val meshIngressFailure: String,
     val meshActiveSessions: ULong?,
+    val meshCapacityRejects: ULong?,
     val readinessState: String,
     val readinessBindingEligible: Boolean,
     val readinessProbeState: String,
@@ -199,6 +200,7 @@ internal fun renderMishDiagnosticSnapshotV2(facts: MishDiagnosticFactsV2): Strin
             put("ingress_running", facts.meshIngressRunning)
             put("ingress_failure", facts.meshIngressFailure)
             put("active_sessions", facts.meshActiveSessions?.toLong() ?: JSONObject.NULL)
+            put("capacity_rejects", facts.meshCapacityRejects?.toLong() ?: JSONObject.NULL)
         })
         put("readiness", JSONObject().apply {
             put("state", facts.readinessState)
@@ -268,7 +270,7 @@ class MishDiagnosticsProvider : ContentProvider() {
 
         val readinessDiagnostic = readinessGeneration.diagnosticObservation()
         val meshIngressFailure = meshGeneration.diagnosticIngressFailure().name
-        val meshActiveSessions = meshGeneration.diagnosticActiveSessions()
+        val meshSessionObservation = meshGeneration.diagnosticSessionObservation()
 
         val runtimeRecoveryAfter = runtime.recoveryDiagnosticObservation()
         val cellularAfter = runtime.cellularSnapshot.value
@@ -361,7 +363,8 @@ class MishDiagnosticsProvider : ContentProvider() {
                 meshEpochPresent = meshAfter?.admissionEpoch != null,
                 meshIngressRunning = meshAfter?.ingressRunning == true,
                 meshIngressFailure = meshIngressFailure,
-                meshActiveSessions = meshActiveSessions,
+                meshActiveSessions = meshSessionObservation?.activeSessions,
+                meshCapacityRejects = meshSessionObservation?.capacityRejects,
                 readinessState = readinessAfter.name,
                 readinessBindingEligible = readinessDiagnostic.bindingEligible,
                 readinessProbeState = readinessProbeState,

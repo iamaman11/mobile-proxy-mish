@@ -27,9 +27,11 @@ class OwnerBackedCapacityDiagnosticsTest {
                 proxyFfi.contains("self.inner.active_sessions()"),
         )
         assertTrue(
-            "Transport owner snapshot must expose the external Mesh session count through UniFFI",
+            "Transport owner snapshot must expose external Mesh session and capacity-reject facts through UniFFI",
             transportFfi.contains("pub active_sessions: u64") &&
-                transportFfi.contains("active_sessions: snapshot.active_sessions() as u64"),
+                transportFfi.contains("pub capacity_rejects: u64") &&
+                transportFfi.contains("active_sessions: snapshot.active_sessions() as u64") &&
+                transportFfi.contains("capacity_rejects: snapshot.capacity_rejects() as u64"),
         )
         assertTrue(
             "Android proxy diagnostics must read the native owner rather than count sessions",
@@ -37,15 +39,19 @@ class OwnerBackedCapacityDiagnosticsTest {
                 proxyAdapter.contains("activeSessions = activeSessions"),
         )
         assertTrue(
-            "Android Mesh diagnostics must fetch a fresh Transport-owner snapshot",
-            meshAdapter.contains("activeController.admissionSnapshot().activeSessions") &&
-                meshAdapter.contains("diagnosticActiveSessions()"),
+            "Android Mesh diagnostics must fetch one fresh Transport-owner capacity observation",
+            meshAdapter.contains("val owner = activeController.admissionSnapshot()") &&
+                meshAdapter.contains("activeSessions = owner.activeSessions") &&
+                meshAdapter.contains("capacityRejects = owner.capacityRejects") &&
+                meshAdapter.contains("diagnosticSessionObservation()"),
         )
         assertTrue(
-            "The canonical diagnostics payload must publish both owner-backed counts",
+            "The canonical diagnostics payload must publish owner-backed active and capacity-reject facts",
             diagnostics.contains("proxyActiveSessions = proxyDiagnosticAfter.activeSessions") &&
-                diagnostics.contains("meshActiveSessions = meshGeneration.diagnosticActiveSessions()") &&
-                diagnostics.split("put(\"active_sessions\"").size - 1 == 2,
+                diagnostics.contains("meshActiveSessions = meshSessionObservation?.activeSessions") &&
+                diagnostics.contains("meshCapacityRejects = meshSessionObservation?.capacityRejects") &&
+                diagnostics.split("put(\"active_sessions\"").size - 1 == 2 &&
+                diagnostics.contains("put(\"capacity_rejects\", facts.meshCapacityRejects"),
         )
 
         for (source in listOf(proxyAdapter, meshAdapter, diagnostics)) {

@@ -31,6 +31,11 @@ internal enum class MeshIngressDiagnosticFailure {
     OTHER,
 }
 
+internal data class MeshSessionDiagnosticObservation(
+    val activeSessions: ULong,
+    val capacityRejects: ULong,
+)
+
 /**
  * Thin Android composition adapter for the Rust Transport Reachability owner.
  *
@@ -72,11 +77,15 @@ internal class MeshIngressRuntimeBridge(
 
     internal fun diagnosticIngressFailure(): MeshIngressDiagnosticFailure = lastIngressFailure
 
-    /** Read the live session count from the Rust Transport owner; Android keeps no parallel counter. */
-    internal fun diagnosticActiveSessions(): ULong? {
+    /** Read one live capacity observation from Rust; Android keeps no parallel counters. */
+    internal fun diagnosticSessionObservation(): MeshSessionDiagnosticObservation? {
         val activeController = controller ?: return null
         return try {
-            activeController.admissionSnapshot().activeSessions
+            val owner = activeController.admissionSnapshot()
+            MeshSessionDiagnosticObservation(
+                activeSessions = owner.activeSessions,
+                capacityRejects = owner.capacityRejects,
+            )
         } catch (_: LinkageError) {
             null
         } catch (_: Exception) {

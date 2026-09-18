@@ -171,11 +171,16 @@ def main() -> None:
         "mish-transport",
         "Runtime must consume Transport-owned Mesh contracts through the typed seam",
     )
-    require(
-        mesh_android,
-        "activeController.admissionSnapshot().activeSessions",
-        "Android diagnostics must project the natural Transport-owned Mesh session counter",
-    )
+    for required in (
+        "val owner = activeController.admissionSnapshot()",
+        "activeSessions = owner.activeSessions",
+        "capacityRejects = owner.capacityRejects",
+    ):
+        require(
+            mesh_android,
+            required,
+            "Android diagnostics must project one natural Transport-owned Mesh capacity observation",
+        )
     for duplicate_counter in ("AtomicInteger", "AtomicLong", "LongAdder"):
         forbid(
             mesh_android,
