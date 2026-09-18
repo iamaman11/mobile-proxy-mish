@@ -240,6 +240,8 @@ impl ProductRuntimeCoordinator {
         sequence: u64,
         observed_handle: NetworkHandle,
     ) -> Result<CellularAdmissionSnapshot, crate::CellularRuntimeError> {
+        let sequence_value = mish_cellular::ObservationSequence::new(sequence)
+            .ok_or(crate::CellularRuntimeError::StateUnavailable)?;
         let generation = {
             let mut state = self
                 .state
@@ -256,9 +258,9 @@ impl ProductRuntimeCoordinator {
             }
             Arc::clone(&state.generation)
         };
-        let sequence = mish_cellular::ObservationSequence::new(sequence)
-            .ok_or(crate::CellularRuntimeError::StateUnavailable)?;
-        generation.policy().network_lost(sequence, observed_handle)
+        generation
+            .policy()
+            .network_lost(sequence_value, observed_handle)
     }
 
     pub fn observe_mesh_vpn(
@@ -499,7 +501,7 @@ impl ProductRuntimeCoordinator {
     }
 
     async fn run_start(self: Arc<Self>, expected_generation: u64, input: ProductStartInput) {
-        let generation = {
+        let (generation, platform_facts) = {
             let Ok(state) = self.state.lock() else {
                 return;
             };
@@ -510,10 +512,15 @@ impl ProductRuntimeCoordinator {
             {
                 return;
             }
-            Arc::clone(&state.generation)
+            (
+                Arc::clone(&state.generation),
+                state.platform_facts.clone(),
+            )
         };
 
-        if generation.policy().start().is_err() {
+        if generation.policy().start().is_err()
+            || !replay_platform_facts(&generation, &platform_facts)
+        {
             self.finish_failed_start(expected_generation, generation).await;
             return;
         }
@@ -668,6 +675,45 @@ impl ProductRuntimeCoordinator {
     fn state_mut(&self) -> Result<MutexGuard<'_, ProductRuntimeState>, RuntimeExecutionError> {
         self.state()
     }
+}
+
+fn replay_platform_facts(
+    generation: &ProductGeneration,
+    platform_facts: &ProductPlatformFacts,
+) -> bool {
+    for observation in platform_facts.cellular_replay() {
+        if generation
+            .policy()
+            .observe_network(
+                observation.observation,
+                observation.observed_handle,
+                observation.interface_name,
+            )
+            .is_err()
+        {
+            return false;
+        }
+    }
+
+    if let Some(mesh) = platform_facts.mesh.clone() {
+        if apply_mesh_observation(generation, mesh.sequence, mesh.observation).is_err() {
+            return false;
+        }
+    }
+    true
+}
+
+fn apply_mesh_observation(
+    generation: &ProductGeneration,
+    sequence: u64,
+    observation: MeshVpnObservation,
+) -> Result<MeshTransportSnapshot, MeshTransportError> {
+    let snapshot = generation.mesh().observe_vpn(sequence, observation)?;
+    generation
+        .readiness()
+        .observe_mesh(snapshot)
+        .map_err(|_| MeshTransportError::StateUnavailable)?;
+    generation.mesh().snapshot()
 }
 
 fn bind_observers(generation: &ProductGeneration, observers: ProductObservers) {
