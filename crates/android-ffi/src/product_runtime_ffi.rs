@@ -1,6 +1,4 @@
-use crate::readiness_ffi::{
-    EgressProbeOutcome, ProductReadinessState, ReadinessBoundaryError, map_outcome_out,
-};
+use crate::readiness_ffi::ProductReadinessState;
 use crate::runtime_boundary::{
     AndroidDnsResolver, CellularAdmissionView, CellularBridgeError, CellularController,
     CellularDnsDiagnosticView, PublicIpObservationView, PublicIpProbeError, PublicIpProbeTicket,
@@ -17,10 +15,10 @@ use mish_runtime::{
     CellularReconcileDiagnostic, CellularRuntimeCoordinator, MeshCompositionCoordinator,
     ProxyServingRuntime, RootAuthorityStatus as OwnerRootAuthorityStatus,
     RootPolicyFailure as OwnerRootPolicyFailure,
-    ReadinessDiagnosticSnapshot, ReadinessNetworkError, ReadinessObserver,
-    ReadinessRuntimeCoordinator, ReadinessRuntimeError, RootPolicyReconcileDiagnostic,
+    ReadinessDiagnosticSnapshot, ReadinessObserver, ReadinessRuntimeCoordinator,
+    ReadinessRuntimeError, RootPolicyReconcileDiagnostic,
     RootPolicyResult as OwnerRootPolicyResult, RootRecoveryDiagnostic, RuntimeExecutionError,
-    RuntimeExecutor, execute_readiness_probe as execute_native_readiness_probe,
+    RuntimeExecutor,
 };
 use mish_transport::MeshVpnObservation;
 use std::fmt;
@@ -364,19 +362,6 @@ impl NativeProductRuntime {
             .map_err(map_public_ip_failure)
     }
 
-    pub fn execute_readiness_probe(
-        &self,
-        public_username: String,
-        public_password: String,
-    ) -> Result<EgressProbeOutcome, ReadinessBoundaryError> {
-        if self.closed.load(Ordering::Acquire) {
-            return Err(ReadinessBoundaryError::ProbeEffectUnavailable);
-        }
-        execute_native_readiness_probe(&self.executor, public_username, public_password)
-            .map(map_outcome_out)
-            .map_err(map_readiness_network_error)
-    }
-
     pub fn cellular_reconcile_diagnostic(&self) -> CellularReconcileDiagnosticView {
         map_reconcile_diagnostic(self.policy.reconcile_diagnostic())
     }
@@ -455,18 +440,6 @@ impl NativeProductRuntime {
         self.mesh.snapshot().map(map_mesh_view).map_err(map_transport_error)
     }
 
-    /// Transitional presentation relay until readiness scheduling itself is native.
-    /// Rust still owns the ingress start/stop decision.
-    pub fn set_mesh_readiness_ready(
-        &self,
-        ready: bool,
-    ) -> Result<MeshAdmissionView, MeshTransportBoundaryError> {
-        self.mesh
-            .set_readiness_ready(ready)
-            .map(map_mesh_view)
-            .map_err(map_transport_error)
-    }
-
     pub fn shutdown(&self) -> Result<(), NativeProductRuntimeError> {
         if self.closed.swap(true, Ordering::AcqRel) {
             return Ok(());
@@ -517,15 +490,6 @@ fn map_readiness_diagnostic(snapshot: ReadinessDiagnosticSnapshot) -> ReadinessD
 
 fn map_readiness_runtime_to_mesh(_error: ReadinessRuntimeError) -> MeshTransportBoundaryError {
     MeshTransportBoundaryError::OwnerUnavailable
-}
-
-fn map_readiness_network_error(error: ReadinessNetworkError) -> ReadinessBoundaryError {
-    match error {
-        ReadinessNetworkError::InvalidTarget => ReadinessBoundaryError::InvalidProbeTarget,
-        ReadinessNetworkError::InvalidCredentials
-        | ReadinessNetworkError::ExecutorUnavailable
-        | ReadinessNetworkError::TlsConfiguration => ReadinessBoundaryError::ProbeEffectUnavailable,
-    }
 }
 
 fn map_policy_publication(
