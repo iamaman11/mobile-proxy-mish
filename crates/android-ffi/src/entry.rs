@@ -19,9 +19,6 @@ pub use readiness_ffi::*;
 mod readiness_eligibility_ffi;
 pub use readiness_eligibility_ffi::*;
 
-mod runtime_composition_ffi;
-pub use runtime_composition_ffi::*;
-
 mod runtime_lifecycle_ffi;
 pub use runtime_lifecycle_ffi::*;
 
