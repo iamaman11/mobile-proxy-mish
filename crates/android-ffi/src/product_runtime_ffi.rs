@@ -2,18 +2,23 @@ use crate::runtime_boundary::{
     AndroidDnsResolver, CellularAdmissionView, CellularBridgeError, CellularController,
     CellularDnsDiagnosticView, PublicIpProbeError, PublicIpProbeTicket, map_snapshot,
 };
+use crate::transport_ffi::{
+    MeshAdmissionView, MeshTransportBoundaryError, map_transport_error, map_view as map_mesh_view,
+};
 use mish_cellular::{
     NetworkHandle, NetworkObservation, ObservationSequence, RootPolicyNamespace,
 };
 use mish_runtime::{
     CellularPolicyCoordinator, CellularPolicyObserver, CellularPolicyPublication,
-    CellularReconcileDiagnostic, CellularRuntimeCoordinator,
-    RootAuthorityStatus as OwnerRootAuthorityStatus,
+    CellularReconcileDiagnostic, CellularRuntimeCoordinator, MeshCompositionCoordinator,
+    ProxyServingRuntime, RootAuthorityStatus as OwnerRootAuthorityStatus,
     RootPolicyFailure as OwnerRootPolicyFailure,
     RootPolicyReconcileDiagnostic, RootPolicyResult as OwnerRootPolicyResult,
     RootRecoveryDiagnostic, RuntimeExecutionError, RuntimeExecutor,
 };
+use mish_transport::MeshVpnObservation;
 use std::fmt;
+use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -137,6 +142,7 @@ pub struct NativeProductRuntime {
     cellular: Arc<CellularRuntimeCoordinator>,
     cellular_view: Arc<CellularController>,
     policy: Arc<CellularPolicyCoordinator>,
+    mesh: Arc<MeshCompositionCoordinator>,
     closed: AtomicBool,
 }
 
@@ -147,6 +153,23 @@ impl NativeProductRuntime {
 
     pub(crate) fn cellular_handle(&self) -> Arc<CellularRuntimeCoordinator> {
         Arc::clone(&self.cellular)
+    }
+
+    pub(crate) fn install_proxy_for_mesh(
+        &self,
+        proxy: Arc<ProxyServingRuntime>,
+    ) -> Result<(), MeshTransportBoundaryError> {
+        self.mesh
+            .install_proxy(proxy)
+            .map(|_| ())
+            .map_err(map_transport_error)
+    }
+
+    pub(crate) fn clear_proxy_for_mesh(&self) -> Result<(), MeshTransportBoundaryError> {
+        self.mesh
+            .clear_proxy()
+            .map(|_| ())
+            .map_err(map_transport_error)
     }
 }
 
@@ -175,12 +198,15 @@ impl NativeProductRuntime {
             namespace,
         )?;
         let cellular_view = CellularController::from_runtime(Arc::clone(&cellular));
+        let mesh = MeshCompositionCoordinator::new()
+            .map_err(|_| NativeProductRuntimeError::StateUnavailable)?;
 
         Ok(Arc::new(Self {
             executor,
             cellular,
             cellular_view,
             policy,
+            mesh,
             closed: AtomicBool::new(false),
         }))
     }
@@ -276,18 +302,80 @@ impl NativeProductRuntime {
             .map_err(Into::into)
     }
 
+    pub fn mesh_admission_snapshot(
+        &self,
+    ) -> Result<MeshAdmissionView, MeshTransportBoundaryError> {
+        self.mesh.snapshot().map(map_mesh_view).map_err(map_transport_error)
+    }
+
+    pub fn observe_mesh_vpn_absent(
+        &self,
+        sequence: u64,
+    ) -> Result<MeshAdmissionView, MeshTransportBoundaryError> {
+        self.mesh
+            .observe_vpn(sequence, MeshVpnObservation::Absent)
+            .map(map_mesh_view)
+            .map_err(map_transport_error)
+    }
+
+    pub fn observe_mesh_unique_vpn(
+        &self,
+        sequence: u64,
+        local_ipv4: Vec<String>,
+    ) -> Result<MeshAdmissionView, MeshTransportBoundaryError> {
+        let addresses = local_ipv4
+            .into_iter()
+            .map(|raw| {
+                raw.parse::<Ipv4Addr>()
+                    .map_err(|_| MeshTransportBoundaryError::InvalidVpnObservation)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.mesh
+            .observe_vpn(
+                sequence,
+                MeshVpnObservation::UniqueVpn {
+                    local_ipv4: addresses,
+                },
+            )
+            .map(map_mesh_view)
+            .map_err(map_transport_error)
+    }
+
+    pub fn observe_mesh_vpn_ambiguous(
+        &self,
+        sequence: u64,
+    ) -> Result<MeshAdmissionView, MeshTransportBoundaryError> {
+        self.mesh
+            .observe_vpn(sequence, MeshVpnObservation::AmbiguousVpn)
+            .map(map_mesh_view)
+            .map_err(map_transport_error)
+    }
+
+    /// Transitional presentation relay until readiness scheduling itself is native.
+    /// Rust still owns the ingress start/stop decision.
+    pub fn set_mesh_readiness_ready(
+        &self,
+        ready: bool,
+    ) -> Result<MeshAdmissionView, MeshTransportBoundaryError> {
+        self.mesh
+            .set_readiness_ready(ready)
+            .map(map_mesh_view)
+            .map_err(map_transport_error)
+    }
+
     pub fn shutdown(&self) -> Result<(), NativeProductRuntimeError> {
         if self.closed.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
 
+        let mesh_clean = self.mesh.shutdown().is_ok();
         let policy_clean = self
             .policy
             .shutdown_blocking(&self.executor)
             .map_err(NativeProductRuntimeError::from);
         let executor_clean = self.executor.shutdown().map_err(NativeProductRuntimeError::from);
 
-        if policy_clean? && executor_clean.is_ok() {
+        if mesh_clean && policy_clean? && executor_clean.is_ok() {
             Ok(())
         } else {
             let _ = executor_clean;
