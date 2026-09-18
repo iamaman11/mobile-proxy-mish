@@ -1,9 +1,8 @@
 package com.mobileproxymish.app
 
-import com.mobileproxymish.app.cellular.CellularRuntimeBridge
 import com.mobileproxymish.ffi.NativeProxyRuntime
 import com.mobileproxymish.ffi.NativeProxyRuntimeObserver
-import com.mobileproxymish.ffi.NativeRuntimeExecutor
+import com.mobileproxymish.ffi.NativeProductRuntime
 import com.mobileproxymish.ffi.ProxyServingFailure
 import com.mobileproxymish.ffi.ProxyServingSnapshotView
 import com.mobileproxymish.ffi.ProxyServingState
@@ -63,8 +62,7 @@ internal fun interface ProxyCredentialProvider {
  * health decision, lifecycle state machine or runtime supervision loop.
  */
 class ProxyRuntimeSupervisor internal constructor(
-    private val executor: NativeRuntimeExecutor,
-    private val cellularRuntime: CellularRuntimeBridge,
+    private val productRuntime: NativeProductRuntime,
     private val publicCredentials: ProxyCredentialProvider,
     private val onFailureObserved: (ProxyServingFailure) -> Unit = {},
 ) : Closeable {
@@ -135,8 +133,7 @@ class ProxyRuntimeSupervisor internal constructor(
 
             val attempt = try {
                 startNativeProxyRuntime(
-                    executor = executor,
-                    cellular = cellularRuntime.nativeController(),
+                    productRuntime = productRuntime,
                     publicUsername = publicCredential.credentials.username,
                     publicPassword = publicCredential.credentials.password,
                     operationTimeoutMs = OUTBOUND_TIMEOUT_MS.toULong(),
