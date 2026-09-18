@@ -169,7 +169,7 @@ impl MeshTransportController {
     }
 }
 
-fn map_view(snapshot: OwnerTransportSnapshot) -> MeshAdmissionView {
+pub(crate) fn map_view(snapshot: OwnerTransportSnapshot) -> MeshAdmissionView {
     let admission = snapshot.admission();
     MeshAdmissionView {
         state: match admission.state() {
@@ -191,7 +191,7 @@ fn map_view(snapshot: OwnerTransportSnapshot) -> MeshAdmissionView {
     }
 }
 
-fn map_transport_error(error: OwnerTransportError) -> MeshTransportBoundaryError {
+pub(crate) fn map_transport_error(error: OwnerTransportError) -> MeshTransportBoundaryError {
     match error {
         OwnerTransportError::Owner(error) => error.into(),
         OwnerTransportError::StateUnavailable => MeshTransportBoundaryError::OwnerUnavailable,
