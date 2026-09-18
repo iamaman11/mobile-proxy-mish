@@ -307,20 +307,66 @@ def main() -> None:
             "U4 completion must revalidate the existing root-policy gate without a second owner",
         )
 
-    public_ip_android = "android/app/src/main/java/com/mobileproxymish/app/cellular/PublicIpProbeEffect.kt"
+    public_ip_network = "crates/runtime/src/public_ip_network.rs"
+    tls_client = "crates/runtime/src/tls_client.rs"
+    product_ffi = "crates/android-ffi/src/product_runtime_ffi.rs"
+    cellular_bridge = "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRuntimeBridge.kt"
     for required in (
-        "InetAddress.getByAddress(",
-        "SSLSocketFactory.getDefault() as SSLSocketFactory",
-        "tlsFactory.createSocket(",
-        "getDefaultHostnameVerifier().verify(",
-        "ticket.remainingTimeoutMs()",
-        "ticket.complete(body)",
+        "execute_public_ip_probe(",
+        "TcpStream::connect(",
+        "tls.connect(",
+        "HTTP_RESPONSE_MAX_BYTES",
+        "parse_http_200_body(",
     ):
-        require(
-            public_ip_android,
+        require_product(
+            public_ip_network,
             required,
-            "Android U4 adapter must remain a narrow bounded TLS/HTTPS effect",
+            "U4 ordinary TCP/TLS/HTTPS execution must remain on the shared Rust/Tokio path",
         )
+    for required in (
+        "ProductTlsClient",
+        "RootCertStore",
+        "webpki_roots::TLS_SERVER_ROOTS",
+        "self.connector.connect(server_name, stream)",
+    ):
+        require_product(
+            tls_client,
+            required,
+            "PRODUCT TLS certificate and hostname verification must remain Rust-owned",
+        )
+    require_product(
+        "crates/runtime/src/entry.rs",
+        "mod public_ip_network;",
+        "U4 network execution module must be part of the runtime crate",
+    )
+    for required in (
+        "pub fn observe_public_egress_ip(",
+        "executor.block_on(execute_public_ip_probe(probe, &tls))",
+    ):
+        require_product(
+            public_ip_runtime,
+            required,
+            "Cellular runtime must execute U4 through the one shared RuntimeExecutor",
+        )
+    require_product(
+        product_ffi,
+        "pub fn observe_public_egress_ip(",
+        "NativeProductRuntime must expose only the terminal native U4 operation to Android",
+    )
+    require(
+        cellular_bridge,
+        "productRuntime.observePublicEgressIp(timeoutMs.toULong())",
+        "Android Cellular adapter must delegate U4 execution to the native runtime",
+    )
+    forbid(
+        cellular_bridge,
+        "PublicIpProbeEffect",
+        "Android Cellular adapter must not regain U4 socket/TLS execution",
+    )
+    forbid_exists(
+        "android/app/src/main/java/com/mobileproxymish/app/cellular/PublicIpProbeEffect.kt",
+        "U4 ordinary socket/TLS/HTTPS execution is Rust/Tokio-owned",
+    )
 
     public_ip_physical = (
         "android/app/src/androidTest/java/com/mobileproxymish/app/cellular/"
