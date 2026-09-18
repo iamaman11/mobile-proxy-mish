@@ -11,6 +11,7 @@ use crate::{
 use mish_cellular::RootPolicyNamespace;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::task::spawn_blocking;
 
 const PROXY_OPERATION_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -106,13 +107,27 @@ impl ProductGeneration {
 
     /// Exact native generation drain. The shared process executor intentionally remains alive so a
     /// later generation can be constructed without creating a second Tokio runtime.
-    pub fn shutdown_blocking(&self) -> Result<bool, RuntimeExecutionError> {
-        let proxy_clean =
-            self.proxy.shutdown().failure != Some(crate::ProxyServingFailure::ShutdownFailed);
+    pub async fn shutdown_async(&self) -> bool {
+        let proxy = Arc::clone(&self.proxy);
+        let proxy_clean = spawn_blocking(move || {
+            proxy.shutdown().failure != Some(crate::ProxyServingFailure::ShutdownFailed)
+        })
+        .await
+        .unwrap_or(false);
+
         self.readiness.shutdown();
-        let mesh_clean = self.mesh.shutdown().is_ok();
-        let policy_clean = self.policy.shutdown_blocking(&self.executor)?;
-        Ok(proxy_clean && mesh_clean && policy_clean)
+
+        let mesh = Arc::clone(&self.mesh);
+        let mesh_clean = spawn_blocking(move || mesh.shutdown().is_ok())
+            .await
+            .unwrap_or(false);
+
+        let policy_clean = self.policy.shutdown().await;
+        proxy_clean && mesh_clean && policy_clean
+    }
+
+    pub fn shutdown_blocking(&self) -> Result<bool, RuntimeExecutionError> {
+        self.executor.block_on(self.shutdown_async())
     }
 }
 
