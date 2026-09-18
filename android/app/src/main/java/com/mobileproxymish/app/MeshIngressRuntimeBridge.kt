@@ -1,12 +1,10 @@
 package com.mobileproxymish.app
 
 import android.content.Context
-import com.mobileproxymish.ffi.MeshAdmissionState
 import com.mobileproxymish.ffi.MeshAdmissionView
 import com.mobileproxymish.ffi.MeshTransportBoundaryException
-import com.mobileproxymish.ffi.MeshTransportController
+import com.mobileproxymish.ffi.NativeProductRuntime
 import com.mobileproxymish.ffi.ProductReadinessState
-import com.mobileproxymish.ffi.meshIngressServingAllowed
 import java.io.Closeable
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
@@ -37,35 +35,26 @@ internal data class MeshSessionDiagnosticObservation(
 )
 
 /**
- * Thin Android composition adapter for the Rust Transport Reachability owner.
+ * Android observation/projection adapter for Rust-owned Mesh composition.
  *
- * `AndroidVpnObserver` owns current ConnectivityManager observation only. Rust consumes its raw VPN
- * IPv4 facts, applies configured Mesh CIDR/cardinality policy, owns admission epochs and decides
- * cross-owner serving eligibility. This adapter sequences observations and realizes the exact
- * ingress start/stop effect; it owns no parallel Mesh admission or readiness state machine.
+ * Android owns only complete current-VPN observation. Rust owns Mesh admission/epoch/capacity and
+ * combines current Proxy + Readiness + Mesh owner facts into ingress start/stop. Until readiness
+ * scheduling moves native in the next U5 slice, this adapter forwards only the terminal Rust-owned
+ * readiness projection; it never evaluates the serving predicate itself.
  */
 internal class MeshIngressRuntimeBridge(
     context: Context,
-    private val proxyRuntime: ProxyRuntimeSupervisor,
+    private val productRuntime: NativeProductRuntime,
 ) : Closeable {
-    private val controller: MeshTransportController? = try {
-        MeshTransportController()
-    } catch (_: LinkageError) {
-        null
-    } catch (_: Exception) {
-        null
-    }
-    private val mutableSnapshot = MutableStateFlow(controller?.let(::ownerSnapshotOrNull))
+    private val mutableSnapshot = MutableStateFlow(ownerSnapshotOrNull())
     private val started = AtomicBoolean(false)
     private val closed = AtomicBoolean(false)
-    private val ingressLock = Any()
     private val observationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val vpnObserver = AndroidVpnObserver(
         context = context,
         onObservation = ::onVpnObservation,
         onObservationUnavailable = ::onVpnObservationUnavailable,
     )
-    private var proxyObservationJob: Job? = null
     private var readinessObservationJob: Job? = null
     private var egressReadiness: StateFlow<ProductReadinessState>? = null
     @Volatile
@@ -78,43 +67,32 @@ internal class MeshIngressRuntimeBridge(
     internal fun diagnosticIngressFailure(): MeshIngressDiagnosticFailure = lastIngressFailure
 
     /** Read one live capacity observation from Rust; Android keeps no parallel counters. */
-    internal fun diagnosticSessionObservation(): MeshSessionDiagnosticObservation? {
-        val activeController = controller ?: return null
-        return try {
-            val owner = activeController.admissionSnapshot()
+    internal fun diagnosticSessionObservation(): MeshSessionDiagnosticObservation? =
+        ownerSnapshotOrNull()?.let { owner ->
             MeshSessionDiagnosticObservation(
                 activeSessions = owner.activeSessions,
                 capacityRejects = owner.capacityRejects,
             )
-        } catch (_: LinkageError) {
-            null
-        } catch (_: Exception) {
-            null
         }
-    }
 
     fun start() {
         check(!closed.get()) { "Mesh ingress runtime is closed" }
-        check(controller != null) { "Mesh transport owner is unavailable" }
         if (!started.compareAndSet(false, true)) return
 
         try {
-            proxyObservationJob = proxyRuntime.snapshot
-                .onEach { vpnObserver.refresh() }
-                .launchIn(observationScope)
-            egressReadiness?.let { readiness ->
+            val readiness = egressReadiness
+            applyReadiness(readiness?.value ?: ProductReadinessState.UNKNOWN)
+            if (readiness != null) {
                 readinessObservationJob = readiness
-                    .onEach { vpnObserver.refresh() }
+                    .onEach(::applyReadiness)
                     .launchIn(observationScope)
             }
             vpnObserver.start()
         } catch (error: Exception) {
             started.set(false)
-            proxyObservationJob?.cancel()
-            proxyObservationJob = null
             readinessObservationJob?.cancel()
             readinessObservationJob = null
-            stopIngressFailClosed(controller)
+            failClosed()
             throw IllegalStateException("Mesh platform adapter could not start", error)
         }
     }
@@ -127,141 +105,105 @@ internal class MeshIngressRuntimeBridge(
     }
 
     private fun onVpnObservation(observation: AndroidMeshVpnObservation) {
-        val activeController = controller ?: return
         if (closed.get()) return
         if (sequence == Long.MAX_VALUE) {
-            stopIngressFailClosed(activeController)
+            failClosed()
             return
         }
         sequence += 1
 
-        val view = try {
-            when (observation) {
+        try {
+            mutableSnapshot.value = when (observation) {
                 AndroidMeshVpnObservation.Absent ->
-                    activeController.observeVpnAbsent(sequence.toULong())
+                    productRuntime.observeMeshVpnAbsent(sequence.toULong())
 
                 is AndroidMeshVpnObservation.UniqueVpn ->
-                    activeController.observeUniqueVpn(
+                    productRuntime.observeMeshUniqueVpn(
                         sequence = sequence.toULong(),
                         localIpv4 = observation.localIpv4,
                     )
 
                 AndroidMeshVpnObservation.AmbiguousVpn ->
-                    activeController.observeVpnAmbiguous(sequence.toULong())
+                    productRuntime.observeMeshVpnAmbiguous(sequence.toULong())
             }
+            lastIngressFailure = MeshIngressDiagnosticFailure.NONE
+        } catch (error: MeshTransportBoundaryException) {
+            lastIngressFailure = classifyBoundaryFailure(error)
+            failClosed()
         } catch (_: LinkageError) {
-            stopIngressFailClosed(activeController)
-            return
+            lastIngressFailure = MeshIngressDiagnosticFailure.OWNER_UNAVAILABLE
+            failClosed()
         } catch (_: Exception) {
-            stopIngressFailClosed(activeController)
-            return
+            lastIngressFailure = MeshIngressDiagnosticFailure.OTHER
+            failClosed()
         }
-
-        reconcileIngress(activeController, view)
     }
 
     private fun onVpnObservationUnavailable() {
-        stopIngressFailClosed(controller)
+        // A missing complete Android snapshot is itself an ambiguous current-VPN observation.
+        onVpnObservation(AndroidMeshVpnObservation.AmbiguousVpn)
     }
 
-    private fun reconcileIngress(
-        activeController: MeshTransportController,
-        view: MeshAdmissionView,
-    ) = synchronized(ingressLock) {
-        if (closed.get()) {
-            runCatching { activeController.stopIngress() }
-            mutableSnapshot.value = ownerSnapshotOrNull(activeController)
-            return@synchronized
-        }
-
+    private fun applyReadiness(readiness: ProductReadinessState) {
+        if (closed.get()) return
         try {
-            val epoch = view.admissionEpoch
-            if (meshIngressServingAllowed(
-                    proxyRunning = proxyRuntime.snapshot.value == ProxyRuntimeSnapshot.Running,
-                    readiness = egressReadiness?.value ?: ProductReadinessState.UNKNOWN,
-                    meshAdmitted = view.state == MeshAdmissionState.ADMITTED,
-                    admissionEpochPresent = epoch != null,
-                )
-            ) {
-                val processRuntime = proxyRuntime.currentNativeRuntimeHandle()
-                if (processRuntime == null) {
-                    lastIngressFailure = MeshIngressDiagnosticFailure.UNAVAILABLE
-                    activeController.stopIngress()
-                } else if (!view.ingressRunning || !activeController.ingressHealthy()) {
-                    if (!activeController.startIngress(requireNotNull(epoch), processRuntime)) {
-                        lastIngressFailure = MeshIngressDiagnosticFailure.START_REJECTED
-                        activeController.stopIngress()
-                    } else {
-                        lastIngressFailure = MeshIngressDiagnosticFailure.NONE
-                    }
-                }
-            } else {
-                activeController.stopIngress()
-                lastIngressFailure = MeshIngressDiagnosticFailure.NONE
-            }
+            mutableSnapshot.value =
+                productRuntime.setMeshReadinessReady(readiness == ProductReadinessState.READY)
+            lastIngressFailure = MeshIngressDiagnosticFailure.NONE
+        } catch (error: MeshTransportBoundaryException) {
+            lastIngressFailure = classifyBoundaryFailure(error)
+            failClosed()
         } catch (_: LinkageError) {
             lastIngressFailure = MeshIngressDiagnosticFailure.OWNER_UNAVAILABLE
-            runCatching { activeController.stopIngress() }
-        } catch (error: MeshTransportBoundaryException) {
-            lastIngressFailure = when (error) {
-                is MeshTransportBoundaryException.IngressBindFailed ->
-                    MeshIngressDiagnosticFailure.BIND_FAILED
-                is MeshTransportBoundaryException.IngressShutdownFailed ->
-                    MeshIngressDiagnosticFailure.SHUTDOWN_FAILED
-                is MeshTransportBoundaryException.IngressUnavailable ->
-                    MeshIngressDiagnosticFailure.UNAVAILABLE
-                is MeshTransportBoundaryException.OwnerUnavailable ->
-                    MeshIngressDiagnosticFailure.OWNER_UNAVAILABLE
-                else -> MeshIngressDiagnosticFailure.OTHER
-            }
-            runCatching { activeController.stopIngress() }
+            failClosed()
         } catch (_: Exception) {
             lastIngressFailure = MeshIngressDiagnosticFailure.OTHER
-            runCatching { activeController.stopIngress() }
-        }
-        mutableSnapshot.value = ownerSnapshotOrNull(activeController)
-    }
-
-    private fun stopIngressFailClosed(activeController: MeshTransportController?) {
-        if (activeController == null) {
-            mutableSnapshot.value = null
-            return
-        }
-        synchronized(ingressLock) {
-            runCatching { activeController.stopIngress() }
-            mutableSnapshot.value = ownerSnapshotOrNull(activeController)
+            failClosed()
         }
     }
 
-    private fun ownerSnapshotOrNull(activeController: MeshTransportController): MeshAdmissionView? =
-        try {
-            activeController.admissionSnapshot()
-        } catch (_: LinkageError) {
-            null
-        } catch (_: Exception) {
-            null
+    private fun failClosed() {
+        runCatching {
+            mutableSnapshot.value = productRuntime.setMeshReadinessReady(false)
         }
+    }
+
+    private fun ownerSnapshotOrNull(): MeshAdmissionView? = try {
+        productRuntime.meshAdmissionSnapshot()
+    } catch (_: LinkageError) {
+        null
+    } catch (_: Exception) {
+        null
+    }
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
 
-        proxyObservationJob?.cancel()
-        proxyObservationJob = null
         readinessObservationJob?.cancel()
         readinessObservationJob = null
         observationScope.cancel()
 
         var clean = runCatching(vpnObserver::close).isSuccess
-        synchronized(ingressLock) {
-            controller?.let { activeController ->
-                clean = runCatching { activeController.stopIngress() }.isSuccess && clean
-                mutableSnapshot.value = ownerSnapshotOrNull(activeController)
-            } ?: run {
-                mutableSnapshot.value = null
-            }
-        }
+        clean = runCatching {
+            mutableSnapshot.value = productRuntime.setMeshReadinessReady(false)
+        }.isSuccess && clean
+
         if (!clean) {
             throw IllegalStateException("Mesh ingress cleanup failed")
         }
     }
+}
+
+private fun classifyBoundaryFailure(
+    error: MeshTransportBoundaryException,
+): MeshIngressDiagnosticFailure = when (error) {
+    is MeshTransportBoundaryException.IngressBindFailed ->
+        MeshIngressDiagnosticFailure.BIND_FAILED
+    is MeshTransportBoundaryException.IngressShutdownFailed ->
+        MeshIngressDiagnosticFailure.SHUTDOWN_FAILED
+    is MeshTransportBoundaryException.IngressUnavailable ->
+        MeshIngressDiagnosticFailure.UNAVAILABLE
+    is MeshTransportBoundaryException.OwnerUnavailable ->
+        MeshIngressDiagnosticFailure.OWNER_UNAVAILABLE
+    else -> MeshIngressDiagnosticFailure.OTHER
 }
