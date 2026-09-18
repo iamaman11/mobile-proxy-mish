@@ -243,11 +243,21 @@ impl NativeProductRuntime {
             .map_err(Into::into)
     }
 
-    pub fn advance_stopped_generation_after_platform_mutation(
+    pub fn begin_stopped_platform_mutation(
         &self,
+    ) -> Result<Option<u64>, NativeProductRuntimeError> {
+        self.runtime
+            .begin_stopped_platform_mutation()
+            .map_err(Into::into)
+    }
+
+    pub fn complete_stopped_platform_mutation(
+        &self,
+        lease: u64,
+        succeeded: bool,
     ) -> Result<bool, NativeProductRuntimeError> {
         self.runtime
-            .advance_stopped_generation_after_platform_mutation()
+            .complete_stopped_platform_mutation(lease, succeeded)
             .map_err(Into::into)
     }
 
@@ -339,13 +349,13 @@ impl NativeProductRuntime {
             is_validated,
             is_not_vpn,
         );
-        let generation = self
-            .runtime
-            .active_generation()
-            .map_err(|_| CellularBridgeError::OwnerUnavailable)?;
-        generation
-            .policy()
-            .observe_network(observation, network_handle, interface_name)
+        self.runtime
+            .observe_network(
+                sequence.raw(),
+                observation,
+                network_handle,
+                interface_name,
+            )
             .map(map_snapshot)
             .map_err(|_| CellularBridgeError::OwnerUnavailable)
     }
@@ -359,13 +369,8 @@ impl NativeProductRuntime {
             .ok_or(CellularBridgeError::InvalidObservationSequence)?;
         let network_handle =
             NetworkHandle::new(network_handle).ok_or(CellularBridgeError::InvalidNetworkHandle)?;
-        let generation = self
-            .runtime
-            .active_generation()
-            .map_err(|_| CellularBridgeError::OwnerUnavailable)?;
-        generation
-            .policy()
-            .network_lost(sequence, network_handle)
+        self.runtime
+            .network_lost(sequence.raw(), network_handle)
             .map(map_snapshot)
             .map_err(|_| CellularBridgeError::OwnerUnavailable)
     }
@@ -482,21 +487,8 @@ impl NativeProductRuntime {
         &self,
         sequence: u64,
     ) -> Result<MeshAdmissionView, MeshTransportBoundaryError> {
-        let generation = self
-            .runtime
-            .active_generation()
-            .map_err(|_| MeshTransportBoundaryError::OwnerUnavailable)?;
-        let snapshot = generation
-            .mesh()
-            .observe_vpn(sequence, MeshVpnObservation::Absent)
-            .map_err(map_transport_error)?;
-        generation
-            .readiness()
-            .observe_mesh(snapshot)
-            .map_err(map_readiness_runtime_to_mesh)?;
-        generation
-            .mesh()
-            .snapshot()
+        self.runtime
+            .observe_mesh_vpn(sequence, MeshVpnObservation::Absent)
             .map(map_mesh_view)
             .map_err(map_transport_error)
     }
@@ -513,26 +505,13 @@ impl NativeProductRuntime {
                     .map_err(|_| MeshTransportBoundaryError::InvalidVpnObservation)
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let generation = self
-            .runtime
-            .active_generation()
-            .map_err(|_| MeshTransportBoundaryError::OwnerUnavailable)?;
-        let snapshot = generation
-            .mesh()
-            .observe_vpn(
+        self.runtime
+            .observe_mesh_vpn(
                 sequence,
                 MeshVpnObservation::UniqueVpn {
                     local_ipv4: addresses,
                 },
             )
-            .map_err(map_transport_error)?;
-        generation
-            .readiness()
-            .observe_mesh(snapshot)
-            .map_err(map_readiness_runtime_to_mesh)?;
-        generation
-            .mesh()
-            .snapshot()
             .map(map_mesh_view)
             .map_err(map_transport_error)
     }
@@ -541,21 +520,8 @@ impl NativeProductRuntime {
         &self,
         sequence: u64,
     ) -> Result<MeshAdmissionView, MeshTransportBoundaryError> {
-        let generation = self
-            .runtime
-            .active_generation()
-            .map_err(|_| MeshTransportBoundaryError::OwnerUnavailable)?;
-        let snapshot = generation
-            .mesh()
-            .observe_vpn(sequence, MeshVpnObservation::AmbiguousVpn)
-            .map_err(map_transport_error)?;
-        generation
-            .readiness()
-            .observe_mesh(snapshot)
-            .map_err(map_readiness_runtime_to_mesh)?;
-        generation
-            .mesh()
-            .snapshot()
+        self.runtime
+            .observe_mesh_vpn(sequence, MeshVpnObservation::AmbiguousVpn)
             .map(map_mesh_view)
             .map_err(map_transport_error)
     }
