@@ -91,6 +91,7 @@ def main() -> None:
         "completeStart(",
         "completeStop(",
         "takeGenerationReplacementForStart(",
+        "advanceStoppedGenerationAfterPlatformMutation(",
     ):
         forbid(
             runtime_controller,
@@ -102,7 +103,8 @@ def main() -> None:
         "productRuntime.startRuntime(",
         "productRuntime.stopRuntime()",
         "productRuntime.runtimeLifecycleSnapshot()",
-        "productRuntime.advanceStoppedGenerationAfterPlatformMutation()",
+        "productRuntime.beginStoppedPlatformMutation()",
+        "productRuntime.completeStoppedPlatformMutation(",
     ):
         require(
             runtime_controller,
@@ -667,6 +669,28 @@ def main() -> None:
         "bridge_accept_loop",
     ):
         forbid(ffi, symbol, "android-ffi must remain a typed adapter rather than a runtime owner")
+    for forbidden in (
+        "#[derive(uniffi::Object)]\npub struct CellularController",
+        "pub fn new() -> Arc<Self>",
+        "pub fn authorize_root_policy(",
+        "pub fn close_root_policy_gate(",
+        "pub fn await_root_policy_quiesced(",
+    ):
+        forbid(
+            ffi,
+            forbidden,
+            "legacy Cellular FFI control plane must stay non-constructible and projection-only",
+        )
+    for required in (
+        "pub(crate) struct CellularController",
+        "pub(crate) fn from_runtime(",
+    ):
+        require(
+            ffi,
+            required,
+            "CellularController may remain only as an internal projection helper",
+        )
+
     lifecycle_ffi = "crates/android-ffi/src/runtime_lifecycle_ffi.rs"
     require(
         lifecycle_ffi,
@@ -748,7 +772,13 @@ def main() -> None:
         "pub fn request_stop(",
         "run_start",
         "run_stop",
-        "advance_stopped_generation_after_platform_mutation",
+        "ProductPlatformFacts",
+        "record_cellular_observation",
+        "pub fn observe_mesh_vpn(",
+        "replay_platform_facts",
+        "pub fn begin_stopped_platform_mutation(",
+        "pub fn complete_stopped_platform_mutation(",
+        "active_platform_mutation",
         "bind_observers",
     ):
         require_product(
@@ -761,6 +791,8 @@ def main() -> None:
         "pub fn runtime_lifecycle_snapshot(",
         "pub fn start_runtime(",
         "pub fn stop_runtime(",
+        "pub fn begin_stopped_platform_mutation(",
+        "pub fn complete_stopped_platform_mutation(",
         "pub fn observe_proxy_runtime(",
         "pub fn proxy_runtime_snapshot(",
     ):
@@ -826,7 +858,7 @@ def main() -> None:
         "observe_mesh_vpn_absent",
         "observe_mesh_unique_vpn",
         "observe_mesh_vpn_ambiguous",
-        ".active_generation()",
+        ".observe_mesh_vpn(",
         ".current_generation()",
     ):
         require_product(
