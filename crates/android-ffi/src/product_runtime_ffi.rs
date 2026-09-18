@@ -231,7 +231,7 @@ impl NativeProductRuntime {
         if self.closed.load(Ordering::Acquire) {
             return Err(NativeProductRuntimeError::StateUnavailable);
         }
-        self.policy
+        self.generation.policy()
             .start()
             .map_err(|_| NativeProductRuntimeError::StateUnavailable)
     }
@@ -240,33 +240,33 @@ impl NativeProductRuntime {
         let callback: CellularPolicyObserver = Arc::new(move |publication| {
             observer.on_cellular_policy_publication(map_policy_publication(publication));
         });
-        self.policy.set_observer(callback);
+        self.generation.policy().set_observer(callback);
     }
 
     pub fn observe_readiness(&self, observer: Arc<dyn NativeReadinessObserver>) {
         let callback: ReadinessObserver = Arc::new(move |readiness| {
             observer.on_readiness(map_readiness_state(readiness));
         });
-        self.readiness.set_observer(callback);
+        self.generation.readiness().set_observer(callback);
     }
 
     pub fn readiness_snapshot(&self) -> ProductReadinessState {
-        map_readiness_state(self.readiness.snapshot())
+        map_readiness_state(self.generation.readiness().snapshot())
     }
 
     pub fn readiness_diagnostic_snapshot(&self) -> ReadinessDiagnosticView {
-        map_readiness_diagnostic(self.readiness.diagnostic_snapshot())
+        map_readiness_diagnostic(self.generation.readiness().diagnostic_snapshot())
     }
 
     pub fn observe_proxy_runtime(&self, observer: Arc<dyn NativeProxyRuntimeObserver>) {
         let callback: ProxyRuntimeObserver = Arc::new(move |publication| {
             observer.on_proxy_runtime(map_proxy_publication(publication));
         });
-        self.proxy.set_observer(callback);
+        self.generation.proxy().set_observer(callback);
     }
 
     pub fn proxy_runtime_snapshot(&self) -> ProxyRuntimePublicationView {
-        map_proxy_publication(self.proxy.snapshot())
+        map_proxy_publication(self.generation.proxy().snapshot())
     }
 
     pub fn start_proxy_runtime(
@@ -276,24 +276,24 @@ impl NativeProductRuntime {
         password: Option<String>,
     ) -> ProxyRuntimePublicationView {
         if self.closed.load(Ordering::Acquire) {
-            return map_proxy_publication(self.proxy.snapshot());
+            return map_proxy_publication(self.generation.proxy().snapshot());
         }
         map_proxy_publication(
-            self.proxy
+            self.generation.proxy()
                 .start(credential_version, username, password),
         )
     }
 
     pub fn stop_proxy_runtime(&self) -> ProxyRuntimePublicationView {
-        map_proxy_publication(self.proxy.stop())
+        map_proxy_publication(self.generation.proxy().stop())
     }
 
     pub fn proxy_active_sessions(&self) -> u32 {
-        self.proxy.active_sessions()
+        self.generation.proxy().active_sessions()
     }
 
     pub fn admission_snapshot(&self) -> Result<CellularAdmissionView, CellularBridgeError> {
-        self.cellular_view.admission_snapshot()
+        self.generation.cellular()_view.admission_snapshot()
     }
 
     pub fn observe_network(
@@ -318,7 +318,7 @@ impl NativeProductRuntime {
             is_validated,
             is_not_vpn,
         );
-        self.policy
+        self.generation.policy()
             .observe_network(observation, network_handle, interface_name)
             .map(map_snapshot)
             .map_err(|_| CellularBridgeError::OwnerUnavailable)
@@ -333,28 +333,28 @@ impl NativeProductRuntime {
             .ok_or(CellularBridgeError::InvalidObservationSequence)?;
         let network_handle =
             NetworkHandle::new(network_handle).ok_or(CellularBridgeError::InvalidNetworkHandle)?;
-        self.policy
+        self.generation.policy()
             .network_lost(sequence, network_handle)
             .map(map_snapshot)
             .map_err(|_| CellularBridgeError::OwnerUnavailable)
     }
 
     pub fn dns_diagnostic_snapshot(&self) -> CellularDnsDiagnosticView {
-        self.cellular_view.dns_diagnostic_snapshot()
+        self.generation.cellular()_view.dns_diagnostic_snapshot()
     }
 
     pub fn prepare_public_ip_probe(
         &self,
         timeout_ms: u64,
     ) -> Result<Arc<PublicIpProbeTicket>, PublicIpProbeError> {
-        self.cellular_view.prepare_public_ip_probe(timeout_ms)
+        self.generation.cellular()_view.prepare_public_ip_probe(timeout_ms)
     }
 
     pub fn observe_public_egress_ip(
         &self,
         timeout_ms: u64,
     ) -> Result<PublicIpObservationView, PublicIpProbeError> {
-        self.cellular
+        self.generation.cellular()
             .observe_public_egress_ip(&self.executor, Duration::from_millis(timeout_ms))
             .map(|observation| PublicIpObservationView {
                 address: observation.address().to_string(),
@@ -364,17 +364,17 @@ impl NativeProductRuntime {
     }
 
     pub fn cellular_reconcile_diagnostic(&self) -> CellularReconcileDiagnosticView {
-        map_reconcile_diagnostic(self.policy.reconcile_diagnostic())
+        map_reconcile_diagnostic(self.generation.policy().reconcile_diagnostic())
     }
 
     pub fn root_recovery_diagnostic(&self) -> RootRecoveryDiagnosticView {
-        map_recovery_diagnostic(self.policy.recovery_diagnostic())
+        map_recovery_diagnostic(self.generation.policy().recovery_diagnostic())
     }
 
     pub fn root_policy_reconcile_diagnostic(
         &self,
     ) -> Result<RootPolicyReconcileDiagnosticView, NativeProductRuntimeError> {
-        self.policy
+        self.generation.policy()
             .root_policy_diagnostic_blocking(&self.executor)
             .map(map_root_policy_diagnostic)
             .map_err(Into::into)
@@ -383,7 +383,7 @@ impl NativeProductRuntime {
     pub fn mesh_admission_snapshot(
         &self,
     ) -> Result<MeshAdmissionView, MeshTransportBoundaryError> {
-        self.mesh.snapshot().map(map_mesh_view).map_err(map_transport_error)
+        self.generation.mesh().snapshot().map(map_mesh_view).map_err(map_transport_error)
     }
 
     pub fn observe_mesh_vpn_absent(
@@ -394,10 +394,10 @@ impl NativeProductRuntime {
             .mesh
             .observe_vpn(sequence, MeshVpnObservation::Absent)
             .map_err(map_transport_error)?;
-        self.readiness
+        self.generation.readiness()
             .observe_mesh(snapshot)
             .map_err(map_readiness_runtime_to_mesh)?;
-        self.mesh.snapshot().map(map_mesh_view).map_err(map_transport_error)
+        self.generation.mesh().snapshot().map(map_mesh_view).map_err(map_transport_error)
     }
 
     pub fn observe_mesh_unique_vpn(
@@ -421,10 +421,10 @@ impl NativeProductRuntime {
                 },
             )
             .map_err(map_transport_error)?;
-        self.readiness
+        self.generation.readiness()
             .observe_mesh(snapshot)
             .map_err(map_readiness_runtime_to_mesh)?;
-        self.mesh.snapshot().map(map_mesh_view).map_err(map_transport_error)
+        self.generation.mesh().snapshot().map(map_mesh_view).map_err(map_transport_error)
     }
 
     pub fn observe_mesh_vpn_ambiguous(
@@ -435,10 +435,10 @@ impl NativeProductRuntime {
             .mesh
             .observe_vpn(sequence, MeshVpnObservation::AmbiguousVpn)
             .map_err(map_transport_error)?;
-        self.readiness
+        self.generation.readiness()
             .observe_mesh(snapshot)
             .map_err(map_readiness_runtime_to_mesh)?;
-        self.mesh.snapshot().map(map_mesh_view).map_err(map_transport_error)
+        self.generation.mesh().snapshot().map(map_mesh_view).map_err(map_transport_error)
     }
 
     pub fn shutdown(&self) -> Result<(), NativeProductRuntimeError> {
@@ -446,9 +446,9 @@ impl NativeProductRuntime {
             return Ok(());
         }
 
-        let proxy_clean = self.proxy.shutdown().failure != Some(OwnerProxyServingFailure::ShutdownFailed);
-        self.readiness.shutdown();
-        let mesh_clean = self.mesh.shutdown().is_ok();
+        let proxy_clean = self.generation.proxy().shutdown().failure != Some(OwnerProxyServingFailure::ShutdownFailed);
+        self.generation.readiness().shutdown();
+        let mesh_clean = self.generation.mesh().shutdown().is_ok();
         let policy_clean = self
             .policy
             .shutdown_blocking(&self.executor)
