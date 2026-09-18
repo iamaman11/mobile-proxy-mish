@@ -1,6 +1,7 @@
 use crate::runtime_boundary::{
     AndroidDnsResolver, CellularAdmissionView, CellularBridgeError, CellularController,
-    CellularDnsDiagnosticView, PublicIpProbeError, PublicIpProbeTicket, map_snapshot,
+    CellularDnsDiagnosticView, PublicIpObservationView, PublicIpProbeError, PublicIpProbeTicket,
+    map_public_ip_failure, map_snapshot,
 };
 use crate::transport_ffi::{
     MeshAdmissionView, MeshTransportBoundaryError, map_transport_error, map_view as map_mesh_view,
@@ -21,6 +22,7 @@ use std::fmt;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Error)]
 pub enum NativeProductRuntimeError {
@@ -283,6 +285,19 @@ impl NativeProductRuntime {
         timeout_ms: u64,
     ) -> Result<Arc<PublicIpProbeTicket>, PublicIpProbeError> {
         self.cellular_view.prepare_public_ip_probe(timeout_ms)
+    }
+
+    pub fn observe_public_egress_ip(
+        &self,
+        timeout_ms: u64,
+    ) -> Result<PublicIpObservationView, PublicIpProbeError> {
+        self.cellular
+            .observe_public_egress_ip(&self.executor, Duration::from_millis(timeout_ms))
+            .map(|observation| PublicIpObservationView {
+                address: observation.address().to_string(),
+                generation: observation.generation(),
+            })
+            .map_err(map_public_ip_failure)
     }
 
     pub fn cellular_reconcile_diagnostic(&self) -> CellularReconcileDiagnosticView {
