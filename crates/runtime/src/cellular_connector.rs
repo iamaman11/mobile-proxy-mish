@@ -251,6 +251,27 @@ pub(crate) struct PreparedCellularDnsTarget {
     pub(crate) addresses: Vec<IpAddr>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CellularDnsPrepareError {
+    AuthorityUnavailable,
+    ResolverFailed,
+    DeadlineExceeded,
+    StaleAuthority,
+    UnusableResult,
+}
+
+impl From<CellularDnsPrepareError> for ProxyOutboundConnectError {
+    fn from(error: CellularDnsPrepareError) -> Self {
+        match error {
+            CellularDnsPrepareError::AuthorityUnavailable
+            | CellularDnsPrepareError::DeadlineExceeded
+            | CellularDnsPrepareError::StaleAuthority => ProxyOutboundConnectError::Unavailable,
+            CellularDnsPrepareError::ResolverFailed
+            | CellularDnsPrepareError::UnusableResult => ProxyOutboundConnectError::Failed,
+        }
+    }
+}
+
 /// One shared owner-bound DNS/currentness path used by Proxy Serving and bounded Cellular
 /// observations. This function owns no admission policy: authority is issued and revalidated by
 /// the single `CellularEgress` owner around the Android network-scoped DNS effect.
@@ -262,40 +283,41 @@ pub(crate) fn resolve_current_domain(
         CellularNetworkAuthority,
         &str,
     ) -> Result<Vec<IpAddr>, ProxyOutboundConnectError>,
-) -> Result<PreparedCellularDnsTarget, ProxyOutboundConnectError> {
-    ensure_deadline(deadline)?;
-    let authority = issue_authority(owner)?;
+) -> Result<PreparedCellularDnsTarget, CellularDnsPrepareError> {
+    ensure_deadline(deadline).map_err(|_| CellularDnsPrepareError::DeadlineExceeded)?;
+    let authority = issue_authority(owner)
+        .map_err(|_| CellularDnsPrepareError::AuthorityUnavailable)?;
     let mut observation = DNS_DIAGNOSTICS.start(authority);
     let resolved = resolve(authority, domain);
     let current_sequence = current_owner_sequence(owner);
     observation.complete(current_sequence);
     let addresses = match resolved {
         Ok(addresses) => addresses,
-        Err(error) => {
+        Err(_error) => {
             DNS_DIAGNOSTICS.record_disposition(DnsResultDisposition::ResolverFailed);
-            return Err(error);
+            return Err(CellularDnsPrepareError::ResolverFailed);
         }
     };
-    if let Err(error) = ensure_deadline(deadline) {
+    if ensure_deadline(deadline).is_err() {
         DNS_DIAGNOSTICS.record_disposition(DnsResultDisposition::DiscardedAfterDeadline);
-        return Err(error);
+        return Err(CellularDnsPrepareError::DeadlineExceeded);
     }
-    if let Err(error) = validate_authority(owner, authority) {
+    if validate_authority(owner, authority).is_err() {
         let sequence_after_validation = current_owner_sequence(owner);
         if sequence_after_validation
             .is_some_and(|sequence| sequence != authority.observation_sequence().raw())
         {
             DNS_DIAGNOSTICS.record_disposition(DnsResultDisposition::DiscardedStale);
-        } else {
-            DNS_DIAGNOSTICS.record_disposition(DnsResultDisposition::AuthorityValidationFailed);
+            return Err(CellularDnsPrepareError::StaleAuthority);
         }
-        return Err(error);
+        DNS_DIAGNOSTICS.record_disposition(DnsResultDisposition::AuthorityValidationFailed);
+        return Err(CellularDnsPrepareError::AuthorityUnavailable);
     }
     let addresses = match bounded_ipv4_candidates(addresses) {
         Ok(addresses) => addresses,
-        Err(error) => {
+        Err(_error) => {
             DNS_DIAGNOSTICS.record_disposition(DnsResultDisposition::UnusableResult);
-            return Err(error);
+            return Err(CellularDnsPrepareError::UnusableResult);
         }
     };
     DNS_DIAGNOSTICS.record_disposition(DnsResultDisposition::AcceptedCurrent);
@@ -419,7 +441,8 @@ fn connect_host_with<T>(
                 domain,
                 deadline,
                 |authority, hostname| resolve(authority, hostname, deadline),
-            )?;
+            )
+            .map_err(ProxyOutboundConnectError::from)?;
             if prepared.authority != authority {
                 return Err(ProxyOutboundConnectError::Unavailable);
             }
