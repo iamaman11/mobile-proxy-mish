@@ -20,6 +20,7 @@ foreach ($required in @(
     'CredentialProvisioning.psm1',
     'Invoke-MishExternalProxyCredentialProvisioning',
     'Open-MishExternalProxyCredentialLease',
+    'HTTPS through the accepted HTTP proxy forces CONNECT',
     '@(''forward'', ''tcp:0'', ''tcp:3128'')',
     '''shell'', ''cmd'', ''phone'', ''data''',
     'LAB_DNS_LIFETIME_PROCESS_CHANGED',
@@ -39,7 +40,7 @@ foreach ($required in @(
     'same_process = $true',
     'product_routes_or_iptables_mutated_by_lab = $false',
     'cloudflare_app_mutated = $false',
-    'mish-dns-$RunTag-$Ordinal.example.com',
+    'https://mish-dns-$RunTag-$Ordinal.example.com/',
     '''forward'', ''--remove'''
 )) {
     if (-not $source.Contains($required)) {
