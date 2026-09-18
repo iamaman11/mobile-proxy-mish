@@ -82,7 +82,7 @@ internal class MeshIngressRuntimeBridge(
     }
 
     private fun onVpnObservation(observation: AndroidMeshVpnObservation) {
-        if (closed.get()) return
+        if (closed.get() || !started.get()) return
         if (sequence == Long.MAX_VALUE) {
             failClosed()
             return
@@ -122,7 +122,7 @@ internal class MeshIngressRuntimeBridge(
     }
 
     private fun failClosed() {
-        if (closed.get() || sequence == Long.MAX_VALUE) return
+        if (closed.get() || !started.get() || sequence == Long.MAX_VALUE) return
         sequence += 1
         runCatching {
             mutableSnapshot.value = productRuntime.observeMeshVpnAmbiguous(sequence.toULong())
