@@ -566,10 +566,7 @@ mod tests {
         let authority = issue_authority(&owner).expect("authority");
 
         let mut observation = tracker.start(authority);
-        owner
-            .lock()
-            .expect("owner")
-            .lost(sequence(2), handle(42));
+        owner.lock().expect("owner").lost(sequence(2), handle(42));
         observation.complete(current_owner_sequence(&owner));
 
         let completed = tracker.snapshot();
