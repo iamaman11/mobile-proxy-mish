@@ -306,21 +306,10 @@ impl NativeProductRuntime {
         if self.closed.load(Ordering::Acquire) {
             return map_proxy_publication(self.proxy.snapshot());
         }
-        let credentials = match mish_proxy::ProxyCredentialMaterial::new(username, password) {
-            Ok(credentials) => credentials,
-            Err(_) => {
-                return ProxyRuntimePublicationView {
-                    state: ProxyServingState::Failed,
-                    failure: Some(ProxyServingFailure::ProxyConfigurationRejected),
-                    serving_generation: None,
-                    credential_version: None,
-                    recovery_pending: false,
-                    recovery_attempts_since_success: 0,
-                    recovery_next_delay_ms: 1_000,
-                };
-            }
-        };
-        map_proxy_publication(self.proxy.start(credential_version, credentials))
+        map_proxy_publication(
+            self.proxy
+                .start(credential_version, username, password),
+        )
     }
 
     pub fn stop_proxy_runtime(&self) -> ProxyRuntimePublicationView {
