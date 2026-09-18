@@ -135,12 +135,16 @@ class MishRuntimeController internal constructor(
         mutateExternalCredentialWhileStopped(externalCredentialStore::revokeWhileStopped)
 
     private fun mutateExternalCredentialWhileStopped(mutation: () -> Boolean): Boolean {
-        if (productRuntime.runtimeLifecycleSnapshot().state != RuntimeLifecycleState.STOPPED) {
-            return false
-        }
-        if (!mutation()) return false
+        val lease = runCatching {
+            productRuntime.beginStoppedPlatformMutation()
+        }.getOrNull() ?: return false
+
+        val succeeded = runCatching(mutation).getOrDefault(false)
         return runCatching {
-            productRuntime.advanceStoppedGenerationAfterPlatformMutation()
+            productRuntime.completeStoppedPlatformMutation(
+                lease = lease,
+                succeeded = succeeded,
+            )
         }.getOrDefault(false)
     }
 
