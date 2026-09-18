@@ -35,9 +35,9 @@ import kotlinx.coroutines.flow.onEach
 /**
  * Thin Android composition adapter for the Rust Readiness/Application contracts.
  *
- * Rust owns freshness, probe eligibility and terminal readiness projection. This adapter only
- * assembles immutable owner projections, executes one requested Android CONNECT+TLS effect through
- * `AuthenticatedEgressProbe`, and returns the typed observation. The public hostname is never
+ * Rust owns freshness, probe eligibility, refresh cadence and terminal readiness projection. This
+ * adapter only assembles immutable owner projections, schedules the next requested refresh, executes
+ * Android CONNECT+TLS effects through `AuthenticatedEgressProbe`, and returns typed observations. The public hostname is never
  * resolved by Android: native Proxy Serving preserves it until the exact Cellular DNS owner.
  */
 internal class ProductReadinessRuntime(
@@ -54,6 +54,7 @@ internal class ProductReadinessRuntime(
         Thread(task, "mish-readiness-probe").apply { isDaemon = true }
     }
     private val refreshLock = Any()
+    private val probeIssueLock = Any()
     private var refreshFuture: ScheduledFuture<*>? = null
     private val probeEffect = AuthenticatedEgressProbe { freshness ->
         !closed.get() && controller.expectedFreshness() == freshness
@@ -102,18 +103,31 @@ internal class ProductReadinessRuntime(
         lastStructuralFacts = facts
         cancelScheduledRefresh()
 
-        if (runCatching { controller.invalidateProbe() }.isFailure) {
-            probeEffect.cancel()
-            mutableState.value = projectUnknown()
-            return
+        val binding = eligibleBinding(facts)
+        var invalidationFailed = false
+        val ticket = synchronized(probeIssueLock) {
+            if (runCatching { controller.invalidateProbe() }.isFailure) {
+                invalidationFailed = true
+                null
+            } else if (binding == null) {
+                null
+            } else {
+                try {
+                    controller.beginProbe(binding)
+                } catch (_: Exception) {
+                    null
+                }
+            }
         }
         probeEffect.cancel()
 
+        if (invalidationFailed) {
+            mutableState.value = projectUnknown()
+            return
+        }
         mutableState.value = projectOrUnknown(facts, null)
-        val binding = eligibleBinding(facts) ?: return
-        val ticket = try {
-            controller.beginProbe(binding)
-        } catch (_: Exception) {
+        if (binding == null) return
+        if (ticket == null) {
             mutableState.value = projectUnknown()
             return
         }
@@ -121,7 +135,9 @@ internal class ProductReadinessRuntime(
         try {
             probeExecutor.execute { executeProbe(ticket) }
         } catch (_: RejectedExecutionException) {
-            runCatching { controller.invalidateProbe() }
+            synchronized(probeIssueLock) {
+                runCatching { controller.invalidateProbe() }
+            }
             mutableState.value = projectOrUnknown(currentFacts(), null)
         }
     }
@@ -207,13 +223,18 @@ internal class ProductReadinessRuntime(
 
     private fun executeScheduledRefresh(expectedBinding: ProbeBindingView) {
         if (closed.get()) return
-        val facts = currentFacts()
-        val binding = eligibleBinding(facts) ?: return
-        if (!readinessRefreshBindingStillCurrent(expectedBinding, binding)) return
-
-        val ticket = try {
-            controller.beginProbe(binding)
-        } catch (_: Exception) {
+        val ticket = synchronized(probeIssueLock) {
+            if (closed.get()) return
+            val facts = currentFacts()
+            val binding = eligibleBinding(facts) ?: return
+            if (!readinessRefreshBindingStillCurrent(expectedBinding, binding)) return
+            try {
+                controller.beginProbe(binding)
+            } catch (_: Exception) {
+                null
+            }
+        }
+        if (ticket == null) {
             mutableState.value = projectUnknown()
             return
         }
@@ -309,7 +330,9 @@ internal class ProductReadinessRuntime(
         observationJob?.cancel()
         observationJob = null
         cancelScheduledRefresh()
-        runCatching { controller.invalidateProbe() }
+        synchronized(probeIssueLock) {
+            runCatching { controller.invalidateProbe() }
+        }
         probeEffect.cancel()
         probeExecutor.shutdownNow()
         val stopped = try {
