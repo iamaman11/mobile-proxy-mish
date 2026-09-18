@@ -253,7 +253,7 @@ class MishDiagnosticsProvider : ContentProvider() {
         // fence without introducing a second lifecycle/generation owner into diagnostics.
         val cellularGeneration = runtime.currentCellularRuntime
         val proxyGeneration = runtime.currentProxyRuntime
-        val readinessGeneration = runtime.currentReadinessRuntime
+        val productGeneration = runtime.currentProductRuntime
         val meshGeneration = runtime.currentMeshRuntime
         val runtimeRunningBefore = runtime.isRunning
 
@@ -268,7 +268,7 @@ class MishDiagnosticsProvider : ContentProvider() {
         val readinessBefore = runtime.readinessSnapshot.value
         val meshBefore = runtime.meshSnapshot.value
 
-        val readinessDiagnostic = readinessGeneration.diagnosticObservation()
+        val readinessDiagnostic = productGeneration.readinessDiagnosticSnapshot()
         val meshIngressFailure = meshGeneration.diagnosticIngressFailure().name
         val meshSessionObservation = meshGeneration.diagnosticSessionObservation()
 
@@ -286,7 +286,7 @@ class MishDiagnosticsProvider : ContentProvider() {
 
         val sameGeneration = cellularGeneration === runtime.currentCellularRuntime &&
             proxyGeneration === runtime.currentProxyRuntime &&
-            readinessGeneration === runtime.currentReadinessRuntime &&
+            productGeneration === runtime.currentProductRuntime &&
             meshGeneration === runtime.currentMeshRuntime
         val consistent = sameGeneration &&
             runtimeRunningBefore == runtimeRunningAfter &&
