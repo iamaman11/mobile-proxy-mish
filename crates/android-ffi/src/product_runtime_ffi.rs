@@ -1,4 +1,6 @@
-use crate::readiness_ffi::{EgressProbeOutcome, ReadinessBoundaryError, map_outcome_out};
+use crate::readiness_ffi::{
+    EgressProbeOutcome, ProductReadinessState, ReadinessBoundaryError, map_outcome_out,
+};
 use crate::runtime_boundary::{
     AndroidDnsResolver, CellularAdmissionView, CellularBridgeError, CellularController,
     CellularDnsDiagnosticView, PublicIpObservationView, PublicIpProbeError, PublicIpProbeTicket,
@@ -15,7 +17,8 @@ use mish_runtime::{
     CellularReconcileDiagnostic, CellularRuntimeCoordinator, MeshCompositionCoordinator,
     ProxyServingRuntime, RootAuthorityStatus as OwnerRootAuthorityStatus,
     RootPolicyFailure as OwnerRootPolicyFailure,
-    ReadinessNetworkError, RootPolicyReconcileDiagnostic,
+    ReadinessDiagnosticSnapshot, ReadinessNetworkError, ReadinessObserver,
+    ReadinessRuntimeCoordinator, ReadinessRuntimeError, RootPolicyReconcileDiagnostic,
     RootPolicyResult as OwnerRootPolicyResult, RootRecoveryDiagnostic, RuntimeExecutionError,
     RuntimeExecutor, execute_readiness_probe as execute_native_readiness_probe,
 };
@@ -29,6 +32,7 @@ use std::time::Duration;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Error)]
 pub enum NativeProductRuntimeError {
     InvalidProductUid,
+    InvalidRuntimeGeneration,
     ThreadUnavailable,
     StateUnavailable,
     CleanupFailed,
@@ -38,6 +42,7 @@ impl fmt::Display for NativeProductRuntimeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::InvalidProductUid => "PRODUCT Android UID must be positive",
+            Self::InvalidRuntimeGeneration => "PRODUCT runtime generation must be positive",
             Self::ThreadUnavailable => "native PRODUCT executor threads are unavailable",
             Self::StateUnavailable => "native PRODUCT runtime state is unavailable",
             Self::CleanupFailed => "native PRODUCT root-policy cleanup failed",
@@ -130,6 +135,19 @@ pub struct RootPolicyReconcileDiagnosticView {
     pub last_mutation_failures: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct ReadinessDiagnosticView {
+    pub state: ProductReadinessState,
+    pub binding_eligible: bool,
+    pub probe_in_flight: bool,
+    pub refresh_pending: bool,
+}
+
+#[uniffi::export(foreign)]
+pub trait NativeReadinessObserver: Send + Sync {
+    fn on_readiness(&self, readiness: ProductReadinessState);
+}
+
 #[uniffi::export(foreign)]
 pub trait NativeCellularPolicyObserver: Send + Sync {
     fn on_cellular_policy_publication(&self, publication: CellularPolicyPublicationView);
@@ -147,6 +165,7 @@ pub struct NativeProductRuntime {
     cellular_view: Arc<CellularController>,
     policy: Arc<CellularPolicyCoordinator>,
     mesh: Arc<MeshCompositionCoordinator>,
+    readiness: Arc<ReadinessRuntimeCoordinator>,
     closed: AtomicBool,
 }
 
@@ -160,20 +179,29 @@ impl NativeProductRuntime {
     }
 
     pub(crate) fn install_proxy_for_mesh(
-        &self,
+        self: &Arc<Self>,
         proxy: Arc<ProxyServingRuntime>,
+        credential_version: u64,
+        username: String,
+        password: String,
     ) -> Result<(), MeshTransportBoundaryError> {
-        self.mesh
-            .install_proxy(proxy)
-            .map(|_| ())
-            .map_err(map_transport_error)
+        let snapshot = self.mesh.install_proxy(proxy).map_err(map_transport_error)?;
+        self.readiness
+            .observe_mesh(snapshot)
+            .map_err(map_readiness_runtime_to_mesh)?;
+        self.readiness
+            .observe_proxy_started(credential_version, username, password)
+            .map_err(map_readiness_runtime_to_mesh)
     }
 
-    pub(crate) fn clear_proxy_for_mesh(&self) -> Result<(), MeshTransportBoundaryError> {
-        self.mesh
-            .clear_proxy()
-            .map(|_| ())
-            .map_err(map_transport_error)
+    pub(crate) fn clear_proxy_for_mesh(self: &Arc<Self>) -> Result<(), MeshTransportBoundaryError> {
+        self.readiness
+            .observe_proxy_stopped()
+            .map_err(map_readiness_runtime_to_mesh)?;
+        let snapshot = self.mesh.clear_proxy().map_err(map_transport_error)?;
+        self.readiness
+            .observe_mesh(snapshot)
+            .map_err(map_readiness_runtime_to_mesh)
     }
 }
 
@@ -183,9 +211,13 @@ impl NativeProductRuntime {
     pub fn new(
         product_uid: u32,
         debug_isolation: bool,
+        runtime_generation: u64,
     ) -> Result<Arc<Self>, NativeProductRuntimeError> {
         if product_uid == 0 {
             return Err(NativeProductRuntimeError::InvalidProductUid);
+        }
+        if runtime_generation == 0 {
+            return Err(NativeProductRuntimeError::InvalidRuntimeGeneration);
         }
 
         let executor = RuntimeExecutor::new()?;
@@ -204,6 +236,16 @@ impl NativeProductRuntime {
         let cellular_view = CellularController::from_runtime(Arc::clone(&cellular));
         let mesh = MeshCompositionCoordinator::new()
             .map_err(|_| NativeProductRuntimeError::StateUnavailable)?;
+        let readiness = ReadinessRuntimeCoordinator::new(
+            Arc::clone(&executor),
+            Arc::clone(&mesh),
+            runtime_generation,
+        )
+        .map_err(|_| NativeProductRuntimeError::StateUnavailable)?;
+        let readiness_cellular = Arc::clone(&readiness);
+        policy.add_internal_observer(Arc::new(move |publication| {
+            let _ = readiness_cellular.observe_cellular(publication);
+        }));
 
         Ok(Arc::new(Self {
             executor,
@@ -211,6 +253,7 @@ impl NativeProductRuntime {
             cellular_view,
             policy,
             mesh,
+            readiness,
             closed: AtomicBool::new(false),
         }))
     }
@@ -229,6 +272,21 @@ impl NativeProductRuntime {
             observer.on_cellular_policy_publication(map_policy_publication(publication));
         });
         self.policy.set_observer(callback);
+    }
+
+    pub fn observe_readiness(&self, observer: Arc<dyn NativeReadinessObserver>) {
+        let callback: ReadinessObserver = Arc::new(move |readiness| {
+            observer.on_readiness(map_readiness_state(readiness));
+        });
+        self.readiness.set_observer(callback);
+    }
+
+    pub fn readiness_snapshot(&self) -> ProductReadinessState {
+        map_readiness_state(self.readiness.snapshot())
+    }
+
+    pub fn readiness_diagnostic_snapshot(&self) -> ReadinessDiagnosticView {
+        map_readiness_diagnostic(self.readiness.diagnostic_snapshot())
     }
 
     pub fn admission_snapshot(&self) -> Result<CellularAdmissionView, CellularBridgeError> {
@@ -342,10 +400,14 @@ impl NativeProductRuntime {
         &self,
         sequence: u64,
     ) -> Result<MeshAdmissionView, MeshTransportBoundaryError> {
-        self.mesh
+        let snapshot = self
+            .mesh
             .observe_vpn(sequence, MeshVpnObservation::Absent)
-            .map(map_mesh_view)
-            .map_err(map_transport_error)
+            .map_err(map_transport_error)?;
+        self.readiness
+            .observe_mesh(snapshot)
+            .map_err(map_readiness_runtime_to_mesh)?;
+        self.mesh.snapshot().map(map_mesh_view).map_err(map_transport_error)
     }
 
     pub fn observe_mesh_unique_vpn(
@@ -360,25 +422,33 @@ impl NativeProductRuntime {
                     .map_err(|_| MeshTransportBoundaryError::InvalidVpnObservation)
             })
             .collect::<Result<Vec<_>, _>>()?;
-        self.mesh
+        let snapshot = self
+            .mesh
             .observe_vpn(
                 sequence,
                 MeshVpnObservation::UniqueVpn {
                     local_ipv4: addresses,
                 },
             )
-            .map(map_mesh_view)
-            .map_err(map_transport_error)
+            .map_err(map_transport_error)?;
+        self.readiness
+            .observe_mesh(snapshot)
+            .map_err(map_readiness_runtime_to_mesh)?;
+        self.mesh.snapshot().map(map_mesh_view).map_err(map_transport_error)
     }
 
     pub fn observe_mesh_vpn_ambiguous(
         &self,
         sequence: u64,
     ) -> Result<MeshAdmissionView, MeshTransportBoundaryError> {
-        self.mesh
+        let snapshot = self
+            .mesh
             .observe_vpn(sequence, MeshVpnObservation::AmbiguousVpn)
-            .map(map_mesh_view)
-            .map_err(map_transport_error)
+            .map_err(map_transport_error)?;
+        self.readiness
+            .observe_mesh(snapshot)
+            .map_err(map_readiness_runtime_to_mesh)?;
+        self.mesh.snapshot().map(map_mesh_view).map_err(map_transport_error)
     }
 
     /// Transitional presentation relay until readiness scheduling itself is native.
@@ -398,6 +468,7 @@ impl NativeProductRuntime {
             return Ok(());
         }
 
+        self.readiness.shutdown();
         let mesh_clean = self.mesh.shutdown().is_ok();
         let policy_clean = self
             .policy
@@ -416,6 +487,28 @@ impl NativeProductRuntime {
     pub fn is_running(&self) -> bool {
         !self.closed.load(Ordering::Acquire) && self.executor.is_running()
     }
+}
+
+fn map_readiness_state(readiness: mish_readiness::Readiness) -> ProductReadinessState {
+    match readiness {
+        mish_readiness::Readiness::Ready => ProductReadinessState::Ready,
+        mish_readiness::Readiness::NotReady => ProductReadinessState::NotReady,
+        mish_readiness::Readiness::Degraded => ProductReadinessState::Degraded,
+        mish_readiness::Readiness::Unknown => ProductReadinessState::Unknown,
+    }
+}
+
+fn map_readiness_diagnostic(snapshot: ReadinessDiagnosticSnapshot) -> ReadinessDiagnosticView {
+    ReadinessDiagnosticView {
+        state: map_readiness_state(snapshot.state),
+        binding_eligible: snapshot.binding_eligible,
+        probe_in_flight: snapshot.probe_in_flight,
+        refresh_pending: snapshot.refresh_pending,
+    }
+}
+
+fn map_readiness_runtime_to_mesh(_error: ReadinessRuntimeError) -> MeshTransportBoundaryError {
+    MeshTransportBoundaryError::OwnerUnavailable
 }
 
 fn map_readiness_network_error(error: ReadinessNetworkError) -> ReadinessBoundaryError {
@@ -539,7 +632,7 @@ mod tests {
 
     #[test]
     fn invalid_uid_is_rejected_before_runtime_construction() {
-        let error = match NativeProductRuntime::new(0, false) {
+        let error = match NativeProductRuntime::new(0, false, 1) {
             Ok(_) => panic!("zero UID must be rejected"),
             Err(error) => error,
         };
