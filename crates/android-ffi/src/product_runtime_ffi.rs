@@ -299,9 +299,9 @@ impl NativeProductRuntime {
 
     pub fn start_proxy_runtime(
         &self,
-        credential_version: u64,
-        username: String,
-        password: String,
+        credential_version: Option<u64>,
+        username: Option<String>,
+        password: Option<String>,
     ) -> ProxyRuntimePublicationView {
         if self.closed.load(Ordering::Acquire) {
             return map_proxy_publication(self.proxy.snapshot());
