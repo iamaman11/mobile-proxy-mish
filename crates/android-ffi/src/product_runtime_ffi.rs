@@ -30,7 +30,6 @@ use mish_transport::MeshVpnObservation;
 use std::fmt;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Error)]
@@ -248,60 +247,93 @@ impl NativeProductRuntime {
         let callback: CellularPolicyObserver = Arc::new(move |publication| {
             observer.on_cellular_policy_publication(map_policy_publication(publication));
         });
-        self.generation.policy().set_observer(callback);
+        self.runtime.set_cellular_observer(callback);
     }
 
     pub fn observe_readiness(&self, observer: Arc<dyn NativeReadinessObserver>) {
         let callback: ReadinessObserver = Arc::new(move |readiness| {
             observer.on_readiness(map_readiness_state(readiness));
         });
-        self.generation.readiness().set_observer(callback);
+        self.runtime.set_readiness_observer(callback);
     }
 
     pub fn readiness_snapshot(&self) -> ProductReadinessState {
-        map_readiness_state(self.generation.readiness().snapshot())
+        self.runtime
+            .current_generation()
+            .map(|generation| map_readiness_state(generation.readiness().snapshot()))
+            .unwrap_or(ProductReadinessState::Unknown)
     }
 
     pub fn readiness_diagnostic_snapshot(&self) -> ReadinessDiagnosticView {
-        map_readiness_diagnostic(self.generation.readiness().diagnostic_snapshot())
+        self.runtime
+            .current_generation()
+            .map(|generation| map_readiness_diagnostic(generation.readiness().diagnostic_snapshot()))
+            .unwrap_or(ReadinessDiagnosticView {
+                state: ProductReadinessState::Unknown,
+                root_policy_verified: false,
+                proxy_healthy: false,
+                credential_active: false,
+                mesh_admitted: false,
+                binding_eligible: false,
+                probe_in_flight: false,
+                refresh_pending: false,
+            })
     }
 
     pub fn observe_proxy_runtime(&self, observer: Arc<dyn NativeProxyRuntimeObserver>) {
         let callback: ProxyRuntimeObserver = Arc::new(move |publication| {
             observer.on_proxy_runtime(map_proxy_publication(publication));
         });
-        self.generation.proxy().set_observer(callback);
+        self.runtime.set_proxy_observer(callback);
     }
 
     pub fn proxy_runtime_snapshot(&self) -> ProxyRuntimePublicationView {
-        map_proxy_publication(self.generation.proxy().snapshot())
+        self.runtime
+            .current_generation()
+            .map(|generation| map_proxy_publication(generation.proxy().snapshot()))
+            .unwrap_or_else(|_| unavailable_proxy_publication())
     }
 
+    /// Transitional direct seam until the Android lifecycle facade is switched to start_runtime().
     pub fn start_proxy_runtime(
         &self,
         credential_version: Option<u64>,
         username: Option<String>,
         password: Option<String>,
     ) -> ProxyRuntimePublicationView {
-        if self.closed.load(Ordering::Acquire) {
-            return map_proxy_publication(self.generation.proxy().snapshot());
-        }
-        map_proxy_publication(
-            self.generation.proxy()
-                .start(credential_version, username, password),
-        )
+        self.runtime
+            .active_generation()
+            .map(|generation| {
+                map_proxy_publication(
+                    generation
+                        .proxy()
+                        .start(credential_version, username, password),
+                )
+            })
+            .unwrap_or_else(|_| unavailable_proxy_publication())
     }
 
+    /// Transitional direct seam until the Android lifecycle facade is switched to stop_runtime().
     pub fn stop_proxy_runtime(&self) -> ProxyRuntimePublicationView {
-        map_proxy_publication(self.generation.proxy().stop())
+        self.runtime
+            .current_generation()
+            .map(|generation| map_proxy_publication(generation.proxy().stop()))
+            .unwrap_or_else(|_| unavailable_proxy_publication())
     }
 
     pub fn proxy_active_sessions(&self) -> u32 {
-        self.generation.proxy().active_sessions()
+        self.runtime
+            .current_generation()
+            .map(|generation| generation.proxy().active_sessions())
+            .unwrap_or(0)
     }
 
     pub fn admission_snapshot(&self) -> Result<CellularAdmissionView, CellularBridgeError> {
-        self.cellular_view.admission_snapshot()
+        let generation = self
+            .runtime
+            .current_generation()
+            .map_err(|_| CellularBridgeError::OwnerUnavailable)?;
+        CellularController::from_runtime(generation.cellular()).admission_snapshot()
     }
 
     pub fn observe_network(
@@ -326,7 +358,12 @@ impl NativeProductRuntime {
             is_validated,
             is_not_vpn,
         );
-        self.generation.policy()
+        let generation = self
+            .runtime
+            .active_generation()
+            .map_err(|_| CellularBridgeError::OwnerUnavailable)?;
+        generation
+            .policy()
             .observe_network(observation, network_handle, interface_name)
             .map(map_snapshot)
             .map_err(|_| CellularBridgeError::OwnerUnavailable)
@@ -341,29 +378,69 @@ impl NativeProductRuntime {
             .ok_or(CellularBridgeError::InvalidObservationSequence)?;
         let network_handle =
             NetworkHandle::new(network_handle).ok_or(CellularBridgeError::InvalidNetworkHandle)?;
-        self.generation.policy()
+        let generation = self
+            .runtime
+            .active_generation()
+            .map_err(|_| CellularBridgeError::OwnerUnavailable)?;
+        generation
+            .policy()
             .network_lost(sequence, network_handle)
             .map(map_snapshot)
             .map_err(|_| CellularBridgeError::OwnerUnavailable)
     }
 
     pub fn dns_diagnostic_snapshot(&self) -> CellularDnsDiagnosticView {
-        self.cellular_view.dns_diagnostic_snapshot()
+        self.runtime
+            .current_generation()
+            .map(|generation| {
+                CellularController::from_runtime(generation.cellular()).dns_diagnostic_snapshot()
+            })
+            .unwrap_or_else(|_| CellularDnsDiagnosticView {
+                slow_threshold_ms: 0,
+                started: 0,
+                completed: 0,
+                active: 0,
+                peak_active: 0,
+                slow_completions: 0,
+                resolver_failed: 0,
+                discarded_after_deadline: 0,
+                completed_after_owner_change: 0,
+                discarded_stale: 0,
+                authority_validation_failed: 0,
+                unusable_result: 0,
+                accepted_current: 0,
+                max_native_elapsed_ms: 0,
+                last_started_owner_sequence: None,
+                last_completed_start_owner_sequence: None,
+                last_completed_current_owner_sequence: None,
+            })
     }
 
     pub fn prepare_public_ip_probe(
         &self,
         timeout_ms: u64,
     ) -> Result<Arc<PublicIpProbeTicket>, PublicIpProbeError> {
-        self.cellular_view.prepare_public_ip_probe(timeout_ms)
+        let generation = self
+            .runtime
+            .active_generation()
+            .map_err(|_| PublicIpProbeError::NoCurrentCellular)?;
+        CellularController::from_runtime(generation.cellular()).prepare_public_ip_probe(timeout_ms)
     }
 
     pub fn observe_public_egress_ip(
         &self,
         timeout_ms: u64,
     ) -> Result<PublicIpObservationView, PublicIpProbeError> {
-        self.generation.cellular()
-            .observe_public_egress_ip(&self.executor, Duration::from_millis(timeout_ms))
+        let generation = self
+            .runtime
+            .active_generation()
+            .map_err(|_| PublicIpProbeError::NoCurrentCellular)?;
+        generation
+            .cellular()
+            .observe_public_egress_ip(
+                &generation.executor(),
+                Duration::from_millis(timeout_ms),
+            )
             .map(|observation| PublicIpObservationView {
                 address: observation.address().to_string(),
                 generation: observation.generation(),
@@ -372,18 +449,36 @@ impl NativeProductRuntime {
     }
 
     pub fn cellular_reconcile_diagnostic(&self) -> CellularReconcileDiagnosticView {
-        map_reconcile_diagnostic(self.generation.policy().reconcile_diagnostic())
+        self.runtime
+            .current_generation()
+            .map(|generation| map_reconcile_diagnostic(generation.policy().reconcile_diagnostic()))
+            .unwrap_or(CellularReconcileDiagnosticView {
+                requested: 0,
+                executed: 0,
+                coalesced: 0,
+                pending: false,
+                drain_scheduled: false,
+            })
     }
 
     pub fn root_recovery_diagnostic(&self) -> RootRecoveryDiagnosticView {
-        map_recovery_diagnostic(self.generation.policy().recovery_diagnostic())
+        self.runtime
+            .current_generation()
+            .map(|generation| map_recovery_diagnostic(generation.policy().recovery_diagnostic()))
+            .unwrap_or(RootRecoveryDiagnosticView {
+                pending: false,
+                attempts_since_reset: 0,
+                next_delay_ms: 0,
+            })
     }
 
     pub fn root_policy_reconcile_diagnostic(
         &self,
     ) -> Result<RootPolicyReconcileDiagnosticView, NativeProductRuntimeError> {
-        self.generation.policy()
-            .root_policy_diagnostic_blocking(&self.executor)
+        let generation = self.runtime.current_generation()?;
+        generation
+            .policy()
+            .root_policy_diagnostic_blocking(&generation.executor())
             .map(map_root_policy_diagnostic)
             .map_err(Into::into)
     }
@@ -391,20 +486,38 @@ impl NativeProductRuntime {
     pub fn mesh_admission_snapshot(
         &self,
     ) -> Result<MeshAdmissionView, MeshTransportBoundaryError> {
-        self.generation.mesh().snapshot().map(map_mesh_view).map_err(map_transport_error)
+        let generation = self
+            .runtime
+            .current_generation()
+            .map_err(|_| MeshTransportBoundaryError::OwnerUnavailable)?;
+        generation
+            .mesh()
+            .snapshot()
+            .map(map_mesh_view)
+            .map_err(map_transport_error)
     }
 
     pub fn observe_mesh_vpn_absent(
         &self,
         sequence: u64,
     ) -> Result<MeshAdmissionView, MeshTransportBoundaryError> {
-        let snapshot = self.generation.mesh()
+        let generation = self
+            .runtime
+            .active_generation()
+            .map_err(|_| MeshTransportBoundaryError::OwnerUnavailable)?;
+        let snapshot = generation
+            .mesh()
             .observe_vpn(sequence, MeshVpnObservation::Absent)
             .map_err(map_transport_error)?;
-        self.generation.readiness()
+        generation
+            .readiness()
             .observe_mesh(snapshot)
             .map_err(map_readiness_runtime_to_mesh)?;
-        self.generation.mesh().snapshot().map(map_mesh_view).map_err(map_transport_error)
+        generation
+            .mesh()
+            .snapshot()
+            .map(map_mesh_view)
+            .map_err(map_transport_error)
     }
 
     pub fn observe_mesh_unique_vpn(
@@ -419,7 +532,12 @@ impl NativeProductRuntime {
                     .map_err(|_| MeshTransportBoundaryError::InvalidVpnObservation)
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let snapshot = self.generation.mesh()
+        let generation = self
+            .runtime
+            .active_generation()
+            .map_err(|_| MeshTransportBoundaryError::OwnerUnavailable)?;
+        let snapshot = generation
+            .mesh()
             .observe_vpn(
                 sequence,
                 MeshVpnObservation::UniqueVpn {
@@ -427,47 +545,56 @@ impl NativeProductRuntime {
                 },
             )
             .map_err(map_transport_error)?;
-        self.generation.readiness()
+        generation
+            .readiness()
             .observe_mesh(snapshot)
             .map_err(map_readiness_runtime_to_mesh)?;
-        self.generation.mesh().snapshot().map(map_mesh_view).map_err(map_transport_error)
+        generation
+            .mesh()
+            .snapshot()
+            .map(map_mesh_view)
+            .map_err(map_transport_error)
     }
 
     pub fn observe_mesh_vpn_ambiguous(
         &self,
         sequence: u64,
     ) -> Result<MeshAdmissionView, MeshTransportBoundaryError> {
-        let snapshot = self.generation.mesh()
+        let generation = self
+            .runtime
+            .active_generation()
+            .map_err(|_| MeshTransportBoundaryError::OwnerUnavailable)?;
+        let snapshot = generation
+            .mesh()
             .observe_vpn(sequence, MeshVpnObservation::AmbiguousVpn)
             .map_err(map_transport_error)?;
-        self.generation.readiness()
+        generation
+            .readiness()
             .observe_mesh(snapshot)
             .map_err(map_readiness_runtime_to_mesh)?;
-        self.generation.mesh().snapshot().map(map_mesh_view).map_err(map_transport_error)
+        generation
+            .mesh()
+            .snapshot()
+            .map(map_mesh_view)
+            .map_err(map_transport_error)
     }
 
-    pub fn shutdown(&self) -> Result<(), NativeProductRuntimeError> {
-        if self.closed.swap(true, Ordering::AcqRel) {
-            return Ok(());
-        }
-
-        let generation_clean = self
-            .generation
-            .shutdown_blocking()
-            .map_err(NativeProductRuntimeError::from)?;
-        let executor_clean = self.executor.shutdown().map_err(NativeProductRuntimeError::from);
-
-        if generation_clean && executor_clean.is_ok() {
+    pub fn shutdown(self: &Arc<Self>) -> Result<(), NativeProductRuntimeError> {
+        if self.runtime.shutdown_blocking()? {
             Ok(())
         } else {
-            let _ = executor_clean;
             Err(NativeProductRuntimeError::CleanupFailed)
         }
     }
 
     pub fn is_running(&self) -> bool {
-        !self.closed.load(Ordering::Acquire) && self.executor.is_running()
+        matches!(
+            self.runtime.snapshot().state,
+            mish_runtime::RuntimeLifecycleState::Starting
+                | mish_runtime::RuntimeLifecycleState::Running
+        )
     }
+
 }
 
 fn map_proxy_publication(publication: ProxyRuntimePublication) -> ProxyRuntimePublicationView {
