@@ -56,6 +56,7 @@ struct StoredMeshObservation {
 struct ProductPlatformFacts {
     cellular: HashMap<NetworkHandle, StoredCellularObservation>,
     last_cellular_sequence: Option<u64>,
+    last_cellular_loss: Option<(u64, NetworkHandle)>,
     mesh: Option<StoredMeshObservation>,
 }
 
@@ -74,6 +75,7 @@ impl ProductPlatformFacts {
             return;
         }
         self.last_cellular_sequence = Some(sequence);
+        self.last_cellular_loss = None;
         self.cellular.insert(
             observed_handle,
             StoredCellularObservation {
@@ -93,6 +95,7 @@ impl ProductPlatformFacts {
             return;
         }
         self.last_cellular_sequence = Some(sequence);
+        self.last_cellular_loss = Some((sequence, observed_handle));
         self.cellular.remove(&observed_handle);
     }
 
@@ -114,6 +117,16 @@ impl ProductPlatformFacts {
         let mut observations = self.cellular.values().cloned().collect::<Vec<_>>();
         observations.sort_by_key(|observation| observation.sequence);
         observations
+    }
+
+    fn clear_cellular(&mut self) {
+        self.cellular.clear();
+        self.last_cellular_sequence = None;
+        self.last_cellular_loss = None;
+    }
+
+    fn clear_mesh(&mut self) {
+        self.mesh = None;
     }
 }
 
@@ -285,6 +298,16 @@ impl ProductRuntimeCoordinator {
             Arc::clone(&state.generation)
         };
         apply_mesh_observation(&generation, sequence, observation)
+    }
+
+    pub fn invalidate_cellular_platform_facts(&self) -> Result<(), RuntimeExecutionError> {
+        self.state_mut()?.platform_facts.clear_cellular();
+        Ok(())
+    }
+
+    pub fn invalidate_mesh_platform_fact(&self) -> Result<(), RuntimeExecutionError> {
+        self.state_mut()?.platform_facts.clear_mesh();
+        Ok(())
     }
 
     pub fn set_cellular_observer(&self, observer: CellularPolicyObserver) {
@@ -681,7 +704,8 @@ fn replay_platform_facts(
     generation: &ProductGeneration,
     platform_facts: &ProductPlatformFacts,
 ) -> bool {
-    for observation in platform_facts.cellular_replay() {
+    let cellular = platform_facts.cellular_replay();
+    for observation in cellular.iter().cloned() {
         if generation
             .policy()
             .observe_network(
@@ -692,6 +716,16 @@ fn replay_platform_facts(
             .is_err()
         {
             return false;
+        }
+    }
+    if cellular.is_empty() {
+        if let Some((sequence, handle)) = platform_facts.last_cellular_loss {
+            let Some(sequence) = mish_cellular::ObservationSequence::new(sequence) else {
+                return false;
+            };
+            if generation.policy().network_lost(sequence, handle).is_err() {
+                return false;
+            }
         }
     }
 
