@@ -7,9 +7,6 @@ pub use product_runtime_ffi::*;
 mod credentials_ffi;
 pub use credentials_ffi::*;
 
-mod proxy_recovery_ffi;
-pub use proxy_recovery_ffi::*;
-
 mod readiness_ffi;
 pub use readiness_ffi::*;
 
