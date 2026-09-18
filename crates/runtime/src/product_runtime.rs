@@ -400,8 +400,8 @@ impl ProductRuntimeCoordinator {
                     }
                 };
                 state.generation = Arc::clone(&generation);
-                self.observer_generation
-                    .store(generation.generation(), Ordering::Release);
+            self.observer_generation
+                .store(generation.generation(), Ordering::Release);
                 Some((generation, state.observers.clone()))
             } else {
                 None
@@ -412,10 +412,10 @@ impl ProductRuntimeCoordinator {
 
         if let Some((generation, observers)) = rebound {
             bind_observers(
-            &generation,
-            observers,
-            Arc::clone(&self.observer_generation),
-        );
+                &generation,
+                observers,
+                Arc::clone(&self.observer_generation),
+            );
         }
 
         let owner = Arc::clone(self);
@@ -643,10 +643,10 @@ impl ProductRuntimeCoordinator {
         };
         if let Some((generation, observers)) = rebound {
             bind_observers(
-            &generation,
-            observers,
-            Arc::clone(&self.observer_generation),
-        );
+                &generation,
+                observers,
+                Arc::clone(&self.observer_generation),
+            );
         }
     }
 
@@ -702,10 +702,10 @@ impl ProductRuntimeCoordinator {
 
         if let Some((generation, observers)) = rebound {
             bind_observers(
-            &generation,
-            observers,
-            Arc::clone(&self.observer_generation),
-        );
+                &generation,
+                observers,
+                Arc::clone(&self.observer_generation),
+            );
         }
 
         if let Some(input) = restart {
