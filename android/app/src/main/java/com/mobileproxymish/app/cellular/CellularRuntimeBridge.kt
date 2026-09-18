@@ -91,6 +91,30 @@ class CellularRuntimeBridge(
     val snapshot: StateFlow<CellularRuntimeSnapshot>
         get() = mutableSnapshot.asStateFlow()
 
+    init {
+        try {
+            productRuntime.observeCellularPolicy(
+                object : NativeCellularPolicyObserver {
+                    override fun onCellularPolicyPublication(
+                        publication: CellularPolicyPublicationView,
+                    ) {
+                        if (!closed.get()) {
+                            mutableSnapshot.value = projectPublication(publication)
+                        }
+                    }
+                },
+            )
+        } catch (_: LinkageError) {
+            mutableSnapshot.value = CellularRuntimeSnapshot.BoundaryUnavailable(
+                CellularBoundaryFailure.NativeLibraryUnavailable,
+            )
+        } catch (_: Exception) {
+            mutableSnapshot.value = CellularRuntimeSnapshot.BoundaryUnavailable(
+                CellularBoundaryFailure.ForeignCallFailed,
+            )
+        }
+    }
+
     /** Read-only process-wide native DNS execution facts; no Android-side accounting is kept. */
     internal fun dnsDiagnosticObservation(): CellularDnsDiagnosticView? = try {
         productRuntime.dnsDiagnosticSnapshot()
@@ -171,28 +195,20 @@ class CellularRuntimeBridge(
         if (closed.get() || !started.compareAndSet(false, true)) return
 
         try {
-            productRuntime.observeCellularPolicy(
-                object : NativeCellularPolicyObserver {
-                    override fun onCellularPolicyPublication(
-                        publication: CellularPolicyPublicationView,
-                    ) {
-                        if (!closed.get()) {
-                            mutableSnapshot.value = projectPublication(publication)
-                        }
-                    }
-                },
-            )
-            productRuntime.startCellularPolicy()
             observer.start()
             if (closed.get()) observer.close()
         } catch (_: LinkageError) {
+            started.set(false)
             mutableSnapshot.value = CellularRuntimeSnapshot.BoundaryUnavailable(
                 CellularBoundaryFailure.NativeLibraryUnavailable,
             )
-        } catch (_: Exception) {
+            throw
+        } catch (error: Exception) {
+            started.set(false)
             mutableSnapshot.value = CellularRuntimeSnapshot.BoundaryUnavailable(
                 CellularBoundaryFailure.ForeignCallFailed,
             )
+            throw IllegalStateException("Cellular platform observer could not start", error)
         }
     }
 
@@ -202,7 +218,7 @@ class CellularRuntimeBridge(
     }
 
     override fun onEvent(event: CellularNetworkEvent) {
-        if (closed.get()) return
+        if (closed.get() || !started.get()) return
 
         try {
             when (event) {
