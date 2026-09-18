@@ -9,7 +9,11 @@ use crate::{
     ReadinessObserver, RuntimeExecutionError, RuntimeExecutor, RuntimeLifecycle,
     RuntimeLifecycleState, RuntimeStartAction, RuntimeStopAction,
 };
-use mish_cellular::RootPolicyNamespace;
+use mish_cellular::{
+    CellularAdmissionSnapshot, NetworkHandle, NetworkObservation, RootPolicyNamespace,
+};
+use mish_transport::{MeshTransportError, MeshTransportSnapshot, MeshVpnObservation};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::task::spawn_blocking;
 
@@ -34,11 +38,93 @@ struct ProductObservers {
     proxy: Option<ProxyRuntimeObserver>,
 }
 
+#[derive(Clone)]
+struct StoredCellularObservation {
+    sequence: u64,
+    observation: NetworkObservation,
+    observed_handle: NetworkHandle,
+    interface_name: Option<String>,
+}
+
+#[derive(Clone)]
+struct StoredMeshObservation {
+    sequence: u64,
+    observation: MeshVpnObservation,
+}
+
+#[derive(Clone, Default)]
+struct ProductPlatformFacts {
+    cellular: HashMap<NetworkHandle, StoredCellularObservation>,
+    last_cellular_sequence: Option<u64>,
+    mesh: Option<StoredMeshObservation>,
+}
+
+impl ProductPlatformFacts {
+    fn record_cellular_observation(
+        &mut self,
+        sequence: u64,
+        observation: NetworkObservation,
+        observed_handle: NetworkHandle,
+        interface_name: Option<String>,
+    ) {
+        if self
+            .last_cellular_sequence
+            .is_some_and(|last| sequence <= last)
+        {
+            return;
+        }
+        self.last_cellular_sequence = Some(sequence);
+        self.cellular.insert(
+            observed_handle,
+            StoredCellularObservation {
+                sequence,
+                observation,
+                observed_handle,
+                interface_name,
+            },
+        );
+    }
+
+    fn record_cellular_loss(&mut self, sequence: u64, observed_handle: NetworkHandle) {
+        if self
+            .last_cellular_sequence
+            .is_some_and(|last| sequence <= last)
+        {
+            return;
+        }
+        self.last_cellular_sequence = Some(sequence);
+        self.cellular.remove(&observed_handle);
+    }
+
+    fn record_mesh(&mut self, sequence: u64, observation: MeshVpnObservation) {
+        if self
+            .mesh
+            .as_ref()
+            .is_some_and(|current| sequence <= current.sequence)
+        {
+            return;
+        }
+        self.mesh = Some(StoredMeshObservation {
+            sequence,
+            observation,
+        });
+    }
+
+    fn cellular_replay(&self) -> Vec<StoredCellularObservation> {
+        let mut observations = self.cellular.values().cloned().collect::<Vec<_>>();
+        observations.sort_by_key(|observation| observation.sequence);
+        observations
+    }
+}
+
 struct ProductRuntimeState {
     lifecycle: RuntimeLifecycle,
     generation: Arc<ProductGeneration>,
     pending_start: Option<ProductStartInput>,
     observers: ProductObservers,
+    platform_facts: ProductPlatformFacts,
+    platform_mutation_epoch: u64,
+    active_platform_mutation: Option<u64>,
     closed: bool,
 }
 
@@ -80,6 +166,9 @@ impl ProductRuntimeCoordinator {
                 generation,
                 pending_start: None,
                 observers: ProductObservers::default(),
+                platform_facts: ProductPlatformFacts::default(),
+                platform_mutation_epoch: 0,
+                active_platform_mutation: None,
                 closed: false,
             }),
         }))
