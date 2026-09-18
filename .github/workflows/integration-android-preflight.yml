@@ -42,7 +42,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Classify docs-only preflight
+      - name: Classify preflight build scope
         id: scope
         shell: bash
         env:
@@ -55,14 +55,15 @@ jobs:
           git cat-file -e "$BASE_SHA^{commit}"
           git cat-file -e "$HEAD_SHA^{commit}"
 
-          docs_only=true
+          build_required=false
           changed_count=0
           while IFS= read -r path; do
             [[ -n "$path" ]] || continue
             changed_count=$((changed_count + 1))
             case "$path" in
-              docs/architecture/*) ;;
-              *) docs_only=false ;;
+              android/*|crates/*|Cargo.toml|Cargo.lock|rust-toolchain.toml|tools/verify_android_candidate.py)
+                build_required=true
+                ;;
             esac
           done < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
 
@@ -71,8 +72,8 @@ jobs:
             exit 1
           fi
 
-          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
-          echo "DOCS_ONLY=$docs_only"
+          echo "build_required=$build_required" >> "$GITHUB_OUTPUT"
+          echo "BUILD_REQUIRED=$build_required"
 
       - name: Architecture constitution
         shell: bash
@@ -81,20 +82,20 @@ jobs:
           python3 tools/check_architecture.py
 
       - name: Set up JDK 17
-        if: ${{ steps.scope.outputs.docs_only != 'true' }}
+        if: ${{ steps.scope.outputs.build_required == 'true' }}
         uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
         with:
           distribution: temurin
           java-version: '17'
 
       - name: Set up pinned Gradle
-        if: ${{ steps.scope.outputs.docs_only != 'true' }}
+        if: ${{ steps.scope.outputs.build_required == 'true' }}
         uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
         with:
           gradle-version: ${{ env.GRADLE_VERSION }}
 
       - name: Restore Rust build cache
-        if: ${{ steps.scope.outputs.docs_only != 'true' }}
+        if: ${{ steps.scope.outputs.build_required == 'true' }}
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
@@ -109,7 +110,7 @@ jobs:
             integration-android-${{ runner.os }}-static-rust-${{ env.RUST_TOOLCHAIN }}-
 
       - name: Set up host Rust toolchain
-        if: ${{ steps.scope.outputs.docs_only != 'true' }}
+        if: ${{ steps.scope.outputs.build_required == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -117,14 +118,14 @@ jobs:
           rustup override set "$RUST_TOOLCHAIN"
 
       - name: Fast Kotlin compile and lint
-        if: ${{ steps.scope.outputs.docs_only != 'true' }}
+        if: ${{ steps.scope.outputs.build_required == 'true' }}
         run: >-
           gradle --no-daemon -p android
           :app:compileDebugKotlin
           :app:lintDebug
 
       - name: Rust workspace quality gate
-        if: ${{ steps.scope.outputs.docs_only != 'true' && github.event.pull_request.draft == false }}
+        if: ${{ steps.scope.outputs.build_required == 'true' && github.event.pull_request.draft == false }}
         shell: bash
         run: |
           set -euo pipefail
@@ -133,7 +134,7 @@ jobs:
           cargo test --workspace --locked
 
       - name: Set up Android Rust toolchain
-        if: ${{ steps.scope.outputs.docs_only != 'true' && github.event.pull_request.draft == false }}
+        if: ${{ steps.scope.outputs.build_required == 'true' && github.event.pull_request.draft == false }}
         shell: bash
         run: |
           set -euo pipefail
@@ -150,7 +151,7 @@ jobs:
           echo "MISH_TARGET_ABI=$TARGET_ABI" >> "$GITHUB_ENV"
 
       - name: Set up pinned Android NDK
-        if: ${{ steps.scope.outputs.docs_only != 'true' && github.event.pull_request.draft == false }}
+        if: ${{ steps.scope.outputs.build_required == 'true' && github.event.pull_request.draft == false }}
         shell: bash
         run: |
           set -euo pipefail
@@ -167,7 +168,7 @@ jobs:
           echo "ANDROID_NDK=$NDK_PATH" >> "$GITHUB_ENV"
 
       - name: Unit test and assemble host gate
-        if: ${{ steps.scope.outputs.docs_only != 'true' && github.event.pull_request.draft == false }}
+        if: ${{ steps.scope.outputs.build_required == 'true' && github.event.pull_request.draft == false }}
         run: >-
           gradle --no-daemon -p android
           :app:testDebugUnitTest
@@ -175,11 +176,11 @@ jobs:
           :app:assembleDebugAndroidTest
 
       - name: Verify exact PRODUCT candidate contract
-        if: ${{ steps.scope.outputs.docs_only != 'true' && github.event.pull_request.draft == false }}
+        if: ${{ steps.scope.outputs.build_required == 'true' && github.event.pull_request.draft == false }}
         run: python3 tools/verify_android_candidate.py
 
       - name: Stage exact-head device candidate
-        if: ${{ steps.scope.outputs.docs_only != 'true' && github.event.pull_request.draft == false }}
+        if: ${{ steps.scope.outputs.build_required == 'true' && github.event.pull_request.draft == false }}
         shell: bash
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -223,7 +224,7 @@ jobs:
           PY
 
       - name: Upload exact-head device candidate
-        if: ${{ steps.scope.outputs.docs_only != 'true' && github.event.pull_request.draft == false }}
+        if: ${{ steps.scope.outputs.build_required == 'true' && github.event.pull_request.draft == false }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: device-candidate-pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
@@ -232,7 +233,7 @@ jobs:
           retention-days: 7
 
       - name: Publish device candidate summary
-        if: ${{ steps.scope.outputs.docs_only != 'true' && github.event.pull_request.draft == false }}
+        if: ${{ steps.scope.outputs.build_required == 'true' && github.event.pull_request.draft == false }}
         shell: bash
         env:
           SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
@@ -245,12 +246,12 @@ jobs:
             echo '- Install target: **com.mobileproxymish.app.debug**'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Docs-only preflight summary
-        if: ${{ steps.scope.outputs.docs_only == 'true' }}
+      - name: Static-only preflight summary
+        if: ${{ steps.scope.outputs.build_required != 'true' }}
         shell: bash
         run: |
           {
-            echo '### Docs-only architecture preflight'
+            echo '### Static-only architecture preflight'
             echo '- PRODUCT build required: **NO**'
             echo '- Android/Rust build: **SKIPPED**'
             echo '- Device candidate staged: **NO**'
