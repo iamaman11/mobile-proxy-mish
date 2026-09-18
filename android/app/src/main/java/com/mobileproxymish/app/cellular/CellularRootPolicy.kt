@@ -38,6 +38,22 @@ internal enum class CellularRootPolicyCleanupFailure {
     FINAL_VERIFICATION_FAILED,
 }
 
+internal data class CellularRootPolicyReconcileDiagnostic(
+    val attempts: Long = 0,
+    val totalPolicyCommands: Long = 0,
+    val totalObservationCommands: Long = 0,
+    val totalMutationCommands: Long = 0,
+    val totalDuplicateObservations: Long = 0,
+    val lastElapsedMs: Long = 0,
+    val maxElapsedMs: Long = 0,
+    val lastPolicyCommands: Int = 0,
+    val lastObservationCommands: Int = 0,
+    val lastMutationCommands: Int = 0,
+    val lastDuplicateObservations: Int = 0,
+    val lastIncompleteOrTimedOutCommands: Int = 0,
+    val lastMutationFailures: Int = 0,
+)
+
 sealed interface CellularRootPolicyResult {
     data object Enforced : CellularRootPolicyResult
 
@@ -89,6 +105,7 @@ class CellularRootPolicy internal constructor(
     /** Sanitized teardown stage for lifecycle/E3 evidence; never contains commands or addresses. */
     private var lastCleanupFailure: CellularRootPolicyFailure? = null
     private var lastCleanupStage: CellularRootPolicyCleanupFailure? = null
+    private var reconcileDiagnostic = CellularRootPolicyReconcileDiagnostic()
 
     @Synchronized
     fun failClosed(): CellularRootPolicyResult = reconcile(admitted = false, interfaceName = null)
@@ -98,81 +115,119 @@ class CellularRootPolicy internal constructor(
         admitted: Boolean,
         interfaceName: String?,
     ): CellularRootPolicyResult {
-        val authorityStatus = authority.probe()
-        if (authorityStatus != RootAuthorityStatus.Ready) {
-            return CellularRootPolicyResult.AuthorityUnavailable(authorityStatus)
-        }
-        if (productUid <= 0) {
-            return CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.InvalidProductUid)
-        }
+        val startedNanos = System.nanoTime()
+        executor.beginDiagnosticWindow()
+        try {
+            val authorityStatus = authority.probe()
+            if (authorityStatus != RootAuthorityStatus.Ready) {
+                return CellularRootPolicyResult.AuthorityUnavailable(authorityStatus)
+            }
+            if (productUid <= 0) {
+                return CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.InvalidProductUid)
+            }
 
-        when (resolvePolicyIdentity()) {
-            PolicyIdentityResolution.Collision -> {
-                val revoked = activeIdentity == null || removeOwnedIpv4Lookups()
+            when (resolvePolicyIdentity()) {
+                PolicyIdentityResolution.Collision -> {
+                    val revoked = activeIdentity == null || removeOwnedIpv4Lookups()
+                    return CellularRootPolicyResult.FailClosed(
+                        if (revoked) {
+                            CellularRootPolicyFailure.ReservedPolicyCollision
+                        } else {
+                            CellularRootPolicyFailure.RuleMutationFailed
+                        },
+                    )
+                }
+
+                PolicyIdentityResolution.Unavailable -> {
+                    val revoked = activeIdentity == null || removeOwnedIpv4Lookups()
+                    return CellularRootPolicyResult.FailClosed(
+                        if (revoked) {
+                            CellularRootPolicyFailure.VerificationFailed
+                        } else {
+                            CellularRootPolicyFailure.RuleMutationFailed
+                        },
+                    )
+                }
+
+                PolicyIdentityResolution.Selected -> Unit
+            }
+
+            // Generation transaction boundary:
+            // 1) guards exist; 2) stale lookup is revoked; 3) exact MISH flow policy exists.
+            // Only then may an admitted generation discover/install one fresh cellular lookup.
+            if (!ensureFailClosedGuards()) {
+                return CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.RuleMutationFailed)
+            }
+            if (!removeOwnedIpv4Lookups()) {
+                return CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.RuleMutationFailed)
+            }
+            when (val mangle = ensureManglePolicy()) {
+                ManglePolicyResult.Enforced -> Unit
+                is ManglePolicyResult.Failed ->
+                    return CellularRootPolicyResult.FailClosed(mangle.failure)
+            }
+            if (!verifyFailClosedBase()) {
                 return CellularRootPolicyResult.FailClosed(
-                    if (revoked) {
-                        CellularRootPolicyFailure.ReservedPolicyCollision
-                    } else {
-                        CellularRootPolicyFailure.RuleMutationFailed
-                    },
+                    CellularRootPolicyFailure.MangleVerificationFailed,
                 )
             }
 
-            PolicyIdentityResolution.Unavailable -> {
-                val revoked = activeIdentity == null || removeOwnedIpv4Lookups()
+            if (!admitted) {
+                return CellularRootPolicyResult.FailClosed()
+            }
+
+            val iface = interfaceName?.takeIf(RootPolicySnapshot::isSafeInterfaceName)
+                ?: return CellularRootPolicyResult.FailClosed(
+                    CellularRootPolicyFailure.InvalidInterface,
+                )
+
+            val table = routeInspector.discoverValidatedIpv4Table(iface, IPV4_RULE_SHOW)
+                ?: return CellularRootPolicyResult.FailClosed(
+                    CellularRootPolicyFailure.RouteTableDiscoveryFailed,
+                )
+
+            if (!replaceIpv4Lookup(table)) {
+                removeOwnedIpv4Lookups()
                 return CellularRootPolicyResult.FailClosed(
-                    if (revoked) {
-                        CellularRootPolicyFailure.VerificationFailed
-                    } else {
-                        CellularRootPolicyFailure.RuleMutationFailed
-                    },
+                    CellularRootPolicyFailure.LookupRuleCreationFailed,
                 )
             }
 
-            PolicyIdentityResolution.Selected -> Unit
-        }
+            if (!routeInspector.verifyIpv4Path(iface, MARK_HEX)) {
+                removeOwnedIpv4Lookups()
+                return CellularRootPolicyResult.FailClosed(
+                    CellularRootPolicyFailure.RouteLookupVerificationFailed,
+                )
+            }
 
-        // Generation transaction boundary:
-        // 1) guards exist; 2) stale lookup is revoked; 3) exact MISH flow policy exists.
-        // Only then may an admitted generation discover/install one fresh cellular lookup.
-        if (!ensureFailClosedGuards()) {
-            return CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.RuleMutationFailed)
-        }
-        if (!removeOwnedIpv4Lookups()) {
-            return CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.RuleMutationFailed)
-        }
-        when (val mangle = ensureManglePolicy()) {
-            ManglePolicyResult.Enforced -> Unit
-            is ManglePolicyResult.Failed -> return CellularRootPolicyResult.FailClosed(mangle.failure)
-        }
-        if (!verifyFailClosedBase()) {
-            return CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.MangleVerificationFailed)
-        }
-
-        if (!admitted) {
-            return CellularRootPolicyResult.FailClosed()
-        }
-
-        val iface = interfaceName?.takeIf(RootPolicySnapshot::isSafeInterfaceName)
-            ?: return CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.InvalidInterface)
-
-        val table = routeInspector.discoverValidatedIpv4Table(iface, IPV4_RULE_SHOW)
-            ?: return CellularRootPolicyResult.FailClosed(
-                CellularRootPolicyFailure.RouteTableDiscoveryFailed,
+            return CellularRootPolicyResult.Enforced
+        } finally {
+            val elapsedMs = ((System.nanoTime() - startedNanos) / 1_000_000L).coerceAtLeast(0L)
+            val window = executor.finishDiagnosticWindow()
+            val previous = reconcileDiagnostic
+            reconcileDiagnostic = previous.copy(
+                attempts = previous.attempts + 1,
+                totalPolicyCommands = previous.totalPolicyCommands + window.commands,
+                totalObservationCommands =
+                    previous.totalObservationCommands + window.observationCommands,
+                totalMutationCommands = previous.totalMutationCommands + window.mutationCommands,
+                totalDuplicateObservations =
+                    previous.totalDuplicateObservations + window.duplicateObservations,
+                lastElapsedMs = elapsedMs,
+                maxElapsedMs = maxOf(previous.maxElapsedMs, elapsedMs),
+                lastPolicyCommands = window.commands,
+                lastObservationCommands = window.observationCommands,
+                lastMutationCommands = window.mutationCommands,
+                lastDuplicateObservations = window.duplicateObservations,
+                lastIncompleteOrTimedOutCommands = window.incompleteOrTimedOutCommands,
+                lastMutationFailures = window.mutationFailures,
             )
-
-        if (!replaceIpv4Lookup(table)) {
-            removeOwnedIpv4Lookups()
-            return CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.LookupRuleCreationFailed)
         }
-
-        if (!routeInspector.verifyIpv4Path(iface, MARK_HEX)) {
-            removeOwnedIpv4Lookups()
-            return CellularRootPolicyResult.FailClosed(CellularRootPolicyFailure.RouteLookupVerificationFailed)
-        }
-
-        return CellularRootPolicyResult.Enforced
     }
+
+    @Synchronized
+    internal fun reconcileDiagnosticObservation(): CellularRootPolicyReconcileDiagnostic =
+        reconcileDiagnostic
 
     /**
      * Exact intentional teardown. Cleanup attempts every exact PRODUCT-owned delete before

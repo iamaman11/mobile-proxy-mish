@@ -10,6 +10,7 @@ import android.os.Process
 import android.os.SystemClock
 import android.util.Base64
 import com.mobileproxymish.app.cellular.CellularBoundaryFailure
+import com.mobileproxymish.app.cellular.CellularRootPolicyReconcileDiagnostic
 import com.mobileproxymish.app.cellular.CellularRuntimeSnapshot
 import com.mobileproxymish.ffi.CellularAdmissionState
 import com.mobileproxymish.ffi.ProductReadinessState
@@ -38,6 +39,7 @@ internal data class MishDiagnosticFactsV2(
     val cellularReconcileDrainScheduled: Boolean,
     val rootAuthorityObservation: String,
     val rootPolicyAuthorized: Boolean,
+    val rootReconcile: CellularRootPolicyReconcileDiagnostic,
     val proxyState: String,
     val proxyHealthy: Boolean,
     val proxyFailure: String?,
@@ -80,6 +82,30 @@ internal fun renderMishDiagnosticSnapshotV2(facts: MishDiagnosticFactsV2): Strin
         put("root", JSONObject().apply {
             put("authority_observation", facts.rootAuthorityObservation)
             put("policy_authorized", facts.rootPolicyAuthorized)
+            put("reconcile", JSONObject().apply {
+                put("attempts", facts.rootReconcile.attempts)
+                put("total_policy_commands", facts.rootReconcile.totalPolicyCommands)
+                put("total_observation_commands", facts.rootReconcile.totalObservationCommands)
+                put("total_mutation_commands", facts.rootReconcile.totalMutationCommands)
+                put(
+                    "total_duplicate_observations",
+                    facts.rootReconcile.totalDuplicateObservations,
+                )
+                put("last_elapsed_ms", facts.rootReconcile.lastElapsedMs)
+                put("max_elapsed_ms", facts.rootReconcile.maxElapsedMs)
+                put("last_policy_commands", facts.rootReconcile.lastPolicyCommands)
+                put("last_observation_commands", facts.rootReconcile.lastObservationCommands)
+                put("last_mutation_commands", facts.rootReconcile.lastMutationCommands)
+                put(
+                    "last_duplicate_observations",
+                    facts.rootReconcile.lastDuplicateObservations,
+                )
+                put(
+                    "last_incomplete_or_timed_out_commands",
+                    facts.rootReconcile.lastIncompleteOrTimedOutCommands,
+                )
+                put("last_mutation_failures", facts.rootReconcile.lastMutationFailures)
+            })
         })
         put("proxy", JSONObject().apply {
             put("state", facts.proxyState)
@@ -155,6 +181,7 @@ class MishDiagnosticsProvider : ContentProvider() {
 
         val cellularBefore = runtime.cellularSnapshot.value
         val cellularReconcileBefore = cellularGeneration.reconcileDiagnosticObservation()
+        val rootReconcileBefore = cellularGeneration.rootPolicyReconcileDiagnosticObservation()
         val proxyBefore = runtime.proxySnapshot.value
         val readinessBefore = runtime.readinessSnapshot.value
         val meshBefore = runtime.meshSnapshot.value
@@ -166,6 +193,7 @@ class MishDiagnosticsProvider : ContentProvider() {
 
         val cellularAfter = runtime.cellularSnapshot.value
         val cellularReconcileAfter = cellularGeneration.reconcileDiagnosticObservation()
+        val rootReconcileAfter = cellularGeneration.rootPolicyReconcileDiagnosticObservation()
         val proxyAfter = runtime.proxySnapshot.value
         val readinessAfter = runtime.readinessSnapshot.value
         val meshAfter = runtime.meshSnapshot.value
@@ -179,6 +207,7 @@ class MishDiagnosticsProvider : ContentProvider() {
             runtimeRunningBefore == runtimeRunningAfter &&
             cellularBefore == cellularAfter &&
             cellularReconcileBefore == cellularReconcileAfter &&
+            rootReconcileBefore == rootReconcileAfter &&
             proxyBefore == proxyAfter &&
             readinessBefore == readinessAfter &&
             meshBefore == meshAfter
@@ -226,6 +255,7 @@ class MishDiagnosticsProvider : ContentProvider() {
                 cellularReconcileDrainScheduled = cellularReconcileAfter.drainScheduled,
                 rootAuthorityObservation = rootAuthorityObservation,
                 rootPolicyAuthorized = readinessDiagnostic.rootPolicyVerified,
+                rootReconcile = rootReconcileAfter,
                 proxyState = proxyState,
                 proxyHealthy = readinessDiagnostic.proxyHealthy,
                 proxyFailure = proxyFailure,
