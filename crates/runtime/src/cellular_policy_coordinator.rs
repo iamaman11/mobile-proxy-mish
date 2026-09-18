@@ -216,7 +216,14 @@ impl CellularPolicyCoordinator {
             state.recovery_epoch = state.recovery_epoch.wrapping_add(1);
             state.recovery_pending = false;
         }
-        let cleanup = self.root_policy.cleanup_exact().await.is_ok();
+
+        let gate_closed = self.cellular.close_root_policy_gate().is_ok();
+        let quiesced = self
+            .cellular
+            .await_root_policy_quiesced_async(EFFECT_DRAIN_TIMEOUT)
+            .await
+            .unwrap_or(false);
+        let cleanup = gate_closed && quiesced && self.root_policy.cleanup_exact().await.is_ok();
         self.root_session.shutdown().await;
         cleanup
     }
