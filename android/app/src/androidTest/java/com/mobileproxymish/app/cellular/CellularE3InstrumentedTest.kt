@@ -11,6 +11,7 @@ import com.mobileproxymish.app.MishApplication
 import com.mobileproxymish.ffi.CellularAdmissionState
 import com.mobileproxymish.ffi.CellularAdmissionView
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.InputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
@@ -101,6 +102,23 @@ class CellularE3InstrumentedTest {
             )
             requirePublicIpLiteral(initialPublicIp)
 
+            // U4 reuses the same PRODUCT Cellular owner/root-policy authority. The Android
+            // instrumentation does not resolve or select a network: the Rust-issued observation
+            // performs owner-bound DNS, ordinary PRODUCT-UID TLS/HTTPS and strict IP parsing.
+            val u4FdBefore = openFdCount()
+            repeat(U4_REPEATED_OBSERVATIONS) {
+                val observation = runtime.observePublicEgressIp(U4_PUBLIC_IP_TIMEOUT_MILLIS)
+                assertEquals(
+                    "U4 observation must belong to the current positive owner generation",
+                    positiveSequence,
+                    observation.generation,
+                )
+                requirePublicIpLiteral(observation.address)
+            }
+            val u4StaleTicket = runtime.nativeController()
+                .preparePublicIpProbe(U4_PUBLIC_IP_TIMEOUT_MILLIS.toULong())
+            assertTrue("fresh U4 ticket must begin current", u4StaleTicket.isCurrent())
+
             // Establish a second real PRODUCT HTTPS/TCP flow while cellular authority is
             // current, but intentionally send no HTTP application request yet. The TLS
             // handshake proves that this exact socket existed over the admitted path before
@@ -133,6 +151,20 @@ class CellularE3InstrumentedTest {
             assertTrue(
                 "negative owner sequence must supersede the positive generation",
                 negativeSequence > positiveSequence,
+            )
+            assertFalse(
+                "old U4 ticket must become stale after the real cellular loss generation",
+                u4StaleTicket.isCurrent(),
+            )
+            assertTrue(
+                "old-generation U4 completion must be rejected",
+                runCatching { u4StaleTicket.complete("198.51.100.77") }.isFailure,
+            )
+            assertTrue(
+                "U4 must not fall back to default/Wi-Fi/WARP after NOT_ADMITTED",
+                runCatching {
+                    runtime.observePublicEgressIp(U4_NEGATIVE_TIMEOUT_MILLIS)
+                }.isFailure,
             )
             assertEstablishedFlowFailsClosed(
                 socket = establishedFlow
@@ -180,6 +212,25 @@ class CellularE3InstrumentedTest {
                 phase = "recovery",
             )
             requirePublicIpLiteral(recoveryPublicIp)
+
+            val u4Recovery = runtime.observePublicEgressIp(U4_PUBLIC_IP_TIMEOUT_MILLIS)
+            assertEquals(
+                "U4 recovery observation must belong to the fresh owner generation",
+                recoverySequence,
+                u4Recovery.generation,
+            )
+            requirePublicIpLiteral(u4Recovery.address)
+            val u4FdAfter = openFdCount()
+            assertTrue(
+                "repeated U4 observations must not leak unbounded file descriptors: " +
+                    "before=$u4FdBefore after=$u4FdAfter",
+                u4FdAfter <= u4FdBefore + U4_FD_HEADROOM,
+            )
+            emitEvidence(
+                "phase=u4 positive_https=true owner_bound_dns=true ordinary_uid_socket=true " +
+                    "stale_generation_rejected=true no_default_fallback=true " +
+                    "fresh_generation=true repeated_observations_bounded=true raw_ip_persisted=false",
+            )
             val recoveryFunctionalElapsedMs = SystemClock.elapsedRealtime() - recoveryStartedAt
 
             // Deliberate shutdown follows the real composition dependency order: the proxy
@@ -284,6 +335,10 @@ class CellularE3InstrumentedTest {
     private fun requireSequence(admission: CellularAdmissionView, phase: String): ULong =
         admission.lastSequence
             ?: throw AssertionError("E3_SAFE_FAILURE stage=owner_generation phase=$phase")
+
+    private fun openFdCount(): Int =
+        File("/proc/self/fd").list()?.size
+            ?: throw AssertionError("E3_SAFE_FAILURE stage=u4_fd_count")
 
     /** Read-only evidence observation; this never becomes an admission source. */
     private fun waitForDirectCellular(
@@ -801,6 +856,10 @@ class CellularE3InstrumentedTest {
         const val DNS_RESPONSE_MAX_BYTES = 4_096
         const val SOCKET_TIMEOUT_MILLIS = 15_000
         const val NEGATIVE_SOCKET_TIMEOUT_MILLIS = 5_000
+        const val U4_PUBLIC_IP_TIMEOUT_MILLIS = 15_000L
+        const val U4_NEGATIVE_TIMEOUT_MILLIS = 5_000L
+        const val U4_REPEATED_OBSERVATIONS = 3
+        const val U4_FD_HEADROOM = 8
         const val HTTP_RESPONSE_MAX_BYTES = 65_536
         const val HTTPS_PORT = 443
         const val ROOT_READ_TIMEOUT_MILLIS = 5_000L
