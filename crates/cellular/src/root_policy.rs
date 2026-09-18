@@ -144,6 +144,7 @@ pub enum MangleFamilyState {
     DetachedExact,
     DetachedMismatch,
     AttachedExact,
+    AttachedDuplicateExact,
     InvalidReferenced,
 }
 
@@ -372,11 +373,11 @@ impl RootPolicyContract {
         if definition_count != 1 {
             return Some(MangleFamilyState::InvalidReferenced);
         }
-        if jump_count > 1 {
+        if jump_count != 0 && actual != expected {
             return Some(MangleFamilyState::InvalidReferenced);
         }
-        if jump_count == 1 && actual != expected {
-            return Some(MangleFamilyState::InvalidReferenced);
+        if jump_count > 1 {
+            return Some(MangleFamilyState::AttachedDuplicateExact);
         }
         if jump_count == 1 {
             return Some(MangleFamilyState::AttachedExact);
@@ -489,6 +490,11 @@ impl RootPolicyContract {
         }
         let uid = tokens[5].parse::<u32>().ok()?;
         (uid != 0).then_some(uid)
+    }
+
+    pub fn output_jump_count(&self, lines: &[String]) -> usize {
+        let jump = self.output_jump();
+        lines.iter().filter(|line| *line == &jump).count()
     }
 
     pub fn output_jump(&self) -> String {
@@ -720,11 +726,6 @@ impl RootPolicyContract {
         let expected_mark = mark_spec(identity);
         token_after(&tokens, "fwmark") == Some(expected_mark.as_str())
             && tokens.iter().any(|token| *token == "unreachable")
-    }
-
-    fn output_jump_count(&self, lines: &[String]) -> usize {
-        let jump = self.output_jump();
-        lines.iter().filter(|line| *line == &jump).count()
     }
 
     fn ipv4_owned_chain_lines_for(&self, identity: PolicyIdentity) -> Vec<String> {
@@ -1220,6 +1221,28 @@ mod tests {
                 0x20_0000,
             ),
             MangleAuditResult::Collision
+        );
+    }
+
+    #[test]
+    fn duplicate_exact_owner_jump_is_repairable_not_foreign_structure() {
+        let mut contract = release(10123);
+        let snapshot = empty_snapshot();
+        let PolicyIdentityResolution::Selected(_) = contract.resolve_identity(&snapshot) else {
+            panic!("identity");
+        };
+        let mut lines = vec![format!("-N {}", contract.chain_name())];
+        lines.extend(contract.ipv4_owned_chain_lines().expect("chain"));
+        lines.push(contract.output_jump());
+        lines.push(contract.output_jump());
+        assert_eq!(
+            contract.mangle_family_state(&lines, true),
+            Some(MangleFamilyState::AttachedDuplicateExact)
+        );
+        lines.push(format!("-A {} -j DROP", contract.chain_name()));
+        assert_eq!(
+            contract.mangle_family_state(&lines, true),
+            Some(MangleFamilyState::InvalidReferenced)
         );
     }
 
