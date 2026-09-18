@@ -76,7 +76,7 @@ def main() -> None:
     require(transport_ffi, "active_sessions: snapshot.active_sessions() as u64", "Mesh owner active-session source")
     require(proxy_adapter, "runCatching { it.activeSessions() }", "Proxy owner session observation")
     require(mesh_adapter, "activeController.admissionSnapshot().activeSessions", "fresh Mesh owner session observation")
-    require(provider, "proxyActiveSessions = proxyDiagnostic.activeSessions", "Proxy session projection")
+    require(provider, "proxyActiveSessions = proxyDiagnosticAfter.activeSessions", "Proxy session projection")
     require(provider, "meshActiveSessions = meshGeneration.diagnosticActiveSessions()", "Mesh session projection")
     if provider.count('put("active_sessions"') != 2:
         raise SystemExit("diagnostics contract must publish exactly proxy + Mesh active_sessions")
