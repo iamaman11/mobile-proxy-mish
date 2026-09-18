@@ -27,6 +27,7 @@ sealed interface ProxyRuntimeSnapshot {
 /** Non-secret read-only observation of the current in-process native serving generation. */
 internal data class ProxyRuntimeDiagnosticObservation(
     val healthy: Boolean,
+    val servingGeneration: Long?,
     val credentialVersion: ULong?,
     val activeSessions: UInt?,
 )
@@ -87,6 +88,7 @@ class ProxyRuntimeSupervisor internal constructor(
         }
         ProxyRuntimeDiagnosticObservation(
             healthy = runtimeHealthy,
+            servingGeneration = activeRuntimeToken,
             credentialVersion = servingCredentialVersion,
             activeSessions = activeSessions,
         )
