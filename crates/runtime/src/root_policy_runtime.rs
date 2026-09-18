@@ -43,6 +43,21 @@ pub enum RootPolicyFailure {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RootPolicyCleanupFailure {
+    IdentityUnavailable,
+    IdentityCollision,
+    Ipv4LookupDeleteFailed,
+    Ipv4OutputJumpDeleteFailed,
+    Ipv4LegacySelectorDeleteFailed,
+    Ipv4ChainDeleteFailed,
+    Ipv4GuardDeleteFailed,
+    Ipv6OutputJumpDeleteFailed,
+    Ipv6LegacySelectorDeleteFailed,
+    Ipv6ChainDeleteFailed,
+    Ipv6GuardDeleteFailed,
+    FinalVerificationFailed,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RootPolicyResult {
     Enforced,
     FailClosed(Option<RootPolicyFailure>),
@@ -738,6 +753,225 @@ impl RootPolicyRuntime {
     }
 }
 
+impl RootPolicyRuntime {
+    pub async fn cleanup_exact(&self) -> Result<(), RootPolicyCleanupFailure> {
+        let mut state = self.state.lock().await;
+        let mut window = RootPolicyCommandWindow::default();
+
+        if state.contract.active_identity().is_none() {
+            let snapshot = self
+                .read_snapshot(&mut window)
+                .await
+                .map_err(|_| RootPolicyCleanupFailure::IdentityUnavailable)?;
+            match state.contract.resolve_identity(&snapshot) {
+                PolicyIdentityResolution::Selected(_) => {}
+                PolicyIdentityResolution::Collision => {
+                    if state.contract.has_any_product_signature(&snapshot) {
+                        return Err(RootPolicyCleanupFailure::IdentityCollision);
+                    }
+                    return Ok(());
+                }
+            }
+        }
+
+        self.remove_owned_ipv4_lookups(&state.contract, &mut window)
+            .await
+            .map_err(|_| RootPolicyCleanupFailure::Ipv4LookupDeleteFailed)?;
+
+        let ipv4_jump = self
+            .remove_all_output_jumps(&state.contract, IPTABLES, &mut window)
+            .await;
+        let ipv4_legacy = self
+            .remove_exact_rule(
+                &state.contract.legacy_selector_check(IPTABLES),
+                &state.contract.legacy_selector_delete(IPTABLES),
+                &mut window,
+            )
+            .await;
+        if ipv4_jump.is_ok() && ipv4_legacy.is_ok() {
+            self.remove_owned_chain(&state.contract, IPTABLES, true, &mut window)
+                .await
+                .map_err(|_| RootPolicyCleanupFailure::Ipv4ChainDeleteFailed)?;
+            self.remove_guard(&state.contract, true, &mut window)
+                .await
+                .map_err(|_| RootPolicyCleanupFailure::Ipv4GuardDeleteFailed)?;
+        }
+
+        let ipv6_jump = self
+            .remove_all_output_jumps(&state.contract, IP6TABLES, &mut window)
+            .await;
+        let ipv6_legacy = self
+            .remove_exact_rule(
+                &state.contract.legacy_selector_check(IP6TABLES),
+                &state.contract.legacy_selector_delete(IP6TABLES),
+                &mut window,
+            )
+            .await;
+        if ipv6_jump.is_ok() && ipv6_legacy.is_ok() {
+            self.remove_owned_chain(&state.contract, IP6TABLES, false, &mut window)
+                .await
+                .map_err(|_| RootPolicyCleanupFailure::Ipv6ChainDeleteFailed)?;
+            self.remove_guard(&state.contract, false, &mut window)
+                .await
+                .map_err(|_| RootPolicyCleanupFailure::Ipv6GuardDeleteFailed)?;
+        }
+
+        if ipv4_jump.is_err() {
+            return Err(RootPolicyCleanupFailure::Ipv4OutputJumpDeleteFailed);
+        }
+        if ipv4_legacy.is_err() {
+            return Err(RootPolicyCleanupFailure::Ipv4LegacySelectorDeleteFailed);
+        }
+        if ipv6_jump.is_err() {
+            return Err(RootPolicyCleanupFailure::Ipv6OutputJumpDeleteFailed);
+        }
+        if ipv6_legacy.is_err() {
+            return Err(RootPolicyCleanupFailure::Ipv6LegacySelectorDeleteFailed);
+        }
+
+        if self.probe_authority(&mut state).await != RootAuthorityStatus::Ready {
+            return Err(RootPolicyCleanupFailure::FinalVerificationFailed);
+        }
+        let final_snapshot = self
+            .read_snapshot(&mut window)
+            .await
+            .map_err(|_| RootPolicyCleanupFailure::FinalVerificationFailed)?;
+        if !state.contract.verify_exact_cleanup(&final_snapshot) {
+            return Err(RootPolicyCleanupFailure::FinalVerificationFailed);
+        }
+        state.contract.clear_active_identity();
+        Ok(())
+    }
+
+    async fn remove_all_output_jumps(
+        &self,
+        contract: &RootPolicyContract,
+        binary: &str,
+        window: &mut RootPolicyCommandWindow,
+    ) -> Result<(), RootPolicyFailure> {
+        let show = format!("{binary} -t mangle -S");
+        for _ in 0..MAX_RECONCILE_PASSES {
+            let lines = self
+                .io
+                .lines(&show, window)
+                .await
+                .map_err(map_effect_failure)?;
+            if contract.output_jump_count(&lines) == 0 {
+                return Ok(());
+            }
+            let delete = contract.output_jump_delete(binary);
+            match self.io.mutate(&delete, window).await {
+                Ok(()) => {}
+                Err(RootPolicyEffectFailure::MutationUncertain) => {
+                    let fresh = self
+                        .io
+                        .lines(&show, window)
+                        .await
+                        .map_err(map_effect_failure)?;
+                    if contract.output_jump_count(&fresh) == 0 {
+                        return Ok(());
+                    }
+                    return Err(RootPolicyFailure::MutationUncertain);
+                }
+                Err(error) => return Err(map_effect_failure(error)),
+            }
+        }
+        let final_lines = self
+            .io
+            .lines(&show, window)
+            .await
+            .map_err(map_effect_failure)?;
+        (contract.output_jump_count(&final_lines) == 0)
+            .then_some(())
+            .ok_or(RootPolicyFailure::MutationRejected)
+    }
+
+    async fn remove_owned_chain(
+        &self,
+        contract: &RootPolicyContract,
+        binary: &str,
+        ipv4: bool,
+        window: &mut RootPolicyCommandWindow,
+    ) -> Result<(), RootPolicyFailure> {
+        let show = format!("{binary} -t mangle -S");
+        let lines = self
+            .io
+            .lines(&show, window)
+            .await
+            .map_err(map_effect_failure)?;
+        let definition = format!("-N {}", contract.chain_name());
+        if !lines.iter().any(|line| line == &definition) {
+            return Ok(());
+        }
+        let expected = if ipv4 {
+            contract.ipv4_owned_chain_lines()
+        } else {
+            contract.ipv6_owned_chain_lines()
+        }
+        .ok_or(RootPolicyFailure::ExactCleanupFailed)?;
+        let prefix = format!("-A {} ", contract.chain_name());
+        let actual = lines
+            .iter()
+            .filter(|line| line.starts_with(&prefix))
+            .collect::<Vec<_>>();
+        if actual.iter().any(|line| !expected.contains(line)) {
+            return Err(RootPolicyFailure::ExactCleanupFailed);
+        }
+        let flush = contract.flush_chain_command(binary);
+        self.io
+            .mutate(&flush, window)
+            .await
+            .map_err(map_effect_failure)?;
+        let delete = contract.delete_chain_command(binary);
+        self.io
+            .mutate(&delete, window)
+            .await
+            .map_err(map_effect_failure)?;
+        let fresh = self
+            .io
+            .lines(&show, window)
+            .await
+            .map_err(map_effect_failure)?;
+        (!fresh.iter().any(|line| line.contains(contract.chain_name())))
+            .then_some(())
+            .ok_or(RootPolicyFailure::ExactCleanupFailed)
+    }
+
+    async fn remove_guard(
+        &self,
+        contract: &RootPolicyContract,
+        ipv4: bool,
+        window: &mut RootPolicyCommandWindow,
+    ) -> Result<(), RootPolicyFailure> {
+        let show = if ipv4 { IPV4_RULE_SHOW } else { IPV6_RULE_SHOW };
+        for _ in 0..MAX_RECONCILE_PASSES {
+            let rules = self
+                .io
+                .lines(show, window)
+                .await
+                .map_err(map_effect_failure)?;
+            let present = if ipv4 {
+                rules.iter().any(|line| contract.is_owned_ipv4_guard(line))
+            } else {
+                rules.iter().any(|line| contract.is_owned_ipv6_guard(line))
+            };
+            if !present {
+                return Ok(());
+            }
+            let delete = if ipv4 {
+                contract.ipv4_guard_delete()
+            } else {
+                contract.ipv6_guard_delete()
+            }
+            .ok_or(RootPolicyFailure::ExactCleanupFailed)?;
+            self.io
+                .mutate(&delete, window)
+                .await
+                .map_err(map_effect_failure)?;
+        }
+        Err(RootPolicyFailure::ExactCleanupFailed)
+    }
+}
 fn map_effect_failure(failure: RootPolicyEffectFailure) -> RootPolicyFailure {
     match failure {
         RootPolicyEffectFailure::ObservationUnavailable => {
