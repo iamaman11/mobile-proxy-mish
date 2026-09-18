@@ -30,15 +30,27 @@ pub fn execute_readiness_probe(
     username: String,
     password: String,
 ) -> Result<ProbeOutcome, ReadinessNetworkError> {
+    executor
+        .block_on(execute_readiness_probe_async(username, password))
+        .map_err(map_execution_error)?
+}
+
+/// Native async seam used by the process-generation readiness coordinator.
+///
+/// This deliberately does not accept a RuntimeExecutor: callers already running on the shared
+/// Tokio runtime must await the effect directly rather than nesting block_on or constructing a
+/// second runtime.
+pub(crate) async fn execute_readiness_probe_async(
+    username: String,
+    password: String,
+) -> Result<ProbeOutcome, ReadinessNetworkError> {
     let target =
         ReadinessProbeTarget::deployment().map_err(|_| ReadinessNetworkError::InvalidTarget)?;
     let credentials = ProxyCredentialMaterial::new(username, password)
         .map_err(|_| ReadinessNetworkError::InvalidCredentials)?;
     let tls = ProductTlsClient::new().map_err(|_| ReadinessNetworkError::TlsConfiguration)?;
 
-    executor
-        .block_on(execute_probe(&target, &credentials, &tls))
-        .map_err(map_execution_error)
+    Ok(execute_probe(&target, &credentials, &tls).await)
 }
 
 async fn execute_probe(
