@@ -187,6 +187,10 @@ impl PublicIpProbeTicket {
         self.inner.path().to_owned()
     }
 
+    pub fn response_body_max_bytes(&self) -> u64 {
+        u64::try_from(self.inner.response_body_max_bytes()).unwrap_or(u64::MAX)
+    }
+
     pub fn numeric_addresses(&self) -> Vec<String> {
         self.inner.numeric_addresses()
     }
