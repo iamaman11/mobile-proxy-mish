@@ -74,6 +74,12 @@ internal data class CellularReconcileDiagnostic(
     val drainScheduled: Boolean,
 )
 
+internal data class CellularRootRecoveryDiagnostic(
+    val pending: Boolean,
+    val attemptsSinceReset: Int,
+    val nextDelayMs: Long,
+)
+
 internal class LatestCellularReconcileQueue<T> {
     private var latest: T? = null
     private var drainScheduled = false
@@ -348,6 +354,15 @@ class CellularRuntimeBridge(
 
     internal fun rootPolicyReconcileDiagnosticObservation(): CellularRootPolicyReconcileDiagnostic =
         rootPolicy.reconcileDiagnosticObservation()
+
+    internal fun rootRecoveryDiagnosticObservation(): CellularRootRecoveryDiagnostic {
+        val backoff = rootRecoveryBackoff.diagnostic()
+        return CellularRootRecoveryDiagnostic(
+            pending = rootRecoveryPending.get(),
+            attemptsSinceReset = backoff.attemptsSinceReset,
+            nextDelayMs = backoff.nextDelayMs,
+        )
+    }
 
     private fun reconcileOwnerGeneration(
         activeController: CellularController,
