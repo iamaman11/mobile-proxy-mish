@@ -507,20 +507,34 @@ def main() -> None:
     readiness_ffi = "crates/android-ffi/src/readiness_ffi.rs"
     require(
         readiness_ffi,
+        "pub enum ProductReadinessState",
+        "Android readiness FFI must expose only the terminal presentation vocabulary",
+    )
+    for obsolete in (
         "ProductReadinessController",
-        "Android readiness must delegate freshness/projection decisions to Rust",
+        "ProductReadinessFactsView",
+        "ProbeBindingView",
+        "ProbeTicketView",
+        "EgressProbeObservationView",
+        "ReadinessProbeTargetView",
+        "readiness_probe_refresh_delay_ms",
+        "readiness_probe_target",
+        "proxy_http_connect_port",
+        "egress_probe_budget_ms",
+    ):
+        forbid(
+            readiness_ffi,
+            obsolete,
+            "readiness control/freshness/target semantics must not return to Android FFI",
+        )
+    forbid_exists(
+        "crates/android-ffi/src/readiness_eligibility_ffi.rs",
+        "readiness eligibility is internal to the native runtime",
     )
-    forbid(readiness_ffi, "private_bridge", "readiness FFI must expose native facts only")
-    readiness_eligibility_ffi = "crates/android-ffi/src/readiness_eligibility_ffi.rs"
-    require(
-        readiness_eligibility_ffi,
-        "probe_eligibility(input)",
-        "readiness eligibility FFI must delegate to the Rust predicate",
-    )
-    require(
+    forbid(
         "crates/android-ffi/src/entry.rs",
-        "mod readiness_eligibility_ffi;",
-        "readiness eligibility UniFFI boundary must remain generated",
+        "readiness_eligibility_ffi",
+        "obsolete readiness eligibility FFI module must stay deleted",
     )
     readiness_runtime = "crates/runtime/src/readiness_runtime.rs"
     for required in (
@@ -560,6 +574,7 @@ def main() -> None:
         "tls.connect(stream, target.hostname(), remaining)",
         "DEFAULT_EGRESS_PROBE_BUDGET",
         "MAX_CONNECT_HEADER_BYTES",
+        "HTTP_CONNECT_PORT",
     ):
         require_product(
             readiness_network,
@@ -714,12 +729,6 @@ def main() -> None:
         "pub fn proxy_listener_ports",
         "Transport FFI must not duplicate the Proxy Serving listener projection",
     )
-    require(
-        readiness_ffi,
-        "HTTP_CONNECT_PORT",
-        "readiness probe HTTP port must project Proxy Serving desired state",
-    )
-
     proxy_android = "android/app/src/main/java/com/mobileproxymish/app/ProxyRuntimeSupervisor.kt"
     for obsolete in ("privateBridge", "childAlive", "RuntimeProcess"):
         forbid(proxy_android, obsolete, "Android proxy supervisor must describe native serving only")
