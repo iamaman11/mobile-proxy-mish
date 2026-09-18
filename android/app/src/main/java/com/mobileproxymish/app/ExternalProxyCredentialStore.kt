@@ -31,13 +31,13 @@ internal data class ExternalProxyCredentialReadinessSnapshot(
  */
 internal class ExternalProxyCredentialStore(
     context: Context,
-) : ProxyCredentialProvider {
+) {
     private val metadata = CredentialMetadataStore(context.applicationContext)
     private val rootEffect = AndroidKeystoreRoot()
     private val materializer = CredentialMaterializer(rootEffect)
 
     @Synchronized
-    override fun currentCredential(): ProxyRuntimeCredentialSnapshot? = runCatching {
+    fun currentCredential(): ProxyRuntimeCredentialSnapshot? = runCatching {
         val current = materializeCurrent()
         ProxyRuntimeCredentialSnapshot(
             version = current.version,
