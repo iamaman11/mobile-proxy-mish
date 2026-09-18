@@ -393,7 +393,7 @@ mod tests {
 
         execution
             .start(
-                &runtime,
+                runtime.handle(),
                 Ipv4Addr::LOCALHOST,
                 &[MeshPortForward::new(ingress_port, backend_port)],
                 Arc::clone(&sessions),
@@ -464,7 +464,7 @@ mod tests {
 
         execution
             .start(
-                &runtime,
+                runtime.handle(),
                 Ipv4Addr::LOCALHOST,
                 &[MeshPortForward::new(ingress_port, backend_port)],
                 Arc::clone(&sessions),
@@ -538,7 +538,7 @@ mod tests {
 
         execution
             .start(
-                &runtime,
+                runtime.handle(),
                 Ipv4Addr::LOCALHOST,
                 &[MeshPortForward::new(ingress_port, backend_port)],
                 Arc::clone(&sessions),
@@ -570,7 +570,7 @@ mod tests {
 
         execution
             .start(
-                &runtime,
+                runtime.handle(),
                 Ipv4Addr::LOCALHOST,
                 &[MeshPortForward::new(ingress_port, backend_port)],
                 Arc::clone(&sessions),
@@ -592,7 +592,7 @@ mod tests {
         let next_sessions = MeshSessionOwner::product_generation();
         execution
             .start(
-                &runtime,
+                runtime.handle(),
                 Ipv4Addr::LOCALHOST,
                 &[MeshPortForward::new(ingress_port, backend_port)],
                 Arc::clone(&next_sessions),
