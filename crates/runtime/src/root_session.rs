@@ -151,13 +151,30 @@ impl RootShellSession {
                     }
                 };
                 if count == 0 {
+                    let exit_code = self
+                        .child
+                        .try_wait()
+                        .ok()
+                        .flatten()
+                        .and_then(|status| status.code());
+                    let authoritative_denial = exit_code.filter(|code| *code != 0);
                     return RootCommandOutcome {
-                        result: RootCommandResult {
-                            exit_code: -1,
-                            stdout: String::new(),
-                            timed_out: false,
-                            output_complete: false,
-                            session_generation: generation,
+                        result: if let Some(exit_code) = authoritative_denial {
+                            RootCommandResult {
+                                exit_code,
+                                stdout: captured,
+                                timed_out: false,
+                                output_complete,
+                                session_generation: generation,
+                            }
+                        } else {
+                            RootCommandResult {
+                                exit_code: -1,
+                                stdout: String::new(),
+                                timed_out: false,
+                                output_complete: false,
+                                session_generation: generation,
+                            }
                         },
                         transport_healthy: false,
                     };
@@ -336,6 +353,19 @@ mod tests {
             RootCommand::mutation("true").expect("mutation").kind(),
             RootCommandKind::Mutation
         );
+    }
+
+    #[test]
+    fn nonzero_pre_marker_exit_remains_authoritative_denial_data() {
+        let result = RootCommandResult {
+            exit_code: 1,
+            stdout: "permission denied\n".to_owned(),
+            timed_out: false,
+            output_complete: true,
+            session_generation: 1,
+        };
+        assert!(!result.authoritative_success());
+        assert!(result.exit_code > 0);
     }
 
     #[test]
