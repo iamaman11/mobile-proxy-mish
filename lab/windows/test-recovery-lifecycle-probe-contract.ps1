@@ -50,6 +50,18 @@ foreach ($required in @(
     'no_default_fallback=true',
     'fresh_generation=true',
     'cleanup_verified=true',
+    'Get-MishDnsLifetimeObservation',
+    '$dnsLifetimeEvidence.before_e3 = $preDnsObservation',
+    '$postE3Snapshot = Read-MishSnapshot',
+    '$dnsLifetimeEvidence.after_e3_before_restart = $postE3DnsObservation',
+    '$dnsLifetimeEvidence.same_process = $true',
+    'LAB_DNS_LIFETIME_BASELINE_INVALID',
+    'LAB_DNS_LIFETIME_POST_E3_INVALID',
+    'LAB_DNS_LIFETIME_PROCESS_CHANGED',
+    'completed_after_owner_change = [int64]$dns.completed_after_owner_change',
+    'discarded_after_deadline = [int64]$dns.discarded_after_deadline',
+    'discarded_stale = [int64]$dns.discarded_stale',
+    'dns_lifetime = $dnsLifetimeEvidence',
     'start-device-app.ps1',
     'collect-device-diagnostic.ps1',
     "`$externalMeshBlocked = `$postClass -ceq 'LAB_WINDOWS_SANDBOX_OUTBOUND_BLOCKED'",
@@ -65,6 +77,18 @@ foreach ($required in @(
     if (-not $source.Contains($required)) {
         throw "Recovery/lifecycle probe lost required exact-candidate/recovery evidence: $required"
     }
+}
+
+$postE3SnapshotIndex = $source.IndexOf('$postE3Snapshot = Read-MishSnapshot', [StringComparison]::Ordinal)
+$explicitRestartIndex = $source.IndexOf('& (Join-Path $PSScriptRoot ''start-device-app.ps1'')', [StringComparison]::Ordinal)
+if ($postE3SnapshotIndex -lt 0 -or $explicitRestartIndex -lt 0 -or $postE3SnapshotIndex -ge $explicitRestartIndex) {
+    throw 'Recovery/lifecycle control must capture same-process DNS lifetime facts before the explicit PRODUCT restart.'
+}
+
+$preDnsIndex = $source.IndexOf('$dnsLifetimeEvidence.before_e3 = $preDnsObservation', [StringComparison]::Ordinal)
+$postDnsIndex = $source.IndexOf('$dnsLifetimeEvidence.after_e3_before_restart = $postE3DnsObservation', [StringComparison]::Ordinal)
+if ($preDnsIndex -lt 0 -or $postDnsIndex -le $preDnsIndex) {
+    throw 'Recovery/lifecycle control must preserve ordered before-E3 and after-E3 DNS observations.'
 }
 
 $installerSource = Get-Content -Raw -LiteralPath $installerPath
