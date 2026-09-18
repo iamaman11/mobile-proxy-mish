@@ -334,16 +334,10 @@ mod tests {
     #[test]
     fn stale_completion_is_rejected_even_with_valid_ip_bytes() {
         let owner = admitted_owner();
-        let probe = PreparedPublicIpProbe::prepare(
-            Arc::clone(&owner),
-            resolver(),
-            Duration::from_secs(2),
-        )
-        .expect("probe");
-        owner
-            .lock()
-            .expect("owner")
-            .lost(sequence(2), handle(42));
+        let probe =
+            PreparedPublicIpProbe::prepare(Arc::clone(&owner), resolver(), Duration::from_secs(2))
+                .expect("probe");
+        owner.lock().expect("owner").lost(sequence(2), handle(42));
 
         assert_eq!(
             probe.complete("198.51.100.42"),
@@ -357,12 +351,9 @@ mod tests {
 
     #[test]
     fn absolute_deadline_rejects_late_completion() {
-        let probe = PreparedPublicIpProbe::prepare(
-            admitted_owner(),
-            resolver(),
-            Duration::from_millis(1),
-        )
-        .expect("probe");
+        let probe =
+            PreparedPublicIpProbe::prepare(admitted_owner(), resolver(), Duration::from_millis(1))
+                .expect("probe");
         thread::sleep(Duration::from_millis(5));
         assert_eq!(
             probe.complete("198.51.100.42"),
