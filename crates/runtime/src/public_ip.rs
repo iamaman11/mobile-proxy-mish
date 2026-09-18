@@ -149,8 +149,8 @@ impl PreparedPublicIpProbe {
         if raw_body.len() > PUBLIC_IP_RESPONSE_BODY_MAX_BYTES {
             return Err(PublicIpProbeFailure::ResponseTooLarge);
         }
-        let value = raw_body.trim_matches(char::is_ascii_whitespace);
-        if value.is_empty() || value.chars().any(char::is_ascii_whitespace) {
+        let value = raw_body.trim_matches(|value: char| value.is_ascii_whitespace());
+        if value.is_empty() || value.chars().any(|character| character.is_ascii_whitespace()) {
             return Err(PublicIpProbeFailure::InvalidResponse);
         }
         let address = value
