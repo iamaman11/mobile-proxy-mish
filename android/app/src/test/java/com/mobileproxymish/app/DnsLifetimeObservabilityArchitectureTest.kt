@@ -34,7 +34,7 @@ class DnsLifetimeObservabilityArchitectureTest {
         for (forbidden in listOf("newSingleThreadExecutor", "newFixedThreadPool", "AtomicInteger", "AtomicLong")) {
             assertFalse(
                 "DNS observability must not introduce Android scheduling/accounting: $forbidden",
-                bridge.substringAfter("dnsDiagnosticObservation()").substringBefore("fun start()")
+                bridge.substringAfter("internal fun dnsDiagnosticObservation").substringBefore("fun start()")
                     .contains(forbidden),
             )
         }
