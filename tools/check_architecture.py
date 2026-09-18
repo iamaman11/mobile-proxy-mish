@@ -826,8 +826,8 @@ def main() -> None:
         "observe_mesh_vpn_absent",
         "observe_mesh_unique_vpn",
         "observe_mesh_vpn_ambiguous",
-        "runtime.active_generation()",
-        "runtime.current_generation()",
+        ".active_generation()",
+        ".current_generation()",
     ):
         require_product(
             product_ffi,
