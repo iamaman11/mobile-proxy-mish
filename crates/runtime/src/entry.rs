@@ -28,6 +28,9 @@ mod public_ip;
 pub use public_ip::*;
 
 mod mesh_serving;
+
+mod mesh_composition;
+pub use mesh_composition::*;
 pub use mesh_serving::*;
 
 #[cfg(test)]
