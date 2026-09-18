@@ -61,7 +61,7 @@ impl CellularRuntimeCoordinator {
     ) -> Result<RuntimePublicIpProbe, PublicIpProbeFailure> {
         validate_operation_timeout(operation_timeout)
             .map_err(|_| PublicIpProbeFailure::DeadlineExceeded)?;
-        let _permit = self
+        let permit = self
             .root_policy_effect_gate
             .acquire()
             .ok_or(PublicIpProbeFailure::RootPolicyUnavailable)?;
@@ -73,6 +73,7 @@ impl CellularRuntimeCoordinator {
         Ok(RuntimePublicIpProbe {
             inner,
             effect_gate: Arc::clone(&self.root_policy_effect_gate),
+            permit: Mutex::new(Some(permit)),
         })
     }
 
@@ -274,6 +275,7 @@ impl Drop for RootPolicyEffectPermit {
 pub struct RuntimePublicIpProbe {
     inner: PreparedPublicIpProbe,
     effect_gate: Arc<RootPolicyEffectGate>,
+    permit: Mutex<Option<RootPolicyEffectPermit>>,
 }
 
 impl RuntimePublicIpProbe {
@@ -314,16 +316,28 @@ impl RuntimePublicIpProbe {
         &self,
         raw_body: &str,
     ) -> Result<PublicEgressIpObservation, PublicIpProbeFailure> {
-        self.ensure_current_policy()?;
-        let observation = self.inner.complete(raw_body)?;
-        self.ensure_current_policy()?;
-        Ok(observation)
+        let result = (|| {
+            self.ensure_current_policy()?;
+            let observation = self.inner.complete(raw_body)?;
+            self.ensure_current_policy()?;
+            Ok(observation)
+        })();
+        self.release_permit();
+        result
     }
 
     pub fn effect_failed(&self, effect: PublicIpProbeEffectFailure) -> PublicIpProbeFailure {
-        match self.ensure_current_policy() {
+        let failure = match self.ensure_current_policy() {
             Ok(()) => self.inner.effect_failed(effect),
             Err(failure) => failure,
+        };
+        self.release_permit();
+        failure
+    }
+
+    fn release_permit(&self) {
+        if let Ok(mut permit) = self.permit.lock() {
+            permit.take();
         }
     }
 
@@ -423,6 +437,46 @@ mod tests {
             !runtime
                 .authorize_root_policy(sequence(1), handle(42))
                 .expect("stale")
+        );
+    }
+
+    #[test]
+    fn public_ip_ticket_holds_root_policy_quiescence_until_terminal_completion() {
+        let runtime = coordinator();
+        runtime
+            .observe_network(NetworkObservation::new(
+                sequence(1),
+                handle(42),
+                true,
+                true,
+                true,
+                true,
+            ))
+            .expect("observe");
+        assert!(
+            runtime
+                .authorize_root_policy(sequence(1), handle(42))
+                .expect("authorize")
+        );
+
+        let probe = runtime
+            .prepare_public_ip_probe(Duration::from_secs(2))
+            .expect("probe");
+        runtime.close_root_policy_gate().expect("close gate");
+        assert!(
+            !runtime
+                .await_root_policy_quiesced(Duration::from_millis(1))
+                .expect("quiescence")
+        );
+
+        assert_eq!(
+            probe.complete("198.51.100.42"),
+            Err(PublicIpProbeFailure::RootPolicyUnavailable)
+        );
+        assert!(
+            runtime
+                .await_root_policy_quiesced(Duration::from_millis(50))
+                .expect("quiescence after terminal completion")
         );
     }
 
