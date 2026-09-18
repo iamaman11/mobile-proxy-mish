@@ -23,7 +23,7 @@ use mish_runtime::{
     RootAuthorityStatus as OwnerRootAuthorityStatus,
     RootPolicyFailure as OwnerRootPolicyFailure,
     ReadinessDiagnosticSnapshot, ReadinessObserver,
-    ReadinessRuntimeError, RootPolicyReconcileDiagnostic,
+    RootPolicyReconcileDiagnostic,
     RootPolicyResult as OwnerRootPolicyResult, RootRecoveryDiagnostic, RuntimeExecutionError,
 };
 use mish_transport::MeshVpnObservation;
@@ -183,11 +183,10 @@ pub trait NativeCellularPolicyObserver: Send + Sync {
     fn on_cellular_policy_publication(&self, publication: CellularPolicyPublicationView);
 }
 
-/// One native PRODUCT process generation.
+/// Stable opaque FFI handle over the Rust-owned PRODUCT process runtime.
 ///
-/// This is the only FFI composition handle that owns Tokio execution, Cellular admission,
-/// persistent root authority and root-policy reconciliation. Kotlin may supply Android observations
-/// and consume typed projections, but cannot independently authorize or recover root policy.
+/// ProductRuntimeCoordinator owns Tokio execution, lifecycle/generation replacement and native
+/// composition. Kotlin supplies only Android platform facts/effects and consumes typed projections.
 #[derive(uniffi::Object)]
 pub struct NativeProductRuntime {
     runtime: Arc<ProductRuntimeCoordinator>,
@@ -601,10 +600,6 @@ fn map_readiness_diagnostic(snapshot: ReadinessDiagnosticSnapshot) -> ReadinessD
         probe_in_flight: snapshot.probe_in_flight,
         refresh_pending: snapshot.refresh_pending,
     }
-}
-
-fn map_readiness_runtime_to_mesh(_error: ReadinessRuntimeError) -> MeshTransportBoundaryError {
-    MeshTransportBoundaryError::OwnerUnavailable
 }
 
 fn map_policy_publication(
