@@ -78,6 +78,28 @@ class CellularRootPolicyTest {
     }
 
     @Test
+    fun steadyMangleVerificationDoesNotRereadUnchangedFamilyState() {
+        val process = FakePolicyProcess()
+        val policy = policy(process)
+
+        assertEquals(
+            CellularRootPolicyResult.Enforced,
+            policy.reconcile(admitted = true, interfaceName = "rmnet_data0"),
+        )
+        process.commands.clear()
+
+        assertEquals(
+            CellularRootPolicyResult.Enforced,
+            policy.reconcile(admitted = true, interfaceName = "rmnet_data0"),
+        )
+
+        // Per family: identity resolution + ensureMangleFamily initial snapshot +
+        // one shared final verification snapshot. There is no fourth no-op reread.
+        assertEquals(3, process.commands.count { it == "iptables -t mangle -S" })
+        assertEquals(3, process.commands.count { it == "ip6tables -t mangle -S" })
+    }
+
+    @Test
     fun ownerLossRemovesLookupButRetainsFlowMarkAndGuard() {
         val process = FakePolicyProcess()
         val policy = policy(process)

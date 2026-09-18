@@ -498,6 +498,10 @@ class CellularRootPolicy internal constructor(
         var actualChainLines = snapshot.filter { it.startsWith("-A $MISH_CHAIN ") }
         var jumpCount = snapshot.count { it == outputJump }
 
+        // The fresh initial snapshot is already sufficient when this family needs no mutation.
+        // Only mutation paths require the final post-mutation verification read below.
+        if (chainExists && actualChainLines == expectedChainLines && jumpCount == 1) return null
+
         if (!chainExists) {
             if (jumpCount != 0) return CellularRootPolicyFailure.MangleVerificationFailed
             if (!commandSucceeded("$binary -t mangle -N $MISH_CHAIN")) {
