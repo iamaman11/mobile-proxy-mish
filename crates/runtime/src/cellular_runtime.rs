@@ -4,7 +4,10 @@
 //! effect gate. Proxy Serving consumes the same owner directly through a narrow connector; there is
 //! no private loopback bridge, duplicate cellular owner, DNS fallback or proxy-specific root path.
 
-use crate::{CellularDnsResolver, CellularOutboundRuntimeConnector};
+use crate::{
+    CellularDnsDiagnosticSnapshot, CellularDnsResolver, CellularOutboundRuntimeConnector,
+    cellular_dns_diagnostic_snapshot,
+};
 use mish_cellular::{
     CellularAdmissionSnapshot, CellularAdmissionState, CellularEgress, NetworkHandle,
     NetworkObservation, ObservationSequence,
@@ -40,6 +43,10 @@ impl CellularRuntimeCoordinator {
 
     pub fn admission_snapshot(&self) -> Result<CellularAdmissionSnapshot, CellularRuntimeError> {
         Ok(self.owner()?.admission())
+    }
+
+    pub fn dns_diagnostic_snapshot(&self) -> CellularDnsDiagnosticSnapshot {
+        cellular_dns_diagnostic_snapshot()
     }
 
     pub fn observe_network(
