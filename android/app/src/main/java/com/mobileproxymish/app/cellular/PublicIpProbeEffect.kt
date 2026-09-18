@@ -77,7 +77,8 @@ internal class PublicIpProbeEffect(
             )
             raw.soTimeout = remainingTimeoutInt(ticket)
 
-            val tls = SSLSocketFactory.getDefault().createSocket(raw, host, port, true) as SSLSocket
+            val tlsFactory = SSLSocketFactory.getDefault() as SSLSocketFactory
+            val tls = tlsFactory.createSocket(raw, host, port, true) as SSLSocket
             tls.soTimeout = remainingTimeoutInt(ticket)
             tls.startHandshake()
             if (!HttpsURLConnection.getDefaultHostnameVerifier().verify(host, tls.session)) {
