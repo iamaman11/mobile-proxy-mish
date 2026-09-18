@@ -283,6 +283,47 @@ try {
         throw 'A baseline PRODUCT failure must still outrank measurement-only DNS evidence.'
     }
 
+    $u4PassPath = Join-Path $root 'public-ip-u4-pass.json'
+    [ordered]@{
+        schema = 'mish.lab.public-ip-u4/v1'
+        acceptance_result = 'PASS'
+        classification = 'U4_PUBLIC_IP_PASS'
+        positive_https_observation = $true
+        owner_bound_dns = $true
+        ordinary_product_uid_socket = $true
+        stale_generation_rejected = $true
+        no_default_fallback = $true
+        fresh_generation_observed = $true
+        repeated_observations_bounded = $true
+        raw_public_ip_persisted = $false
+    } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 -LiteralPath $u4PassPath
+    $u4Pass = & $reportScript -Mode full -PrNumber 264 -SourceSha ('8' * 40) -ControlSha $controlSha -DiagnosticEvidencePath $passDiagnostic -RequestedProbe public_ip_u4 -TargetedEvidencePath $u4PassPath -OutputPath (Join-Path $root 'public-ip-u4-pass-report.json') | Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$u4Pass.cycle_result -cne 'PASS' -or
+        [string]$u4Pass.classification -cne 'U4_PUBLIC_IP_PASS' -or
+        [string]$u4Pass.acceptance_scope -cne 'FULL_BASELINE_PLUS_U4_PUBLIC_IP' -or
+        [string]$u4Pass.targeted_probe.acceptance_result -cne 'PASS' -or
+        [string]$u4Pass.exact_candidate_acceptance -cne 'PASS'
+    ) {
+        throw 'U4 public-IP PASS must accept the exact candidate only with baseline + targeted evidence.'
+    }
+
+    $u4FailPath = Join-Path $root 'public-ip-u4-fail.json'
+    [ordered]@{
+        schema = 'mish.lab.public-ip-u4/v1'
+        acceptance_result = 'FAIL'
+        classification = 'U4_PUBLIC_IP_FAILED'
+        raw_public_ip_persisted = $false
+    } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 -LiteralPath $u4FailPath
+    $u4Fail = & $reportScript -Mode full -PrNumber 264 -SourceSha ('9' * 40) -ControlSha $controlSha -DiagnosticEvidencePath $passDiagnostic -RequestedProbe public_ip_u4 -TargetedEvidencePath $u4FailPath -OutputPath (Join-Path $root 'public-ip-u4-fail-report.json') | Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$u4Fail.cycle_result -cne 'PRODUCT_FAIL' -or
+        [string]$u4Fail.classification -cne 'U4_PUBLIC_IP_FAILED' -or
+        [string]$u4Fail.exact_candidate_acceptance -cne 'FAIL'
+    ) {
+        throw 'A collected U4 public-IP failure must reject the exact PRODUCT candidate.'
+    }
+
     $capacityPassPath = Join-Path $root 'capacity-pass.json'
     [ordered]@{ schema = 'mish.lab.capacity-resources/v1'; acceptance_result = 'PASS'; classification = 'U2_CAPACITY_AND_RESOURCE_MEASUREMENTS_PASS' } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $capacityPassPath
     $capacityPass = & $reportScript -Mode full -PrNumber 208 -SourceSha ('1' * 40) -ControlSha $controlSha -DiagnosticEvidencePath $passDiagnostic -RequestedProbe capacity_resources -TargetedEvidencePath $capacityPassPath -OutputPath (Join-Path $root 'capacity-pass-report.json') | Select-Object -Last 1 | ConvertFrom-Json
