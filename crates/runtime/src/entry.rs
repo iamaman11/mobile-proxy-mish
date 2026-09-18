@@ -50,4 +50,7 @@ mod proxy_recovery;
 pub use proxy_recovery::*;
 
 mod proxy_runtime;
+
+mod proxy_coordinator;
+pub use proxy_coordinator::*;
 pub use proxy_runtime::*;
