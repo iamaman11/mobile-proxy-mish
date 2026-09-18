@@ -197,12 +197,12 @@ class CellularRuntimeBridge(
         try {
             observer.start()
             if (closed.get()) observer.close()
-        } catch (_: LinkageError) {
+        } catch (error: LinkageError) {
             started.set(false)
             mutableSnapshot.value = CellularRuntimeSnapshot.BoundaryUnavailable(
                 CellularBoundaryFailure.NativeLibraryUnavailable,
             )
-            throw
+            throw error
         } catch (error: Exception) {
             started.set(false)
             mutableSnapshot.value = CellularRuntimeSnapshot.BoundaryUnavailable(
