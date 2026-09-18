@@ -102,8 +102,7 @@ pub type ProxyServingTerminalObserver = Arc<dyn Fn(ProxyServingFailure) + Send +
 
 struct ProxyServingOwnerStateInner {
     lifecycle: ProxyServingLifecycle,
-    observer: Option<ProxyServingTerminalObserver>,
-    notified: bool,
+    observers: Vec<ProxyServingTerminalObserver>,
 }
 
 struct ProxyServingOwnerState {
@@ -120,31 +119,25 @@ impl ProxyServingOwnerState {
             shutdown,
             inner: Mutex::new(ProxyServingOwnerStateInner {
                 lifecycle,
-                observer: None,
-                notified: false,
+                observers: Vec::new(),
             }),
         }
     }
 
     fn set_observer(&self, observer: ProxyServingTerminalObserver) {
-        let notification = {
+        let immediate = {
             let mut state = self
                 .inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.observer = Some(observer);
-            if state.notified {
-                None
-            } else if let (Some(failure), Some(observer)) =
-                (state.lifecycle.snapshot().failure(), state.observer.clone())
-            {
-                state.notified = true;
+            if let Some(failure) = state.lifecycle.snapshot().failure() {
                 Some((observer, failure))
             } else {
+                state.observers.push(observer);
                 None
             }
         };
-        notify_terminal_observer(notification);
+        notify_terminal_observer(immediate);
     }
 
     fn mark_running(&self) -> bool {
@@ -164,28 +157,29 @@ impl ProxyServingOwnerState {
     }
 
     fn publish_failure(&self, failure: ProxyServingFailure) {
-        let notification = {
+        let notifications = {
             let mut state = self
                 .inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if state.lifecycle.snapshot().failure().is_none() {
-                state.lifecycle.mark_failed(failure);
-            }
-            if state.notified {
-                None
-            } else if let (Some(failure), Some(observer)) =
-                (state.lifecycle.snapshot().failure(), state.observer.clone())
-            {
-                state.notified = true;
-                Some((observer, failure))
+            if state.lifecycle.snapshot().failure().is_some() {
+                Vec::new()
             } else {
-                None
+                state.lifecycle.mark_failed(failure);
+                let failure = state.lifecycle.snapshot().failure().unwrap_or(failure);
+                state
+                    .observers
+                    .iter()
+                    .cloned()
+                    .map(|observer| (observer, failure))
+                    .collect::<Vec<_>>()
             }
         };
 
         let _ = self.shutdown.send(true);
-        notify_terminal_observer(notification);
+        for notification in notifications {
+            notify_terminal_observer(Some(notification));
+        }
     }
 
     fn snapshot(&self) -> ProxyServingSnapshot {
@@ -649,6 +643,33 @@ mod tests {
             ProxyServingRuntimeError::ShutdownTimedOut.lifecycle_failure(),
             ProxyServingFailure::ShutdownFailed
         );
+    }
+
+    #[test]
+    fn terminal_owner_supports_multiple_subscribers_without_replacement() {
+        let (shutdown, _) = watch::channel(false);
+        let owner_state = Arc::new(ProxyServingOwnerState::new(shutdown));
+        assert!(owner_state.mark_running());
+
+        let first = Arc::new(AtomicUsize::new(0));
+        let second = Arc::new(AtomicUsize::new(0));
+        for counter in [Arc::clone(&first), Arc::clone(&second)] {
+            owner_state.set_observer(Arc::new(move |_| {
+                counter.fetch_add(1, Ordering::AcqRel);
+            }));
+        }
+
+        owner_state.publish_failure(ProxyServingFailure::ServingUnhealthy);
+        owner_state.publish_failure(ProxyServingFailure::RuntimeStateUnavailable);
+        assert_eq!(first.load(Ordering::Acquire), 1);
+        assert_eq!(second.load(Ordering::Acquire), 1);
+
+        let late = Arc::new(AtomicUsize::new(0));
+        let late_observer = Arc::clone(&late);
+        owner_state.set_observer(Arc::new(move |_| {
+            late_observer.fetch_add(1, Ordering::AcqRel);
+        }));
+        assert_eq!(late.load(Ordering::Acquire), 1);
     }
 
     #[test]
