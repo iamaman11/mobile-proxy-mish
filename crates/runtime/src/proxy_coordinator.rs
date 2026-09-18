@@ -410,7 +410,7 @@ impl ProxyRuntimeCoordinator {
     }
 
     fn stop_internal(self: &Arc<Self>, close: bool) -> ProxyRuntimePublication {
-        let (runtime, publication) = {
+        let (runtime, stopped_publication) = {
             let Ok(mut state) = self.state.lock() else {
                 return self.unavailable_publication();
             };
@@ -442,7 +442,7 @@ impl ProxyRuntimeCoordinator {
         let proxy_clean = runtime.map_or(true, |runtime| runtime.stop().is_ok());
 
         let publication = if readiness_clean && mesh_clean && proxy_clean {
-            publication
+            stopped_publication
         } else {
             let Ok(mut state) = self.state.lock() else {
                 return self.unavailable_publication();
