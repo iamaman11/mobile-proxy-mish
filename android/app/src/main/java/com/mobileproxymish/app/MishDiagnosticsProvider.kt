@@ -11,6 +11,7 @@ import android.os.SystemClock
 import android.util.Base64
 import com.mobileproxymish.app.cellular.CellularBoundaryFailure
 import com.mobileproxymish.app.cellular.CellularRootPolicyReconcileDiagnostic
+import com.mobileproxymish.app.cellular.CellularRootRecoveryDiagnostic
 import com.mobileproxymish.app.cellular.CellularRuntimeSnapshot
 import com.mobileproxymish.ffi.CellularAdmissionState
 import com.mobileproxymish.ffi.CellularDnsDiagnosticView
@@ -29,9 +30,11 @@ internal data class MishDiagnosticFactsV2(
     val capturedElapsedMs: Long,
     val consistent: Boolean,
     val runtimeRunning: Boolean,
+    val runtimeRecovery: RuntimeRecoveryDiagnosticObservation,
     val cellularState: String,
     val cellularReason: String,
     val cellularAdmitted: Boolean,
+    val cellularOwnerSequence: ULong?,
     val cellularBoundaryFailure: String?,
     val cellularReconcileRequested: Long,
     val cellularReconcileExecuted: Long,
@@ -42,13 +45,18 @@ internal data class MishDiagnosticFactsV2(
     val rootAuthorityObservation: String,
     val rootPolicyAuthorized: Boolean,
     val rootReconcile: CellularRootPolicyReconcileDiagnostic,
+    val rootRecovery: CellularRootRecoveryDiagnostic,
     val proxyState: String,
     val proxyHealthy: Boolean,
     val proxyFailure: String?,
+    val proxyServingGeneration: Long?,
     val proxyActiveSessions: UInt?,
     val credentialActive: Boolean,
+    val credentialVersion: ULong?,
     val meshState: String,
     val meshAdmitted: Boolean,
+    val meshObservationSequence: ULong?,
+    val meshAdmissionEpoch: ULong?,
     val meshEpochPresent: Boolean,
     val meshIngressRunning: Boolean,
     val meshIngressFailure: String,
@@ -67,11 +75,13 @@ internal fun renderMishDiagnosticSnapshotV2(facts: MishDiagnosticFactsV2): Strin
         put("consistent", facts.consistent)
         put("runtime", JSONObject().apply {
             put("running", facts.runtimeRunning)
+            put("generation", facts.runtimeRecovery.runtimeGeneration.toLong())
         })
         put("cellular", JSONObject().apply {
             put("state", facts.cellularState)
             put("reason", facts.cellularReason)
             put("admitted", facts.cellularAdmitted)
+            put("owner_sequence", facts.cellularOwnerSequence?.toLong() ?: JSONObject.NULL)
             putNullable("boundary_failure", facts.cellularBoundaryFailure)
             put("reconcile", JSONObject().apply {
                 put("requested", facts.cellularReconcileRequested)
@@ -158,19 +168,33 @@ internal fun renderMishDiagnosticSnapshotV2(facts: MishDiagnosticFactsV2): Strin
                 )
                 put("last_mutation_failures", facts.rootReconcile.lastMutationFailures)
             })
+            put("recovery", JSONObject().apply {
+                put("pending", facts.rootRecovery.pending)
+                put("attempts_since_reset", facts.rootRecovery.attemptsSinceReset)
+                put("next_delay_ms", facts.rootRecovery.nextDelayMs)
+            })
         })
         put("proxy", JSONObject().apply {
             put("state", facts.proxyState)
             put("healthy", facts.proxyHealthy)
             putNullable("failure", facts.proxyFailure)
+            put("serving_generation", facts.proxyServingGeneration ?: JSONObject.NULL)
             put("active_sessions", facts.proxyActiveSessions?.toLong() ?: JSONObject.NULL)
+            put("recovery", JSONObject().apply {
+                put("pending", facts.runtimeRecovery.proxyRecoveryPending)
+                put("attempts_scheduled", facts.runtimeRecovery.proxyRecoveryAttemptsScheduled)
+                put("next_delay_ms", facts.runtimeRecovery.proxyRecoveryNextDelayMs)
+            })
         })
         put("credential", JSONObject().apply {
             put("active", facts.credentialActive)
+            put("version", facts.credentialVersion?.toLong() ?: JSONObject.NULL)
         })
         put("mesh", JSONObject().apply {
             put("state", facts.meshState)
             put("admitted", facts.meshAdmitted)
+            put("observation_sequence", facts.meshObservationSequence?.toLong() ?: JSONObject.NULL)
+            put("admission_epoch", facts.meshAdmissionEpoch?.toLong() ?: JSONObject.NULL)
             put("epoch_present", facts.meshEpochPresent)
             put("ingress_running", facts.meshIngressRunning)
             put("ingress_failure", facts.meshIngressFailure)
@@ -231,24 +255,29 @@ class MishDiagnosticsProvider : ContentProvider() {
         val meshGeneration = runtime.currentMeshRuntime
         val runtimeRunningBefore = runtime.isRunning
 
+        val runtimeRecoveryBefore = runtime.recoveryDiagnosticObservation()
         val cellularBefore = runtime.cellularSnapshot.value
         val cellularReconcileBefore = cellularGeneration.reconcileDiagnosticObservation()
         val rootReconcileBefore = cellularGeneration.rootPolicyReconcileDiagnosticObservation()
+        val rootRecoveryBefore = cellularGeneration.rootRecoveryDiagnosticObservation()
         val dnsBefore = cellularGeneration.dnsDiagnosticObservation()
         val proxyBefore = runtime.proxySnapshot.value
+        val proxyDiagnosticBefore = proxyGeneration.diagnosticObservation()
         val readinessBefore = runtime.readinessSnapshot.value
         val meshBefore = runtime.meshSnapshot.value
 
         val readinessDiagnostic = readinessGeneration.diagnosticObservation()
-        val proxyDiagnostic = proxyGeneration.diagnosticObservation()
         val meshIngressFailure = meshGeneration.diagnosticIngressFailure().name
         val meshActiveSessions = meshGeneration.diagnosticActiveSessions()
 
+        val runtimeRecoveryAfter = runtime.recoveryDiagnosticObservation()
         val cellularAfter = runtime.cellularSnapshot.value
         val cellularReconcileAfter = cellularGeneration.reconcileDiagnosticObservation()
         val rootReconcileAfter = cellularGeneration.rootPolicyReconcileDiagnosticObservation()
+        val rootRecoveryAfter = cellularGeneration.rootRecoveryDiagnosticObservation()
         val dnsAfter = cellularGeneration.dnsDiagnosticObservation()
         val proxyAfter = runtime.proxySnapshot.value
+        val proxyDiagnosticAfter = proxyGeneration.diagnosticObservation()
         val readinessAfter = runtime.readinessSnapshot.value
         val meshAfter = runtime.meshSnapshot.value
         val runtimeRunningAfter = runtime.isRunning
@@ -259,11 +288,14 @@ class MishDiagnosticsProvider : ContentProvider() {
             meshGeneration === runtime.currentMeshRuntime
         val consistent = sameGeneration &&
             runtimeRunningBefore == runtimeRunningAfter &&
+            runtimeRecoveryBefore == runtimeRecoveryAfter &&
             cellularBefore == cellularAfter &&
             cellularReconcileBefore == cellularReconcileAfter &&
             rootReconcileBefore == rootReconcileAfter &&
+            rootRecoveryBefore == rootRecoveryAfter &&
             dnsBefore == dnsAfter &&
             proxyBefore == proxyAfter &&
+            proxyDiagnosticBefore == proxyDiagnosticAfter &&
             readinessBefore == readinessAfter &&
             meshBefore == meshAfter
 
@@ -299,9 +331,11 @@ class MishDiagnosticsProvider : ContentProvider() {
                 capturedElapsedMs = SystemClock.elapsedRealtime(),
                 consistent = consistent,
                 runtimeRunning = runtimeRunningAfter,
+                runtimeRecovery = runtimeRecoveryAfter,
                 cellularState = cellularState,
                 cellularReason = cellularReason,
                 cellularAdmitted = cellularAdmitted,
+                cellularOwnerSequence = ownerAdmission?.lastSequence,
                 cellularBoundaryFailure = boundaryFailure?.diagnosticCode(),
                 cellularReconcileRequested = cellularReconcileAfter.requested,
                 cellularReconcileExecuted = cellularReconcileAfter.executed,
@@ -312,13 +346,18 @@ class MishDiagnosticsProvider : ContentProvider() {
                 rootAuthorityObservation = rootAuthorityObservation,
                 rootPolicyAuthorized = readinessDiagnostic.rootPolicyVerified,
                 rootReconcile = rootReconcileAfter,
+                rootRecovery = rootRecoveryAfter,
                 proxyState = proxyState,
                 proxyHealthy = readinessDiagnostic.proxyHealthy,
                 proxyFailure = proxyFailure,
-                proxyActiveSessions = proxyDiagnostic.activeSessions,
+                proxyServingGeneration = proxyDiagnosticAfter.servingGeneration,
+                proxyActiveSessions = proxyDiagnosticAfter.activeSessions,
                 credentialActive = readinessDiagnostic.credentialActive,
+                credentialVersion = proxyDiagnosticAfter.credentialVersion,
                 meshState = meshState,
                 meshAdmitted = readinessDiagnostic.meshAdmitted,
+                meshObservationSequence = meshAfter?.lastSequence,
+                meshAdmissionEpoch = meshAfter?.admissionEpoch,
                 meshEpochPresent = meshAfter?.admissionEpoch != null,
                 meshIngressRunning = meshAfter?.ingressRunning == true,
                 meshIngressFailure = meshIngressFailure,

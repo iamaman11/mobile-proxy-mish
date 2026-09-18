@@ -7,6 +7,11 @@ package com.mobileproxymish.app.cellular
  * existing CellularRuntimeBridge should re-probe the same current owner generation after root
  * authority was temporarily unavailable.
  */
+internal data class RootAuthorityRecoveryDiagnostic(
+    val attemptsSinceReset: Int,
+    val nextDelayMs: Long,
+)
+
 internal class RootAuthorityRecoveryBackoff {
     private var attempt = 0
 
@@ -21,6 +26,12 @@ internal class RootAuthorityRecoveryBackoff {
     fun reset() {
         attempt = 0
     }
+
+    @Synchronized
+    fun diagnostic(): RootAuthorityRecoveryDiagnostic = RootAuthorityRecoveryDiagnostic(
+        attemptsSinceReset = attempt,
+        nextDelayMs = rootAuthorityRecoveryDelayMs(attempt),
+    )
 }
 
 internal fun rootAuthorityRecoveryDelayMs(attempt: Int): Long = when (attempt.coerceIn(0, MAX_BACKOFF_ATTEMPT)) {

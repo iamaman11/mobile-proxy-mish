@@ -43,7 +43,7 @@ class OwnerBackedCapacityDiagnosticsTest {
         )
         assertTrue(
             "The canonical diagnostics payload must publish both owner-backed counts",
-            diagnostics.contains("proxyActiveSessions = proxyDiagnostic.activeSessions") &&
+            diagnostics.contains("proxyActiveSessions = proxyDiagnosticAfter.activeSessions") &&
                 diagnostics.contains("meshActiveSessions = meshGeneration.diagnosticActiveSessions()") &&
                 diagnostics.split("put(\"active_sessions\"").size - 1 == 2,
         )
