@@ -195,6 +195,10 @@ impl PublicIpProbeTicket {
         self.inner.numeric_addresses()
     }
 
+    pub fn is_current(&self) -> bool {
+        self.inner.is_current()
+    }
+
     pub fn remaining_timeout_ms(&self) -> Result<u64, PublicIpProbeError> {
         self.inner
             .remaining_timeout_ms()
