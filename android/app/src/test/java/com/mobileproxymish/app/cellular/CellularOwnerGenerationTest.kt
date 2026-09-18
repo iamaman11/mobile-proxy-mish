@@ -129,18 +129,23 @@ class CellularOwnerGenerationTest {
     }
 
     @Test
-    fun cleanupCanCancelPendingCallbackWithoutExecutingIt() {
+    fun cleanupCancelsPendingCallbackBehindCurrentlyExecutingEffect() {
         val queue = LatestCellularReconcileQueue<Int>()
 
         assertTrue(queue.offer(7))
-        queue.cancelPending()
+        assertEquals(7, queue.takeLatest())
 
-        assertEquals(null, queue.takeLatest())
+        // One effect is now executing. A newer callback may become pending, but close() must be
+        // able to remove it so exact cleanup sits behind only the current effect.
+        assertFalse(queue.offer(8))
+        queue.cancelPending()
+        queue.recordExecuted()
+
         assertFalse(queue.finishDrain())
         assertEquals(
             CellularReconcileDiagnostic(
-                requested = 1,
-                executed = 0,
+                requested = 2,
+                executed = 1,
                 coalesced = 0,
                 pending = false,
                 drainScheduled = false,
