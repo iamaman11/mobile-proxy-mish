@@ -112,6 +112,10 @@ impl PreparedPublicIpProbe {
         PUBLIC_IP_ENDPOINT_PATH
     }
 
+    pub const fn response_body_max_bytes(&self) -> usize {
+        PUBLIC_IP_RESPONSE_BODY_MAX_BYTES
+    }
+
     pub fn generation(&self) -> u64 {
         self.authority.observation_sequence().raw()
     }
