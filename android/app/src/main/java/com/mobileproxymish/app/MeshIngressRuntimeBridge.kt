@@ -76,6 +76,11 @@ internal class MeshIngressRuntimeBridge(
         }
     }
 
+    fun stop() {
+        if (closed.get() || !started.compareAndSet(true, false)) return
+        vpnObserver.stop()
+    }
+
     private fun onVpnObservation(observation: AndroidMeshVpnObservation) {
         if (closed.get()) return
         if (sequence == Long.MAX_VALUE) {
@@ -134,6 +139,7 @@ internal class MeshIngressRuntimeBridge(
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
+        started.set(false)
         if (runCatching(vpnObserver::close).isFailure) {
             throw IllegalStateException("Mesh platform observation cleanup failed")
         }
