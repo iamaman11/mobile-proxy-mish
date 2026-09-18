@@ -51,13 +51,20 @@ foreach ($required in @(
     'fresh_generation=true',
     'cleanup_verified=true',
     'Get-MishDnsLifetimeObservation',
-    '$dnsLifetimeEvidence.before_e3 = $preDnsObservation',
-    '$postE3Snapshot = Read-MishSnapshot',
-    '$dnsLifetimeEvidence.after_e3_before_restart = $postE3DnsObservation',
-    '$dnsLifetimeEvidence.same_process = $true',
+    '$dnsLifetimeEvidence.before_instrumentation = $preDnsObservation',
+    'Invoke-MishE3WithDnsLifetimeObservation',
+    'Start-MishDnsStimulusRequest',
+    'Complete-MishDnsStimulusRequest',
+    '$dnsLifetimeEvidence.during_instrumentation = $instrumentation.DnsLifetime',
     'LAB_DNS_LIFETIME_BASELINE_INVALID',
-    'LAB_DNS_LIFETIME_POST_E3_INVALID',
+    'LAB_DNS_LIFETIME_INSTRUMENTATION_UNOBSERVED',
+    'LAB_DNS_LIFETIME_TARGET_NOT_EXERCISED',
     'LAB_DNS_LIFETIME_PROCESS_CHANGED',
+    'CredentialProvisioning.psm1',
+    'Invoke-MishExternalProxyCredentialProvisioning',
+    'Open-MishExternalProxyCredentialLease',
+    "@('forward', 'tcp:0', 'tcp:3128')",
+    "@('forward', '--remove', \"tcp:$forwardPort\")",
     'active = [int64]$dns.active',
     'peak_active = [int64]$dns.peak_active',
     'max_native_elapsed_ms = [int64]$dns.max_native_elapsed_ms',
@@ -82,16 +89,20 @@ foreach ($required in @(
     }
 }
 
-$postE3SnapshotIndex = $source.IndexOf('$postE3Snapshot = Read-MishSnapshot', [StringComparison]::Ordinal)
+$liveInvocationIndex = $source.IndexOf('$instrumentation = Invoke-MishE3WithDnsLifetimeObservation', [StringComparison]::Ordinal)
 $explicitRestartIndex = $source.IndexOf('& (Join-Path $PSScriptRoot ''start-device-app.ps1'')', [StringComparison]::Ordinal)
-if ($postE3SnapshotIndex -lt 0 -or $explicitRestartIndex -lt 0 -or $postE3SnapshotIndex -ge $explicitRestartIndex) {
-    throw 'Recovery/lifecycle control must capture same-process DNS lifetime facts before the explicit PRODUCT restart.'
+if ($liveInvocationIndex -lt 0 -or $explicitRestartIndex -lt 0 -or $liveInvocationIndex -ge $explicitRestartIndex) {
+    throw 'Recovery/lifecycle control must observe DNS while the exact E3 instrumentation is active, before the explicit PRODUCT restart.'
 }
 
-$preDnsIndex = $source.IndexOf('$dnsLifetimeEvidence.before_e3 = $preDnsObservation', [StringComparison]::Ordinal)
-$postDnsIndex = $source.IndexOf('$dnsLifetimeEvidence.after_e3_before_restart = $postE3DnsObservation', [StringComparison]::Ordinal)
-if ($preDnsIndex -lt 0 -or $postDnsIndex -le $preDnsIndex) {
-    throw 'Recovery/lifecycle control must preserve ordered before-E3 and after-E3 DNS observations.'
+$baselineIndex = $source.IndexOf('$dnsLifetimeEvidence.before_instrumentation = $preDnsObservation', [StringComparison]::Ordinal)
+$liveIndex = $source.IndexOf('$dnsLifetimeEvidence.during_instrumentation = $instrumentation.DnsLifetime', [StringComparison]::Ordinal)
+if ($baselineIndex -lt 0 -or $liveIndex -le $baselineIndex) {
+    throw 'Recovery/lifecycle control must preserve ordered baseline and live-instrumentation DNS observations.'
+}
+
+if ($source.Contains('$postE3Snapshot = Read-MishSnapshot')) {
+    throw 'Recovery/lifecycle control must not depend on a post-instrumentation PRODUCT snapshot for process-wide DNS evidence.'
 }
 
 $installerSource = Get-Content -Raw -LiteralPath $installerPath
@@ -118,7 +129,6 @@ foreach ($forbidden in @(
     '$pulledTestApk',
     'installed_exact_bytes_verified = $true',
     "'cmd', 'connectivity', 'airplane-mode'",
-    'CredentialProvisioning.psm1',
     'Open-MishApplicationSession',
     'Set-MishAirplane',
     'LAB_MESH_LOSS_EFFECT_NOT_OBSERVED',
