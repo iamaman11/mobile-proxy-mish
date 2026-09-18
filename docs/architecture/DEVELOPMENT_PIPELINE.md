@@ -70,6 +70,8 @@ Current accepted command forms are defined by the workflow. At this policy revis
 ```text
 /mish-cycle full <PRODUCT_SHA>
 /mish-cycle full <PRODUCT_SHA> capacity_resources
+/mish-cycle full <PRODUCT_SHA> recovery_lifecycle
+/mish-cycle full <PRODUCT_SHA> dns_lifetime_live
 /mish-cycle install_only <PRODUCT_SHA>
 /mish-cycle diagnose_only <PRODUCT_SHA>
 /mish-cycle probe_only <PRODUCT_SHA> loopback_connect
@@ -77,7 +79,11 @@ Current accepted command forms are defined by the workflow. At this policy revis
 
 `probe_only` supports only the current-function `loopback_connect` probe unless the executable workflow is deliberately changed and this document is updated with it.
 
-`full` accepts one optional, explicit `capacity_resources` acceptance probe. It is never selected automatically. `install_only` and `diagnose_only` accept no probe argument.
+`full` accepts one optional, explicit probe: `capacity_resources`, `recovery_lifecycle`, or `dns_lifetime_live`. None is selected automatically. `install_only` and `diagnose_only` accept no probe argument.
+
+`capacity_resources` and `recovery_lifecycle` are acceptance probes when their required baseline and exact-candidate evidence are complete. `dns_lifetime_live` is deliberately **measurement-only**: it collects one bounded same-process native DNS lifetime observation across a Cellular loss/recovery generation change. A green DNS measurement does not independently accept the exact PRODUCT candidate; its `exact_candidate_acceptance` remains `NOT_EVALUATED`.
+
+The DNS lifetime observation reuses the accepted external-proxy credential provisioning and ADB-forward seams, sends bounded authenticated proxy-domain requests through the existing PRODUCT HTTP CONNECT listener, requests exactly one bounded `cmd phone data disable` / `enable` transition, and proves actual loss/recovery from canonical owner snapshots. It requires PRODUCT PID continuity and a fresh native DNS owner sequence after recovery. It records occupancy/currentness/stale/deadline facts and then stops for analysis. It does not invoke androidTest, mutate PRODUCT routes/iptables, mutate Cloudflare, add a DNS executor/pool/cancellation owner, or turn measurement into a repair decision. Best-effort mobile-data restore and ADB-forward cleanup are mandatory LAB hygiene.
 
 ## PRODUCT_SHA and CONTROL_SHA
 
@@ -149,7 +155,7 @@ resolve provenance
  -> STOP
 ```
 
-With no probe argument this is the normal baseline. With `capacity_resources`, the canonical baseline must first PASS, then the same run executes one bounded capacity/resource acceptance from the Windows LAB through the real external Mesh endpoint.
+With no probe argument this is the normal baseline. With `capacity_resources`, the canonical baseline must first PASS, then the same run executes one bounded capacity/resource acceptance from the Windows LAB through the real external Mesh endpoint. With `recovery_lifecycle`, the same run exercises the exact accepted recovery/E3 contract. With `dns_lifetime_live`, the baseline must PASS first and the same run collects bounded live same-process DNS lifetime evidence; that observation remains measurement-only and cannot by itself produce exact PRODUCT acceptance.
 
 The capacity probe is deliberately correlated to the implementation owners:
 

@@ -11,6 +11,7 @@ try {
         'DiagnosticConnectProbe.psm1',
         'diagnose-loopback-connect.ps1',
         'diagnose-capacity-resources.ps1',
+        'diagnose-dns-lifetime-live.ps1',
         'test-diagnostic-connect-probe.ps1',
         'new-device-cycle-report.ps1'
     )) {
@@ -234,6 +235,52 @@ try {
     $probeFailReport = & $reportScript -Mode probe_only -PrNumber 197 -SourceSha ('f' * 40) -ControlSha $controlSha -RequestedProbe loopback_connect -TargetedEvidencePath $loopbackFailPath -OutputPath (Join-Path $root 'probe-fail-report.json') | Select-Object -Last 1 | ConvertFrom-Json
     if ([string]$probeFailReport.cycle_result -cne 'PRODUCT_FAIL' -or [string]$probeFailReport.targeted_probe.acceptance_result -cne 'FAIL') {
         throw 'A collected but failing loopback matrix must not be promoted to a green probe.'
+    }
+
+    $dnsObservationPath = Join-Path $root 'dns-lifetime-live-pass.json'
+    [ordered]@{
+        schema = 'mish.lab.dns-lifetime-live/v1'
+        collection_result = 'PASS'
+        acceptance_result = 'PASS'
+        observation_only = $true
+        classification = 'U3_DNS_LIFETIME_LIVE_OBSERVATION_COMPLETE'
+        same_process = $true
+    } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 -LiteralPath $dnsObservationPath
+    $dnsObservation = & $reportScript -Mode full -PrNumber 251 -SourceSha ('5' * 40) -ControlSha $controlSha -DiagnosticEvidencePath $passDiagnostic -RequestedProbe dns_lifetime_live -TargetedEvidencePath $dnsObservationPath -OutputPath (Join-Path $root 'dns-lifetime-live-pass-report.json') | Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$dnsObservation.cycle_result -cne 'PASS' -or
+        [string]$dnsObservation.classification -cne 'U3_DNS_LIFETIME_LIVE_OBSERVATION_COMPLETE' -or
+        [string]$dnsObservation.acceptance_scope -cne 'FULL_BASELINE_PLUS_DNS_LIFETIME_OBSERVATION' -or
+        [string]$dnsObservation.targeted_probe.acceptance_result -cne 'PASS' -or
+        [string]$dnsObservation.exact_candidate_acceptance -cne 'NOT_EVALUATED'
+    ) {
+        throw 'DNS lifetime observation PASS must remain measurement-only and never claim exact PRODUCT acceptance.'
+    }
+
+    $dnsLabPath = Join-Path $root 'dns-lifetime-live-lab-fail.json'
+    [ordered]@{
+        schema = 'mish.lab.dns-lifetime-live/v1'
+        collection_result = 'FAIL'
+        acceptance_result = 'FAIL'
+        observation_only = $true
+        classification = 'LAB_DNS_LIFETIME_TARGET_NOT_EXERCISED'
+    } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 -LiteralPath $dnsLabPath
+    $dnsLab = & $reportScript -Mode full -PrNumber 251 -SourceSha ('6' * 40) -ControlSha $controlSha -DiagnosticEvidencePath $passDiagnostic -RequestedProbe dns_lifetime_live -TargetedEvidencePath $dnsLabPath -OutputPath (Join-Path $root 'dns-lifetime-live-lab-report.json') | Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$dnsLab.cycle_result -cne 'LAB_FAIL' -or
+        [string]$dnsLab.classification -cne 'LAB_DNS_LIFETIME_TARGET_NOT_EXERCISED' -or
+        [string]$dnsLab.exact_candidate_acceptance -cne 'NOT_EVALUATED'
+    ) {
+        throw 'DNS lifetime collection failure must remain LAB-only and cannot reject PRODUCT.'
+    }
+
+    $dnsBaselineFailure = & $reportScript -Mode full -PrNumber 251 -SourceSha ('7' * 40) -ControlSha $controlSha -DiagnosticEvidencePath $productDiagnostic -RequestedProbe dns_lifetime_live -TargetedEvidencePath $dnsObservationPath -OutputPath (Join-Path $root 'dns-lifetime-live-product-baseline-report.json') | Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$dnsBaselineFailure.cycle_result -cne 'PRODUCT_FAIL' -or
+        [string]$dnsBaselineFailure.classification -cne 'PRODUCT_PROXY_MIXED_LISTENER_UNAVAILABLE' -or
+        [string]$dnsBaselineFailure.exact_candidate_acceptance -cne 'FAIL'
+    ) {
+        throw 'A baseline PRODUCT failure must still outrank measurement-only DNS evidence.'
     }
 
     $capacityPassPath = Join-Path $root 'capacity-pass.json'
