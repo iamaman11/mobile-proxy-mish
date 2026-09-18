@@ -117,7 +117,7 @@ function Read-MishSnapshot {
 }
 
 function Get-MishDnsLifetimeObservation {
-    param([Parameter(Mandatory)] $Snapshot)
+    param([AllowNull()][Parameter(Mandatory)] $Snapshot)
 
     if (
         $null -eq $Snapshot -or
