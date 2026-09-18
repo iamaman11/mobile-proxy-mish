@@ -8,23 +8,11 @@ import com.mobileproxymish.ffi.MeshAdmissionView
 import com.mobileproxymish.ffi.NativeProductRuntime
 import com.mobileproxymish.ffi.NativeReadinessObserver
 import com.mobileproxymish.ffi.ProductReadinessState
-import com.mobileproxymish.ffi.RuntimeLifecycleController
 import com.mobileproxymish.ffi.RuntimeLifecycleState
-import com.mobileproxymish.ffi.RuntimeStartAction
-import com.mobileproxymish.ffi.RuntimeStopAction
-import java.util.concurrent.Executors
-import java.util.concurrent.RejectedExecutionException
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.asStateFlow
 
-/** Runs every generation cleanup effect in dependency order and reports aggregate success. */
 internal data class RuntimeRecoveryDiagnosticObservation(
     val runtimeGeneration: ULong,
     val proxyRecoveryPending: Boolean,
@@ -32,145 +20,112 @@ internal data class RuntimeRecoveryDiagnosticObservation(
     val proxyRecoveryNextDelayMs: Long,
 )
 
-internal fun closeRuntimeGenerationExact(
-    closeMesh: () -> Unit,
-    closeProxy: () -> Unit,
-    closeCellular: () -> Unit,
-): Boolean {
-    var clean = true
-    if (runCatching(closeMesh).isFailure) clean = false
-    if (runCatching(closeProxy).isFailure) clean = false
-    if (runCatching(closeCellular).isFailure) clean = false
-    return clean
-}
-
 /**
- * Android effect/composition adapter for the Rust Runtime Lifecycle natural owner.
+ * Android platform facade around one stable Rust-owned PRODUCT process handle.
  *
- * Rust owns start/stop/restart/generation-replacement and proxy recovery policy. This class only
- * serializes Android effects, executes the runtime-requested delay, stores platform callback
- * closures, and publishes owner projections from the currently installed runtime generation.
+ * Rust owns lifecycle state, generation identity/replacement, Proxy recovery and native drain.
+ * Android only supplies bounded platform credential material and starts/stops Android framework
+ * observers for the foreground-Service lifetime.
  */
 class MishRuntimeController internal constructor(
     context: Context,
 ) {
     private val appContext = context.applicationContext
-    private val lock = Any()
-    private val lifecycle = RuntimeLifecycleController()
-    private val lifecycleExecutor = Executors.newSingleThreadExecutor { task ->
-        Thread(task, "mish-runtime-lifecycle").apply { isDaemon = true }
-    }
-    private val observationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val externalCredentialStore = ExternalProxyCredentialStore(appContext)
-    private val generation = MutableStateFlow(newGeneration())
-    private val stopCallbacks = mutableListOf<(Boolean) -> Unit>()
+    private val debugIsolation = appContext.packageName.endsWith(".debug") &&
+        (appContext.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
 
-    @OptIn(ExperimentalCoroutinesApi::class)
-    val cellularSnapshot: StateFlow<CellularRuntimeSnapshot> = generation
-        .flatMapLatest { it.cellularRuntime.snapshot }
-        .stateIn(
-            scope = observationScope,
-            started = SharingStarted.Eagerly,
-            initialValue = generation.value.cellularRuntime.snapshot.value,
-        )
+    private val productRuntime = NativeProductRuntime(
+        appContext.applicationInfo.uid.toUInt(),
+        debugIsolation,
+    )
+    private val cellularRuntime = CellularRuntimeBridge(appContext, productRuntime)
+    private val proxyRuntime = ProxyRuntimeSupervisor(productRuntime)
+    private val meshRuntime = MeshIngressRuntimeBridge(appContext, productRuntime)
+    private val mutableReadiness = MutableStateFlow(productRuntime.readinessSnapshot())
 
-    @OptIn(ExperimentalCoroutinesApi::class)
-    val proxySnapshot: StateFlow<ProxyRuntimeSnapshot> = generation
-        .flatMapLatest { it.proxyRuntime.snapshot }
-        .stateIn(
-            scope = observationScope,
-            started = SharingStarted.Eagerly,
-            initialValue = ProxyRuntimeSnapshot.Stopped,
+    init {
+        productRuntime.observeReadiness(
+            object : NativeReadinessObserver {
+                override fun onReadiness(readiness: ProductReadinessState) {
+                    mutableReadiness.value = readiness
+                }
+            },
         )
+    }
 
-    @OptIn(ExperimentalCoroutinesApi::class)
-    val readinessSnapshot: StateFlow<ProductReadinessState> = generation
-        .flatMapLatest { it.readinessState }
-        .stateIn(
-            scope = observationScope,
-            started = SharingStarted.Eagerly,
-            initialValue = generation.value.readinessState.value,
-        )
+    val cellularSnapshot: StateFlow<CellularRuntimeSnapshot>
+        get() = cellularRuntime.snapshot
+
+    val proxySnapshot: StateFlow<ProxyRuntimeSnapshot>
+        get() = proxyRuntime.snapshot
+
+    val readinessSnapshot: StateFlow<ProductReadinessState>
+        get() = mutableReadiness.asStateFlow()
 
     /** Read-only Transport Reachability projection for UI and retained device diagnostics. */
-    @OptIn(ExperimentalCoroutinesApi::class)
-    val meshSnapshot: StateFlow<MeshAdmissionView?> = generation
-        .flatMapLatest { it.meshRuntime.snapshot }
-        .stateIn(
-            scope = observationScope,
-            started = SharingStarted.Eagerly,
-            initialValue = generation.value.meshRuntime.snapshot.value,
-        )
+    val meshSnapshot: StateFlow<MeshAdmissionView?>
+        get() = meshRuntime.snapshot
 
     internal val currentCellularRuntime: CellularRuntimeBridge
-        get() = generation.value.cellularRuntime
+        get() = cellularRuntime
 
     internal val currentProxyRuntime: ProxyRuntimeSupervisor
-        get() = generation.value.proxyRuntime
+        get() = proxyRuntime
 
     internal val currentProductRuntime: NativeProductRuntime
-        get() = generation.value.productRuntime
+        get() = productRuntime
 
     internal val currentMeshRuntime: MeshIngressRuntimeBridge
-        get() = generation.value.meshRuntime
+        get() = meshRuntime
 
     /** Read-only bounded snapshot for the permission-gated Windows provisioning transaction. */
     internal fun currentExternalCredentialProvisioningSnapshot(): ExternalProxyCredentialSnapshot? =
         externalCredentialStore.currentProvisioningSnapshot()
 
-    internal fun recoveryDiagnosticObservation(): RuntimeRecoveryDiagnosticObservation =
-        synchronized(lock) {
-            val proxy = generation.value.productRuntime.proxyRuntimeSnapshot()
-            RuntimeRecoveryDiagnosticObservation(
-                runtimeGeneration = lifecycle.generation(),
-                proxyRecoveryPending = proxy.recoveryPending,
-                proxyRecoveryAttemptsScheduled = proxy.recoveryAttemptsSinceSuccess.toInt(),
-                proxyRecoveryNextDelayMs = proxy.recoveryNextDelayMs.toLong(),
-            )
-        }
-
-    val isRunning: Boolean
-        get() = synchronized(lock) { lifecycle.state() != RuntimeLifecycleState.STOPPED }
-
-    fun start(): Boolean {
-        val action = synchronized(lock) { lifecycle.requestStart() }
-        when (action) {
-            RuntimeStartAction.ALREADY_ACTIVE,
-            RuntimeStartAction.QUEUED_AFTER_STOP,
-            -> return true
-
-            RuntimeStartAction.START_NOW -> Unit
-        }
-
-        if (submit(::startBlocking)) return true
-        synchronized(lock) { lifecycle.startSubmissionFailed() }
-        return false
+    internal fun recoveryDiagnosticObservation(): RuntimeRecoveryDiagnosticObservation {
+        val lifecycle = productRuntime.runtimeLifecycleSnapshot()
+        val proxy = productRuntime.proxyRuntimeSnapshot()
+        return RuntimeRecoveryDiagnosticObservation(
+            runtimeGeneration = lifecycle.generation,
+            proxyRecoveryPending = proxy.recoveryPending,
+            proxyRecoveryAttemptsScheduled = proxy.recoveryAttemptsSinceSuccess.toInt(),
+            proxyRecoveryNextDelayMs = proxy.recoveryNextDelayMs.toLong(),
+        )
     }
 
-    fun stop(onComplete: (Boolean) -> Unit = {}) {
-        var completeImmediately = false
-        val action = synchronized(lock) {
-            val requested = lifecycle.requestStop()
-            when (requested) {
-                RuntimeStopAction.ALREADY_STOPPED -> completeImmediately = true
-                RuntimeStopAction.ALREADY_STOPPING -> stopCallbacks += onComplete
-                RuntimeStopAction.STOP_NOW -> stopCallbacks += onComplete
-            }
-            requested
-        }
+    val isRunning: Boolean
+        get() = productRuntime.runtimeLifecycleSnapshot().state != RuntimeLifecycleState.STOPPED
 
-        if (completeImmediately) {
-            onComplete(true)
-            return
-        }
-        if (action != RuntimeStopAction.STOP_NOW) return
-        if (submit(::stopBlocking)) return
+    fun start(): Boolean {
+        val credential = runCatching { externalCredentialStore.currentCredential() }.getOrNull()
+        val accepted = runCatching {
+            productRuntime.startRuntime(
+                credentialVersion = credential?.version,
+                username = credential?.credentials?.username,
+                password = credential?.credentials?.password,
+            )
+        }.isSuccess
+        if (!accepted) return false
 
-        val callbacks = synchronized(lock) {
-            lifecycle.stopSubmissionFailed()
-            stopCallbacks.toList().also { stopCallbacks.clear() }
+        return try {
+            cellularRuntime.start()
+            meshRuntime.start()
+            true
+        } catch (_: Exception) {
+            runCatching(meshRuntime::stop)
+            runCatching(cellularRuntime::stop)
+            runCatching { productRuntime.stopRuntime() }
+            false
         }
-        callbacks.forEach { callback -> runCatching { callback(false) } }
+    }
+
+    fun stop(): Boolean {
+        var platformClean = true
+        if (runCatching(meshRuntime::stop).isFailure) platformClean = false
+        if (runCatching(cellularRuntime::stop).isFailure) platformClean = false
+        val nativeAccepted = runCatching { productRuntime.stopRuntime() }.isSuccess
+        return platformClean && nativeAccepted
     }
 
     internal fun rotateExternalCredentialWhileStopped(): Boolean =
@@ -179,152 +134,22 @@ class MishRuntimeController internal constructor(
     internal fun revokeExternalCredentialWhileStopped(): Boolean =
         mutateExternalCredentialWhileStopped(externalCredentialStore::revokeWhileStopped)
 
-    private fun mutateExternalCredentialWhileStopped(mutation: () -> Boolean): Boolean =
-        synchronized(lock) {
-            if (!lifecycle.canMutateStoppedGeneration()) return false
-            val current = generation.value
-            if (!current.closeExact()) {
-                lifecycle.markStoppedGenerationDirty()
-                return false
-            }
-            if (!mutation()) {
-                lifecycle.markStoppedGenerationDirty()
-                return false
-            }
-            if (!lifecycle.advanceStoppedGeneration()) {
-                lifecycle.markStoppedGenerationDirty()
-                return false
-            }
-            generation.value = newGeneration()
-            true
+    private fun mutateExternalCredentialWhileStopped(mutation: () -> Boolean): Boolean {
+        if (productRuntime.runtimeLifecycleSnapshot().state != RuntimeLifecycleState.STOPPED) {
+            return false
         }
-
-    private fun startBlocking() {
-        val current = synchronized(lock) {
-            val replacementRequired = lifecycle.generationRequiresReplacement()
-            if (replacementRequired && !lifecycle.takeGenerationReplacementForStart()) {
-                null
-            } else {
-                if (replacementRequired) {
-                    generation.value = newGeneration()
-                }
-                generation.value
-            }
-        }
-        if (current == null) {
-            synchronized(lock) {
-                lifecycle.completeStart(
-                    started = false,
-                    cleanAfterFailedStart = false,
-                )
-            }
-            return
-        }
-
-        val started = try {
-            current.cellularRuntime.start()
-            current.proxyRuntime.start()
-            current.meshRuntime.start()
-            true
-        } catch (_: Exception) {
-            false
-        }
-
-        val cleanAfterFailedStart = if (started) true else current.closeExact()
-
-        synchronized(lock) {
-            val completion = lifecycle.completeStart(
-                started = started,
-                cleanAfterFailedStart = cleanAfterFailedStart,
-            )
-            if (completion.installFreshGenerationNow) {
-                generation.value = newGeneration()
-            }
-        }
+        if (!mutation()) return false
+        return runCatching {
+            productRuntime.advanceStoppedGenerationAfterPlatformMutation()
+        }.getOrDefault(false)
     }
 
-    private fun stopBlocking() {
-        val current = synchronized(lock) { generation.value }
-        val clean = current.closeExact()
-
-        val restart: Boolean
-        val callbacks: List<(Boolean) -> Unit>
-        synchronized(lock) {
-            val disposition = lifecycle.completeStop(clean)
-            if (disposition.installFreshGenerationNow) {
-                generation.value = newGeneration()
-            }
-            restart = disposition.restartNow
-            callbacks = stopCallbacks.toList()
-            stopCallbacks.clear()
-        }
-
-        callbacks.forEach { callback -> runCatching { callback(clean) } }
-        if (restart) start()
-    }
-
-    private fun submit(block: () -> Unit): Boolean = try {
-        lifecycleExecutor.execute(block)
-        true
-    } catch (_: RejectedExecutionException) {
-        false
-    }
-
-    private fun newGeneration(): RuntimeGeneration {
-        val runtimeGeneration = lifecycle.generation()
-        val debugIsolation = appContext.packageName.endsWith(".debug") &&
-            (appContext.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
-        val productRuntime = NativeProductRuntime(
-            appContext.applicationInfo.uid.toUInt(),
-            debugIsolation,
-            runtimeGeneration,
-        )
-        try {
-            val cellularRuntime = CellularRuntimeBridge(appContext, productRuntime)
-            val proxyRuntime = ProxyRuntimeSupervisor(
-                productRuntime = productRuntime,
-                publicCredentials = externalCredentialStore,
-            )
-            val meshRuntime = MeshIngressRuntimeBridge(
-                context = appContext,
-                productRuntime = productRuntime,
-            )
-            val readinessState = MutableStateFlow(productRuntime.readinessSnapshot())
-            productRuntime.observeReadiness(
-                object : NativeReadinessObserver {
-                    override fun onReadiness(readiness: ProductReadinessState) {
-                        readinessState.value = readiness
-                    }
-                },
-            )
-            return RuntimeGeneration(
-                productRuntime = productRuntime,
-                cellularRuntime = cellularRuntime,
-                proxyRuntime = proxyRuntime,
-                meshRuntime = meshRuntime,
-                readinessState = readinessState,
-            )
-        } catch (failure: Throwable) {
-            runCatching { productRuntime.shutdown() }
-            throw failure
-        }
-    }
-
-    private data class RuntimeGeneration(
-        val productRuntime: NativeProductRuntime,
-        val cellularRuntime: CellularRuntimeBridge,
-        val proxyRuntime: ProxyRuntimeSupervisor,
-        val meshRuntime: MeshIngressRuntimeBridge,
-        val readinessState: MutableStateFlow<ProductReadinessState>,
-    ) {
-        fun closeExact(): Boolean {
-            var clean = closeRuntimeGenerationExact(
-                closeMesh = meshRuntime::close,
-                closeProxy = proxyRuntime::close,
-                closeCellular = cellularRuntime::close,
-            )
-            clean = runCatching { productRuntime.shutdown() }.isSuccess && clean
-            return clean
-        }
+    /** Final process cleanup seam retained for instrumentation; Service stop uses stop(), not this. */
+    internal fun shutdownProcessExact(): Boolean {
+        var clean = true
+        if (runCatching(meshRuntime::close).isFailure) clean = false
+        if (runCatching(cellularRuntime::close).isFailure) clean = false
+        if (runCatching { productRuntime.shutdown() }.isFailure) clean = false
+        return clean
     }
 }
