@@ -341,7 +341,7 @@ def main() -> None:
     )
     for required in (
         "pub fn observe_public_egress_ip(",
-        "executor.block_on(execute_public_ip_probe(probe, &tls))",
+        ".block_on(execute_public_ip_probe(probe, &tls))",
     ):
         require_product(
             public_ip_runtime,
