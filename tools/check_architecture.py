@@ -583,14 +583,22 @@ def main() -> None:
     for required in (
         "ReadinessRuntimeCoordinator::new",
         "policy.add_internal_observer",
+    ):
+        require_product(
+            "crates/runtime/src/product_generation.rs",
+            required,
+            "ProductGeneration must own readiness construction and native owner wiring",
+        )
+    for required in (
         "pub fn observe_readiness(",
         "pub fn readiness_snapshot(",
         "pub fn readiness_diagnostic_snapshot(",
+        "generation.readiness()",
     ):
         require_product(
             product_ffi,
             required,
-            "NativeProductRuntime must own native readiness composition and projection",
+            "NativeProductRuntime must expose readiness projection from the Rust-owned generation",
         )
     for forbidden in (
         "pub fn execute_readiness_probe(",
