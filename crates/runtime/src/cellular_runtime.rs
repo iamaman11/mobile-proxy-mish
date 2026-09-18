@@ -6,7 +6,7 @@
 
 use crate::{
     CellularDnsDiagnosticSnapshot, CellularDnsResolver, CellularOutboundRuntimeConnector,
-    cellular_dns_diagnostic_snapshot,
+    PreparedPublicIpProbe, PublicIpProbeFailure, cellular_dns_diagnostic_snapshot,
 };
 use mish_cellular::{
     CellularAdmissionSnapshot, CellularAdmissionState, CellularEgress, NetworkHandle,
@@ -47,6 +47,26 @@ impl CellularRuntimeCoordinator {
 
     pub fn dns_diagnostic_snapshot(&self) -> CellularDnsDiagnosticSnapshot {
         cellular_dns_diagnostic_snapshot()
+    }
+
+    /// Begins one bounded generation-bound public-IP observation using the same root-policy
+    /// authorization and owner-bound DNS authority as PRODUCT proxy egress. The returned ticket
+    /// carries no socket and owns no lifecycle; Android performs only the ordinary UID TLS effect.
+    pub fn prepare_public_ip_probe(
+        &self,
+        operation_timeout: Duration,
+    ) -> Result<PreparedPublicIpProbe, PublicIpProbeFailure> {
+        validate_operation_timeout(operation_timeout)
+            .map_err(|_| PublicIpProbeFailure::DeadlineExceeded)?;
+        let _permit = self
+            .root_policy_effect_gate
+            .acquire()
+            .ok_or(PublicIpProbeFailure::RootPolicyUnavailable)?;
+        PreparedPublicIpProbe::prepare(
+            Arc::clone(&self.owner),
+            Arc::clone(&self.resolver),
+            operation_timeout,
+        )
     }
 
     pub fn observe_network(
