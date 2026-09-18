@@ -85,6 +85,24 @@ impl fmt::Display for AndroidRuntimeError {
 }
 impl std::error::Error for AndroidRuntimeError {}
 
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct CellularDnsDiagnosticView {
+    pub started: u64,
+    pub completed: u64,
+    pub active: u64,
+    pub peak_active: u64,
+    pub slow_completions: u64,
+    pub failed: u64,
+    pub discarded_after_deadline: u64,
+    pub completed_after_owner_change: u64,
+    pub discarded_stale: u64,
+    pub accepted_current: u64,
+    pub max_native_elapsed_ms: u64,
+    pub last_started_owner_sequence: Option<u64>,
+    pub last_completed_start_owner_sequence: Option<u64>,
+    pub last_completed_current_owner_sequence: Option<u64>,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct AndroidDnsResolver;
 impl CellularDnsResolver for AndroidDnsResolver {
@@ -129,6 +147,26 @@ impl CellularController {
             .admission_snapshot()
             .map(map_snapshot)
             .map_err(|_| CellularBridgeError::OwnerUnavailable)
+    }
+
+    pub fn dns_diagnostic_snapshot(&self) -> CellularDnsDiagnosticView {
+        let snapshot = self.runtime.dns_diagnostic_snapshot();
+        CellularDnsDiagnosticView {
+            started: snapshot.started,
+            completed: snapshot.completed,
+            active: snapshot.active,
+            peak_active: snapshot.peak_active,
+            slow_completions: snapshot.slow_completions,
+            failed: snapshot.failed,
+            discarded_after_deadline: snapshot.discarded_after_deadline,
+            completed_after_owner_change: snapshot.completed_after_owner_change,
+            discarded_stale: snapshot.discarded_stale,
+            accepted_current: snapshot.accepted_current,
+            max_native_elapsed_ms: snapshot.max_native_elapsed_ms,
+            last_started_owner_sequence: snapshot.last_started_owner_sequence,
+            last_completed_start_owner_sequence: snapshot.last_completed_start_owner_sequence,
+            last_completed_current_owner_sequence: snapshot.last_completed_current_owner_sequence,
+        }
     }
 
     pub fn close_root_policy_gate(&self) -> Result<(), AndroidRuntimeError> {
