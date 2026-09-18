@@ -3,10 +3,10 @@ param(
     [Parameter(Mandatory)][string] $CandidateDirectory,
     [Parameter(Mandatory)][ValidateRange(1, 2147483647)][int] $ExpectedPrNumber,
     [Parameter(Mandatory)][ValidatePattern('^[0-9a-f]{40}$')][string] $ExpectedSourceSha,
-    [Parameter(Mandatory)][ValidateRange(1, [long]::MaxValue)][long] $ArtifactId,
+    [Parameter(Mandatory)][ValidateRange(1, 9223372036854775807)][long] $ArtifactId,
     [Parameter(Mandatory)][string] $ArtifactName,
     [Parameter(Mandatory)][ValidatePattern('^sha256:[0-9a-f]{64}$')][string] $ArtifactDigest,
-    [Parameter(Mandatory)][ValidateRange(1, [long]::MaxValue)][long] $HostedRunId,
+    [Parameter(Mandatory)][ValidateRange(1, 9223372036854775807)][long] $HostedRunId,
     [string] $StoreRoot = 'C:\mish-lab\runner\.state\device-candidate\versions'
 )
 
