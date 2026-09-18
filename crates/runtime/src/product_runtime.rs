@@ -854,16 +854,25 @@ mod tests {
         assert_eq!(replay[0].observed_handle, handle_11);
         assert_eq!(replay[0].sequence, 1);
 
-        facts.record_mesh(4, MeshVpnObservation::Absent);
+        facts.record_cellular_loss(4, handle_11);
+        assert!(facts.cellular_replay().is_empty());
+        assert_eq!(facts.last_cellular_loss, Some((4, handle_11)));
+        facts.clear_cellular();
+        assert!(facts.cellular_replay().is_empty());
+        assert_eq!(facts.last_cellular_loss, None);
+
+        facts.record_mesh(5, MeshVpnObservation::Absent);
         facts.record_mesh(
-            3,
+            4,
             MeshVpnObservation::UniqueVpn {
                 local_ipv4: vec![std::net::Ipv4Addr::new(100, 96, 2, 4)],
             },
         );
         let mesh = facts.mesh.expect("mesh fact");
-        assert_eq!(mesh.sequence, 4);
+        assert_eq!(mesh.sequence, 5);
         assert_eq!(mesh.observation, MeshVpnObservation::Absent);
+        facts.clear_mesh();
+        assert!(facts.mesh.is_none());
     }
 
     #[test]
