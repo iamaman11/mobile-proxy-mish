@@ -421,9 +421,11 @@ version = "0.1.0"
 name = "mish-runtime"
 version = "0.1.0"
 dependencies = [
+ "mish-application",
  "mish-cellular",
  "mish-configuration",
  "mish-proxy",
+ "mish-readiness",
  "mish-transport",
  "tokio",
  "tokio-rustls",
