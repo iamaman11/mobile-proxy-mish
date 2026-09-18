@@ -205,6 +205,10 @@ impl CellularPolicyCoordinator {
         self.state.lock().ok().and_then(|state| state.last_policy_result)
     }
 
+    pub async fn root_policy_diagnostic(&self) -> crate::RootPolicyReconcileDiagnostic {
+        self.root_policy.diagnostic().await
+    }
+
     pub async fn shutdown(&self) -> bool {
         if let Ok(mut state) = self.state.lock() {
             state.closed = true;
