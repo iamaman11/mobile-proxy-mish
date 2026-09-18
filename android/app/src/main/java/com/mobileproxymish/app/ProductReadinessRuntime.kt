@@ -13,10 +13,12 @@ import com.mobileproxymish.ffi.ProductReadinessFactsView
 import com.mobileproxymish.ffi.ProductReadinessState
 import com.mobileproxymish.ffi.egressProbeBudgetMs
 import com.mobileproxymish.ffi.readinessProbeBindingIfEligible
+import com.mobileproxymish.ffi.readinessProbeRefreshDelayMs
 import com.mobileproxymish.ffi.readinessProbeTarget
 import java.io.Closeable
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
@@ -48,9 +50,11 @@ internal class ProductReadinessRuntime(
     private val controller = ProductReadinessController()
     private val closed = AtomicBoolean(false)
     private val observationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val probeExecutor = Executors.newSingleThreadExecutor { task ->
+    private val probeExecutor = Executors.newSingleThreadScheduledExecutor { task ->
         Thread(task, "mish-readiness-probe").apply { isDaemon = true }
     }
+    private val refreshLock = Any()
+    private var refreshFuture: ScheduledFuture<*>? = null
     private val probeEffect = AuthenticatedEgressProbe { freshness ->
         !closed.get() && controller.expectedFreshness() == freshness
     }
@@ -96,6 +100,7 @@ internal class ProductReadinessRuntime(
         // current binding, so duplicate equivalent Mesh observations cannot starve the probe.
         if (facts == lastStructuralFacts) return
         lastStructuralFacts = facts
+        cancelScheduledRefresh()
 
         if (runCatching { controller.invalidateProbe() }.isFailure) {
             probeEffect.cancel()
@@ -166,6 +171,59 @@ internal class ProductReadinessRuntime(
         val projected = projectOrUnknown(facts, completed)
         if (controller.expectedFreshness() == completed.freshness) {
             mutableState.value = projected
+            if (eligibleBinding(facts) == completed.binding) {
+                scheduleRefresh(completed.binding)
+            }
+        }
+    }
+
+    private fun scheduleRefresh(binding: ProbeBindingView) {
+        val delayMs = try {
+            readinessProbeRefreshDelayMs().toLong()
+        } catch (_: Exception) {
+            return
+        }
+        if (delayMs <= 0L || closed.get()) return
+
+        synchronized(refreshLock) {
+            if (closed.get()) return
+            refreshFuture?.cancel(false)
+            refreshFuture = try {
+                probeExecutor.schedule(
+                    {
+                        synchronized(refreshLock) {
+                            refreshFuture = null
+                        }
+                        executeScheduledRefresh(binding)
+                    },
+                    delayMs,
+                    TimeUnit.MILLISECONDS,
+                )
+            } catch (_: RejectedExecutionException) {
+                null
+            }
+        }
+    }
+
+    private fun executeScheduledRefresh(expectedBinding: ProbeBindingView) {
+        if (closed.get()) return
+        val facts = currentFacts()
+        val binding = eligibleBinding(facts) ?: return
+        if (binding != expectedBinding) return
+
+        val ticket = try {
+            controller.beginProbe(binding)
+        } catch (_: Exception) {
+            mutableState.value = projectUnknown()
+            return
+        }
+        executeProbe(ticket)
+    }
+
+    private fun cancelScheduledRefresh() {
+        synchronized(refreshLock) {
+            refreshFuture?.cancel(false)
+            refreshFuture = null
         }
     }
 
@@ -250,6 +308,7 @@ internal class ProductReadinessRuntime(
         if (!closed.compareAndSet(false, true)) return
         observationJob?.cancel()
         observationJob = null
+        cancelScheduledRefresh()
         runCatching { controller.invalidateProbe() }
         probeEffect.cancel()
         probeExecutor.shutdownNow()
