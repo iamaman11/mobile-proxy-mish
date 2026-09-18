@@ -77,7 +77,7 @@ pub struct CellularPolicyCoordinator {
 }
 
 impl CellularPolicyCoordinator {
-    pub(crate) fn new(
+    pub fn new(
         executor: Arc<RuntimeExecutor>,
         cellular: Arc<CellularRuntimeCoordinator>,
         product_uid: u32,
@@ -207,6 +207,20 @@ impl CellularPolicyCoordinator {
 
     pub async fn root_policy_diagnostic(&self) -> crate::RootPolicyReconcileDiagnostic {
         self.root_policy.diagnostic().await
+    }
+
+    pub fn root_policy_diagnostic_blocking(
+        &self,
+        executor: &RuntimeExecutor,
+    ) -> Result<crate::RootPolicyReconcileDiagnostic, RuntimeExecutionError> {
+        executor.block_on(self.root_policy_diagnostic())
+    }
+
+    pub fn shutdown_blocking(
+        &self,
+        executor: &RuntimeExecutor,
+    ) -> Result<bool, RuntimeExecutionError> {
+        executor.block_on(self.shutdown())
     }
 
     pub async fn shutdown(&self) -> bool {
