@@ -277,6 +277,7 @@ impl From<CellularDnsPrepareError> for ProxyOutboundConnectError {
 /// the single `CellularEgress` owner around the Android network-scoped DNS effect.
 pub(crate) fn resolve_current_domain(
     owner: &Arc<Mutex<CellularEgress>>,
+    authority: CellularNetworkAuthority,
     domain: &str,
     deadline: Instant,
     resolve: impl FnOnce(
@@ -285,7 +286,7 @@ pub(crate) fn resolve_current_domain(
     ) -> Result<Vec<IpAddr>, ProxyOutboundConnectError>,
 ) -> Result<PreparedCellularDnsTarget, CellularDnsPrepareError> {
     ensure_deadline(deadline).map_err(|_| CellularDnsPrepareError::DeadlineExceeded)?;
-    let authority = issue_authority(owner)
+    validate_authority(owner, authority)
         .map_err(|_| CellularDnsPrepareError::AuthorityUnavailable)?;
     let mut observation = DNS_DIAGNOSTICS.start(authority);
     let resolved = resolve(authority, domain);
@@ -438,6 +439,7 @@ fn connect_host_with<T>(
         ProxyTargetHost::Domain(domain) => {
             let prepared = resolve_current_domain(
                 owner,
+                authority,
                 domain,
                 deadline,
                 |authority, hostname| resolve(authority, hostname, deadline),
@@ -519,7 +521,7 @@ fn ensure_deadline(deadline: Instant) -> Result<(), ProxyOutboundConnectError> {
     remaining(deadline).map(|_| ())
 }
 
-fn issue_authority(
+pub(crate) fn issue_authority(
     owner: &Arc<Mutex<CellularEgress>>,
 ) -> Result<CellularNetworkAuthority, ProxyOutboundConnectError> {
     owner
@@ -529,7 +531,7 @@ fn issue_authority(
         .map_err(map_authority_error)
 }
 
-fn validate_authority(
+pub(crate) fn validate_authority(
     owner: &Arc<Mutex<CellularEgress>>,
     authority: CellularNetworkAuthority,
 ) -> Result<(), ProxyOutboundConnectError> {
