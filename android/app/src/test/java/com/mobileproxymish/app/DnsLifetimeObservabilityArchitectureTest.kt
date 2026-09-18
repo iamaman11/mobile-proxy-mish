@@ -22,13 +22,19 @@ class DnsLifetimeObservabilityArchitectureTest {
             connector.contains("static DNS_DIAGNOSTICS") &&
                 connector.contains("completed_after_owner_change") &&
                 connector.contains("discarded_stale") &&
+                connector.contains("resolver_failed") &&
+                connector.contains("authority_validation_failed") &&
+                connector.contains("unusable_result") &&
                 connector.contains("peak_active"),
         )
         assertTrue(
             "Android must only project the Rust DNS snapshot",
             bridge.contains("controller?.dnsDiagnosticSnapshot()") &&
                 diagnostics.contains("dnsObservation = dnsAfter") &&
-                diagnostics.contains("\"completed_after_owner_change\""),
+                diagnostics.contains("\"completed_after_owner_change\"") &&
+                diagnostics.contains("\"resolver_failed\"") &&
+                diagnostics.contains("\"authority_validation_failed\"") &&
+                diagnostics.contains("\"unusable_result\""),
         )
 
         for (forbidden in listOf("newSingleThreadExecutor", "newFixedThreadPool", "AtomicInteger", "AtomicLong")) {
