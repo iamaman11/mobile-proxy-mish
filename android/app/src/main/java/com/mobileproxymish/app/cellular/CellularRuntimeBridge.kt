@@ -73,7 +73,7 @@ internal data class CellularRootPolicyReconcileDiagnostic(
 )
 
 /**
- * Thin Android platform adapter for one native PRODUCT generation.
+ * Thin Android platform adapter around one stable native PRODUCT process handle.
  *
  * Rust owns Cellular admission/currentness, root-policy transaction/recovery and generation
  * coalescing. Android only observes ConnectivityManager, resolves LinkProperties for the exact
