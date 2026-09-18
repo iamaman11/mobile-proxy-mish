@@ -234,6 +234,23 @@ $dnsLifetimeEvidence = [ordered]@{
     post_e3_wait_elapsed_ms = 0
 }
 $restartEvidence = [ordered]@{}
+$lifecycleLatencyBudget = [ordered]@{
+    measurement_status = 'NOT_OBSERVED'
+    threshold_policy = 'NO_NEW_SLA'
+    startup = [ordered]@{
+        initial_launch_elapsed_ms = $null
+        restart_launch_elapsed_ms = $null
+    }
+    root_reconcile = [ordered]@{
+        initial_last_reconcile_elapsed_ms = $null
+        initial_last_policy_effect_elapsed_ms = $null
+        restart_last_reconcile_elapsed_ms = $null
+        restart_last_policy_effect_elapsed_ms = $null
+    }
+    loss = $null
+    recovery = $null
+    stop = $null
+}
 $harnessCleanup = [ordered]@{
     package_id = $script:TestPackage
     attempted = $false
@@ -277,6 +294,12 @@ try {
         Stop-MishRecovery 'LAB_RECOVERY_PRECONDITION_NOT_READY' 'Baseline owner/network facts are not ready for recovery/lifecycle acceptance.'
     }
 
+    $lifecycleLatencyBudget.startup.initial_launch_elapsed_ms = [int64]$initialLaunch.elapsed_ms
+    $lifecycleLatencyBudget.root_reconcile.initial_last_reconcile_elapsed_ms =
+        [int64]$preSnapshot.root.reconcile.last_reconcile_elapsed_ms
+    $lifecycleLatencyBudget.root_reconcile.initial_last_policy_effect_elapsed_ms =
+        [int64]$preSnapshot.root.reconcile.last_policy_effect_elapsed_ms
+
     $preDnsObservation = Get-MishDnsLifetimeObservation -Snapshot $preSnapshot
     if ($null -eq $preDnsObservation) {
         Stop-MishRecovery 'LAB_DNS_LIFETIME_BASELINE_INVALID' 'Baseline canonical snapshot omitted a consistent native DNS observation.'
@@ -302,6 +325,243 @@ try {
     $positive = $instrumentationOutput -match '(?m)^INSTRUMENTATION_STATUS:\s*e3_evidence=phase=positive '
     $negative = $instrumentationOutput -match '(?m)^INSTRUMENTATION_STATUS:\s*e3_evidence=phase=negative '
     $recovery = $instrumentationOutput -match '(?m)^INSTRUMENTATION_STATUS:\s*e3_evidence=phase=recovery '
+
+    $latencyPattern =
+        '(?m)^INSTRUMENTATION_STATUS:\s*e3_evidence=phase=latency ' +
+        'loss_owner_elapsed_ms=(?<lossOwner>\d+) ' +
+        'loss_fail_closed_elapsed_ms=(?<lossFailClosed>\d+) ' +
+        'recovery_owner_elapsed_ms=(?<recoveryOwner>\d+) ' +
+        'recovery_functional_elapsed_ms=(?<recoveryFunctional>\d+) ' +
+        'proxy_close_elapsed_ms=(?<proxyClose>\d+) ' +
+        'cellular_close_elapsed_ms=(?<cellularClose>\d+) ' +
+        'cleanup_verify_elapsed_ms=(?<cleanupVerify>\d+) ' +
+        'stop_total_elapsed_ms=(?<stopTotal>\d+)\s*
+        exact_test_apk_digest_verified = $true
+        preinstalled_lab_signed_harness = $true
+        test_package_id = $script:TestPackage
+        installed_package_path_verified = $true
+        instrumentation_exit_code = [int]$instrumentation.ExitCode
+        instrumentation_test_dispatched = $testDispatched
+        instrumentation_pass = $instrumentationPass
+        instrumentation_stderr_present = -not [string]::IsNullOrWhiteSpace($instrumentation.StdErr)
+        instrumentation_output = Get-MishBoundedText -Text $instrumentationOutput
+        positive_phase = $positive
+        negative_phase = $negative
+        recovery_phase = $recovery
+        established_flow_blocked = $instrumentationOutput -match 'established_flow_blocked=true'
+        dns_blocked = $instrumentationOutput -match 'dns_blocked=true'
+        public_socket_blocked = $instrumentationOutput -match 'public_socket_blocked=true'
+        no_default_fallback = $instrumentationOutput -match 'no_default_fallback=true'
+        fresh_generation = $instrumentationOutput -match 'fresh_generation=true'
+        cleanup_verified = $instrumentationOutput -match 'cleanup_verified=true'
+    }
+
+    if (-not $instrumentationPass -or -not $positive -or -not $negative -or -not $recovery) {
+        Stop-MishRecovery (Get-MishE3FailureClassification -Output $instrumentationOutput -TestDispatched $testDispatched) 'Exact-head Cellular E3 lifecycle instrumentation failed.'
+    }
+
+    foreach ($required in @('established_flow_blocked','dns_blocked','public_socket_blocked','no_default_fallback','fresh_generation','cleanup_verified')) {
+        if (-not [bool]$cellularEvidence[$required]) {
+            Stop-MishRecovery 'U2_CELLULAR_E3_EVIDENCE_INCOMPLETE' "Cellular E3 PASS output omitted required $required evidence."
+        }
+    }
+
+    # Capture the first coherent process-wide DNS observation available after E3 and before the
+    # explicit force-stop/start below. Android instrumentation can replace the PRODUCT process, so
+    # PID continuity is evidence, not a recovery acceptance gate. Counters from different PIDs must
+    # never be compared as one process-wide lifetime series.
+    $postE3Read = Wait-MishDnsLifetimeObservation
+    $dnsLifetimeEvidence.post_e3_snapshot_attempts = [int]$postE3Read.attempts
+    $dnsLifetimeEvidence.post_e3_wait_elapsed_ms = [int64]$postE3Read.elapsed_ms
+    if ($null -eq $postE3Read.observation) {
+        # E3/recovery acceptance is owned by the exact PRODUCT instrumentation and the canonical
+        # post-restart diagnostic below. A post-instrumentation DNS snapshot is optional U3
+        # measurement evidence: absence here must never manufacture either DNS PASS or recovery
+        # failure. Keep the measurement explicitly NOT_EVALUATED and continue to the real restart
+        # acceptance boundary.
+        $dnsLifetimeEvidence.measurement_status = 'POST_INSTRUMENTATION_UNAVAILABLE'
+    } else {
+        $dnsLifetimeEvidence.after_e3_before_restart = $postE3Read.observation
+        $dnsLifetimeEvidence.measurement_status = 'OBSERVED'
+        $dnsLifetimeEvidence.same_process =
+            [int]$postE3Read.observation.pid -eq [int]$preDnsObservation.pid
+        $dnsLifetimeEvidence.comparison_scope = if ([bool]$dnsLifetimeEvidence.same_process) {
+            'SAME_PROCESS'
+        } else {
+            'PROCESS_BOUNDARY'
+        }
+    }
+
+    & (Join-Path $PSScriptRoot 'start-device-app.ps1') `
+        -AdbPath $AdbPath `
+        -PackageName $PackageName `
+        -ComponentName $ComponentName `
+        -ReceiptPath $PostRestartReceiptPath | Out-Host
+
+    $postStart = Read-MishJson -Path $PostRestartReceiptPath
+    if ([string]$postStart.result -cne 'PASS') {
+        Stop-MishRecovery 'U2_RESTART_LAUNCH_FAILED' 'Canonical post-E3 PRODUCT restart did not stabilize.'
+    }
+
+    & (Join-Path $PSScriptRoot 'collect-device-diagnostic.ps1') `
+        -AdbPath $AdbPath `
+        -PackageName $PackageName `
+        -EvidencePath $PostRestartDiagnosticPath | Out-Host
+
+    $postDiagnostic = Read-MishJson -Path $PostRestartDiagnosticPath
+    $postClass = [string]$postDiagnostic.classification
+    $externalMeshBlocked = $postClass -ceq 'LAB_WINDOWS_SANDBOX_OUTBOUND_BLOCKED'
+    if ($postClass -cne 'PASS' -and -not $externalMeshBlocked) {
+        if ($postClass -like 'LAB_*') {
+            Stop-MishRecovery $postClass 'Post-restart canonical diagnostic failed in LAB.'
+        }
+        Stop-MishRecovery 'U2_RESTART_DIAGNOSTIC_FAILED' "Post-restart canonical diagnostic was not PASS: $postClass"
+    }
+
+    if ([int64]$postDiagnostic.android.mesh.active_sessions -ne 0 -or [int]$postDiagnostic.android.proxy.active_sessions -ne 0) {
+        Stop-MishRecovery 'U2_RESTART_ACTIVE_SESSION_LEAK' 'Post-restart owner snapshot retained active sessions before diagnostic probes.'
+    }
+
+    $restartEvidence = [ordered]@{
+        canonical_force_stop_start = $true
+        initial_pid = [int]$initialLaunch.pid
+        final_pid = [int]$postStart.pid
+        final_pid_stable = [bool]$postStart.pid_stable
+        launch_elapsed_ms = [int64]$postStart.elapsed_ms
+        diagnostic_classification = $postClass
+        external_mesh_acceptance_blocked = $externalMeshBlocked
+        root_policy_authorized = [bool]$postDiagnostic.android.root.policy_authorized
+        root_authority_observation = [string]$postDiagnostic.android.root.authority_observation
+        proxy_healthy = [bool]$postDiagnostic.android.proxy.healthy
+        mesh_admitted = [bool]$postDiagnostic.android.mesh.admitted
+        mesh_epoch_present = [bool]$postDiagnostic.android.mesh.epoch_present
+        mesh_ingress_running = [bool]$postDiagnostic.android.mesh.ingress_running
+        owner_sessions_before_external_diagnostic_probes = [ordered]@{
+            mesh = [int64]$postDiagnostic.android.mesh.active_sessions
+            proxy = [int]$postDiagnostic.android.proxy.active_sessions
+        }
+        loopback_e2e = [string]$postDiagnostic.external.adb_loopback_proxy_e2e.result
+        mesh_e2e = [string]$postDiagnostic.external.mesh_proxy_e2e.result
+    }
+
+    $lifecycleLatencyBudget.startup.restart_launch_elapsed_ms = [int64]$postStart.elapsed_ms
+    $lifecycleLatencyBudget.root_reconcile.restart_last_reconcile_elapsed_ms =
+        [int64]$postDiagnostic.android.root.reconcile.last_reconcile_elapsed_ms
+    $lifecycleLatencyBudget.root_reconcile.restart_last_policy_effect_elapsed_ms =
+        [int64]$postDiagnostic.android.root.reconcile.last_policy_effect_elapsed_ms
+    if ([string]$lifecycleLatencyBudget.measurement_status -ceq 'E3_OBSERVED') {
+        $lifecycleLatencyBudget.measurement_status = 'COMPLETE'
+    }
+
+    $externalMeshSatisfied = $externalMeshBlocked -or [string]$restartEvidence.mesh_e2e -ceq 'PASS'
+    if (
+        -not [bool]$restartEvidence.root_policy_authorized -or
+        [string]$restartEvidence.root_authority_observation -cne 'READY_AT_POLICY_AUTHORIZATION' -or
+        -not [bool]$restartEvidence.proxy_healthy -or
+        -not [bool]$restartEvidence.mesh_admitted -or
+        -not [bool]$restartEvidence.mesh_epoch_present -or
+        -not [bool]$restartEvidence.mesh_ingress_running -or
+        [string]$restartEvidence.loopback_e2e -cne 'PASS' -or
+        -not $externalMeshSatisfied
+    ) {
+        Stop-MishRecovery 'U2_RESTART_RECOVERY_INCOMPLETE' 'Canonical post-restart owner/readiness/E2E evidence is incomplete.'
+    }
+
+    if ($externalMeshBlocked) {
+        Stop-MishRecovery 'LAB_EXTERNAL_MESH_ACCEPTANCE_BLOCKED' 'Cellular E3 and PRODUCT restart passed, but external Mesh E2E is blocked by the Windows LAB sandbox.'
+    }
+
+    $classification = 'U2_RECOVERY_LIFECYCLE_PASS'
+    $acceptanceResult = 'PASS'
+}
+catch {
+    $message = $_.Exception.Message
+    if ($message -match '^MISH_RECOVERY_FAILURE\|(?<classification>[A-Z0-9_]+)\|') {
+        $classification = $Matches['classification']
+    }
+    else {
+        $classification = 'LAB_RECOVERY_PROBE_UNEXPECTED_FAILURE'
+    }
+}
+finally {
+    try {
+        $installedHarness = Invoke-MishAdb -Arguments @('shell', 'pm', 'path', $script:TestPackage) -TimeoutSeconds 20
+        $harnessPresent = $installedHarness.ExitCode -eq 0 -and $installedHarness.StdOut -match '(?m)^package:'
+        if ($harnessPresent) {
+            $harnessCleanup.attempted = $true
+            $cleanup = Invoke-MishAdb -Arguments @('uninstall', $script:TestPackage) -TimeoutSeconds 30
+            $harnessCleanup.succeeded = $cleanup.ExitCode -eq 0 -and $cleanup.StdOut -match '(?m)^Success\s*$'
+        }
+        else {
+            $harnessCleanup.succeeded = $true
+        }
+    }
+    catch {
+        $harnessCleanup.attempted = $true
+        $harnessCleanup.succeeded = $false
+    }
+
+    if ($acceptanceResult -ceq 'PASS' -and -not [bool]$harnessCleanup.succeeded) {
+        $acceptanceResult = 'FAIL'
+        $classification = 'LAB_TEST_HARNESS_CLEANUP_FAILED'
+    }
+
+    $evidence = [ordered]@{
+        schema = $script:Schema
+        collected_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
+        source_sha = $ExpectedSourceSha
+        application_id = $PackageName
+        acceptance_result = $acceptanceResult
+        classification = $classification
+        mesh_vpn_loss_recovery = $lossEvidence
+        cellular_e3 = $cellularEvidence
+        dns_lifetime = $dnsLifetimeEvidence
+        lifecycle_latency_budget = $lifecycleLatencyBudget
+        restart = $restartEvidence
+        test_harness = $harnessCleanup
+        lab_effects = [ordered]@{
+            external_mesh_owner_fault_injection = 'NOT_PERFORMED'
+            cellular_loss = 'exact-head CellularE3InstrumentedTest uses cmd phone data disable/enable'
+            cloudflare_app_mutated = $false
+            product_routes_or_iptables_mutated_by_lab = $false
+        }
+    }
+
+    $fullEvidencePath = [IO.Path]::GetFullPath($EvidencePath)
+    $parent = Split-Path -Parent $fullEvidencePath
+    if ($parent) { [IO.Directory]::CreateDirectory($parent) | Out-Null }
+    [IO.File]::WriteAllText(
+        $fullEvidencePath,
+        (($evidence | ConvertTo-Json -Depth 16) + [Environment]::NewLine),
+        [Text.UTF8Encoding]::new($false)
+    )
+}
+
+Write-Host "MISH_RECOVERY_LIFECYCLE_ACCEPTANCE=$acceptanceResult"
+Write-Host "MISH_RECOVERY_LIFECYCLE_CLASSIFICATION=$classification"
+Write-Host "MISH_RECOVERY_LIFECYCLE_EVIDENCE=$([IO.Path]::GetFullPath($EvidencePath))"
+if ($acceptanceResult -cne 'PASS') {
+    throw "MISH_RECOVERY_RESULT|$acceptanceResult|$classification"
+}
+
+    $latencyMatch = [regex]::Match($instrumentationOutput, $latencyPattern)
+    if ($latencyMatch.Success) {
+        $lifecycleLatencyBudget.measurement_status = 'E3_OBSERVED'
+        $lifecycleLatencyBudget.loss = [ordered]@{
+            owner_not_admitted_elapsed_ms = [int64]$latencyMatch.Groups['lossOwner'].Value
+            full_fail_closed_elapsed_ms = [int64]$latencyMatch.Groups['lossFailClosed'].Value
+        }
+        $lifecycleLatencyBudget.recovery = [ordered]@{
+            owner_ready_elapsed_ms = [int64]$latencyMatch.Groups['recoveryOwner'].Value
+            functional_ready_elapsed_ms = [int64]$latencyMatch.Groups['recoveryFunctional'].Value
+        }
+        $lifecycleLatencyBudget.stop = [ordered]@{
+            proxy_close_elapsed_ms = [int64]$latencyMatch.Groups['proxyClose'].Value
+            cellular_close_elapsed_ms = [int64]$latencyMatch.Groups['cellularClose'].Value
+            cleanup_verify_elapsed_ms = [int64]$latencyMatch.Groups['cleanupVerify'].Value
+            total_elapsed_ms = [int64]$latencyMatch.Groups['stopTotal'].Value
+        }
+    }
 
     $cellularEvidence = [ordered]@{
         exact_test_apk_sha256 = $testApkSha
