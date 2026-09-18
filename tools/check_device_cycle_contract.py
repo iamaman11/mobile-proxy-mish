@@ -32,6 +32,12 @@ def forbid_regex(path: str, pattern: str, reason: str) -> None:
 def main() -> None:
     workflow = ".github/workflows/device-cycle.yml"
 
+    require(
+        workflow,
+        "'- Next action: **STOP_FOR_ANALYSIS**'\n            ) | Add-Content",
+        "Device Cycle summary must remain valid PowerShell without a trailing array comma",
+    )
+
     for required in (
         "issue_comment:",
         "types: [created]",
@@ -212,6 +218,7 @@ def main() -> None:
         "quiescent_after_recovery",
         "observation_only = $true",
         "same_process = $true",
+        'https://mish-dns-$RunTag-$Ordinal.example.com/',
     ):
         require(dns_probe, required, "U3 DNS lifetime observation must stay bounded and same-process")
     for forbidden in (
