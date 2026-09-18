@@ -35,8 +35,8 @@ class DebugReadinessActivity : Activity() {
             val ingressFailure = runtime.currentMeshRuntime.diagnosticIngressFailure()
             Log.i(TAG, "state=${runtime.readinessSnapshot.value}")
             Log.i(TAG, "inner_readiness=$innerReadiness")
-            Log.i(TAG, "cellular_state=${ownerAdmission?.state?.name ?: \"BOUNDARY_UNAVAILABLE\"}")
-            Log.i(TAG, "cellular_reason=${ownerAdmission?.reason?.name ?: \"NONE\"}")
+            Log.i(TAG, "cellular_state=${ownerAdmission?.state?.name ?: "BOUNDARY_UNAVAILABLE"}")
+            Log.i(TAG, "cellular_reason=${ownerAdmission?.reason?.name ?: "NONE"}")
             Log.i(
                 TAG,
                 "cellular_admitted=${ownerAdmission?.state == com.mobileproxymish.ffi.CellularAdmissionState.ADMITTED}",
