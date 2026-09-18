@@ -10,9 +10,6 @@ pub use credentials_ffi::*;
 mod proxy_recovery_ffi;
 pub use proxy_recovery_ffi::*;
 
-mod proxy_serving_ffi;
-pub use proxy_serving_ffi::*;
-
 mod readiness_ffi;
 pub use readiness_ffi::*;
 
