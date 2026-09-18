@@ -88,6 +88,9 @@ impl ProxyCredentialMaterial {
     pub fn password(&self) -> &str {
         &self.password
     }
+    pub fn basic_authorization_value(&self) -> String {
+        http_connect::expected_basic_authorization(self)
+    }
 }
 
 impl fmt::Debug for ProxyCredentialMaterial {
