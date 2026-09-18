@@ -1,6 +1,9 @@
 mod runtime_boundary;
 pub use runtime_boundary::*;
 
+mod runtime_executor_ffi;
+pub use runtime_executor_ffi::*;
+
 mod credentials_ffi;
 pub use credentials_ffi::*;
 
