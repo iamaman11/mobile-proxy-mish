@@ -251,6 +251,10 @@ pub struct CellularController {
 }
 
 impl CellularController {
+    pub(crate) fn from_runtime(runtime: Arc<CellularRuntimeCoordinator>) -> Arc<Self> {
+        Arc::new(Self { runtime })
+    }
+
     pub(crate) fn runtime_handle(&self) -> Arc<CellularRuntimeCoordinator> {
         Arc::clone(&self.runtime)
     }
