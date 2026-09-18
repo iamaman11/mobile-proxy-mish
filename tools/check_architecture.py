@@ -269,6 +269,25 @@ def main() -> None:
             "Android U4 adapter must remain a narrow bounded TLS/HTTPS effect",
         )
 
+    public_ip_physical = (
+        "android/app/src/androidTest/java/com/mobileproxymish/app/cellular/"
+        "CellularE3InstrumentedTest.kt"
+    )
+    for required in (
+        "runtime.observePublicEgressIp(",
+        ".preparePublicIpProbe(",
+        "u4StaleTicket.isCurrent()",
+        'u4StaleTicket.complete("198.51.100.77")',
+        "phase=u4 positive_https=true owner_bound_dns=true ordinary_uid_socket=true",
+        "stale_generation_rejected=true no_default_fallback=true",
+        "fresh_generation=true repeated_observations_bounded=true raw_ip_persisted=false",
+    ):
+        require(
+            public_ip_physical,
+            required,
+            "U4 physical proof must ride the existing exact-candidate recovery lifecycle",
+        )
+
     endpoint_literal = "checkip.amazonaws.com"
     endpoint_owners = []
     for product_path in list(ROOT.glob("crates/**/*.rs")) + list(
