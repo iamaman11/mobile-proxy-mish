@@ -1,0 +1,514 @@
+//! Stable PRODUCT process handle with Rust-owned runtime generation lifecycle.
+//!
+//! One process keeps one Tokio executor. Runtime generations are immutable composition aggregates
+//! replaced inside this owner. Android may register platform observations against the stable handle;
+//! it never constructs, numbers or replaces PRODUCT generations.
+
+use crate::{
+    CellularDnsResolver, CellularPolicyObserver, ProductGeneration, ProxyRuntimeObserver,
+    ReadinessObserver, RuntimeExecutionError, RuntimeExecutor, RuntimeLifecycle,
+    RuntimeLifecycleState, RuntimeStartAction, RuntimeStopAction,
+};
+use mish_cellular::RootPolicyNamespace;
+use std::sync::{Arc, Mutex, MutexGuard};
+use tokio::task::spawn_blocking;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProductRuntimeSnapshot {
+    pub state: RuntimeLifecycleState,
+    pub generation: u64,
+    pub generation_requires_replacement: bool,
+}
+
+#[derive(Clone)]
+struct ProductStartInput {
+    credential_version: Option<u64>,
+    username: Option<String>,
+    password: Option<String>,
+}
+
+#[derive(Clone, Default)]
+struct ProductObservers {
+    cellular: Option<CellularPolicyObserver>,
+    readiness: Option<ReadinessObserver>,
+    proxy: Option<ProxyRuntimeObserver>,
+}
+
+struct ProductRuntimeState {
+    lifecycle: RuntimeLifecycle,
+    generation: Arc<ProductGeneration>,
+    pending_start: Option<ProductStartInput>,
+    observers: ProductObservers,
+    closed: bool,
+}
+
+pub struct ProductRuntimeCoordinator {
+    executor: Arc<RuntimeExecutor>,
+    resolver: Arc<dyn CellularDnsResolver>,
+    product_uid: u32,
+    namespace: RootPolicyNamespace,
+    state: Mutex<ProductRuntimeState>,
+}
+
+impl ProductRuntimeCoordinator {
+    pub fn new(
+        resolver: Arc<dyn CellularDnsResolver>,
+        product_uid: u32,
+        namespace: RootPolicyNamespace,
+    ) -> Result<Arc<Self>, RuntimeExecutionError> {
+        if product_uid == 0 {
+            return Err(RuntimeExecutionError::StateUnavailable);
+        }
+
+        let executor = RuntimeExecutor::new()?;
+        let lifecycle = RuntimeLifecycle::new();
+        let generation = ProductGeneration::new(
+            Arc::clone(&executor),
+            Arc::clone(&resolver),
+            product_uid,
+            namespace,
+            lifecycle.generation(),
+        )?;
+
+        Ok(Arc::new(Self {
+            executor,
+            resolver,
+            product_uid,
+            namespace,
+            state: Mutex::new(ProductRuntimeState {
+                lifecycle,
+                generation,
+                pending_start: None,
+                observers: ProductObservers::default(),
+                closed: false,
+            }),
+        }))
+    }
+
+    pub fn executor(&self) -> Arc<RuntimeExecutor> {
+        Arc::clone(&self.executor)
+    }
+
+    pub fn snapshot(&self) -> ProductRuntimeSnapshot {
+        self.state().map_or(
+            ProductRuntimeSnapshot {
+                state: RuntimeLifecycleState::Stopped,
+                generation: 0,
+                generation_requires_replacement: true,
+            },
+            |state| snapshot(&state),
+        )
+    }
+
+    pub fn current_generation(&self) -> Result<Arc<ProductGeneration>, RuntimeExecutionError> {
+        self.state().map(|state| Arc::clone(&state.generation))
+    }
+
+    pub fn active_generation(&self) -> Result<Arc<ProductGeneration>, RuntimeExecutionError> {
+        let state = self.state()?;
+        if !matches!(
+            state.lifecycle.state(),
+            RuntimeLifecycleState::Starting | RuntimeLifecycleState::Running
+        ) {
+            return Err(RuntimeExecutionError::StateUnavailable);
+        }
+        Ok(Arc::clone(&state.generation))
+    }
+
+    pub fn set_cellular_observer(&self, observer: CellularPolicyObserver) {
+        let generation = {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            state.observers.cellular = Some(Arc::clone(&observer));
+            Arc::clone(&state.generation)
+        };
+        generation.policy().set_observer(observer);
+    }
+
+    pub fn set_readiness_observer(&self, observer: ReadinessObserver) {
+        let generation = {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            state.observers.readiness = Some(Arc::clone(&observer));
+            Arc::clone(&state.generation)
+        };
+        generation.readiness().set_observer(observer);
+    }
+
+    pub fn set_proxy_observer(&self, observer: ProxyRuntimeObserver) {
+        let generation = {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            state.observers.proxy = Some(Arc::clone(&observer));
+            Arc::clone(&state.generation)
+        };
+        generation.proxy().set_observer(observer);
+    }
+
+    pub fn request_start(
+        self: &Arc<Self>,
+        credential_version: Option<u64>,
+        username: Option<String>,
+        password: Option<String>,
+    ) -> Result<RuntimeStartAction, RuntimeExecutionError> {
+        let input = ProductStartInput {
+            credential_version,
+            username,
+            password,
+        };
+
+        let (action, expected_generation, rebound) = {
+            let mut state = self.state_mut()?;
+            if state.closed {
+                return Err(RuntimeExecutionError::StateUnavailable);
+            }
+
+            let action = state.lifecycle.request_start();
+            match action {
+                RuntimeStartAction::AlreadyActive => return Ok(action),
+                RuntimeStartAction::QueuedAfterStop => {
+                    state.pending_start = Some(input);
+                    return Ok(action);
+                }
+                RuntimeStartAction::StartNow => {}
+            }
+
+            let rebound = if state.lifecycle.generation_requires_replacement() {
+                if !state.lifecycle.take_generation_replacement_for_start() {
+                    state.lifecycle.start_submission_failed();
+                    return Err(RuntimeExecutionError::StateUnavailable);
+                }
+                let generation = self.build_generation(state.lifecycle.generation())?;
+                state.generation = Arc::clone(&generation);
+                Some((generation, state.observers.clone()))
+            } else {
+                None
+            };
+            state.pending_start = None;
+            (action, state.lifecycle.generation(), rebound)
+        };
+
+        if let Some((generation, observers)) = rebound {
+            bind_observers(&generation, observers);
+        }
+
+        let owner = Arc::clone(self);
+        if self
+            .executor
+            .spawn(async move {
+                owner.run_start(expected_generation, input).await;
+            })
+            .is_err()
+        {
+            if let Ok(mut state) = self.state.lock() {
+                state.lifecycle.start_submission_failed();
+            }
+            return Err(RuntimeExecutionError::ThreadUnavailable);
+        }
+        Ok(action)
+    }
+
+    pub fn request_stop(
+        self: &Arc<Self>,
+    ) -> Result<RuntimeStopAction, RuntimeExecutionError> {
+        let (action, expected_generation) = {
+            let mut state = self.state_mut()?;
+            if state.closed {
+                return Ok(RuntimeStopAction::AlreadyStopped);
+            }
+            let action = state.lifecycle.request_stop();
+            if action != RuntimeStopAction::StopNow {
+                return Ok(action);
+            }
+            (action, state.lifecycle.generation())
+        };
+
+        let owner = Arc::clone(self);
+        if self
+            .executor
+            .spawn(async move {
+                owner.run_stop(expected_generation).await;
+            })
+            .is_err()
+        {
+            if let Ok(mut state) = self.state.lock() {
+                state.lifecycle.stop_submission_failed();
+            }
+            return Err(RuntimeExecutionError::ThreadUnavailable);
+        }
+        Ok(action)
+    }
+
+    /// Final process teardown. Unlike service stop, this destroys the shared Tokio runtime.
+    pub fn shutdown_blocking(self: &Arc<Self>) -> Result<bool, RuntimeExecutionError> {
+        let already_closed = {
+            let mut state = self.state_mut()?;
+            if state.closed {
+                true
+            } else {
+                state.closed = true;
+                state.pending_start = None;
+                false
+            }
+        };
+        if already_closed {
+            return Ok(true);
+        }
+
+        let generation = self.current_generation()?;
+        let clean = self.executor.block_on(generation.shutdown_async())?;
+        self.executor.shutdown()?;
+        Ok(clean)
+    }
+
+    async fn run_start(self: Arc<Self>, expected_generation: u64, input: ProductStartInput) {
+        let generation = {
+            let Ok(state) = self.state.lock() else {
+                return;
+            };
+            if state.closed
+                || state.lifecycle.state() != RuntimeLifecycleState::Starting
+                || state.lifecycle.generation() != expected_generation
+                || state.generation.generation() != expected_generation
+            {
+                return;
+            }
+            Arc::clone(&state.generation)
+        };
+
+        if generation.policy().start().is_err() {
+            self.finish_failed_start(expected_generation, generation).await;
+            return;
+        }
+
+        let proxy = generation.proxy();
+        let input_for_proxy = input.clone();
+        let proxy_started = spawn_blocking(move || {
+            proxy.start(
+                input_for_proxy.credential_version,
+                input_for_proxy.username,
+                input_for_proxy.password,
+            );
+        })
+        .await
+        .is_ok();
+
+        if !proxy_started {
+            self.finish_failed_start(expected_generation, generation).await;
+            return;
+        }
+
+        if let Ok(mut state) = self.state.lock() {
+            if state.lifecycle.generation() == expected_generation
+                && state.lifecycle.state() == RuntimeLifecycleState::Starting
+            {
+                state.lifecycle.complete_start(true, true);
+            }
+        }
+    }
+
+    async fn finish_failed_start(
+        &self,
+        expected_generation: u64,
+        generation: Arc<ProductGeneration>,
+    ) {
+        let clean = generation.shutdown_async().await;
+        let rebound = {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            if state.lifecycle.generation() != expected_generation
+                || state.lifecycle.state() != RuntimeLifecycleState::Starting
+            {
+                return;
+            }
+            let completion = state.lifecycle.complete_start(false, clean);
+            if completion.install_fresh_generation_now() {
+                match self.build_generation(state.lifecycle.generation()) {
+                    Ok(fresh) => {
+                        state.generation = Arc::clone(&fresh);
+                        Some((fresh, state.observers.clone()))
+                    }
+                    Err(_) => {
+                        state.lifecycle.mark_stopped_generation_dirty();
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        };
+        if let Some((generation, observers)) = rebound {
+            bind_observers(&generation, observers);
+        }
+    }
+
+    async fn run_stop(self: Arc<Self>, expected_generation: u64) {
+        let generation = {
+            let Ok(state) = self.state.lock() else {
+                return;
+            };
+            if state.lifecycle.generation() != expected_generation
+                || state.lifecycle.state() != RuntimeLifecycleState::Stopping
+            {
+                return;
+            }
+            Arc::clone(&state.generation)
+        };
+
+        let clean = generation.shutdown_async().await;
+
+        let (rebound, restart) = {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            if state.lifecycle.generation() != expected_generation
+                || state.lifecycle.state() != RuntimeLifecycleState::Stopping
+            {
+                return;
+            }
+
+            let disposition = state.lifecycle.complete_stop(clean);
+            let mut rebound = None;
+            if disposition.install_fresh_generation_now() {
+                match self.build_generation(state.lifecycle.generation()) {
+                    Ok(fresh) => {
+                        state.generation = Arc::clone(&fresh);
+                        rebound = Some((fresh, state.observers.clone()));
+                    }
+                    Err(_) => {
+                        state.lifecycle.mark_stopped_generation_dirty();
+                    }
+                }
+            }
+
+            let restart = if disposition.restart_now() && rebound.is_some() {
+                state.pending_start.take()
+            } else {
+                state.pending_start = None;
+                None
+            };
+            (rebound, restart)
+        };
+
+        if let Some((generation, observers)) = rebound {
+            bind_observers(&generation, observers);
+        }
+
+        if let Some(input) = restart {
+            let expected = {
+                let Ok(mut state) = self.state.lock() else {
+                    return;
+                };
+                if state.lifecycle.request_start() != RuntimeStartAction::StartNow {
+                    return;
+                }
+                state.lifecycle.generation()
+            };
+            self.run_start(expected, input).await;
+        }
+    }
+
+    fn build_generation(
+        &self,
+        generation: u64,
+    ) -> Result<Arc<ProductGeneration>, RuntimeExecutionError> {
+        ProductGeneration::new(
+            Arc::clone(&self.executor),
+            Arc::clone(&self.resolver),
+            self.product_uid,
+            self.namespace,
+            generation,
+        )
+    }
+
+    fn state(&self) -> Result<MutexGuard<'_, ProductRuntimeState>, RuntimeExecutionError> {
+        self.state
+            .lock()
+            .map_err(|_| RuntimeExecutionError::StateUnavailable)
+    }
+
+    fn state_mut(&self) -> Result<MutexGuard<'_, ProductRuntimeState>, RuntimeExecutionError> {
+        self.state()
+    }
+}
+
+fn bind_observers(generation: &ProductGeneration, observers: ProductObservers) {
+    if let Some(observer) = observers.cellular {
+        generation.policy().set_observer(observer);
+    }
+    if let Some(observer) = observers.readiness {
+        generation.readiness().set_observer(observer);
+    }
+    if let Some(observer) = observers.proxy {
+        generation.proxy().set_observer(observer);
+    }
+}
+
+fn snapshot(state: &ProductRuntimeState) -> ProductRuntimeSnapshot {
+    ProductRuntimeSnapshot {
+        state: state.lifecycle.state(),
+        generation: state.lifecycle.generation(),
+        generation_requires_replacement: state.lifecycle.generation_requires_replacement(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mish_proxy::ProxyOutboundConnectError;
+    use std::net::IpAddr;
+
+    struct EmptyResolver;
+
+    impl CellularDnsResolver for EmptyResolver {
+        fn resolve(
+            &self,
+            _authority: mish_cellular::CellularNetworkAuthority,
+            _hostname: &str,
+        ) -> Result<Vec<IpAddr>, ProxyOutboundConnectError> {
+            Err(ProxyOutboundConnectError::Unavailable)
+        }
+    }
+
+    #[test]
+    fn stable_process_handle_starts_at_generation_one() {
+        let runtime = ProductRuntimeCoordinator::new(
+            Arc::new(EmptyResolver),
+            10_123,
+            RootPolicyNamespace::Debug,
+        )
+        .expect("runtime");
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.state, RuntimeLifecycleState::Stopped);
+        assert_eq!(snapshot.generation, 1);
+        assert!(!snapshot.generation_requires_replacement);
+        runtime.executor.shutdown().expect("executor shutdown");
+    }
+
+    #[test]
+    fn duplicate_start_is_owned_by_native_lifecycle() {
+        let runtime = ProductRuntimeCoordinator::new(
+            Arc::new(EmptyResolver),
+            10_123,
+            RootPolicyNamespace::Debug,
+        )
+        .expect("runtime");
+        assert_eq!(
+            runtime
+                .request_start(None, None, None)
+                .expect("first start"),
+            RuntimeStartAction::StartNow
+        );
+        assert_eq!(
+            runtime
+                .request_start(None, None, None)
+                .expect("duplicate start"),
+            RuntimeStartAction::AlreadyActive
+        );
+        runtime.executor.shutdown().expect("executor shutdown");
+    }
+}
