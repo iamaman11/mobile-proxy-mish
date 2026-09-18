@@ -227,7 +227,7 @@ impl PublicIpProbeTicket {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct AndroidDnsResolver;
+pub(crate) struct AndroidDnsResolver;
 impl CellularDnsResolver for AndroidDnsResolver {
     fn resolve(
         &self,
@@ -374,7 +374,7 @@ impl CellularController {
     }
 }
 
-fn map_snapshot(snapshot: OwnerAdmissionSnapshot) -> CellularAdmissionView {
+pub(crate) fn map_snapshot(snapshot: OwnerAdmissionSnapshot) -> CellularAdmissionView {
     CellularAdmissionView {
         state: match snapshot.state() {
             OwnerAdmissionState::Unknown => CellularAdmissionState::Unknown,
