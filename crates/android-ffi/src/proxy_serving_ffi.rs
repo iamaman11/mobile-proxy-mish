@@ -135,16 +135,22 @@ impl NativeProxyStartAttempt {
 #[uniffi::export]
 pub fn start_native_proxy_runtime(
     product_runtime: Arc<NativeProductRuntime>,
+    public_credential_version: u64,
     public_username: String,
     public_password: String,
     operation_timeout_ms: u64,
 ) -> Arc<NativeProxyStartAttempt> {
-    if operation_timeout_ms == 0 || operation_timeout_ms > MAX_OUTBOUND_OPERATION_TIMEOUT_MS {
+    if public_credential_version == 0
+        || operation_timeout_ms == 0
+        || operation_timeout_ms > MAX_OUTBOUND_OPERATION_TIMEOUT_MS
+    {
         return NativeProxyStartAttempt::failed(
             OwnerProxyServingFailure::ProxyConfigurationRejected,
         );
     }
 
+    let readiness_username = public_username.clone();
+    let readiness_password = public_password.clone();
     let public_credentials = match ProxyCredentialMaterial::new(public_username, public_password) {
         Ok(credentials) => credentials,
         Err(_) => {
@@ -176,7 +182,12 @@ pub fn start_native_proxy_runtime(
     match ProxyServingRuntime::start(product_runtime.executor_handle(), plan, connector) {
         Ok(inner) => {
             if product_runtime
-                .install_proxy_for_mesh(Arc::clone(&inner))
+                .install_proxy_for_mesh(
+                    Arc::clone(&inner),
+                    public_credential_version,
+                    readiness_username,
+                    readiness_password,
+                )
                 .is_err()
             {
                 let _ = inner.stop();
@@ -206,9 +217,11 @@ mod tests {
 
     #[test]
     fn invalid_start_configuration_is_returned_as_typed_data() {
-        let product_runtime = NativeProductRuntime::new(10123, false).expect("product runtime");
+        let product_runtime =
+            NativeProductRuntime::new(10123, false, 1).expect("product runtime");
         let attempt = start_native_proxy_runtime(
             product_runtime.clone(),
+            1,
             "user".to_string(),
             "password".to_string(),
             0,
