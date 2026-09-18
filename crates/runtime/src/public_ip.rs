@@ -150,7 +150,11 @@ impl PreparedPublicIpProbe {
             return Err(PublicIpProbeFailure::ResponseTooLarge);
         }
         let value = raw_body.trim_matches(|value: char| value.is_ascii_whitespace());
-        if value.is_empty() || value.chars().any(|character| character.is_ascii_whitespace()) {
+        if value.is_empty()
+            || value
+                .chars()
+                .any(|character| character.is_ascii_whitespace())
+        {
             return Err(PublicIpProbeFailure::InvalidResponse);
         }
         let address = value
