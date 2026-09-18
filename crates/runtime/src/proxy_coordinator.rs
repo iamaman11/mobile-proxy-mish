@@ -121,13 +121,26 @@ impl ProxyRuntimeCoordinator {
 
     pub fn start(
         self: &Arc<Self>,
-        credential_version: u64,
-        username: String,
-        password: String,
+        credential_version: Option<u64>,
+        username: Option<String>,
+        password: Option<String>,
     ) -> ProxyRuntimePublication {
-        if credential_version == 0 {
-            return self.publish_start_failure(ProxyServingFailure::ProxyConfigurationRejected);
-        }
+        let (credential_version, username, password) =
+            match (credential_version, username, password) {
+                (None, None, None) => {
+                    return self.publish_start_failure(
+                        ProxyServingFailure::ExternalCredentialUnavailable,
+                    );
+                }
+                (Some(version), Some(username), Some(password)) if version > 0 => {
+                    (version, username, password)
+                }
+                _ => {
+                    return self.publish_start_failure(
+                        ProxyServingFailure::ProxyConfigurationRejected,
+                    );
+                }
+            };
         let credentials = match ProxyCredentialMaterial::new(username, password) {
             Ok(credentials) => credentials,
             Err(_) => {
@@ -309,6 +322,7 @@ impl ProxyRuntimeCoordinator {
                 return;
             }
             let old_runtime = state.current.take();
+            state.serving_generation = None;
             state.state = ProxyServingState::Failed;
             state.failure = Some(failure);
             let publication = schedule_recovery_state(&mut state, failure);
@@ -569,7 +583,11 @@ mod tests {
             readiness,
             Duration::from_secs(1),
         );
-        let snapshot = proxy.start(0, "user".to_owned(), "password".to_owned());
+        let snapshot = proxy.start(
+            Some(0),
+            Some("user".to_owned()),
+            Some("password".to_owned()),
+        );
         assert_eq!(
             snapshot.failure,
             Some(ProxyServingFailure::ProxyConfigurationRejected)
