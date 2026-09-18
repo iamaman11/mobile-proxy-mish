@@ -11,9 +11,11 @@ publish = false
 path = "src/entry.rs"
 
 [dependencies]
+mish-application = { path = "../application" }
 mish-cellular = { path = "../cellular" }
 mish-configuration = { path = "../configuration" }
 mish-proxy = { path = "../proxy" }
+mish-readiness = { path = "../readiness" }
 mish-transport = { path = "../transport" }
 tokio.workspace = true
 tokio-rustls.workspace = true
