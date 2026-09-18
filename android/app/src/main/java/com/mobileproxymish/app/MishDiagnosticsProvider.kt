@@ -11,6 +11,7 @@ import android.os.SystemClock
 import android.util.Base64
 import com.mobileproxymish.app.cellular.CellularBoundaryFailure
 import com.mobileproxymish.app.cellular.CellularRootPolicyReconcileDiagnostic
+import com.mobileproxymish.app.cellular.CellularRootRecoveryDiagnostic
 import com.mobileproxymish.app.cellular.CellularRuntimeSnapshot
 import com.mobileproxymish.ffi.CellularAdmissionState
 import com.mobileproxymish.ffi.CellularDnsDiagnosticView
