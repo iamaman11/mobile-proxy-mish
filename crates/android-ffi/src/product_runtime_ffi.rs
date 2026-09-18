@@ -292,7 +292,7 @@ impl NativeProductRuntime {
     }
 
     pub fn admission_snapshot(&self) -> Result<CellularAdmissionView, CellularBridgeError> {
-        self.generation.cellular()_view.admission_snapshot()
+        self.cellular_view.admission_snapshot()
     }
 
     pub fn observe_network(
@@ -339,14 +339,14 @@ impl NativeProductRuntime {
     }
 
     pub fn dns_diagnostic_snapshot(&self) -> CellularDnsDiagnosticView {
-        self.generation.cellular()_view.dns_diagnostic_snapshot()
+        self.cellular_view.dns_diagnostic_snapshot()
     }
 
     pub fn prepare_public_ip_probe(
         &self,
         timeout_ms: u64,
     ) -> Result<Arc<PublicIpProbeTicket>, PublicIpProbeError> {
-        self.generation.cellular()_view.prepare_public_ip_probe(timeout_ms)
+        self.cellular_view.prepare_public_ip_probe(timeout_ms)
     }
 
     pub fn observe_public_egress_ip(
