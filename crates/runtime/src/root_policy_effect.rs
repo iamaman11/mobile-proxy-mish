@@ -8,6 +8,8 @@ use crate::root_session::{
     RootCommand, RootCommandResult, RootSessionError, RootSessionManager,
 };
 use std::collections::HashSet;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +74,50 @@ impl RootPolicyCommandWindow {
     }
 }
 
+pub(crate) trait RootPolicyIo: Send + Sync {
+    fn session_generation<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Option<u64>> + Send + 'a>>;
+
+    fn raw_observation<'a>(
+        &'a self,
+        command: &'a str,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<RootCommandResult, RootSessionError>> + Send + 'a,
+        >,
+    >;
+
+    fn observe<'a>(
+        &'a self,
+        command: &'a str,
+        window: &'a mut RootPolicyCommandWindow,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<RootCommandResult, RootPolicyEffectFailure>> + Send + 'a,
+        >,
+    >;
+
+    fn lines<'a>(
+        &'a self,
+        command: &'a str,
+        window: &'a mut RootPolicyCommandWindow,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<Vec<String>, RootPolicyEffectFailure>> + Send + 'a,
+        >,
+    >;
+
+    fn mutate<'a>(
+        &'a self,
+        command: &'a str,
+        window: &'a mut RootPolicyCommandWindow,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<(), RootPolicyEffectFailure>> + Send + 'a,
+        >,
+    >;
+}
 pub(crate) struct RootPolicyEffectExecutor {
     session: Arc<RootSessionManager>,
 }
@@ -170,6 +216,60 @@ impl RootPolicyEffectExecutor {
     }
 }
 
+impl RootPolicyIo for RootPolicyEffectExecutor {
+    fn session_generation<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Option<u64>> + Send + 'a>> {
+        Box::pin(async move { RootPolicyEffectExecutor::session_generation(self).await })
+    }
+
+    fn raw_observation<'a>(
+        &'a self,
+        command: &'a str,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<RootCommandResult, RootSessionError>> + Send + 'a,
+        >,
+    > {
+        Box::pin(async move { RootPolicyEffectExecutor::raw_observation(self, command).await })
+    }
+
+    fn observe<'a>(
+        &'a self,
+        command: &'a str,
+        window: &'a mut RootPolicyCommandWindow,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<RootCommandResult, RootPolicyEffectFailure>> + Send + 'a,
+        >,
+    > {
+        Box::pin(async move { RootPolicyEffectExecutor::observe(self, command, window).await })
+    }
+
+    fn lines<'a>(
+        &'a self,
+        command: &'a str,
+        window: &'a mut RootPolicyCommandWindow,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<Vec<String>, RootPolicyEffectFailure>> + Send + 'a,
+        >,
+    > {
+        Box::pin(async move { RootPolicyEffectExecutor::lines(self, command, window).await })
+    }
+
+    fn mutate<'a>(
+        &'a self,
+        command: &'a str,
+        window: &'a mut RootPolicyCommandWindow,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<(), RootPolicyEffectFailure>> + Send + 'a,
+        >,
+    > {
+        Box::pin(async move { RootPolicyEffectExecutor::mutate(self, command, window).await })
+    }
+}
 fn map_observation_transport_failure(_: RootSessionError) -> RootPolicyEffectFailure {
     RootPolicyEffectFailure::ObservationUnavailable
 }
