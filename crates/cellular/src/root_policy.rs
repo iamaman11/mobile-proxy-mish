@@ -422,6 +422,75 @@ impl RootPolicyContract {
         )
     }
 
+    pub fn stale_owner_jump_uids(&self, lines: &[String]) -> Vec<u32> {
+        let mut result = Vec::new();
+        for line in lines {
+            let Some(uid) = self.exact_owner_jump_uid(line) else {
+                continue;
+            };
+            if uid != self.product_uid && !result.contains(&uid) {
+                result.push(uid);
+            }
+        }
+        result
+    }
+
+    pub fn stale_owner_jump_delete(&self, binary: &str, stale_uid: u32) -> String {
+        format!(
+            "{binary} -t mangle -D OUTPUT -m owner --uid-owner {stale_uid} -j {}",
+            self.chain_name()
+        )
+    }
+
+    pub fn is_exact_known_product_state(&self, lines: &[String], ipv4: bool) -> bool {
+        let chain = self.chain_name();
+        if lines.iter().filter(|line| *line == &format!("-N {chain}")).count() != 1 {
+            return false;
+        }
+
+        let actual_chain = chain_lines(lines, chain);
+        let matching = self
+            .candidates()
+            .iter()
+            .copied()
+            .filter(|identity| {
+                let expected = if ipv4 {
+                    self.ipv4_owned_chain_lines_for(*identity)
+                } else {
+                    self.ipv6_owned_chain_lines_for(*identity)
+                };
+                actual_chain == expected
+            })
+            .count();
+        if matching != 1 {
+            return false;
+        }
+
+        let expected_chain = actual_chain.iter().collect::<HashSet<_>>();
+        lines.iter().filter(|line| line.contains(chain)).all(|line| {
+            line == &format!("-N {chain}")
+                || expected_chain.contains(line)
+                || self.exact_owner_jump_uid(line).is_some()
+        })
+    }
+
+    fn exact_owner_jump_uid(&self, line: &str) -> Option<u32> {
+        let tokens = line.split_whitespace().collect::<Vec<_>>();
+        if tokens.len() != 8
+            || tokens[0] != "-A"
+            || tokens[1] != "OUTPUT"
+            || tokens[2] != "-m"
+            || tokens[3] != "owner"
+            || tokens[4] != "--uid-owner"
+            || tokens[6] != "-j"
+            || tokens[7] != self.chain_name()
+        {
+            return None;
+        }
+        let uid = tokens[5].parse::<u32>().ok()?;
+        (uid != 0).then_some(uid)
+    }
+
     pub fn output_jump(&self) -> String {
         format!(
             "-A OUTPUT -m owner --uid-owner {} -j {}",
