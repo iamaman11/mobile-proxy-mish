@@ -3,6 +3,9 @@
 //! Vendor-neutral lifecycle and Cellular Egress runtime coordination live here. Platform DNS,
 //! Android process APIs, root-shell mechanics, UI and vendor JSON remain outside this crate.
 
+mod execution;
+pub use execution::*;
+
 mod lifecycle;
 pub use lifecycle::*;
 
