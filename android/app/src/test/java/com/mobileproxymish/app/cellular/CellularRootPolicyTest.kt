@@ -411,7 +411,7 @@ class CellularRootPolicyTest {
     private fun policy(process: FakePolicyProcess): CellularRootPolicy = CellularRootPolicy(
         productUid = UID,
         authority = MagiskRootAuthority.forTesting(process),
-        process = process,
+        transport = process,
     )
 
     private data class Identity(
@@ -426,7 +426,7 @@ class CellularRootPolicyTest {
         val table: String,
     )
 
-    private class FakePolicyProcess : RootProcess {
+    private class FakePolicyProcess : RootCommandTransport {
         var ipv4Guard: Identity? = null
         var ipv6Guard: Identity? = null
         var ipv4Lookup: Lookup? = null
@@ -451,13 +451,13 @@ class CellularRootPolicyTest {
         val commands = mutableListOf<String>()
         private var ipv4RuleReads = 0
 
-        override fun run(arguments: List<String>): RootProcessResult {
-            val command = arguments.last()
+        override fun execute(effect: RootEffect): RootCommandResult {
+            val command = effect.command
             commands += command
             return when {
                 command == "id -u" -> {
                     if (blockAuthorityProbeUntilCleanupMutation && !cleanupMutationObserved) {
-                        RootProcessResult(
+                        RootCommandResult(
                             exitCode = 0,
                             stdout = "0\n",
                             outputComplete = false,
@@ -468,7 +468,7 @@ class CellularRootPolicyTest {
                 }
                 command == "ip -4 rule show" -> {
                     ipv4RuleReads += 1
-                    RootProcessResult(
+                    RootCommandResult(
                         exitCode = 0,
                         stdout = ipv4Rules(),
                         outputComplete = ipv4RuleReads != incompleteIpv4RuleReadAt,
@@ -495,7 +495,7 @@ class CellularRootPolicyTest {
                     } else if (ipv4JumpCount > 0) {
                         ipv4JumpCount -= 1
                         if (uncertainIpv4JumpDeleteAfterMutation) {
-                            RootProcessResult(
+                            RootCommandResult(
                                 exitCode = -1,
                                 stdout = "",
                                 timedOut = true,
@@ -540,7 +540,7 @@ class CellularRootPolicyTest {
             }
         }
 
-        private fun addGuard(command: String): RootProcessResult {
+        private fun addGuard(command: String): RootCommandResult {
             val match = checkNotNull(GUARD_ADD_REGEX.matchEntire(command))
             val family = match.groupValues[1]
             val guard = match.groupValues[2].toInt()
@@ -550,7 +550,7 @@ class CellularRootPolicyTest {
             return ok()
         }
 
-        private fun deleteGuard(command: String): RootProcessResult {
+        private fun deleteGuard(command: String): RootCommandResult {
             val match = checkNotNull(GUARD_DELETE_REGEX.matchEntire(command))
             val family = match.groupValues[1]
             val guard = match.groupValues[2].toInt()
@@ -561,7 +561,7 @@ class CellularRootPolicyTest {
             return ok()
         }
 
-        private fun addLookup(command: String): RootProcessResult {
+        private fun addLookup(command: String): RootCommandResult {
             val match = checkNotNull(LOOKUP_ADD_REGEX.matchEntire(command))
             ipv4Lookup = Lookup(
                 mark = match.groupValues[2],
@@ -571,7 +571,7 @@ class CellularRootPolicyTest {
             return ok()
         }
 
-        private fun deleteLookup(command: String): RootProcessResult {
+        private fun deleteLookup(command: String): RootCommandResult {
             cleanupMutationObserved = true
             val match = checkNotNull(LOOKUP_DELETE_REGEX.matchEntire(command))
             val current = ipv4Lookup ?: return fail()
@@ -584,7 +584,7 @@ class CellularRootPolicyTest {
             return ok()
         }
 
-        private fun routeGet(command: String): RootProcessResult {
+        private fun routeGet(command: String): RootCommandResult {
             val mark = checkNotNull(ROUTE_GET_REGEX.matchEntire(command)).groupValues[1]
             return if (ipv4Lookup?.mark == mark && ipv4Lookup?.table == "1052") {
                 ok("1.1.1.1 via 10.0.0.1 dev rmnet_data0 table 1052\n")
@@ -593,7 +593,7 @@ class CellularRootPolicyTest {
             }
         }
 
-        private fun createChain(ipv4: Boolean): RootProcessResult {
+        private fun createChain(ipv4: Boolean): RootCommandResult {
             if (ipv4) {
                 if (ipv4ChainExists) return fail()
                 ipv4ChainExists = true
@@ -604,7 +604,7 @@ class CellularRootPolicyTest {
             return ok()
         }
 
-        private fun flushChain(ipv4: Boolean): RootProcessResult {
+        private fun flushChain(ipv4: Boolean): RootCommandResult {
             if (ipv4) {
                 if (!ipv4ChainExists) return fail()
                 ipv4ChainRules.clear()
@@ -615,7 +615,7 @@ class CellularRootPolicyTest {
             return ok()
         }
 
-        private fun deleteChain(ipv4: Boolean): RootProcessResult {
+        private fun deleteChain(ipv4: Boolean): RootCommandResult {
             if (ipv4) {
                 if (!ipv4ChainExists || ipv4JumpCount != 0 || ipv4ChainRules.isNotEmpty()) return fail()
                 ipv4ChainExists = false
@@ -626,7 +626,7 @@ class CellularRootPolicyTest {
             return ok()
         }
 
-        private fun appendChain(command: String, ipv4: Boolean): RootProcessResult {
+        private fun appendChain(command: String, ipv4: Boolean): RootCommandResult {
             val prefix = if (ipv4) "iptables -t mangle " else "ip6tables -t mangle "
             val line = command.removePrefix(prefix)
             if (ipv4) {
@@ -679,8 +679,8 @@ class CellularRootPolicyTest {
             foreignIpv6Mangle.forEach { append(it).append('\n') }
         }
 
-        private fun ok(stdout: String = ""): RootProcessResult = RootProcessResult(0, stdout)
-        private fun fail(stdout: String = ""): RootProcessResult = RootProcessResult(1, stdout)
+        private fun ok(stdout: String = ""): RootCommandResult = RootCommandResult(0, stdout)
+        private fun fail(stdout: String = ""): RootCommandResult = RootCommandResult(1, stdout)
     }
 
     private companion object {

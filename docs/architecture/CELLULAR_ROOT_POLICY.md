@@ -190,7 +190,7 @@ Transport/session generation change invalidates cached authority. Transport fail
 
 Higher layers must not gain a generic privileged RPC/control API, root daemon/helper or whole-app-root execution merely to simplify this boundary.
 
-The remaining shell-shaped internal transport form is an implementation-cleanup target after U2 physical proof; changing that API must preserve exactly one persistent `su` transport, serialization, bounded output/deadlines, generation invalidation and fail-closed uncertainty semantics.
+Callers now cross this boundary only as typed `RootObservation` or `RootMutation` effects. No PRODUCT root-policy/authority caller constructs a `["su", "-c", command]` invocation. The single persistent transport still performs the command framing underneath, preserves serialized execution and bounded output/deadlines, invalidates authority on shell-generation change, and never automatically replays an uncertain mutation.
 
 ## Acceptance status
 

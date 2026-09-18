@@ -22,12 +22,13 @@ private data class RootPolicyCommandWindow(
 /**
  * Narrow root-command effect used only by the Cellular root-policy transaction.
  *
- * The command strings remain constructed by the typed policy adapter; this class is not exposed as
- * an application shell API. It centralizes completeness/deadline handling for authoritative kernel
- * snapshots and exact idempotent mutations.
+ * Command text remains constructed by the typed policy adapter, but the transport receives an
+ * explicit RootObservation or RootMutation rather than a shell-shaped su invocation. This class is
+ * not exposed as an application shell API. It centralizes completeness/deadline handling for
+ * authoritative kernel snapshots and exact idempotent mutations.
  */
 internal class RootPolicyExecutor(
-    private val process: RootProcess,
+    private val transport: RootCommandTransport,
 ) {
     private var diagnosticWindow: RootPolicyCommandWindow? = null
 
@@ -51,7 +52,7 @@ internal class RootPolicyExecutor(
         )
     }
 
-    fun run(command: String): RootProcessResult = runObservation(command)
+    fun observe(command: String): RootCommandResult = runObservation(command)
 
     fun lines(command: String): List<String>? {
         val result = runObservation(command)
@@ -81,14 +82,14 @@ internal class RootPolicyExecutor(
         return !finalCheck.timedOut && finalCheck.outputComplete && finalCheck.exitCode != 0
     }
 
-    private fun runObservation(command: String): RootProcessResult {
-        val result = process.run(listOf("su", "-c", command))
+    private fun runObservation(command: String): RootCommandResult {
+        val result = transport.execute(RootObservation(command))
         recordObservation(command, result)
         return result
     }
 
-    private fun runMutation(command: String): RootProcessResult {
-        val result = process.run(listOf("su", "-c", command))
+    private fun runMutation(command: String): RootCommandResult {
+        val result = transport.execute(RootMutation(command))
         recordMutation(result)
         return result
     }
@@ -96,7 +97,7 @@ internal class RootPolicyExecutor(
     @Synchronized
     private fun recordObservation(
         command: String,
-        result: RootProcessResult,
+        result: RootCommandResult,
     ) {
         val window = diagnosticWindow ?: return
         window.commands += 1
@@ -110,7 +111,7 @@ internal class RootPolicyExecutor(
     }
 
     @Synchronized
-    private fun recordMutation(result: RootProcessResult) {
+    private fun recordMutation(result: RootCommandResult) {
         val window = diagnosticWindow ?: return
         window.commands += 1
         window.mutationCommands += 1

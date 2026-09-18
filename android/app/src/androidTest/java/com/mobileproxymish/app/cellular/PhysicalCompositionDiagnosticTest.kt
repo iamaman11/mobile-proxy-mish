@@ -23,7 +23,7 @@ import org.junit.runner.RunWith
 class PhysicalCompositionDiagnosticTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context = instrumentation.targetContext
-    private val rootProcess: RootProcess = SuProcess()
+    private val rootTransport: RootCommandTransport = SuProcess()
     private val debugIsolation = context.packageName.endsWith(".debug") &&
         (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
     private val mishChain = if (debugIsolation) DEBUG_MISH_CHAIN else RELEASE_MISH_CHAIN
@@ -183,7 +183,7 @@ class PhysicalCompositionDiagnosticTest {
 
     private fun runProductRoot(command: String): RootReadResult {
         val result = try {
-            rootProcess.run(listOf("su", "-c", command))
+            rootTransport.execute(RootObservation(command))
         } catch (_: Exception) {
             return RootReadResult(false, "")
         }

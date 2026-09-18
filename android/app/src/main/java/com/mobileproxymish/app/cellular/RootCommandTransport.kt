@@ -10,9 +10,28 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
-/** Internal typed-command transport seam for deterministic tests and root-policy adapters. */
-internal interface RootProcess {
-    fun run(arguments: List<String>): RootProcessResult
+/**
+ * Narrow typed effect accepted by the one process-wide root transport.
+ *
+ * Observation and mutation are distinct at the call boundary so policy code cannot accidentally
+ * describe an uncertain mutation as a read. The transport still owns only framing and execution;
+ * it never retries either effect automatically.
+ */
+internal sealed interface RootEffect {
+    val command: String
+}
+
+internal class RootObservation(
+    override val command: String,
+) : RootEffect
+
+internal class RootMutation(
+    override val command: String,
+) : RootEffect
+
+/** Internal transport seam used only by typed root-policy/authority adapters and tests. */
+internal interface RootCommandTransport {
+    fun execute(effect: RootEffect): RootCommandResult
 
     /** Live privilege-session identity. A change invalidates any cached authority proof. */
     fun sessionGeneration(): Long? = null
@@ -21,7 +40,7 @@ internal interface RootProcess {
 /**
  * Bounded root-command result. Incomplete output is never authoritative kernel state.
  */
-internal data class RootProcessResult(
+internal data class RootCommandResult(
     val exitCode: Int,
     val stdout: String,
     val timedOut: Boolean = false,
@@ -36,16 +55,15 @@ internal data class RootProcessResult(
  * A transport failure invalidates the shared shell but is never replayed automatically because a
  * mutating command may already have reached the kernel.
  */
-internal class SuProcess : RootProcess {
-    override fun run(arguments: List<String>): RootProcessResult = synchronized(ROOT_PROCESS_LOCK) {
+internal class SuProcess : RootCommandTransport {
+    override fun execute(effect: RootEffect): RootCommandResult = synchronized(ROOT_PROCESS_LOCK) {
+        val command = effect.command
         if (
-            arguments.size != 3 ||
-            arguments[0] != "su" ||
-            arguments[1] != "-c" ||
-            arguments[2].contains('\n') ||
-            arguments[2].contains('\r')
+            command.isBlank() ||
+            command.contains('\n') ||
+            command.contains('\r')
         ) {
-            return@synchronized RootProcessResult(
+            return@synchronized RootCommandResult(
                 exitCode = -1,
                 stdout = "",
                 outputComplete = false,
@@ -53,12 +71,12 @@ internal class SuProcess : RootProcess {
         }
 
         val session = liveSessionOrCreate()
-            ?: return@synchronized RootProcessResult(
+            ?: return@synchronized RootCommandResult(
                 exitCode = 127,
                 stdout = "",
             )
 
-        val outcome = session.execute(arguments[2])
+        val outcome = session.execute(command)
         if (!outcome.transportHealthy) {
             invalidateSharedSession(session)
         }
@@ -78,7 +96,7 @@ internal class SuProcess : RootProcess {
     }
 
     private data class CommandOutcome(
-        val result: RootProcessResult,
+        val result: RootCommandResult,
         val transportHealthy: Boolean,
     )
 
@@ -148,7 +166,7 @@ internal class SuProcess : RootProcess {
                 if (remaining <= 0L) {
                     destroy()
                     return CommandOutcome(
-                        result = RootProcessResult(
+                        result = RootCommandResult(
                             exitCode = -1,
                             stdout = "",
                             timedOut = true,
@@ -164,7 +182,7 @@ internal class SuProcess : RootProcess {
                     Thread.currentThread().interrupt()
                     destroy()
                     return CommandOutcome(
-                        result = RootProcessResult(
+                        result = RootCommandResult(
                             exitCode = -1,
                             stdout = "",
                             timedOut = true,
@@ -181,11 +199,11 @@ internal class SuProcess : RootProcess {
                 if (line.startsWith("$marker:")) {
                     val exitCode = line.substringAfter(':').toIntOrNull()
                         ?: return CommandOutcome(
-                            RootProcessResult(-1, "", outputComplete = false),
+                            RootCommandResult(-1, "", outputComplete = false),
                             transportHealthy = false,
                         )
                     return CommandOutcome(
-                        result = RootProcessResult(
+                        result = RootCommandResult(
                             exitCode = exitCode,
                             stdout = captured.toString(),
                             outputComplete = outputComplete,
@@ -250,7 +268,7 @@ internal class SuProcess : RootProcess {
         }
 
         private fun unavailableOutcome(): CommandOutcome = CommandOutcome(
-            result = RootProcessResult(
+            result = RootCommandResult(
                 exitCode = -1,
                 stdout = "",
                 outputComplete = false,
@@ -274,14 +292,14 @@ internal class SuProcess : RootProcess {
             exitCode: Int?,
             stdout: String,
             outputComplete: Boolean,
-        ): RootProcessResult = if (exitCode != null && exitCode != 0) {
-            RootProcessResult(
+        ): RootCommandResult = if (exitCode != null && exitCode != 0) {
+            RootCommandResult(
                 exitCode = exitCode,
                 stdout = stdout,
                 outputComplete = outputComplete,
             )
         } else {
-            RootProcessResult(
+            RootCommandResult(
                 exitCode = -1,
                 stdout = "",
                 outputComplete = false,

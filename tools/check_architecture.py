@@ -521,8 +521,28 @@ def main() -> None:
     transport_path = "android/app/src/main/java/com/mobileproxymish/app/cellular/RootCommandTransport.kt"
     require(authority, "class MagiskRootAuthority", "Magisk authority proof must remain explicit")
     forbid(authority, "ProcessBuilder", "Magisk authority must not own root-shell process transport")
+    require(transport_path, "internal interface RootCommandTransport", "root transport boundary must remain explicit")
+    require(transport_path, "internal sealed interface RootEffect", "root callers must use typed effects")
+    require(transport_path, "internal class RootObservation", "read-only root effects must be typed")
+    require(transport_path, "internal class RootMutation", "mutating root effects must be typed")
     require(transport_path, 'ProcessBuilder("su")', "one persistent su transport must remain explicit")
     require(transport_path, "sharedSession", "root transport must remain process-wide and generation-aware")
+    for obsolete in (
+        "interface RootProcess",
+        "fun run(arguments: List<String>)",
+        'listOf("su", "-c"',
+    ):
+        forbid(transport_path, obsolete, "shell-shaped root transport API must stay removed")
+    for typed_client in (
+        authority,
+        "android/app/src/main/java/com/mobileproxymish/app/cellular/RootPolicyExecutor.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/cellular/RootSessionBootstrap.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRootPolicy.kt",
+    ):
+        forbid(typed_client, 'listOf("su", "-c"', "typed root clients must not construct su -c invocations")
+    executor = "android/app/src/main/java/com/mobileproxymish/app/cellular/RootPolicyExecutor.kt"
+    require(executor, "transport.execute(RootObservation(command))", "root-policy observations must stay typed")
+    require(executor, "transport.execute(RootMutation(command))", "root-policy mutations must stay typed")
 
     # L8 native cutover is one-way: obsolete Android sing-box bytes/build adapters may not return.
     forbid("Cargo.toml", "sing-box-adapter", "workspace must not contain the obsolete proxy adapter")

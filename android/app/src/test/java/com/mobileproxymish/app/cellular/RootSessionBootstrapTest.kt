@@ -26,6 +26,8 @@ class RootSessionBootstrapTest {
         assertFalse(process.ipv6.any { it.contains("--uid-owner 11001") })
         assertTrue(process.ipv4.any { it.contains("--uid-owner 12002") })
         assertTrue(process.commands.none { it.contains(" -F ") || it.contains(" flush") })
+        assertTrue(process.effects.filter { it.command.contains(" -D OUTPUT ") }.all { it is RootMutation })
+        assertTrue(process.effects.filter { it.command.endsWith("-t mangle -S") }.all { it is RootObservation })
     }
 
     @Test
@@ -106,11 +108,13 @@ class RootSessionBootstrapTest {
         val ipv4: MutableList<String>,
         val ipv6: MutableList<String>,
         private val failDeletes: Boolean = false,
-    ) : RootProcess {
+    ) : RootCommandTransport {
         val commands = mutableListOf<String>()
+        val effects = mutableListOf<RootEffect>()
 
-        override fun run(arguments: List<String>): RootProcessResult {
-            val command = arguments.last()
+        override fun execute(effect: RootEffect): RootCommandResult {
+            effects += effect
+            val command = effect.command
             commands += command
             return when {
                 command == "iptables -t mangle -S" -> ok(ipv4)
@@ -119,7 +123,7 @@ class RootSessionBootstrapTest {
                     deleteExact(ipv4, command, "iptables")
                 command.startsWith("ip6tables -t mangle -D OUTPUT ") ->
                     deleteExact(ipv6, command, "ip6tables")
-                else -> RootProcessResult(1, "unsupported")
+                else -> RootCommandResult(1, "unsupported")
             }
         }
 
@@ -127,18 +131,18 @@ class RootSessionBootstrapTest {
             lines: MutableList<String>,
             command: String,
             binary: String,
-        ): RootProcessResult {
-            if (failDeletes) return RootProcessResult(1, "failed")
+        ): RootCommandResult {
+            if (failDeletes) return RootCommandResult(1, "failed")
             val expectedLine = command.removePrefix("$binary -t mangle ")
                 .replaceFirst("-D OUTPUT", "-A OUTPUT")
             return if (lines.remove(expectedLine)) {
-                RootProcessResult(0, "")
+                RootCommandResult(0, "")
             } else {
-                RootProcessResult(1, "missing")
+                RootCommandResult(1, "missing")
             }
         }
 
-        private fun ok(lines: List<String>): RootProcessResult = RootProcessResult(
+        private fun ok(lines: List<String>): RootCommandResult = RootCommandResult(
             exitCode = 0,
             stdout = lines.joinToString(separator = "\n", postfix = if (lines.isEmpty()) "" else "\n"),
         )
