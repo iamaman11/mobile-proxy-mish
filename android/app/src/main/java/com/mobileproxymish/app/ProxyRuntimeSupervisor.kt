@@ -134,6 +134,7 @@ class ProxyRuntimeSupervisor internal constructor(
             val attempt = try {
                 startNativeProxyRuntime(
                     productRuntime = productRuntime,
+                    publicCredentialVersion = publicCredential.version,
                     publicUsername = publicCredential.credentials.username,
                     publicPassword = publicCredential.credentials.password,
                     operationTimeoutMs = OUTBOUND_TIMEOUT_MS.toULong(),
