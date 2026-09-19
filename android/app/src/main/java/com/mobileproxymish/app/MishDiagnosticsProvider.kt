@@ -84,6 +84,15 @@ internal fun renderMishDiagnosticSnapshotV2(
     put("root", JSONObject().apply {
         put("authority_observation", snapshot.rootAuthorityObservation)
         put("policy_authorized", snapshot.rootPolicyAuthorized)
+        put(
+            "session_generation",
+            snapshot.rootSessionGeneration?.toLong() ?: JSONObject.NULL,
+        )
+        putNullable("last_failure_class", snapshot.rootLastFailureClass)
+        put(
+            "policy_authorized_generation",
+            snapshot.rootPolicyAuthorizedGeneration?.toLong() ?: JSONObject.NULL,
+        )
         put("reconcile", JSONObject().apply {
             val root = snapshot.rootReconcile
             put("attempts", root.attempts.toLong())
@@ -122,6 +131,7 @@ internal fun renderMishDiagnosticSnapshotV2(
         put("active_sessions", snapshot.proxyActiveSessions.toLong())
         put("recovery", JSONObject().apply {
             put("pending", snapshot.proxyRecoveryPending)
+            put("operation_id", snapshot.proxyRecoveryOperationId.toLong())
             put(
                 "attempts_scheduled",
                 snapshot.proxyRecoveryAttemptsScheduled.toLong(),
@@ -146,6 +156,10 @@ internal fun renderMishDiagnosticSnapshotV2(
         )
         put("epoch_present", snapshot.meshEpochPresent)
         put("ingress_running", snapshot.meshIngressRunning)
+        put(
+            "serving_generation",
+            snapshot.meshServingGeneration?.toLong() ?: JSONObject.NULL,
+        )
         put("ingress_failure", snapshot.meshIngressFailure)
         put(
             "active_sessions",
@@ -159,6 +173,38 @@ internal fun renderMishDiagnosticSnapshotV2(
     put("readiness", JSONObject().apply {
         put("state", snapshot.readinessState)
         put("binding_eligible", snapshot.readinessBindingEligible)
+        put("binding", JSONObject().apply {
+            put(
+                "cellular_owner_generation",
+                snapshot.readinessBindingCellularOwnerGeneration?.toLong() ?: JSONObject.NULL,
+            )
+            put(
+                "runtime_generation",
+                snapshot.readinessBindingRuntimeGeneration?.toLong() ?: JSONObject.NULL,
+            )
+            put(
+                "proxy_serving_generation",
+                snapshot.readinessBindingProxyServingGeneration?.toLong() ?: JSONObject.NULL,
+            )
+            put(
+                "mesh_admission_epoch",
+                snapshot.readinessBindingMeshAdmissionEpoch?.toLong() ?: JSONObject.NULL,
+            )
+            put(
+                "credential_version",
+                snapshot.readinessBindingCredentialVersion?.toLong() ?: JSONObject.NULL,
+            )
+        })
+        put(
+            "expected_freshness",
+            snapshot.readinessExpectedFreshness?.toLong() ?: JSONObject.NULL,
+        )
+        put(
+            "observed_freshness",
+            snapshot.readinessObservedFreshness?.toLong() ?: JSONObject.NULL,
+        )
+        put("probe_in_flight", snapshot.readinessProbeInFlight)
+        put("refresh_pending", snapshot.readinessRefreshPending)
         put("probe_state", snapshot.readinessProbeState)
     })
     put("rotation", JSONObject().apply {
