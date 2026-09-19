@@ -50,8 +50,7 @@ pub struct CellularPolicyPublication {
 }
 
 pub type CellularPolicyObserver = Arc<dyn Fn(CellularPolicyPublication) + Send + Sync + 'static>;
-pub type CellularAdmissionObserver =
-    Arc<dyn Fn(CellularAdmissionSnapshot) + Send + Sync + 'static>;
+pub type CellularAdmissionObserver = Arc<dyn Fn(CellularAdmissionSnapshot) + Send + Sync + 'static>;
 
 struct CoordinatorState {
     latest: Option<ReconcileRequest>,
