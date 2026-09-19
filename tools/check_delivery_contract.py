@@ -123,7 +123,6 @@ def main() -> None:
         "cargo fmt --all --check",
         "cargo clippy --workspace --all-targets --locked -- -D warnings",
         "cargo test --workspace --locked",
-        "Generate and verify native UniFFI contract",
         "name: Android Compose Shell",
         "needs: [control, device-contracts, rust]",
         "Require control and Rust gates",
@@ -143,6 +142,8 @@ def main() -> None:
     forbid_regex(producer, r"^\s{2}push:\s*$", "accepted protected main must not automatically rebuild an already accepted PRODUCT")
     forbid(producer, "fix/root-policy-reconciliation", "candidate producer must target protected main after convergence")
     forbid(producer, "sing-box", "native candidate producer must not know the deleted external proxy runtime")
+    forbid(producer, "Generate and verify native UniFFI contract", "UniFFI surface verification must have one authority in verify_android_candidate.py")
+    forbid(producer, "cargo build -p mish-android-ffi --locked", "Rust required-check must not duplicate the Android candidate native build")
 
     product_verifier = "tools/verify_android_candidate.py"
     for required in ("libmish_android_ffi.so", "libsingbox.so"):
