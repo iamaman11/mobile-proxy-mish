@@ -64,6 +64,13 @@ foreach ($required in @(
     '[AllowEmptyCollection()][System.Collections.Generic.List[object]] $Timeline',
     'MISH_U5_ROTATION_TIMELINE=',
     'MISH_U5_RESTORE_PHASE=',
+    'Start-MishFastAirplaneObserver',
+    'Stop-MishFastAirplaneObserver',
+    'settings get global airplane_mode_on',
+    'sleep 0.05',
+    'MISH_U5_FAST_AIRPLANE=',
+    'STOP_TRIGGER_EXIT=',
+    'airplane_fast_observer',
     "Invoke-MishActivityTrigger",
     "'shell', 'am', 'start', '-n'",
     'LAB_ACTIVITY_TRIGGER_FAILED',
@@ -102,7 +109,9 @@ foreach ($forbidden in @(
     "'shell', 'ps', '-T', '-p'",
     "'-o', 'NAME'",
     '$output = @(& $AdbPath @Arguments',
-    "'shell', 'am', 'start', '-W'"
+    "'shell', 'am', 'start', '-W'",
+    '$sawAirplaneOn -and $airplane -ceq',
+    "Invoke-MishActivityTrigger -Component $script:StopComponent -Operation 'restore_stop_trigger'"
 )) {
     if ($source.Contains($forbidden)) {
         throw "U5 rotation acceptance probe contains forbidden duplicate PRODUCT/control/secret path: $forbidden"
