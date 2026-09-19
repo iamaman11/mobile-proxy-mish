@@ -67,6 +67,9 @@ foreach ($required in @(
     'Start-MishFastAirplaneObserver',
     'Stop-MishFastAirplaneObserver',
     'settings get global airplane_mode_on',
+    "foreach (`$argument in @('shell', `$shell))",
+    'observer_exit_code',
+    'stderr_empty',
     'sleep 0.05',
     'MISH_U5_FAST_AIRPLANE=',
     'STOP_TRIGGER_EXIT=',
@@ -110,7 +113,7 @@ foreach ($forbidden in @(
     "'-o', 'NAME'",
     '$output = @(& $AdbPath @Arguments',
     "'shell', 'am', 'start', '-W'",
-    '$sawAirplaneOn -and $airplane -ceq',
+    "@('shell', 'sh', '-c', `$shell)",
     'Invoke-MishActivityTrigger -Component $script:StopComponent -Operation ''restore_stop_trigger'''
 )) {
     if ($source.Contains($forbidden)) {
