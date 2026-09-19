@@ -510,8 +510,7 @@ def main() -> None:
     )
     for required in (
         "runtime.observePublicEgressIp(",
-        "application.runtimeController.currentProductRuntime",
-        ".preparePublicIpProbe(",
+        "runtime.preparePublicIpProbeForInstrumentation(",
         "u4StaleTicket.isCurrent()",
         'u4StaleTicket.complete("198.51.100.77")',
         "phase=u4 positive_https=true owner_bound_dns=true ordinary_uid_socket=true",
@@ -549,8 +548,8 @@ def main() -> None:
     readiness_physical = "android/app/src/androidTest/java/com/mobileproxymish/app/RuntimeReadinessInstrumentedTest.kt"
     require(
         readiness_physical,
-        "currentProductRuntime.readinessDiagnosticSnapshot()",
-        "readiness instrumentation must project the stable Rust-owned runtime diagnostic snapshot",
+        "runtimeController.diagnosticSnapshot()",
+        "readiness instrumentation must project the one atomic Rust-owned diagnostic snapshot",
     )
     forbid(
         readiness_physical,
