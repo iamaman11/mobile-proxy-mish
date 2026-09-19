@@ -169,10 +169,7 @@ pub fn external_credential_encode_provisioning_envelope(
 ) -> Result<Vec<u8>, ExternalCredentialBoundaryError> {
     let state = OwnerCredentialState::new(credential_version, OwnerCredentialStatus::Active)?;
     Ok(encode_provisioning_envelope(
-        state,
-        &challenge,
-        &username,
-        &password,
+        state, &challenge, &username, &password,
     )?)
 }
 
@@ -217,9 +214,7 @@ impl From<OwnerCredentialError> for ExternalCredentialBoundaryError {
             OwnerCredentialError::VersionExhausted => Self::VersionExhausted,
             OwnerCredentialError::Revoked => Self::Revoked,
             OwnerCredentialError::InvalidDerivationOutput => Self::InvalidDerivationOutput,
-            OwnerCredentialError::InvalidProvisioningEnvelope => {
-                Self::InvalidProvisioningEnvelope
-            }
+            OwnerCredentialError::InvalidProvisioningEnvelope => Self::InvalidProvisioningEnvelope,
         }
     }
 }
@@ -283,8 +278,7 @@ mod tests {
             7,
             vec![3; 32],
             "mish-0123456789abcdef0123456789abcdef".to_owned(),
-            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-                .to_owned(),
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
         )
         .expect("provisioning envelope");
         assert!(!encoded.is_empty());
