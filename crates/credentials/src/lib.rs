@@ -20,8 +20,8 @@ pub use persistence::{
     encode_state, resolve_persistence,
 };
 pub use provisioning::{
-    ExternalProxyProvisioningEnvelope, PROVISIONING_CHALLENGE_BYTES,
-    PROVISIONING_SCHEMA_VERSION, decode_provisioning_envelope, encode_provisioning_envelope,
+    ExternalProxyProvisioningEnvelope, PROVISIONING_CHALLENGE_BYTES, PROVISIONING_SCHEMA_VERSION,
+    decode_provisioning_envelope, encode_provisioning_envelope,
 };
 
 pub const DERIVATION_OUTPUT_BYTES: usize = 32;
@@ -204,12 +204,8 @@ impl fmt::Display for ExternalCredentialError {
             Self::MissingRootForState => {
                 "external credential root is missing for durable owner state"
             }
-            Self::RootWithoutState => {
-                "external credential root exists without durable owner state"
-            }
-            Self::InvalidProvisioningEnvelope => {
-                "external proxy provisioning envelope is invalid"
-            }
+            Self::RootWithoutState => "external credential root exists without durable owner state",
+            Self::InvalidProvisioningEnvelope => "external proxy provisioning envelope is invalid",
         })
     }
 }
