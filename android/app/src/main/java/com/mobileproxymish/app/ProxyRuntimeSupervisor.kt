@@ -36,7 +36,7 @@ internal class ProxyRuntimeCredentials(
     override fun toString(): String = "ProxyRuntimeCredentials(<redacted>)"
 }
 
-/** Exact Credentials-owner version plus ephemeral derived material for one runtime start. */
+/** Exact Credentials-owner version plus sensitive in-memory material for one runtime start. */
 internal class ProxyRuntimeCredentialSnapshot(
     val version: ULong,
     val credentials: ProxyRuntimeCredentials,
