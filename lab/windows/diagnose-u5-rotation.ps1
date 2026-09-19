@@ -158,6 +158,7 @@ function Get-MishProcessMetrics {
         proxy_active_sessions = [int64]$Snapshot.proxy.active_sessions
         mesh_serving_generation = Get-MishOptionalInt64 $Snapshot.mesh.serving_generation
         mesh_active_sessions = Get-MishOptionalInt64 $Snapshot.mesh.active_sessions
+        rotation_active_tasks = [int64]$Snapshot.rotation.active_tasks
     }
 }
 
@@ -398,7 +399,8 @@ function Invoke-MishOneRotation {
             [string]$final.readiness.state -ceq 'READY' -and
             [bool]$final.mesh.ingress_running -and
             [bool]$final.root.policy_authorized -and
-            (Get-MishOptionalInt64 $final.root.policy_authorized_generation) -eq $generationB
+            (Get-MishOptionalInt64 $final.root.policy_authorized_generation) -eq $generationB -and
+            [int64]$final.rotation.active_tasks -eq 0
         ) {
             if ($null -eq $readinessReadyMs) { $readinessReadyMs = $elapsed }
             break
@@ -531,6 +533,46 @@ for ($ordinal = 1; $ordinal -le $SuccessfulOperations; $ordinal++) {
     $operations.Add((Invoke-MishOneRotation -Ordinal $ordinal -ExpectedCredentialVersion $credentialVersion))
 }
 
+$postRotationSnapshot = Get-MishAndroidSnapshot
+Assert-MishReadyBaseline -Snapshot $postRotationSnapshot
+$metricsAfterRotations = Get-MishProcessMetrics -Snapshot $postRotationSnapshot
+$runtimeGenerationStableAcrossRotations = (
+    [int64]$metricsAfterRotations.runtime_generation -eq [int64]$metricsBefore.runtime_generation
+)
+$rootSessionStableAcrossRotations = (
+    $null -ne $metricsBefore.root_session_generation -and
+    $null -ne $metricsAfterRotations.root_session_generation -and
+    [int64]$metricsAfterRotations.root_session_generation -eq [int64]$metricsBefore.root_session_generation
+)
+$rotationTasksQuiescent = (
+    [int64]$metricsBefore.rotation_active_tasks -eq 0 -and
+    [int64]$metricsAfterRotations.rotation_active_tasks -eq 0
+)
+$runtimeIoStableAcrossRotations = (
+    [int]$metricsAfterRotations.runtime_io_threads -eq [int]$metricsBefore.runtime_io_threads
+)
+$threadsNoGrowthAcrossRotations = (
+    [int]$metricsAfterRotations.threads -le [int]$metricsBefore.threads
+)
+$fdsNoGrowthAcrossRotations = (
+    [int]$metricsAfterRotations.fd_count -le [int]$metricsBefore.fd_count
+)
+$ownerSessionsQuiescentAfterRotations = (
+    [int64]$metricsAfterRotations.proxy_active_sessions -eq 0 -and
+    ($null -eq $metricsAfterRotations.mesh_active_sessions -or [int64]$metricsAfterRotations.mesh_active_sessions -eq 0)
+)
+if (
+    -not $runtimeGenerationStableAcrossRotations -or
+    -not $rootSessionStableAcrossRotations -or
+    -not $rotationTasksQuiescent -or
+    -not $runtimeIoStableAcrossRotations -or
+    -not $threadsNoGrowthAcrossRotations -or
+    -not $fdsNoGrowthAcrossRotations -or
+    -not $ownerSessionsQuiescentAfterRotations
+) {
+    Stop-MishRotationAcceptance 'PRODUCT_ROTATION_RESOURCE_REGRESSION' 'Repeated normal rotations changed runtime/root-session ownership or leaked tasks/resources.'
+}
+
 $restoreCase = Invoke-MishShutdownRestoreAfterOn -ExpectedCredentialVersion $credentialVersion
 $final = Get-MishAndroidSnapshot
 Assert-MishReadyBaseline -Snapshot $final
@@ -548,11 +590,6 @@ if (-not $credentialMaterialUnchanged) {
 }
 
 $pidStable = [int]$metricsBefore.pid -eq [int]$metricsAfter.pid
-$rootSessionBounded = (
-    $null -ne $metricsBefore.root_session_generation -and
-    $null -ne $metricsAfter.root_session_generation -and
-    [int64]$metricsAfter.root_session_generation -ge [int64]$metricsBefore.root_session_generation
-)
 $runtimeIoStable = [int]$metricsAfter.runtime_io_threads -eq [int]$metricsBefore.runtime_io_threads
 $forbiddenKotlinOwnersAbsent = [int]$metricsAfter.forbidden_kotlin_owner_threads -eq 0
 $threadsBounded = [int]$metricsAfter.threads -le [int]$metricsBefore.threads
@@ -564,6 +601,13 @@ $sessionsQuiescent = (
 
 $acceptance = (
     $credentialMaterialUnchanged -and
+    $runtimeGenerationStableAcrossRotations -and
+    $rootSessionStableAcrossRotations -and
+    $rotationTasksQuiescent -and
+    $runtimeIoStableAcrossRotations -and
+    $threadsNoGrowthAcrossRotations -and
+    $fdsNoGrowthAcrossRotations -and
+    $ownerSessionsQuiescentAfterRotations -and
     $runtimeIoStable -and
     $forbiddenKotlinOwnersAbsent -and
     $threadsBounded -and
@@ -589,9 +633,16 @@ $evidence = [ordered]@{
     raw_ip_persisted = $false
     resources = [ordered]@{
         before = $metricsBefore
-        after = $metricsAfter
+        after_normal_rotations = $metricsAfterRotations
+        after_restore_restart = $metricsAfter
         pid_stable = $pidStable
-        root_session_generation_bounded = $rootSessionBounded
+        runtime_generation_stable_across_normal_rotations = $runtimeGenerationStableAcrossRotations
+        root_session_stable_across_normal_rotations = $rootSessionStableAcrossRotations
+        rotation_tasks_quiescent = $rotationTasksQuiescent
+        runtime_io_threads_stable_across_normal_rotations = $runtimeIoStableAcrossRotations
+        total_threads_no_growth_across_normal_rotations = $threadsNoGrowthAcrossRotations
+        file_descriptors_no_growth_across_normal_rotations = $fdsNoGrowthAcrossRotations
+        owner_sessions_quiescent_after_normal_rotations = $ownerSessionsQuiescentAfterRotations
         runtime_io_threads_stable = $runtimeIoStable
         forbidden_kotlin_owner_threads_absent = $forbiddenKotlinOwnersAbsent
         total_threads_no_growth = $threadsBounded
