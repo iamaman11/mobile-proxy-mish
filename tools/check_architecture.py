@@ -317,15 +317,19 @@ def main() -> None:
         "mish-transport",
         "Runtime must consume Transport-owned Mesh contracts through the typed seam",
     )
-    for required in (
+    require_product(
+        "crates/runtime/src/product_diagnostics.rs",
         "let mesh_snapshot = match mesh.snapshot()",
+        "atomic native diagnostics must capture the Transport-owned Mesh snapshot",
+    )
+    for required in (
         "snapshot.active_sessions",
         "snapshot.capacity_rejects",
     ):
         require_product(
-            "crates/runtime/src/product_diagnostics.rs",
+            product_ffi,
             required,
-            "atomic native diagnostics must read Mesh capacity from the Transport owner",
+            "atomic native diagnostics must project Mesh capacity from the captured Transport snapshot",
         )
     for duplicate_counter in ("AtomicInteger", "AtomicLong", "LongAdder"):
         forbid(
