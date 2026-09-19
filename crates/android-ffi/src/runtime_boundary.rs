@@ -13,7 +13,7 @@ use mish_cellular::{
 };
 use mish_proxy::ProxyOutboundConnectError;
 use mish_runtime::{
-    CellularDnsResolver, CellularRuntimeCoordinator,
+    CellularDnsDiagnosticSnapshot, CellularDnsResolver, CellularRuntimeCoordinator,
     PublicIpProbeEffectFailure as RuntimePublicIpProbeEffectFailure,
     PublicIpProbeFailure as RuntimePublicIpProbeFailure, RuntimePublicIpProbe,
 };
@@ -241,26 +241,7 @@ impl CellularController {
     }
 
     pub(crate) fn dns_diagnostic_snapshot(&self) -> CellularDnsDiagnosticView {
-        let snapshot = self.runtime.dns_diagnostic_snapshot();
-        CellularDnsDiagnosticView {
-            slow_threshold_ms: snapshot.slow_threshold_ms,
-            started: snapshot.started,
-            completed: snapshot.completed,
-            active: snapshot.active,
-            peak_active: snapshot.peak_active,
-            slow_completions: snapshot.slow_completions,
-            resolver_failed: snapshot.resolver_failed,
-            discarded_after_deadline: snapshot.discarded_after_deadline,
-            completed_after_owner_change: snapshot.completed_after_owner_change,
-            discarded_stale: snapshot.discarded_stale,
-            authority_validation_failed: snapshot.authority_validation_failed,
-            unusable_result: snapshot.unusable_result,
-            accepted_current: snapshot.accepted_current,
-            max_native_elapsed_ms: snapshot.max_native_elapsed_ms,
-            last_started_owner_sequence: snapshot.last_started_owner_sequence,
-            last_completed_start_owner_sequence: snapshot.last_completed_start_owner_sequence,
-            last_completed_current_owner_sequence: snapshot.last_completed_current_owner_sequence,
-        }
+        map_dns_diagnostic(self.runtime.dns_diagnostic_snapshot())
     }
 
     pub(crate) fn prepare_public_ip_probe(
@@ -271,6 +252,30 @@ impl CellularController {
             .prepare_public_ip_probe(Duration::from_millis(timeout_ms))
             .map(|inner| Arc::new(PublicIpProbeTicket { inner }))
             .map_err(map_public_ip_failure)
+    }
+}
+
+pub(crate) fn map_dns_diagnostic(
+    snapshot: CellularDnsDiagnosticSnapshot,
+) -> CellularDnsDiagnosticView {
+    CellularDnsDiagnosticView {
+        slow_threshold_ms: snapshot.slow_threshold_ms,
+        started: snapshot.started,
+        completed: snapshot.completed,
+        active: snapshot.active,
+        peak_active: snapshot.peak_active,
+        slow_completions: snapshot.slow_completions,
+        resolver_failed: snapshot.resolver_failed,
+        discarded_after_deadline: snapshot.discarded_after_deadline,
+        completed_after_owner_change: snapshot.completed_after_owner_change,
+        discarded_stale: snapshot.discarded_stale,
+        authority_validation_failed: snapshot.authority_validation_failed,
+        unusable_result: snapshot.unusable_result,
+        accepted_current: snapshot.accepted_current,
+        max_native_elapsed_ms: snapshot.max_native_elapsed_ms,
+        last_started_owner_sequence: snapshot.last_started_owner_sequence,
+        last_completed_start_owner_sequence: snapshot.last_completed_start_owner_sequence,
+        last_completed_current_owner_sequence: snapshot.last_completed_current_owner_sequence,
     }
 }
 
