@@ -3,11 +3,11 @@
 //! Android supplies raw network observations and an exact-handle interface hint. This coordinator
 //! owns latest-generation coalescing, quiescence, policy execution, authorization and retry state.
 
+use crate::root_session::RootSessionManager;
 use crate::{
     CellularRuntimeCoordinator, CellularRuntimeError, RootPolicyResult, RootPolicyRuntime,
     RuntimeExecutionError, RuntimeExecutor,
 };
-use crate::root_session::RootSessionManager;
 use mish_cellular::{
     CellularAdmissionSnapshot, CellularAdmissionState, NetworkHandle, NetworkObservation,
     ObservationSequence, RootPolicyNamespace,
@@ -113,7 +113,6 @@ impl CellularPolicyCoordinator {
     pub fn cellular(&self) -> Arc<CellularRuntimeCoordinator> {
         Arc::clone(&self.cellular)
     }
-
 
     pub fn start(self: &Arc<Self>) -> Result<(), CellularRuntimeError> {
         let admission = self.cellular.admission_snapshot()?;
