@@ -3,7 +3,6 @@ package com.mobileproxymish.app.cellular
 import android.content.Context
 import com.mobileproxymish.ffi.CellularAdmissionState
 import com.mobileproxymish.ffi.CellularAdmissionView
-import com.mobileproxymish.ffi.CellularDnsDiagnosticView
 import com.mobileproxymish.ffi.CellularNetworkObservationInput
 import com.mobileproxymish.ffi.CellularPolicyPublicationView
 import com.mobileproxymish.ffi.NativeCellularPolicyObserver
@@ -40,38 +39,6 @@ sealed interface CellularRuntimeSnapshot {
         val reason: CellularBoundaryFailure,
     ) : CellularRuntimeSnapshot
 }
-
-internal data class CellularReconcileDiagnostic(
-    val requested: Long,
-    val executed: Long,
-    val coalesced: Long,
-    val pending: Boolean,
-    val drainScheduled: Boolean,
-)
-
-internal data class CellularRootRecoveryDiagnostic(
-    val pending: Boolean,
-    val attemptsSinceReset: Int,
-    val nextDelayMs: Long,
-)
-
-internal data class CellularRootPolicyReconcileDiagnostic(
-    val attempts: Long = 0,
-    val totalExecutorCommands: Long = 0,
-    val totalObservationCommands: Long = 0,
-    val totalMutationCommands: Long = 0,
-    val totalDuplicateObservations: Long = 0,
-    val lastReconcileElapsedMs: Long = 0,
-    val maxReconcileElapsedMs: Long = 0,
-    val lastPolicyEffectElapsedMs: Long = 0,
-    val maxPolicyEffectElapsedMs: Long = 0,
-    val lastExecutorCommands: Int = 0,
-    val lastObservationCommands: Int = 0,
-    val lastMutationCommands: Int = 0,
-    val lastDuplicateObservations: Int = 0,
-    val lastIncompleteOrTimedOutCommands: Int = 0,
-    val lastMutationFailures: Int = 0,
-)
 
 /**
  * Thin Android platform adapter around one stable native PRODUCT process handle.
@@ -114,71 +81,6 @@ class CellularRuntimeBridge(
                 CellularBoundaryFailure.ForeignCallFailed,
             )
         }
-    }
-
-    /** Read-only process-wide native DNS execution facts; no Android-side accounting is kept. */
-    internal fun dnsDiagnosticObservation(): CellularDnsDiagnosticView? = try {
-        productRuntime.dnsDiagnosticSnapshot()
-    } catch (_: LinkageError) {
-        null
-    } catch (_: Exception) {
-        null
-    }
-
-    internal fun reconcileDiagnosticObservation(): CellularReconcileDiagnostic = try {
-        productRuntime.cellularReconcileDiagnostic().let { view ->
-            CellularReconcileDiagnostic(
-                requested = view.requested.toLong(),
-                executed = view.executed.toLong(),
-                coalesced = view.coalesced.toLong(),
-                pending = view.pending,
-                drainScheduled = view.drainScheduled,
-            )
-        }
-    } catch (_: Throwable) {
-        CellularReconcileDiagnostic(0, 0, 0, pending = false, drainScheduled = false)
-    }
-
-    internal fun rootPolicyReconcileDiagnosticObservation(): CellularRootPolicyReconcileDiagnostic =
-        try {
-            productRuntime.rootPolicyReconcileDiagnostic().let { view ->
-                CellularRootPolicyReconcileDiagnostic(
-                    attempts = view.attempts.toLong(),
-                    totalExecutorCommands = view.totalExecutorCommands.toLong(),
-                    totalObservationCommands = view.totalObservationCommands.toLong(),
-                    totalMutationCommands = view.totalMutationCommands.toLong(),
-                    totalDuplicateObservations = view.totalDuplicateObservations.toLong(),
-                    lastReconcileElapsedMs = view.lastReconcileElapsedMs.toLong(),
-                    maxReconcileElapsedMs = view.maxReconcileElapsedMs.toLong(),
-                    lastPolicyEffectElapsedMs = view.lastPolicyEffectElapsedMs.toLong(),
-                    maxPolicyEffectElapsedMs = view.maxPolicyEffectElapsedMs.toLong(),
-                    lastExecutorCommands = view.lastExecutorCommands.coerceAtMost(Int.MAX_VALUE.toULong()).toInt(),
-                    lastObservationCommands = view.lastObservationCommands.coerceAtMost(Int.MAX_VALUE.toULong()).toInt(),
-                    lastMutationCommands = view.lastMutationCommands.coerceAtMost(Int.MAX_VALUE.toULong()).toInt(),
-                    lastDuplicateObservations = view.lastDuplicateObservations.coerceAtMost(Int.MAX_VALUE.toULong()).toInt(),
-                    lastIncompleteOrTimedOutCommands =
-                        view.lastIncompleteOrTimedOutCommands.coerceAtMost(Int.MAX_VALUE.toULong()).toInt(),
-                    lastMutationFailures = view.lastMutationFailures.coerceAtMost(Int.MAX_VALUE.toULong()).toInt(),
-                )
-            }
-        } catch (_: Throwable) {
-            CellularRootPolicyReconcileDiagnostic()
-        }
-
-    internal fun rootRecoveryDiagnosticObservation(): CellularRootRecoveryDiagnostic = try {
-        productRuntime.rootRecoveryDiagnostic().let { view ->
-            CellularRootRecoveryDiagnostic(
-                pending = view.pending,
-                attemptsSinceReset = view.attemptsSinceReset.coerceAtMost(Int.MAX_VALUE.toUInt()).toInt(),
-                nextDelayMs = view.nextDelayMs.toLong(),
-            )
-        }
-    } catch (_: Throwable) {
-        CellularRootRecoveryDiagnostic(
-            pending = false,
-            attemptsSinceReset = 0,
-            nextDelayMs = 0,
-        )
     }
 
     /**
