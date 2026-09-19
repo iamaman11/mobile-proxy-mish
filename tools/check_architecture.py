@@ -1184,7 +1184,10 @@ def main() -> None:
         "root_publication: Option<CellularPolicyPublication>",
         "root_session_generation: Option<u64>",
         "pub rotation: RotationSnapshot",
-        "let rotation_snapshot = generation.rotation().snapshot()",
+        "pub rotation_active_tasks: u32",
+        "let rotation = generation.rotation();",
+        "let rotation_snapshot = rotation.snapshot();",
+        "let rotation_active_tasks = rotation.active_task_count();",
     ):
         require_product(
             diagnostics_owner,
