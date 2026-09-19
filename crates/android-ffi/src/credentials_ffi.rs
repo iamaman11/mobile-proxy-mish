@@ -1,8 +1,10 @@
 use mish_credentials::{
     ExternalCredentialError as OwnerCredentialError,
+    ExternalCredentialPersistenceAction as OwnerPersistenceAction,
     ExternalCredentialPurpose as OwnerCredentialPurpose,
     ExternalCredentialState as OwnerCredentialState,
-    ExternalCredentialStatus as OwnerCredentialStatus,
+    ExternalCredentialStatus as OwnerCredentialStatus, encode_provisioning_envelope, encode_state,
+    resolve_persistence,
 };
 use std::fmt;
 
@@ -11,6 +13,26 @@ pub struct ExternalCredentialStateView {
     pub version: u64,
     pub revoked: bool,
     pub credential_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ExternalCredentialCanonicalStateView {
+    pub state: ExternalCredentialStateView,
+    pub canonical_state: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum ExternalCredentialPersistenceActionView {
+    UseCurrent,
+    PersistCanonical,
+    CreateRootAndPersistCanonical,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ExternalCredentialPersistenceResolutionView {
+    pub state: ExternalCredentialStateView,
+    pub canonical_state: Vec<u8>,
+    pub action: ExternalCredentialPersistenceActionView,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
@@ -40,18 +62,24 @@ impl fmt::Debug for ExternalProxyCredentialMaterial {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Error)]
 pub enum ExternalCredentialBoundaryError {
     InvalidState,
+    InvalidStorage,
     VersionExhausted,
     Revoked,
     InvalidDerivationOutput,
+    InvalidProvisioningEnvelope,
 }
 
 impl fmt::Display for ExternalCredentialBoundaryError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::InvalidState => "external credential state is invalid",
+            Self::InvalidStorage => "external credential durable storage is invalid",
             Self::VersionExhausted => "external credential version space is exhausted",
             Self::Revoked => "external credential version is revoked",
             Self::InvalidDerivationOutput => "external credential derivation output is invalid",
+            Self::InvalidProvisioningEnvelope => {
+                "external credential provisioning envelope is invalid"
+            }
         })
     }
 }
@@ -59,32 +87,49 @@ impl fmt::Display for ExternalCredentialBoundaryError {
 impl std::error::Error for ExternalCredentialBoundaryError {}
 
 #[uniffi::export]
-pub fn external_credential_initial_state() -> ExternalCredentialStateView {
-    map_state(OwnerCredentialState::initial())
-}
-
-#[uniffi::export]
-pub fn external_credential_restore(
-    version: u64,
-    revoked: bool,
-) -> Result<ExternalCredentialStateView, ExternalCredentialBoundaryError> {
-    Ok(map_state(owner_state(version, revoked)?))
+pub fn external_credential_resolve_persistence(
+    canonical_state: Option<Vec<u8>>,
+    legacy_version: Option<String>,
+    legacy_revoked: Option<bool>,
+    root_exists: bool,
+) -> Result<ExternalCredentialPersistenceResolutionView, ExternalCredentialBoundaryError> {
+    let resolution = resolve_persistence(
+        canonical_state.as_deref(),
+        legacy_version.as_deref(),
+        legacy_revoked,
+        root_exists,
+    )?;
+    Ok(ExternalCredentialPersistenceResolutionView {
+        state: map_state(resolution.state()),
+        canonical_state: resolution.canonical_state().to_vec(),
+        action: match resolution.action() {
+            OwnerPersistenceAction::UseCurrent => {
+                ExternalCredentialPersistenceActionView::UseCurrent
+            }
+            OwnerPersistenceAction::PersistCanonical => {
+                ExternalCredentialPersistenceActionView::PersistCanonical
+            }
+            OwnerPersistenceAction::CreateRootAndPersistCanonical => {
+                ExternalCredentialPersistenceActionView::CreateRootAndPersistCanonical
+            }
+        },
+    })
 }
 
 #[uniffi::export]
 pub fn external_credential_rotate(
     version: u64,
     revoked: bool,
-) -> Result<ExternalCredentialStateView, ExternalCredentialBoundaryError> {
-    Ok(map_state(owner_state(version, revoked)?.rotate()?))
+) -> Result<ExternalCredentialCanonicalStateView, ExternalCredentialBoundaryError> {
+    Ok(map_canonical(owner_state(version, revoked)?.rotate()?))
 }
 
 #[uniffi::export]
 pub fn external_credential_revoke(
     version: u64,
     revoked: bool,
-) -> Result<ExternalCredentialStateView, ExternalCredentialBoundaryError> {
-    Ok(map_state(owner_state(version, revoked)?.revoke()))
+) -> Result<ExternalCredentialCanonicalStateView, ExternalCredentialBoundaryError> {
+    Ok(map_canonical(owner_state(version, revoked)?.revoke()))
 }
 
 #[uniffi::export]
@@ -115,6 +160,22 @@ pub fn external_credential_materialize(
     })
 }
 
+#[uniffi::export]
+pub fn external_credential_encode_provisioning_envelope(
+    credential_version: u64,
+    challenge: Vec<u8>,
+    username: String,
+    password: String,
+) -> Result<Vec<u8>, ExternalCredentialBoundaryError> {
+    let state = OwnerCredentialState::new(credential_version, OwnerCredentialStatus::Active)?;
+    Ok(encode_provisioning_envelope(
+        state,
+        &challenge,
+        &username,
+        &password,
+    )?)
+}
+
 fn owner_state(
     version: u64,
     revoked: bool,
@@ -135,13 +196,30 @@ fn map_state(state: OwnerCredentialState) -> ExternalCredentialStateView {
     }
 }
 
+fn map_canonical(state: OwnerCredentialState) -> ExternalCredentialCanonicalStateView {
+    ExternalCredentialCanonicalStateView {
+        state: map_state(state),
+        canonical_state: encode_state(state),
+    }
+}
+
 impl From<OwnerCredentialError> for ExternalCredentialBoundaryError {
     fn from(error: OwnerCredentialError) -> Self {
         match error {
-            OwnerCredentialError::InvalidVersion => Self::InvalidState,
+            OwnerCredentialError::InvalidVersion
+            | OwnerCredentialError::MalformedState
+            | OwnerCredentialError::NonCanonicalState => Self::InvalidState,
+            OwnerCredentialError::MixedPersistenceSchemas
+            | OwnerCredentialError::IncompleteLegacyState
+            | OwnerCredentialError::InvalidLegacyVersion
+            | OwnerCredentialError::MissingRootForState
+            | OwnerCredentialError::RootWithoutState => Self::InvalidStorage,
             OwnerCredentialError::VersionExhausted => Self::VersionExhausted,
             OwnerCredentialError::Revoked => Self::Revoked,
             OwnerCredentialError::InvalidDerivationOutput => Self::InvalidDerivationOutput,
+            OwnerCredentialError::InvalidProvisioningEnvelope => {
+                Self::InvalidProvisioningEnvelope
+            }
         }
     }
 }
@@ -151,37 +229,64 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ffi_state_round_trip_delegates_to_owner() {
-        let initial = external_credential_initial_state();
-        assert_eq!(initial.version, 1);
-        assert!(!initial.revoked);
-        let restored = external_credential_restore(initial.version, initial.revoked)
-            .expect("restore initial owner state");
-        assert_eq!(restored, initial);
+    fn ffi_persistence_resolution_delegates_to_owner() {
+        let initial =
+            external_credential_resolve_persistence(None, None, None, false).expect("initialize");
+        assert_eq!(initial.state.version, 1);
+        assert!(!initial.state.revoked);
+        assert_eq!(
+            initial.action,
+            ExternalCredentialPersistenceActionView::CreateRootAndPersistCanonical
+        );
+
+        let current = external_credential_resolve_persistence(
+            Some(initial.canonical_state.clone()),
+            None,
+            None,
+            true,
+        )
+        .expect("current");
+        assert_eq!(current.state, initial.state);
+        assert_eq!(
+            current.action,
+            ExternalCredentialPersistenceActionView::UseCurrent
+        );
     }
 
     #[test]
-    fn ffi_rotation_and_revocation_preserve_owner_semantics() {
-        let initial = external_credential_initial_state();
-        let revoked = external_credential_revoke(initial.version, initial.revoked)
-            .expect("revoke owner state");
-        assert!(revoked.revoked);
+    fn ffi_rotation_and_revocation_return_canonical_owner_state() {
+        let revoked = external_credential_revoke(1, false).expect("revoke owner state");
+        assert!(revoked.state.revoked);
         assert_eq!(
-            external_credential_derivation(revoked.version, revoked.revoked),
+            external_credential_derivation(revoked.state.version, revoked.state.revoked),
             Err(ExternalCredentialBoundaryError::Revoked)
         );
-        let rotated = external_credential_rotate(revoked.version, revoked.revoked)
+
+        let rotated = external_credential_rotate(revoked.state.version, revoked.state.revoked)
             .expect("rotate revoked owner state");
-        assert_eq!(rotated.version, 2);
-        assert!(!rotated.revoked);
+        assert_eq!(rotated.state.version, 2);
+        assert!(!rotated.state.revoked);
+        assert_eq!(rotated.canonical_state, vec![0x08, 0x02]);
     }
 
     #[test]
     fn ffi_materialization_rejects_bad_hmac_length() {
-        let state = external_credential_initial_state();
         assert_eq!(
-            external_credential_materialize(state.version, state.revoked, vec![1; 31], vec![2; 32],),
+            external_credential_materialize(1, false, vec![1; 31], vec![2; 32]),
             Err(ExternalCredentialBoundaryError::InvalidDerivationOutput)
         );
+    }
+
+    #[test]
+    fn ffi_provisioning_plaintext_is_owner_encoded() {
+        let encoded = external_credential_encode_provisioning_envelope(
+            7,
+            vec![3; 32],
+            "mish-0123456789abcdef0123456789abcdef".to_owned(),
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                .to_owned(),
+        )
+        .expect("provisioning envelope");
+        assert!(!encoded.is_empty());
     }
 }
