@@ -145,7 +145,8 @@ def main() -> None:
         "retention-days: 7",
         "Local build required: **NO**",
         "      - name: Set up JDK 17\n        if: ${{ steps.scope.outputs.build_required == 'true' }}",
-        "      - name: Unit test and assemble host gate\n        if: ${{ steps.scope.outputs.build_required == 'true' && github.event.pull_request.draft == false }}",
+        "contains(github.event.pull_request.body, '[full-hosted]')",
+        "      - name: Unit test and assemble host gate\n        if: ${{ steps.scope.outputs.build_required == 'true' && (github.event.pull_request.draft == false || contains(github.event.pull_request.body, '[full-hosted]')) }}",
         "      - name: Stage exact-head device candidate\n        if: ${{ steps.scope.outputs.build_required == 'true' && github.event.pull_request.draft == false }}",
         "      - name: Upload exact-head device candidate\n        if: ${{ steps.scope.outputs.build_required == 'true' && github.event.pull_request.draft == false }}",
         "Static-only preflight summary",
@@ -261,7 +262,8 @@ def main() -> None:
         "CONTROL_SHA",
         "No successful build, merge to main, label, or completed workflow starts DEVICE-1",
         "one GitHub Actions Device Cycle run",
-        "They are not PRODUCT release identity and cannot be promoted",
+        "Development device candidates are the canonical Android physical-acceptance bytes for their exact source head",
+        "They are never promoted through an RC lineage",
     ):
         require(pipeline, required, "stable development delivery documentation drifted")
 
