@@ -24,6 +24,20 @@ data class MainUiState(
     val proxyReasonCode: String? = null,
 )
 
+internal sealed interface CredentialRevealUiState {
+    data object Hidden : CredentialRevealUiState
+    data object Unavailable : CredentialRevealUiState
+
+    class Revealed(
+        val version: ULong,
+        val username: String,
+        val password: String,
+    ) : CredentialRevealUiState {
+        override fun toString(): String =
+            "CredentialRevealUiState.Revealed(version=$version,<redacted>)"
+    }
+}
+
 /** Presentation wording only. The input value is the Rust readiness projection itself. */
 internal fun readinessStatus(readiness: ProductReadinessState): String = when (readiness) {
     ProductReadinessState.READY ->
@@ -40,6 +54,11 @@ internal fun readinessStatus(readiness: ProductReadinessState): String = when (r
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application as MishApplication
     private val runtimeController = app.runtimeController
+    private val mutableCredentialReveal =
+        MutableStateFlow<CredentialRevealUiState>(CredentialRevealUiState.Hidden)
+
+    internal val credentialReveal: StateFlow<CredentialRevealUiState>
+        get() = mutableCredentialReveal.asStateFlow()
 
     val state: StateFlow<MainUiState> = combine(
         runtimeController.cellularSnapshot,
@@ -55,6 +74,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             runtimeController.readinessSnapshot.value,
         ),
     )
+
+    fun showCurrentCredentials() {
+        val current = runtimeController.revealCurrentExternalCredential()
+        mutableCredentialReveal.value = if (current == null) {
+            CredentialRevealUiState.Unavailable
+        } else {
+            CredentialRevealUiState.Revealed(
+                version = current.version,
+                username = current.credentials.username,
+                password = current.credentials.password,
+            )
+        }
+    }
+
+    fun hideCurrentCredentials() {
+        mutableCredentialReveal.value = CredentialRevealUiState.Hidden
+    }
 
     private fun toUiState(
         cellular: CellularRuntimeSnapshot,
