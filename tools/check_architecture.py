@@ -771,7 +771,6 @@ def main() -> None:
     for required in (
         "pub fn observe_readiness(",
         "pub fn readiness_snapshot(",
-        "pub fn readiness_diagnostic_snapshot(",
         "generation.readiness()",
     ):
         require_product(
@@ -968,11 +967,6 @@ def main() -> None:
             required,
             "NativeProductRuntime must be a stable forwarding/projection handle over ProductRuntimeCoordinator",
         )
-    require_product(
-        product_ffi,
-        "pub fn proxy_active_sessions(&self) -> u32",
-        "NativeProductRuntime must project Proxy Serving active sessions from the Rust owner",
-    )
     for forbidden in (
         "ProductGeneration::new",
         "RuntimeExecutor::new",
@@ -1112,12 +1106,101 @@ def main() -> None:
             "Android Proxy adapter must not regain serving-generation or recovery ownership",
         )
 
-    # Diagnostics v2 observes current owner facts only. It must never become a repair/control path.
+    # F diagnostics cutover is one-way: one immutable generation-pinned Rust snapshot, then
+    # Android-only process metadata + serialization. Kotlin may not reconstruct owner semantics.
+    diagnostics_owner = "crates/runtime/src/product_diagnostics.rs"
+    for required in (
+        "pub struct ProductDiagnosticSnapshot",
+        "pub struct ProductGenerationDiagnosticSnapshot",
+        "pub fn diagnostic_snapshot(&self)",
+        "DIAGNOSTIC_STABILITY_ATTEMPTS",
+        "Arc::ptr_eq(&generation, &current)",
+        "runtime_before == runtime_after",
+        "first == second",
+        "capture_generation(&generation)",
+        "RotationDiagnosticState::NotSupported",
+    ):
+        require_product(
+            diagnostics_owner,
+            required,
+            "mish-runtime must own atomic generation-consistent PRODUCT diagnostics",
+        )
+    for forbidden in ("std::thread", "sleep(", "ProcessBuilder", "RootCommandTransport"):
+        forbid_product(
+            diagnostics_owner,
+            forbidden,
+            "diagnostic capture must remain read-only and scheduler-free",
+        )
+
+    for required in (
+        "pub struct ProductDiagnosticSnapshotView",
+        "pub fn diagnostic_snapshot(",
+        ".diagnostic_snapshot()",
+        "map_product_diagnostic_snapshot",
+    ):
+        require_product(
+            product_ffi,
+            required,
+            "UniFFI must expose exactly one Rust-composed diagnostic snapshot",
+        )
+    for forbidden in (
+        "pub fn readiness_diagnostic_snapshot(",
+        "pub fn proxy_active_sessions(",
+        "pub fn dns_diagnostic_snapshot(",
+        "pub fn cellular_reconcile_diagnostic(",
+        "pub fn root_recovery_diagnostic(",
+        "pub fn root_policy_reconcile_diagnostic(",
+    ):
+        forbid_product(
+            product_ffi,
+            forbidden,
+            "per-owner diagnostic reads must not remain exported after atomic snapshot cutover",
+        )
+
     diagnostics = "android/app/src/main/java/com/mobileproxymish/app/MishDiagnosticsProvider.kt"
     require(diagnostics, 'MISH_DIAGNOSTICS_SCHEMA_V2 = "mish.diagnostics/v2"', "diagnostics must be versioned v2")
     require(diagnostics, 'MISH_DIAGNOSTICS_METHOD_SNAPSHOT_V2 = "snapshot_v2"', "diagnostics method must be v2")
-    for obsolete in ("MISH_DIAGNOSTICS_SCHEMA_V1", "snapshot_v1", 'put("bridge"', "private_healthy", "privateBridge"):
-        forbid(diagnostics, obsolete, "diagnostics must not retain deleted private-bridge semantics")
+    require(
+        diagnostics,
+        "val snapshot = app.runtimeController.diagnosticSnapshot()",
+        "Kotlin diagnostics must request exactly one native PRODUCT snapshot",
+    )
+    require(
+        diagnostics,
+        "snapshot: ProductDiagnosticSnapshotView",
+        "Kotlin diagnostics serializer must consume the aggregate native record directly",
+    )
+    for obsolete in (
+        "MISH_DIAGNOSTICS_SCHEMA_V1",
+        "snapshot_v1",
+        'put("bridge"',
+        "private_healthy",
+        "privateBridge",
+        "currentCellularRuntime",
+        "currentProxyRuntime",
+        "currentProductRuntime",
+        "currentMeshRuntime",
+        "runtimeRecoveryBefore",
+        "runtimeRecoveryAfter",
+        "cellularBefore",
+        "cellularAfter",
+        "proxyBefore",
+        "proxyAfter",
+        "readinessBefore",
+        "readinessAfter",
+        "meshBefore",
+        "meshAfter",
+        "sameGeneration",
+        " === ",
+        "MishDiagnosticFactsV2",
+        "CellularAdmissionState",
+        "ProductReadinessState",
+    ):
+        forbid(
+            diagnostics,
+            obsolete,
+            "Kotlin diagnostics must not regain multi-read semantic composition or generation fencing",
+        )
     for mutation in (
         "startNativeProxyRuntime(",
         ".start()",
@@ -1135,6 +1218,21 @@ def main() -> None:
         "observeNetwork(",
     ):
         forbid(diagnostics, mutation, "diagnostics must remain observation-only")
+
+    for kotlin_path, obsolete in (
+        ("android/app/src/main/java/com/mobileproxymish/app/ProxyRuntimeSupervisor.kt", "diagnosticObservation"),
+        ("android/app/src/main/java/com/mobileproxymish/app/MeshIngressRuntimeBridge.kt", "diagnosticIngressFailure"),
+        ("android/app/src/main/java/com/mobileproxymish/app/MeshIngressRuntimeBridge.kt", "diagnosticSessionObservation"),
+        ("android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRuntimeBridge.kt", "dnsDiagnosticObservation"),
+        ("android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRuntimeBridge.kt", "reconcileDiagnosticObservation"),
+        ("android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRuntimeBridge.kt", "rootPolicyReconcileDiagnosticObservation"),
+        ("android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRuntimeBridge.kt", "rootRecoveryDiagnosticObservation"),
+    ):
+        forbid(
+            kotlin_path,
+            obsolete,
+            "presentation/platform adapters must not expose parallel diagnostic composition APIs",
+        )
 
     # U5 root ownership is one-way: policy semantics live in mish-cellular, while the one
     # persistent root session + policy execution/recovery live under the process Tokio owner.
