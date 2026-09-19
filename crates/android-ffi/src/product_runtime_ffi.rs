@@ -5,9 +5,8 @@ use crate::runtime_boundary::{
     map_public_ip_failure, map_snapshot,
 };
 use crate::runtime_lifecycle_ffi::{
-    ProxyServingFailure, ProxyServingState, RuntimeLifecycleState, RuntimeStartAction,
-    RuntimeStopAction, map_lifecycle_state, map_proxy_failure_out, map_start_action,
-    map_stop_action,
+    ProxyServingFailure, ProxyServingState, RuntimeLifecycleState, map_lifecycle_state,
+    map_proxy_failure_out,
 };
 use crate::transport_ffi::{
     MeshAdmissionView, MeshTransportBoundaryError, map_transport_error, map_view as map_mesh_view,
@@ -31,7 +30,6 @@ use std::time::Duration;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Error)]
 pub enum NativeProductRuntimeError {
     InvalidProductUid,
-    InvalidRuntimeGeneration,
     ThreadUnavailable,
     StateUnavailable,
     CleanupFailed,
@@ -41,7 +39,6 @@ impl fmt::Display for NativeProductRuntimeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::InvalidProductUid => "PRODUCT Android UID must be positive",
-            Self::InvalidRuntimeGeneration => "PRODUCT runtime generation must be positive",
             Self::ThreadUnavailable => "native PRODUCT executor threads are unavailable",
             Self::StateUnavailable => "native PRODUCT runtime state is unavailable",
             Self::CleanupFailed => "native PRODUCT root-policy cleanup failed",
@@ -230,18 +227,15 @@ impl NativeProductRuntime {
         credential_version: Option<u64>,
         username: Option<String>,
         password: Option<String>,
-    ) -> Result<RuntimeStartAction, NativeProductRuntimeError> {
+    ) -> Result<(), NativeProductRuntimeError> {
         self.runtime
             .request_start(credential_version, username, password)
-            .map(map_start_action)
+            .map(|_| ())
             .map_err(Into::into)
     }
 
-    pub fn stop_runtime(self: &Arc<Self>) -> Result<RuntimeStopAction, NativeProductRuntimeError> {
-        self.runtime
-            .request_stop()
-            .map(map_stop_action)
-            .map_err(Into::into)
+    pub fn stop_runtime(self: &Arc<Self>) -> Result<(), NativeProductRuntimeError> {
+        self.runtime.request_stop().map(|_| ()).map_err(Into::into)
     }
 
     pub fn begin_stopped_platform_mutation(
