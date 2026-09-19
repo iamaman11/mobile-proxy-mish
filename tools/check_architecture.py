@@ -273,6 +273,31 @@ def main() -> None:
         "pub trait CellularDnsResolver",
         "Runtime must keep one injected Cellular Egress DNS consumer port",
     )
+    for required in (
+        "static DNS_DIAGNOSTICS",
+        "completed_after_owner_change",
+        "discarded_stale",
+        "resolver_failed",
+        "authority_validation_failed",
+        "unusable_result",
+        "peak_active",
+    ):
+        require_product(
+            runtime_dns,
+            required,
+            "native DNS lifetime diagnostics must remain process-wide Rust-owned observation facts",
+        )
+    require(
+        cellular_bridge,
+        "productRuntime.dnsDiagnosticSnapshot()",
+        "Android must only project the Rust-owned DNS diagnostic snapshot",
+    )
+    for forbidden in ("newSingleThreadExecutor", "newFixedThreadPool", "AtomicInteger", "AtomicLong"):
+        forbid(
+            cellular_bridge,
+            forbidden,
+            "Android DNS projection must not acquire scheduling or duplicate lifetime counters",
+        )
     android_dns = "crates/android-network/src/lib.rs"
     require(
         android_dns,
@@ -875,6 +900,11 @@ def main() -> None:
             required,
             "NativeProductRuntime must be a stable forwarding/projection handle over ProductRuntimeCoordinator",
         )
+    require_product(
+        product_ffi,
+        "pub fn proxy_active_sessions(&self) -> u32",
+        "NativeProductRuntime must project Proxy Serving active sessions from the Rust owner",
+    )
     for forbidden in (
         "ProductGeneration::new",
         "RuntimeExecutor::new",
@@ -973,6 +1003,7 @@ def main() -> None:
     for required in (
         "productRuntime.observeProxyRuntime(",
         "productRuntime.proxyRuntimeSnapshot()",
+        "productRuntime.proxyActiveSessions()",
     ):
         require(
             proxy_android,
@@ -989,6 +1020,12 @@ def main() -> None:
             proxy_android,
             forbidden,
             "Android Proxy projection must not retain a direct lifecycle or credential control path",
+        )
+    for duplicate_counter in ("AtomicInteger", "AtomicLong", "LongAdder", "Semaphore("):
+        forbid(
+            proxy_android,
+            duplicate_counter,
+            "Android Proxy diagnostics must not own capacity or active-session accounting",
         )
     for forbidden in (
         "NativeProxyRuntime?",
@@ -1146,6 +1183,7 @@ def main() -> None:
         "crates/sing-box-adapter",
         "vendor/sing-box",
         "tools/materialize_sing_box_android.py",
+        "android/app/src/main/java/com/mobileproxymish/app/LegacySingBoxUpgradeMigration.kt",
     ):
         forbid_exists(obsolete_path, "obsolete sing-box product dependency must stay deleted")
 
