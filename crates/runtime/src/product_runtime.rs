@@ -229,11 +229,12 @@ impl ProductRuntimeCoordinator {
 
     pub fn start_public_ip_rotation(
         self: &Arc<Self>,
+        cellular_request_rearm: Arc<dyn crate::CellularRequestRearmEffect>,
     ) -> Result<u64, crate::RotationRuntimeStartError> {
         let generation = self
             .active_generation()
             .map_err(|_| crate::RotationRuntimeStartError::RuntimeNotRunning)?;
-        generation.rotation().start()
+        generation.rotation().start(cellular_request_rearm)
     }
 
     pub fn rotation_snapshot(&self) -> mish_rotation::RotationSnapshot {
