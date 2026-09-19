@@ -12,19 +12,15 @@ use crate::runtime_boundary::{
 use crate::transport_ffi::{
     MeshAdmissionView, MeshTransportBoundaryError, map_transport_error, map_view as map_mesh_view,
 };
-use mish_cellular::{
-    NetworkHandle, NetworkObservation, ObservationSequence, RootPolicyNamespace,
-};
+use mish_cellular::{NetworkHandle, NetworkObservation, ObservationSequence, RootPolicyNamespace};
 use mish_runtime::{
     CellularPolicyObserver, CellularPolicyPublication, CellularReconcileDiagnostic,
     ProductRuntimeCoordinator, ProductRuntimeSnapshot, ProxyRuntimeObserver,
-    ProxyRuntimePublication,
-    ProxyServingState as OwnerProxyServingState,
-    RootAuthorityStatus as OwnerRootAuthorityStatus,
-    RootPolicyFailure as OwnerRootPolicyFailure,
+    ProxyRuntimePublication, ProxyServingState as OwnerProxyServingState,
     ReadinessDiagnosticSnapshot, ReadinessObserver,
-    RootPolicyReconcileDiagnostic,
-    RootPolicyResult as OwnerRootPolicyResult, RootRecoveryDiagnostic, RuntimeExecutionError,
+    RootAuthorityStatus as OwnerRootAuthorityStatus, RootPolicyFailure as OwnerRootPolicyFailure,
+    RootPolicyReconcileDiagnostic, RootPolicyResult as OwnerRootPolicyResult,
+    RootRecoveryDiagnostic, RuntimeExecutionError,
 };
 use mish_transport::MeshVpnObservation;
 use std::fmt;
@@ -208,11 +204,8 @@ impl NativeProductRuntime {
         } else {
             RootPolicyNamespace::Release
         };
-        let runtime = ProductRuntimeCoordinator::new(
-            Arc::new(AndroidDnsResolver),
-            product_uid,
-            namespace,
-        )?;
+        let runtime =
+            ProductRuntimeCoordinator::new(Arc::new(AndroidDnsResolver), product_uid, namespace)?;
 
         Ok(Arc::new(Self { runtime }))
     }
@@ -233,9 +226,7 @@ impl NativeProductRuntime {
             .map_err(Into::into)
     }
 
-    pub fn stop_runtime(
-        self: &Arc<Self>,
-    ) -> Result<RuntimeStopAction, NativeProductRuntimeError> {
+    pub fn stop_runtime(self: &Arc<Self>) -> Result<RuntimeStopAction, NativeProductRuntimeError> {
         self.runtime
             .request_stop()
             .map(map_stop_action)
@@ -284,7 +275,9 @@ impl NativeProductRuntime {
     pub fn readiness_diagnostic_snapshot(&self) -> ReadinessDiagnosticView {
         self.runtime
             .current_generation()
-            .map(|generation| map_readiness_diagnostic(generation.readiness().diagnostic_snapshot()))
+            .map(|generation| {
+                map_readiness_diagnostic(generation.readiness().diagnostic_snapshot())
+            })
             .unwrap_or(ReadinessDiagnosticView {
                 state: ProductReadinessState::Unknown,
                 root_policy_verified: false,
@@ -349,12 +342,7 @@ impl NativeProductRuntime {
             is_not_vpn,
         );
         self.runtime
-            .observe_network(
-                sequence.raw(),
-                observation,
-                network_handle,
-                interface_name,
-            )
+            .observe_network(sequence.raw(), observation, network_handle, interface_name)
             .map(map_snapshot)
             .map_err(|_| CellularBridgeError::OwnerUnavailable)
     }
@@ -374,9 +362,7 @@ impl NativeProductRuntime {
             .map_err(|_| CellularBridgeError::OwnerUnavailable)
     }
 
-    pub fn invalidate_cellular_platform_facts(
-        &self,
-    ) -> Result<(), NativeProductRuntimeError> {
+    pub fn invalidate_cellular_platform_facts(&self) -> Result<(), NativeProductRuntimeError> {
         self.runtime
             .invalidate_cellular_platform_facts()
             .map_err(Into::into)
@@ -430,10 +416,7 @@ impl NativeProductRuntime {
             .map_err(|_| PublicIpProbeError::NoCurrentCellular)?;
         generation
             .cellular()
-            .observe_public_egress_ip(
-                &generation.executor(),
-                Duration::from_millis(timeout_ms),
-            )
+            .observe_public_egress_ip(&generation.executor(), Duration::from_millis(timeout_ms))
             .map(|observation| PublicIpObservationView {
                 address: observation.address().to_string(),
                 generation: observation.generation(),
@@ -476,17 +459,13 @@ impl NativeProductRuntime {
             .map_err(Into::into)
     }
 
-    pub fn invalidate_mesh_platform_fact(
-        &self,
-    ) -> Result<(), NativeProductRuntimeError> {
+    pub fn invalidate_mesh_platform_fact(&self) -> Result<(), NativeProductRuntimeError> {
         self.runtime
             .invalidate_mesh_platform_fact()
             .map_err(Into::into)
     }
 
-    pub fn mesh_admission_snapshot(
-        &self,
-    ) -> Result<MeshAdmissionView, MeshTransportBoundaryError> {
+    pub fn mesh_admission_snapshot(&self) -> Result<MeshAdmissionView, MeshTransportBoundaryError> {
         let generation = self
             .runtime
             .current_generation()
@@ -618,9 +597,7 @@ fn map_readiness_diagnostic(snapshot: ReadinessDiagnosticSnapshot) -> ReadinessD
     }
 }
 
-fn map_policy_publication(
-    publication: CellularPolicyPublication,
-) -> CellularPolicyPublicationView {
+fn map_policy_publication(publication: CellularPolicyPublication) -> CellularPolicyPublicationView {
     let (state, failure, authority_status) = match publication.result {
         OwnerRootPolicyResult::Enforced => (RootPolicyStateView::Enforced, None, None),
         OwnerRootPolicyResult::FailClosed(failure) => (
