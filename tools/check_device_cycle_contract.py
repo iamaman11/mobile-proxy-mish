@@ -101,14 +101,16 @@ def main() -> None:
         require(workflow, required, "explicit single-run orchestration contract drifted")
 
     for required in (
+        "name: Device Cycle Contracts",
+        "runs-on: windows-latest",
         "Verify Device Cycle orchestration contracts",
-        "./lab/windows/test-device-candidate-store.ps1",
-        "./lab/windows/test-device-candidate.ps1",
-        "./lab/windows/test-device-cycle.ps1",
-        "./lab/windows/test-recovery-lifecycle-probe-contract.ps1",
-        "./lab/windows/test-dns-lifetime-live-probe-contract.ps1",
-        "./lab/windows/test-u5-rotation-probe-contract.ps1",
-        "python ./tools/check_device_cycle_contract.py",
+        ".\\lab\\windows\\test-device-candidate-store.ps1",
+        ".\\lab\\windows\\test-device-candidate.ps1",
+        ".\\lab\\windows\\test-device-cycle.ps1",
+        ".\\lab\\windows\\test-recovery-lifecycle-probe-contract.ps1",
+        ".\\lab\\windows\\test-dns-lifetime-live-probe-contract.ps1",
+        ".\\lab\\windows\\test-u5-rotation-probe-contract.ps1",
+        "python .\\tools\\check_device_cycle_contract.py",
     ):
         require(validation_workflow, required, "Device Cycle contract verification must remain in protected-main PR validation")
 
