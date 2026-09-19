@@ -66,6 +66,7 @@ def main() -> None:
         "rotationRestoreRequired",
         "rotationTerminalResult",
         "rotationRestoreResult",
+        "rotationActiveTasks",
         "ReadinessDiagnosticView",
         "MeshAdmissionView",
         "ExternalCredentialCanonicalStateView",
