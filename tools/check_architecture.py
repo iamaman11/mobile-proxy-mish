@@ -1693,6 +1693,36 @@ def main() -> None:
             "Android Cellular bridge must stay an observation/presentation adapter only",
         )
 
+    # Android physical acceptance has one artifact authority. The obsolete RC/prerelease
+    # pipeline and its release-lineage helpers must never return beside Integration Preflight
+    # + Device Cycle.
+    for obsolete_path in (
+        ".github/workflows/android-release.yml",
+        ".github/workflows/e3-physical-cellular.yml",
+        "scripts/release/android_release.py",
+        "scripts/release/e3_harness.py",
+        "scripts/release/failed_rc_reservation.py",
+        "scripts/release/test_android_release.py",
+        "scripts/release/test_e3_harness.py",
+        "scripts/release/test_failed_rc_reservation.py",
+        "scripts/release/test_release_workflow_topology.py",
+    ):
+        forbid_exists(
+            obsolete_path,
+            "obsolete RC/release-lineage pipeline must stay deleted; exact hosted device candidate + Device Cycle is the sole Android physical-acceptance path",
+        )
+
+    require(
+        ".github/workflows/integration-android-preflight.yml",
+        "name: device-candidate-pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}",
+        "Integration Android Preflight must remain the exact-head Android candidate producer",
+    )
+    require(
+        ".github/workflows/device-cycle.yml",
+        "candidate artifact did not originate from Integration Android Preflight",
+        "Device Cycle must consume only the exact hosted candidate producer",
+    )
+
     # L8 native cutover is one-way: obsolete Android sing-box bytes/build adapters may not return.
     forbid("Cargo.toml", "sing-box-adapter", "workspace must not contain the obsolete proxy adapter")
     android_build = "android/app/build.gradle.kts"
