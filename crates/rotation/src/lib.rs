@@ -278,6 +278,7 @@ impl RotationStateMachine {
                 // authoritative observation decides whether normal flow can continue.
                 operation.restore_required = true;
                 operation.phase = RotationPhase::WaitingRadioDown;
+                operation.maybe_advance_radio_down();
             }
         }
         Ok(operation.snapshot())
@@ -337,6 +338,7 @@ impl RotationStateMachine {
             if matches!(
                 operation.phase,
                 RotationPhase::WaitingRadioDown
+                    | RotationPhase::AirplaneEnabling
                     | RotationPhase::AirplaneDisabling
                     | RotationPhase::WaitingCellularRecovery
                     | RotationPhase::WaitingRootPolicy
@@ -347,6 +349,11 @@ impl RotationStateMachine {
         }
 
         match operation.phase {
+            RotationPhase::AirplaneEnabling => {
+                if !admitted {
+                    operation.cellular_loss_observed = true;
+                }
+            }
             RotationPhase::WaitingRadioDown => {
                 if !admitted {
                     operation.cellular_loss_observed = true;
@@ -468,6 +475,13 @@ impl RotationStateMachine {
     ) -> Result<RotationSnapshot, RotationTransitionError> {
         let operation = self.active(operation_id)?;
         Ok(fail_operation(operation, failure))
+    }
+
+    pub fn deadline_exceeded(
+        &mut self,
+        operation_id: u64,
+    ) -> Result<RotationSnapshot, RotationTransitionError> {
+        self.fail(operation_id, RotationFailure::DeadlineExceeded)
     }
 
     pub fn record_restore(
@@ -761,6 +775,34 @@ mod tests {
             .expect("B root authorized");
         assert_eq!(authorized.phase, RotationPhase::ProbingPublicIp);
         assert_eq!(authorized.after_generation, Some(12));
+    }
+
+    #[test]
+    fn absolute_deadline_is_terminal_and_keeps_restore_requirement() {
+        let (mut machine, id) = started();
+        machine
+            .airplane_enable_effect_completed(id, RotationMutationOutcome::Applied)
+            .expect("enable");
+        machine.observe_airplane(id, true).expect("on");
+        let failed = machine.deadline_exceeded(id).expect("deadline");
+        assert_eq!(failed.phase, RotationPhase::Failed);
+        assert_eq!(failed.failure, Some(RotationFailure::DeadlineExceeded));
+        assert!(failed.restore_required);
+    }
+
+    #[test]
+    fn cellular_loss_during_enable_is_retained_until_airplane_on_is_observed() {
+        let (mut machine, id) = started();
+        let early_loss = machine
+            .observe_cellular(id, 11, false)
+            .expect("loss during enable");
+        assert_eq!(early_loss.phase, RotationPhase::AirplaneEnabling);
+        let waiting = machine
+            .airplane_enable_effect_completed(id, RotationMutationOutcome::Applied)
+            .expect("enable complete");
+        assert_eq!(waiting.phase, RotationPhase::WaitingRadioDown);
+        let ready_for_off = machine.observe_airplane(id, true).expect("airplane on");
+        assert_eq!(ready_for_off.phase, RotationPhase::AirplaneDisabling);
     }
 
     #[test]
