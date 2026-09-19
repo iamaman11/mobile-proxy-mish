@@ -326,12 +326,12 @@ function Invoke-MishOneRotation {
     }
 
     $startTicks = [Environment]::TickCount64
-    Write-Host "MISH_U5_ROTATION_OPERATION_PHASE=$Ordinal:TRIGGER_START"
+    Write-Host "MISH_U5_ROTATION_OPERATION_PHASE=$($Ordinal):TRIGGER_START"
     $startOutput = Invoke-MishAdbText -Operation "rotation_$($Ordinal)_trigger" -Arguments @('shell', 'am', 'start', '-W', '-n', $script:RotationComponent)
     if ($startOutput -notmatch 'Status:\s+ok') {
         Stop-MishRotationAcceptance 'LAB_ROTATION_TRIGGER_FAILED' 'Debug PRODUCT rotation trigger did not launch successfully.'
     }
-    Write-Host "MISH_U5_ROTATION_OPERATION_PHASE=$Ordinal:TRIGGERED"
+    Write-Host "MISH_U5_ROTATION_OPERATION_PHASE=$($Ordinal):TRIGGERED"
 
     $deadlineTicks = $startTicks + ([int64]$OperationDeadlineSeconds * 1000)
     $timeline = [System.Collections.Generic.List[object]]::new()
@@ -476,7 +476,7 @@ function Invoke-MishOneRotation {
     if ($null -eq $readinessReadyMs) {
         Stop-MishRotationAcceptance 'PRODUCT_RECOVERY_NOT_READY' 'Readiness/Mesh did not naturally recover after generation B.'
     }
-    Write-Host "MISH_U5_ROTATION_OPERATION_PHASE=$Ordinal:RECOVERED"
+    Write-Host "MISH_U5_ROTATION_OPERATION_PHASE=$($Ordinal):RECOVERED"
     if ((Get-MishAirplaneState) -cne 'DISABLED') {
         Stop-MishRotationAcceptance 'PRODUCT_AIRPLANE_FINAL_ON' 'Normal rotation did not finish with airplane OFF.'
     }
