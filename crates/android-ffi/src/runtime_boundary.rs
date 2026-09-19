@@ -167,7 +167,6 @@ impl CellularController {
             .map(map_snapshot)
             .map_err(|_| CellularBridgeError::OwnerUnavailable)
     }
-
 }
 
 pub(crate) fn map_dns_diagnostic(

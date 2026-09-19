@@ -2,8 +2,7 @@ use crate::readiness_ffi::ProductReadinessState;
 use crate::runtime_boundary::{
     AndroidDnsResolver, CellularAdmissionReason, CellularAdmissionState, CellularAdmissionView,
     CellularBridgeError, CellularController, CellularDnsDiagnosticView, PublicIpObservationView,
-    PublicIpProbeError, map_dns_diagnostic, map_public_ip_failure,
-    map_snapshot,
+    PublicIpProbeError, map_dns_diagnostic, map_public_ip_failure, map_snapshot,
 };
 use crate::runtime_lifecycle_ffi::{
     ProxyServingFailure, ProxyServingState, RuntimeLifecycleState, map_lifecycle_state,
