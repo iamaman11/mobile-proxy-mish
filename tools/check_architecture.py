@@ -1135,7 +1135,6 @@ def main() -> None:
         "let second = capture(&generation)?",
         "root_publication: Option<CellularPolicyPublication>",
         "root_session_generation: Option<u64>",
-        "generation_replacement_during_capture_never_returns_a_mixed_snapshot",
         "RotationDiagnosticState::NotSupported",
     ):
         require_product(
@@ -1149,6 +1148,12 @@ def main() -> None:
             forbidden,
             "diagnostic capture must remain read-only and scheduler-free",
         )
+
+    require(
+        diagnostics_owner,
+        "generation_replacement_during_capture_never_returns_a_mixed_snapshot",
+        "Rust tests must force generation replacement during diagnostic capture",
+    )
 
     for required in (
         "pub struct ProductDiagnosticSnapshotView",
