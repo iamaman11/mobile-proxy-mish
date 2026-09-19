@@ -180,6 +180,53 @@ def main() -> None:
             "Android VPN observer must remain raw platform observation, never a PRODUCT scheduler/owner",
         )
 
+    # U5 production-Kotlin boundary is global, not filename-based. New Kotlin files may not
+    # silently reintroduce PRODUCT scheduling/control under a new class name. The one intentional
+    # executor is AndroidVpnObserver's Android callback serializer.
+    kotlin_main_root = ROOT / "android/app/src/main"
+    vpn_observer_relative = "android/app/src/main/java/com/mobileproxymish/app/AndroidVpnObserver.kt"
+    for kotlin_file in sorted(kotlin_main_root.rglob("*.kt")):
+        kotlin_relative = kotlin_file.relative_to(ROOT).as_posix()
+        kotlin_text = kotlin_file.read_text(encoding="utf-8")
+        for forbidden in (
+            "cmd connectivity airplane-mode",
+            "airplane-mode enable",
+            "airplane-mode disable",
+            "ProcessBuilder",
+            "su -c",
+            "iptables",
+            "ip6tables",
+            "svc data",
+            "cmd phone data",
+            "warp-cli",
+            "sing-box",
+            "Thread.sleep",
+            "SystemClock.sleep",
+            "kotlinx.coroutines.delay",
+            "CoroutineScope(",
+            "GlobalScope",
+            "scheduleAtFixedRate",
+            "scheduleWithFixedDelay",
+            "postDelayed(",
+        ):
+            if forbidden in kotlin_text:
+                raise SystemExit(
+                    f"architecture guard: production Kotlin must stay Android-effect/presentation-only; "
+                    f"{kotlin_relative} contains {forbidden!r}"
+                )
+        if kotlin_relative != vpn_observer_relative:
+            for forbidden in (
+                "Executors.",
+                "ScheduledExecutorService",
+                "newSingleThreadExecutor",
+                "newScheduledThreadPool",
+            ):
+                if forbidden in kotlin_text:
+                    raise SystemExit(
+                        f"architecture guard: only AndroidVpnObserver may retain the callback serializer; "
+                        f"{kotlin_relative} contains {forbidden!r}"
+                    )
+
     # Cross-owner Mesh composition decisions belong to Rust/runtime, not Android adapters.
     mesh_serving = "crates/runtime/src/mesh_serving.rs"
     require(
