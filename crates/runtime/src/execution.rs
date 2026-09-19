@@ -1,8 +1,8 @@
 //! Single PRODUCT Tokio execution owner.
 //!
-//! This is the only place that creates a Tokio runtime for a live PRODUCT process generation.
-//! Proxy, Mesh, root-session, readiness and rotation components borrow this executor; none of
-//! them may construct or destroy a second runtime.
+//! This is the only place that creates a Tokio runtime for a live PRODUCT process. Native PRODUCT
+//! generations and Proxy, Mesh, root-session, readiness and rotation components borrow this
+//! executor; none of them may construct or destroy a second runtime.
 
 use std::future::Future;
 use std::sync::{Arc, Mutex};
