@@ -20,5 +20,13 @@ class ProxyRuntimeCredentialRedactionTest {
         assertEquals("external-password-secret", credentials.password)
         assertFalse(credentials.toString().contains(credentials.username))
         assertFalse(credentials.toString().contains(credentials.password))
+
+        val reveal = CredentialRevealUiState.Revealed(
+            version = 9uL,
+            username = credentials.username,
+            password = credentials.password,
+        )
+        assertFalse(reveal.toString().contains(credentials.username))
+        assertFalse(reveal.toString().contains(credentials.password))
     }
 }
