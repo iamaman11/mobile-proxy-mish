@@ -384,7 +384,7 @@ Requirements:
 
 - monotonic operation id and stale-completion rejection;
 - fail-closed serving before/during cellular loss;
-- narrow typed Android adapter: observe / enable / disable; no generic root command API;
+- airplane observe / enable / disable are sealed Rust effects over the existing persistent root session; Android/Kotlin owns no airplane command or generic root command API;
 - effective ON requires observed airplane ON plus cellular loss, not only shell exit 0;
 - bounded best-effort restore to airplane OFF after any failure;
 - fresh cellular generation -> fresh root policy -> native proxy/readiness -> public-IP probe;

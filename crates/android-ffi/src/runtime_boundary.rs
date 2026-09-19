@@ -14,13 +14,11 @@ use mish_cellular::{
 use mish_proxy::ProxyOutboundConnectError;
 use mish_runtime::{
     CellularDnsDiagnosticSnapshot, CellularDnsResolver, CellularRuntimeCoordinator,
-    PublicIpProbeEffectFailure as RuntimePublicIpProbeEffectFailure,
-    PublicIpProbeFailure as RuntimePublicIpProbeFailure, RuntimePublicIpProbe,
+    PublicIpProbeFailure as RuntimePublicIpProbeFailure,
 };
 use std::fmt;
 use std::net::IpAddr;
 use std::sync::Arc;
-use std::time::Duration;
 
 uniffi::setup_scaffolding!();
 
@@ -89,18 +87,6 @@ pub struct CellularDnsDiagnosticView {
     pub last_completed_current_owner_sequence: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
-pub enum PublicIpEffectFailure {
-    SocketConnect,
-    SocketTimeout,
-    TlsHandshake,
-    TlsHostname,
-    HttpStatus,
-    ResponseTooLarge,
-    ResponseMalformed,
-    Io,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Error)]
 pub enum PublicIpProbeError {
     NoCurrentCellular,
@@ -147,64 +133,6 @@ pub struct PublicIpObservationView {
     pub generation: u64,
 }
 
-#[derive(uniffi::Object)]
-pub struct PublicIpProbeTicket {
-    inner: RuntimePublicIpProbe,
-}
-
-#[uniffi::export]
-impl PublicIpProbeTicket {
-    pub fn endpoint_host(&self) -> String {
-        self.inner.host().to_owned()
-    }
-
-    pub fn endpoint_port(&self) -> u16 {
-        self.inner.port()
-    }
-
-    pub fn endpoint_path(&self) -> String {
-        self.inner.path().to_owned()
-    }
-
-    pub fn response_body_max_bytes(&self) -> u64 {
-        u64::try_from(self.inner.response_body_max_bytes()).unwrap_or(u64::MAX)
-    }
-
-    pub fn numeric_addresses(&self) -> Vec<String> {
-        self.inner.numeric_addresses()
-    }
-
-    pub fn is_current(&self) -> bool {
-        self.inner.is_current()
-    }
-
-    pub fn remaining_timeout_ms(&self) -> Result<u64, PublicIpProbeError> {
-        self.inner
-            .remaining_timeout_ms()
-            .map_err(map_public_ip_failure)
-    }
-
-    pub fn complete(
-        &self,
-        raw_body: String,
-    ) -> Result<PublicIpObservationView, PublicIpProbeError> {
-        self.inner
-            .complete(&raw_body)
-            .map(|observation| PublicIpObservationView {
-                address: observation.address().to_string(),
-                generation: observation.generation(),
-            })
-            .map_err(map_public_ip_failure)
-    }
-
-    pub fn effect_failed(&self, effect: PublicIpEffectFailure) -> Result<(), PublicIpProbeError> {
-        Err(map_public_ip_failure(
-            self.inner
-                .effect_failed(map_public_ip_effect_failure(effect)),
-        ))
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AndroidDnsResolver;
 impl CellularDnsResolver for AndroidDnsResolver {
@@ -240,15 +168,6 @@ impl CellularController {
             .map_err(|_| CellularBridgeError::OwnerUnavailable)
     }
 
-    pub(crate) fn prepare_public_ip_probe(
-        &self,
-        timeout_ms: u64,
-    ) -> Result<Arc<PublicIpProbeTicket>, PublicIpProbeError> {
-        self.runtime
-            .prepare_public_ip_probe(Duration::from_millis(timeout_ms))
-            .map(|inner| Arc::new(PublicIpProbeTicket { inner }))
-            .map_err(map_public_ip_failure)
-    }
 }
 
 pub(crate) fn map_dns_diagnostic(
@@ -294,25 +213,6 @@ pub(crate) fn map_snapshot(snapshot: OwnerAdmissionSnapshot) -> CellularAdmissio
         }),
         admitted_network_handle: snapshot.admitted_network().map(NetworkHandle::raw),
         last_sequence: snapshot.last_sequence().map(ObservationSequence::raw),
-    }
-}
-
-fn map_public_ip_effect_failure(
-    effect: PublicIpEffectFailure,
-) -> RuntimePublicIpProbeEffectFailure {
-    match effect {
-        PublicIpEffectFailure::SocketConnect => RuntimePublicIpProbeEffectFailure::SocketConnect,
-        PublicIpEffectFailure::SocketTimeout => RuntimePublicIpProbeEffectFailure::SocketTimeout,
-        PublicIpEffectFailure::TlsHandshake => RuntimePublicIpProbeEffectFailure::TlsHandshake,
-        PublicIpEffectFailure::TlsHostname => RuntimePublicIpProbeEffectFailure::TlsHostname,
-        PublicIpEffectFailure::HttpStatus => RuntimePublicIpProbeEffectFailure::HttpStatus,
-        PublicIpEffectFailure::ResponseTooLarge => {
-            RuntimePublicIpProbeEffectFailure::ResponseTooLarge
-        }
-        PublicIpEffectFailure::ResponseMalformed => {
-            RuntimePublicIpProbeEffectFailure::ResponseMalformed
-        }
-        PublicIpEffectFailure::Io => RuntimePublicIpProbeEffectFailure::Io,
     }
 }
 

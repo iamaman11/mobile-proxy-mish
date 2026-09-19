@@ -115,10 +115,6 @@ class CellularE3InstrumentedTest {
                 )
                 requirePublicIpLiteral(observation.address)
             }
-            val u4StaleTicket =
-                runtime.preparePublicIpProbeForInstrumentation(U4_PUBLIC_IP_TIMEOUT_MILLIS)
-            assertTrue("fresh U4 ticket must begin current", u4StaleTicket.isCurrent())
-
             // Establish a second real PRODUCT HTTPS/TCP flow while cellular authority is
             // current, but intentionally send no HTTP application request yet. The TLS
             // handshake proves that this exact socket existed over the admitted path before
@@ -151,14 +147,6 @@ class CellularE3InstrumentedTest {
             assertTrue(
                 "negative owner sequence must supersede the positive generation",
                 negativeSequence > positiveSequence,
-            )
-            assertFalse(
-                "old U4 ticket must become stale after the real cellular loss generation",
-                u4StaleTicket.isCurrent(),
-            )
-            assertTrue(
-                "old-generation U4 completion must be rejected",
-                runCatching { u4StaleTicket.complete("198.51.100.77") }.isFailure,
             )
             assertTrue(
                 "U4 must not fall back to default/Wi-Fi/WARP after NOT_ADMITTED",
@@ -228,7 +216,7 @@ class CellularE3InstrumentedTest {
             )
             emitEvidence(
                 "phase=u4 positive_https=true owner_bound_dns=true ordinary_uid_socket=true " +
-                    "stale_generation_rejected=true no_default_fallback=true " +
+                    "generation_current=true no_default_fallback=true " +
                     "fresh_generation=true repeated_observations_bounded=true raw_ip_persisted=false",
             )
             val recoveryFunctionalElapsedMs = SystemClock.elapsedRealtime() - recoveryStartedAt

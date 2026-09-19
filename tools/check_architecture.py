@@ -567,7 +567,22 @@ def main() -> None:
     require_product(
         product_ffi,
         "pub fn observe_public_egress_ip(",
-        "NativeProductRuntime must expose only the terminal native U4 operation to Android",
+        "NativeProductRuntime must expose the terminal native U4 operation to Android",
+    )
+    forbid_product(
+        product_ffi,
+        "pub fn prepare_public_ip_probe(",
+        "H closes the instrumentation-only U4 ticket surface; Android must receive terminal observations only",
+    )
+    forbid_product(
+        "crates/android-ffi/src/runtime_boundary.rs",
+        "PublicIpProbeTicket",
+        "H removes the obsolete Android-effect public-IP ticket FFI vocabulary",
+    )
+    require_product(
+        public_ip,
+        "fn stale_completion_is_rejected_even_with_valid_ip_bytes()",
+        "native U4 tests must retain deterministic stale-generation rejection after removing the Android ticket seam",
     )
     require(
         cellular_bridge,
@@ -594,17 +609,25 @@ def main() -> None:
     )
     for required in (
         "runtime.observePublicEgressIp(",
-        "runtime.preparePublicIpProbeForInstrumentation(",
-        "u4StaleTicket.isCurrent()",
-        'u4StaleTicket.complete("198.51.100.77")',
         "phase=u4 positive_https=true owner_bound_dns=true ordinary_uid_socket=true",
-        "stale_generation_rejected=true no_default_fallback=true",
+        "generation_current=true no_default_fallback=true",
         "fresh_generation=true repeated_observations_bounded=true raw_ip_persisted=false",
     ):
         require(
             public_ip_physical,
             required,
             "U4 physical proof must ride the existing exact-candidate recovery lifecycle",
+        )
+
+    for forbidden in (
+        "preparePublicIpProbeForInstrumentation",
+        "u4StaleTicket",
+        "PublicIpProbeTicket",
+    ):
+        forbid(
+            public_ip_physical if forbidden == "u4StaleTicket" else cellular_bridge,
+            forbidden,
+            "H must not retain the transitional Android U4 ticket seam",
         )
 
     for required in (

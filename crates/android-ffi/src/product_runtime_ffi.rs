@@ -2,7 +2,7 @@ use crate::readiness_ffi::ProductReadinessState;
 use crate::runtime_boundary::{
     AndroidDnsResolver, CellularAdmissionReason, CellularAdmissionState, CellularAdmissionView,
     CellularBridgeError, CellularController, CellularDnsDiagnosticView, PublicIpObservationView,
-    PublicIpProbeError, PublicIpProbeTicket, map_dns_diagnostic, map_public_ip_failure,
+    PublicIpProbeError, map_dns_diagnostic, map_public_ip_failure,
     map_snapshot,
 };
 use crate::runtime_lifecycle_ffi::{
@@ -486,17 +486,6 @@ impl NativeProductRuntime {
         self.runtime
             .invalidate_cellular_platform_facts()
             .map_err(Into::into)
-    }
-
-    pub fn prepare_public_ip_probe(
-        &self,
-        timeout_ms: u64,
-    ) -> Result<Arc<PublicIpProbeTicket>, PublicIpProbeError> {
-        let generation = self
-            .runtime
-            .active_generation()
-            .map_err(|_| PublicIpProbeError::NoCurrentCellular)?;
-        CellularController::from_runtime(generation.cellular()).prepare_public_ip_probe(timeout_ms)
     }
 
     pub fn observe_public_egress_ip(
