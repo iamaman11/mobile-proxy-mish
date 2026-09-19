@@ -1554,8 +1554,33 @@ def main() -> None:
     )
     require(
         controller,
-        "productRuntime.startPublicIpRotation()",
+        "productRuntime.startPublicIpRotation(",
         "rotation command facade must delegate directly to native PRODUCT ownership",
+    )
+    require(
+        controller,
+        "object : NativeCellularRequestRearmEffect",
+        "Android rotation facade may supply only the typed framework re-arm effect requested by Rust",
+    )
+    require(
+        cellular_bridge,
+        "internal fun rearmNetworkRequest(): Boolean",
+        "Android Cellular bridge must expose only the bounded framework request re-arm effect",
+    )
+    require(
+        cellular_observer,
+        "fun rearm()",
+        "Android Cellular observer must support one explicit request re-registration effect",
+    )
+    require_product(
+        rotation_runtime,
+        "snapshot.phase != RotationPhase::WaitingCellularRecovery",
+        "Rust rotation owner must gate Cellular request re-arm to the exact recovery phase",
+    )
+    require_product(
+        rotation_runtime,
+        "effect.rearm_cellular_request()",
+        "Rust rotation owner must invoke the typed Cellular request re-arm effect",
     )
     for required in (
         "class DebugRotationActivity : Activity()",
