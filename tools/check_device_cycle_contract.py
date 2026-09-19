@@ -52,7 +52,7 @@ def main() -> None:
         "candidate build is not a completed successful PR preflight",
         "Integration Android Preflight",
         "probe_only supports only the current-function loopback_connect probe",
-        "full accepts only the explicit optional capacity_resources probe",
+        "full accepts only the explicit optional capacity_resources, recovery_lifecycle, dns_lifetime_live, or u5_rotation probe",
         "install_only/diagnose_only do not accept a probe",
         "capacity_resources",
         "recovery_lifecycle",
