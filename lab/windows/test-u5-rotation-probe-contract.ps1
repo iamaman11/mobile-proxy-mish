@@ -50,9 +50,10 @@ foreach ($required in @(
     'owner_sessions_quiescent_after_normal_rotations',
     'U5_ROTATION_PHYSICAL_ACCEPTANCE_PASS',
     'PRODUCT_RESTORE_OFF_FAILED',
-    '''shell'', ''run-as'', $PackageName, ''sh'', ''-c'', "cat /proc/$processId/task/*/comm"',
-    'Wildcard expansion must happen',
-    'PRODUCT /proc task comm observation returned no thread names.',
+    '''shell'', ''ps'', ''-A'', ''-T'', ''-w'', ''-o'', ''PID,TID,CMD''',
+    "row = [regex]::Match",
+    "Groups['pid'].Value -eq $processId",
+    'Android ps -A -T returned no PRODUCT thread rows.',
     'MISH_U5_TOPOLOGY_RUNTIME_IO_THREADS=',
     'MISH_U5_TOPOLOGY_FORBIDDEN_KOTLIN_OWNER_THREADS=',
     "final_airplane = Get-MishAirplaneState"
@@ -83,9 +84,9 @@ foreach ($forbidden in @(
     'after_ip',
     'retry-until-changed',
     'retry_until_changed',
-    "'shell', 'ps', '-T'",
-    "'-o', 'NAME'",
-    "'-o', 'CMD'"
+    "'shell', 'run-as', $PackageName, 'sh', '-c', \"cat /proc/$processId/task/*/comm\"",
+    "'shell', 'ps', '-T', '-p'",
+    "'-o', 'NAME'"
 )) {
     if ($source.Contains($forbidden)) {
         throw "U5 rotation acceptance probe contains forbidden duplicate PRODUCT/control/secret path: $forbidden"
