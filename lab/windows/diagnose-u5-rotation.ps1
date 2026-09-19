@@ -100,6 +100,7 @@ function Start-MishFastAirplaneObserver {
     )
 
     $normalTemplate = @'
+printf 'OBSERVER_READY\n'
 i=0
 seen=0
 while [ "$i" -lt __MAX__ ]; do
@@ -118,6 +119,7 @@ exit 4
 '@
 
     $restoreTemplate = @'
+printf 'OBSERVER_READY\n'
 i=0
 while [ "$i" -lt __MAX__ ]; do
   state=$(settings get global airplane_mode_on)
@@ -145,11 +147,10 @@ exit 4
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = $AdbPath
     $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardInput = $true
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
-    foreach ($argument in @('shell', $shell)) {
-        [void]$startInfo.ArgumentList.Add($argument)
-    }
+    [void]$startInfo.ArgumentList.Add('shell')
 
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
@@ -158,15 +159,35 @@ exit 4
         Stop-MishRotationAcceptance 'LAB_AIRPLANE_OBSERVER_FAILED' "Fast airplane observer '$Label' did not start."
     }
 
-    return [pscustomobject]@{
-        label = $Label
-        process = $process
-        stdout_task = $process.StandardOutput.ReadToEndAsync()
-        stderr_task = $process.StandardError.ReadToEndAsync()
-        completed = $false
+    try {
+        $deviceScript = $shell.Replace("`r`n", "`n")
+        $process.StandardInput.Write($deviceScript)
+        $process.StandardInput.Close()
+
+        $readyTask = $process.StandardOutput.ReadLineAsync()
+        if (-not $readyTask.Wait($script:AdbTransportTimeoutMilliseconds)) {
+            try { $process.Kill($true) } catch {}
+            Stop-MishRotationAcceptance 'LAB_AIRPLANE_OBSERVER_FAILED' "Fast airplane observer '$Label' did not become ready."
+        }
+        if ([string]$readyTask.Result -cne 'OBSERVER_READY') {
+            try { $process.Kill($true) } catch {}
+            Stop-MishRotationAcceptance 'LAB_AIRPLANE_OBSERVER_FAILED' "Fast airplane observer '$Label' returned an invalid readiness marker."
+        }
+
+        return [pscustomobject]@{
+            label = $Label
+            process = $process
+            stdout_task = $process.StandardOutput.ReadToEndAsync()
+            stderr_task = $process.StandardError.ReadToEndAsync()
+            completed = $false
+        }
+    }
+    catch {
+        try { $process.Kill($true) } catch {}
+        $process.Dispose()
+        Stop-MishRotationAcceptance 'LAB_AIRPLANE_OBSERVER_FAILED' "Fast airplane observer '$Label' setup failed."
     }
 }
-
 function Stop-MishFastAirplaneObserver {
     param(
         [Parameter(Mandatory)] $Observer,
