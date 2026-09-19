@@ -585,13 +585,12 @@ impl ProductRuntimeCoordinator {
             return;
         }
 
-        if let Ok(mut state) = self.state.lock() {
-            if !state.closed
-                && state.lifecycle.generation() == expected_generation
-                && state.lifecycle.state() == RuntimeLifecycleState::Starting
-            {
-                state.lifecycle.complete_start(true, true);
-            }
+        if let Ok(mut state) = self.state.lock()
+            && !state.closed
+            && state.lifecycle.generation() == expected_generation
+            && state.lifecycle.state() == RuntimeLifecycleState::Starting
+        {
+            state.lifecycle.complete_start(true, true);
         }
     }
 
@@ -784,21 +783,21 @@ fn replay_platform_facts(
             return false;
         }
     }
-    if cellular.is_empty() {
-        if let Some((sequence, handle)) = platform_facts.last_cellular_loss {
-            let Some(sequence) = mish_cellular::ObservationSequence::new(sequence) else {
-                return false;
-            };
-            if generation.policy().network_lost(sequence, handle).is_err() {
-                return false;
-            }
+    if cellular.is_empty()
+        && let Some((sequence, handle)) = platform_facts.last_cellular_loss
+    {
+        let Some(sequence) = mish_cellular::ObservationSequence::new(sequence) else {
+            return false;
+        };
+        if generation.policy().network_lost(sequence, handle).is_err() {
+            return false;
         }
     }
 
-    if let Some(mesh) = platform_facts.mesh.clone() {
-        if apply_mesh_observation(generation, mesh.sequence, mesh.observation).is_err() {
-            return false;
-        }
+    if let Some(mesh) = platform_facts.mesh.clone()
+        && apply_mesh_observation(generation, mesh.sequence, mesh.observation).is_err()
+    {
+        return false;
     }
     true
 }
@@ -983,7 +982,7 @@ mod tests {
                 local_ipv4: vec![std::net::Ipv4Addr::new(100, 96, 2, 4)],
             },
         );
-        let mesh = facts.mesh.expect("mesh fact");
+        let mesh = facts.mesh.as_ref().expect("mesh fact");
         assert_eq!(mesh.sequence, 5);
         assert_eq!(mesh.observation, MeshVpnObservation::Absent);
         facts.clear_mesh();
