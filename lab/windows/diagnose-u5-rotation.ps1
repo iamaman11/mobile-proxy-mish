@@ -695,7 +695,10 @@ function Invoke-MishOneRotation {
 }
 
 function Invoke-MishShutdownRestoreAfterOn {
-    param([Parameter(Mandatory)][int64] $ExpectedCredentialVersion)
+    param(
+        [Parameter(Mandatory)][int64] $ExpectedCredentialVersion,
+        [Parameter(Mandatory)][int] $ExpectedProcessId
+    )
 
     $before = Get-MishAndroidSnapshot
     Assert-MishReadyBaseline -Snapshot $before
@@ -760,6 +763,7 @@ function Invoke-MishShutdownRestoreAfterOn {
     Write-Host 'MISH_U5_RESTORE_PHASE=AIRPLANE_OFF_OBSERVED'
 
     Write-Host 'MISH_U5_RESTORE_PHASE=RESTART_START'
+    $restartRequestedAt = [Environment]::TickCount64
     Invoke-MishActivityTrigger -Component $script:MainComponent -Operation 'restore_restart_trigger'
     $readyDeadline = [Environment]::TickCount64 + ([int64]$script:RecoveryDeadlineSeconds * 1000)
     $ready = $null
@@ -774,6 +778,42 @@ function Invoke-MishShutdownRestoreAfterOn {
         ) { break }
         Start-Sleep -Milliseconds 150
     }
+
+    $restartElapsedMs = [Environment]::TickCount64 - $restartRequestedAt
+    $restartPid = Get-MishOptionalInt64 $ready.pid
+    $restartOwner = Get-MishOptionalInt64 $ready.cellular.owner_sequence
+    $restartRootGeneration = Get-MishOptionalInt64 $ready.root.policy_authorized_generation
+    $restartCredentialVersion = Get-MishOptionalInt64 $ready.credential.version
+    $restartRotationOperation = Get-MishOptionalInt64 $ready.rotation.operation_id
+    $restartPidChanged = $null -ne $restartPid -and [int64]$restartPid -ne [int64]$ExpectedProcessId
+    Write-Host (
+        'MISH_U5_RESTORE_RESTART_STATE=' +
+        "elapsed_ms=$restartElapsedMs;" +
+        "pid=$restartPid;" +
+        "pid_changed=$restartPidChanged;" +
+        "runtime=$([bool]$ready.runtime.running);" +
+        "runtime_generation=$([int64]$ready.runtime.generation);" +
+        "cellular=$([bool]$ready.cellular.admitted);" +
+        "owner=$restartOwner;" +
+        "cellular_reconcile_pending=$([bool]$ready.cellular.reconcile.pending);" +
+        "cellular_reconcile_requested=$([int64]$ready.cellular.reconcile.requested);" +
+        "cellular_reconcile_executed=$([int64]$ready.cellular.reconcile.executed);" +
+        "root=$([bool]$ready.root.policy_authorized);" +
+        "root_generation=$restartRootGeneration;" +
+        "root_recovery_pending=$([bool]$ready.root.recovery.pending);" +
+        "root_recovery_attempts=$([int64]$ready.root.recovery.attempts_since_reset);" +
+        "readiness=$([string]$ready.readiness.state);" +
+        "readiness_binding=$([bool]$ready.readiness.binding_eligible);" +
+        "readiness_probe=$([string]$ready.readiness.probe_state);" +
+        "mesh_admitted=$([bool]$ready.mesh.admitted);" +
+        "mesh_ingress=$([bool]$ready.mesh.ingress_running);" +
+        "rotation=$([string]$ready.rotation.state);" +
+        "rotation_operation=$restartRotationOperation;" +
+        "rotation_active_tasks=$([int64]$ready.rotation.active_tasks);" +
+        "credential_active=$([bool]$ready.credential.active);" +
+        "credential_version=$restartCredentialVersion"
+    )
+
     Assert-MishReadyBaseline -Snapshot $ready
     if ([int64]$ready.credential.version -ne $ExpectedCredentialVersion) {
         Stop-MishRotationAcceptance 'PRODUCT_CREDENTIAL_CHANGED' 'Credential version changed after restore restart.'
@@ -790,6 +830,10 @@ function Invoke-MishShutdownRestoreAfterOn {
         runtime_credential_cleared = $runtimeCredentialCleared
         restore_off_observed = $true
         on_to_restore_off_ms = $offMs - $observedOnMs
+        restart_pid_before = $ExpectedProcessId
+        restart_pid_after = $restartPid
+        restart_process_stable = -not $restartPidChanged
+        restart_recovery_elapsed_ms = $restartElapsedMs
         runtime_restarted_ready = $true
     }
 }
@@ -858,7 +902,9 @@ if (
     Stop-MishRotationAcceptance 'PRODUCT_ROTATION_RESOURCE_REGRESSION' 'Repeated normal rotations changed runtime/root-session ownership or leaked tasks/resources.'
 }
 
-$restoreCase = Invoke-MishShutdownRestoreAfterOn -ExpectedCredentialVersion $credentialVersion
+$restoreCase = Invoke-MishShutdownRestoreAfterOn `
+    -ExpectedCredentialVersion $credentialVersion `
+    -ExpectedProcessId ([int]$metricsAfterRotations.pid)
 $final = Get-MishAndroidSnapshot
 Assert-MishReadyBaseline -Snapshot $final
 $metricsAfter = Get-MishProcessMetrics -Snapshot $final
