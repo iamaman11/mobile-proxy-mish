@@ -84,7 +84,7 @@ foreach ($forbidden in @(
     'after_ip',
     'retry-until-changed',
     'retry_until_changed',
-    "'shell', 'run-as', $PackageName, 'sh', '-c', \"cat /proc/$processId/task/*/comm\"",
+    'task/*/comm',
     "'shell', 'ps', '-T', '-p'",
     "'-o', 'NAME'"
 )) {
