@@ -318,14 +318,14 @@ def main() -> None:
         "Runtime must consume Transport-owned Mesh contracts through the typed seam",
     )
     for required in (
-        "ownerSnapshotOrNull()?.let",
-        "activeSessions = owner.activeSessions",
-        "capacityRejects = owner.capacityRejects",
+        "let mesh_snapshot = match mesh.snapshot()",
+        "snapshot.active_sessions",
+        "snapshot.capacity_rejects",
     ):
-        require(
-            mesh_android,
+        require_product(
+            "crates/runtime/src/product_diagnostics.rs",
             required,
-            "Android diagnostics must project one natural Transport-owned Mesh capacity observation",
+            "atomic native diagnostics must read Mesh capacity from the Transport owner",
         )
     for duplicate_counter in ("AtomicInteger", "AtomicLong", "LongAdder"):
         forbid(
@@ -356,10 +356,15 @@ def main() -> None:
             required,
             "native DNS lifetime diagnostics must remain process-wide Rust-owned observation facts",
         )
-    require(
+    require_product(
+        "crates/runtime/src/product_diagnostics.rs",
+        "let dns = cellular.dns_diagnostic_snapshot();",
+        "atomic native diagnostics must read the process-wide Rust-owned DNS facts",
+    )
+    forbid(
         cellular_bridge,
-        "productRuntime.dnsDiagnosticSnapshot()",
-        "Android must only project the Rust-owned DNS diagnostic snapshot",
+        "dnsDiagnostic",
+        "Android Cellular adapter must not expose a separate DNS diagnostic read path",
     )
     for forbidden in ("newSingleThreadExecutor", "newFixedThreadPool", "AtomicInteger", "AtomicLong"):
         forbid(
@@ -1068,7 +1073,6 @@ def main() -> None:
     for required in (
         "productRuntime.observeProxyRuntime(",
         "productRuntime.proxyRuntimeSnapshot()",
-        "productRuntime.proxyActiveSessions()",
     ):
         require(
             proxy_android,
@@ -1092,6 +1096,11 @@ def main() -> None:
             duplicate_counter,
             "Android Proxy diagnostics must not own capacity or active-session accounting",
         )
+    require_product(
+        "crates/runtime/src/product_diagnostics.rs",
+        "let proxy_active_sessions = proxy.active_sessions();",
+        "atomic native diagnostics must read Proxy active sessions from the Rust owner",
+    )
     for forbidden in (
         "NativeProxyRuntime?",
         "startNativeProxyRuntime(",
