@@ -1568,7 +1568,7 @@ def main() -> None:
         "Android Cellular bridge must expose only the bounded framework request re-arm effect",
     )
     require(
-        cellular_observer,
+        "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularNetworkObserver.kt",
         "fun rearm()",
         "Android Cellular observer must support one explicit request re-registration effect",
     )
