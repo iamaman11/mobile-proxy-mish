@@ -412,6 +412,40 @@ def main() -> None:
             "U4 physical proof must ride the existing exact-candidate recovery lifecycle",
         )
 
+    for required in (
+        "val nativeShutdownElapsedMs =",
+        '"native_shutdown_elapsed_ms=$nativeShutdownElapsedMs "',
+    ):
+        require(
+            public_ip_physical,
+            required,
+            "D2 lifecycle evidence must observe one stable native generation shutdown boundary",
+        )
+    for forbidden in (
+        "proxyCloseElapsedMs",
+        "cellularCloseElapsedMs",
+        "proxy_close_elapsed_ms",
+        "cellular_close_elapsed_ms",
+    ):
+        forbid(
+            public_ip_physical,
+            forbidden,
+            "D2 must not restore per-component Android runtime close ownership",
+        )
+
+    recovery_lifecycle_probe = "lab/windows/diagnose-recovery-lifecycle.ps1"
+    require(
+        recovery_lifecycle_probe,
+        "native_shutdown_elapsed_ms=(?<nativeShutdown>",
+        "recovery diagnostics must parse the stable native shutdown timing boundary",
+    )
+    for forbidden in ("proxy_close_elapsed_ms", "cellular_close_elapsed_ms"):
+        forbid(
+            recovery_lifecycle_probe,
+            forbidden,
+            "recovery diagnostics must not depend on deleted per-component close seams",
+        )
+
     endpoint_literal = "checkip.amazonaws.com"
     endpoint_owners = []
     for product_path in list(ROOT.glob("crates/**/*.rs")) + list(
