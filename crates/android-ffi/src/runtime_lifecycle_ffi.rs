@@ -1,6 +1,5 @@
 use mish_runtime::{
     ProxyServingFailure as OwnerProxyServingFailure,
-    ProxyServingSnapshot as OwnerProxyServingSnapshot, ProxyServingState as OwnerProxyServingState,
     RuntimeLifecycleState as OwnerRuntimeLifecycleState,
     RuntimeStartAction as OwnerRuntimeStartAction, RuntimeStopAction as OwnerRuntimeStopAction,
 };
@@ -79,18 +78,6 @@ pub(crate) fn map_stop_action(action: OwnerRuntimeStopAction) -> RuntimeStopActi
         OwnerRuntimeStopAction::StopNow => RuntimeStopAction::StopNow,
         OwnerRuntimeStopAction::AlreadyStopped => RuntimeStopAction::AlreadyStopped,
         OwnerRuntimeStopAction::AlreadyStopping => RuntimeStopAction::AlreadyStopping,
-    }
-}
-
-pub(crate) fn map_proxy_snapshot(snapshot: OwnerProxyServingSnapshot) -> ProxyServingSnapshotView {
-    ProxyServingSnapshotView {
-        state: match snapshot.state() {
-            OwnerProxyServingState::Stopped => ProxyServingState::Stopped,
-            OwnerProxyServingState::Starting => ProxyServingState::Starting,
-            OwnerProxyServingState::Running => ProxyServingState::Running,
-            OwnerProxyServingState::Failed => ProxyServingState::Failed,
-        },
-        failure: snapshot.failure().map(map_proxy_failure_out),
     }
 }
 
