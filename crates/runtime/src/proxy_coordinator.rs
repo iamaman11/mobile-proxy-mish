@@ -432,7 +432,7 @@ impl ProxyRuntimeCoordinator {
                     .map_err(|_| mish_transport::MeshTransportError::StateUnavailable)
             })
             .is_ok();
-        let proxy_clean = runtime.map_or(true, |runtime| runtime.stop().is_ok());
+        let proxy_clean = runtime.is_none_or(|runtime| runtime.stop().is_ok());
 
         let publication = if readiness_clean && mesh_clean && proxy_clean {
             stopped_publication
