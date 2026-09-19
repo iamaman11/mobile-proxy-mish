@@ -4,6 +4,7 @@ import android.content.Context
 import com.mobileproxymish.ffi.CellularAdmissionState
 import com.mobileproxymish.ffi.CellularAdmissionView
 import com.mobileproxymish.ffi.CellularDnsDiagnosticView
+import com.mobileproxymish.ffi.CellularNetworkObservationInput
 import com.mobileproxymish.ffi.CellularPolicyPublicationView
 import com.mobileproxymish.ffi.NativeCellularPolicyObserver
 import com.mobileproxymish.ffi.NativeProductRuntime
@@ -233,13 +234,15 @@ class CellularRuntimeBridge(
                         null
                     }
                     productRuntime.observeNetwork(
-                        sequence = event.sequence.toULong(),
-                        networkHandle = event.networkHandle.toULong(),
-                        isCellular = event.isCellular,
-                        hasInternet = event.hasInternet,
-                        isValidated = event.isValidated,
-                        isNotVpn = event.isNotVpn,
-                        interfaceName = exactInterface,
+                        CellularNetworkObservationInput(
+                            sequence = event.sequence.toULong(),
+                            networkHandle = event.networkHandle.toULong(),
+                            isCellular = event.isCellular,
+                            hasInternet = event.hasInternet,
+                            isValidated = event.isValidated,
+                            isNotVpn = event.isNotVpn,
+                            interfaceName = exactInterface,
+                        ),
                     )
                 }
 
