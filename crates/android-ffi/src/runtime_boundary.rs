@@ -233,9 +233,7 @@ impl CellularController {
         Self { runtime }
     }
 
-    pub(crate) fn admission_snapshot(
-        &self,
-    ) -> Result<CellularAdmissionView, CellularBridgeError> {
+    pub(crate) fn admission_snapshot(&self) -> Result<CellularAdmissionView, CellularBridgeError> {
         self.runtime
             .admission_snapshot()
             .map(map_snapshot)
