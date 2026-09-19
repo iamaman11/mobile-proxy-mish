@@ -17,8 +17,7 @@ use std::time::Duration;
 use tokio::task::spawn_blocking;
 use tokio::time::sleep;
 
-pub type ProxyRuntimeObserver =
-    Arc<dyn Fn(ProxyRuntimePublication) + Send + Sync + 'static>;
+pub type ProxyRuntimeObserver = Arc<dyn Fn(ProxyRuntimePublication) + Send + Sync + 'static>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProxyRuntimePublication {
@@ -128,25 +127,21 @@ impl ProxyRuntimeCoordinator {
         let (credential_version, username, password) =
             match (credential_version, username, password) {
                 (None, None, None) => {
-                    return self.publish_start_failure(
-                        ProxyServingFailure::ExternalCredentialUnavailable,
-                    );
+                    return self
+                        .publish_start_failure(ProxyServingFailure::ExternalCredentialUnavailable);
                 }
                 (Some(version), Some(username), Some(password)) if version > 0 => {
                     (version, username, password)
                 }
                 _ => {
-                    return self.publish_start_failure(
-                        ProxyServingFailure::ProxyConfigurationRejected,
-                    );
+                    return self
+                        .publish_start_failure(ProxyServingFailure::ProxyConfigurationRejected);
                 }
             };
         let credentials = match ProxyCredentialMaterial::new(username, password) {
             Ok(credentials) => credentials,
             Err(_) => {
-                return self.publish_start_failure(
-                    ProxyServingFailure::ProxyConfigurationRejected,
-                );
+                return self.publish_start_failure(ProxyServingFailure::ProxyConfigurationRejected);
             }
         };
 
@@ -158,7 +153,10 @@ impl ProxyRuntimeCoordinator {
                 return publication(&state);
             }
             if state.current.is_some()
-                && matches!(state.state, ProxyServingState::Starting | ProxyServingState::Running)
+                && matches!(
+                    state.state,
+                    ProxyServingState::Starting | ProxyServingState::Running
+                )
             {
                 return publication(&state);
             }
@@ -230,13 +228,14 @@ impl ProxyRuntimeCoordinator {
             }
         }));
 
-        let still_current = self
-            .state()
-            .is_ok_and(|state| {
-                state.serving_generation == Some(generation)
-                    && state.current.as_ref().is_some_and(|current| Arc::ptr_eq(current, &runtime))
-                    && state.failure.is_none()
-            });
+        let still_current = self.state().is_ok_and(|state| {
+            state.serving_generation == Some(generation)
+                && state
+                    .current
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(current, &runtime))
+                && state.failure.is_none()
+        });
         if !still_current {
             return self.snapshot();
         }
@@ -309,11 +308,7 @@ impl ProxyRuntimeCoordinator {
         publication
     }
 
-    fn on_terminal_failure(
-        self: &Arc<Self>,
-        generation: u64,
-        failure: ProxyServingFailure,
-    ) {
+    fn on_terminal_failure(self: &Arc<Self>, generation: u64, failure: ProxyServingFailure) {
         let (old_runtime, publication) = {
             let Ok(mut state) = self.state.lock() else {
                 return;
@@ -391,10 +386,8 @@ impl ProxyRuntimeCoordinator {
         let executor = Arc::clone(&self.executor);
         let cellular = Arc::clone(&self.cellular);
         let timeout = self.operation_timeout;
-        let result = spawn_blocking(move || {
-            start_candidate(executor, cellular, credentials, timeout)
-        })
-        .await;
+        let result =
+            spawn_blocking(move || start_candidate(executor, cellular, credentials, timeout)).await;
 
         match result {
             Ok(Ok(runtime)) => {
@@ -503,9 +496,7 @@ fn publication(state: &ProxyCoordinatorState) -> ProxyRuntimePublication {
         credential_version: state.credential_version,
         recovery_pending: state.recovery_pending,
         recovery_attempts_since_success: state.recovery_attempts,
-        recovery_next_delay_ms: proxy_recovery_delay_ms(
-            state.recovery_attempts.saturating_sub(1),
-        ),
+        recovery_next_delay_ms: proxy_recovery_delay_ms(state.recovery_attempts.saturating_sub(1)),
     }
 }
 
@@ -520,8 +511,7 @@ fn start_candidate(
     let connector = cellular
         .outbound_connector(operation_timeout)
         .map_err(|_| ProxyServingFailure::CellularConnectorUnavailable)?;
-    ProxyServingRuntime::start(executor, plan, connector)
-        .map_err(|error| error.lifecycle_failure())
+    ProxyServingRuntime::start(executor, plan, connector).map_err(|error| error.lifecycle_failure())
 }
 
 fn notify(notification: Option<(ProxyRuntimeObserver, ProxyRuntimePublication)>) {
