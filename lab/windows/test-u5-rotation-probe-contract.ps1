@@ -78,7 +78,7 @@ foreach ($required in @(
     'sleep 0.05',
     'MISH_U5_FAST_AIRPLANE=',
     'STOP_TRIGGER_EXIT=',
-    "$restoreTemplate.Replace('__MAX__', [string]$maxSamples).Replace('__STOP__', $StopComponent)",
+    '$restoreTemplate.Replace(''__MAX__'', [string]$maxSamples).Replace(''__STOP__'', $StopComponent)',
     'airplane_fast_observer',
     "Invoke-MishActivityTrigger",
     "'shell', 'am', 'start', '-n'",
