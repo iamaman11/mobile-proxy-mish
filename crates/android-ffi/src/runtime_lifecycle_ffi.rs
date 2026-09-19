@@ -1,3 +1,8 @@
+//! Projection-only Android FFI vocabulary for Rust-owned runtime/Proxy state.
+//!
+//! Lifecycle decisions and start/stop actions stay internal to mish-runtime. Android may observe
+//! immutable state/failure values but cannot steer the native state machine through this module.
+
 use mish_runtime::{
     ProxyServingFailure as OwnerProxyServingFailure,
     RuntimeLifecycleState as OwnerRuntimeLifecycleState,
