@@ -47,11 +47,6 @@ impl RootCommand {
         Ok(Self { kind, command })
     }
 
-    #[cfg(test)]
-    pub(crate) const fn kind(&self) -> RootCommandKind {
-        self.kind
-    }
-
     pub(crate) fn command(&self) -> &str {
         &self.command
     }
@@ -64,13 +59,6 @@ pub(crate) struct RootCommandResult {
     pub(crate) timed_out: bool,
     pub(crate) output_complete: bool,
     pub(crate) session_generation: u64,
-}
-
-impl RootCommandResult {
-    #[cfg(test)]
-    pub(crate) const fn authoritative_success(&self) -> bool {
-        !self.timed_out && self.output_complete && self.exit_code == 0
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -355,13 +343,11 @@ mod tests {
     #[test]
     fn observation_and_mutation_remain_distinct_types() {
         assert_eq!(
-            RootCommand::observation("id -u")
-                .expect("observation")
-                .kind(),
+            RootCommand::observation("id -u").expect("observation").kind,
             RootCommandKind::Observation
         );
         assert_eq!(
-            RootCommand::mutation("true").expect("mutation").kind(),
+            RootCommand::mutation("true").expect("mutation").kind,
             RootCommandKind::Mutation
         );
     }
@@ -375,31 +361,28 @@ mod tests {
             output_complete: true,
             session_generation: 1,
         };
-        assert!(!result.authoritative_success());
+        assert!(result.timed_out || !result.output_complete || result.exit_code != 0);
         assert!(result.exit_code > 0);
     }
 
     #[test]
     fn authoritative_success_requires_complete_zero_exit() {
-        assert!(
-            RootCommandResult {
-                exit_code: 0,
-                stdout: String::new(),
-                timed_out: false,
-                output_complete: true,
-                session_generation: 1,
-            }
-            .authoritative_success()
-        );
-        assert!(
-            !RootCommandResult {
-                exit_code: 1,
-                stdout: String::new(),
-                timed_out: false,
-                output_complete: true,
-                session_generation: 1,
-            }
-            .authoritative_success()
-        );
+        let success = RootCommandResult {
+            exit_code: 0,
+            stdout: String::new(),
+            timed_out: false,
+            output_complete: true,
+            session_generation: 1,
+        };
+        assert!(!success.timed_out && success.output_complete && success.exit_code == 0);
+
+        let denied = RootCommandResult {
+            exit_code: 1,
+            stdout: String::new(),
+            timed_out: false,
+            output_complete: true,
+            session_generation: 1,
+        };
+        assert!(!(!denied.timed_out && denied.output_complete && denied.exit_code == 0));
     }
 }
