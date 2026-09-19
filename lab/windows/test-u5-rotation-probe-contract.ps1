@@ -63,6 +63,9 @@ foreach ($required in @(
     'MISH_U5_ROTATION_OPERATION_START=',
     'MISH_U5_ROTATION_TIMELINE=',
     'MISH_U5_RESTORE_PHASE=',
+    "Invoke-MishActivityTrigger",
+    "'shell', 'am', 'start', '-n'",
+    'LAB_ACTIVITY_TRIGGER_FAILED',
     "final_airplane = Get-MishAirplaneState"
 )) {
     if (-not $source.Contains($required)) {
@@ -97,7 +100,8 @@ foreach ($forbidden in @(
     'task/*/comm',
     "'shell', 'ps', '-T', '-p'",
     "'-o', 'NAME'",
-    '$output = @(& $AdbPath @Arguments'
+    '$output = @(& $AdbPath @Arguments',
+    "'shell', 'am', 'start', '-W'"
 )) {
     if ($source.Contains($forbidden)) {
         throw "U5 rotation acceptance probe contains forbidden duplicate PRODUCT/control/secret path: $forbidden"

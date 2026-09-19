@@ -70,6 +70,23 @@ function Invoke-MishAdbText {
     }
 }
 
+function Invoke-MishActivityTrigger {
+    param(
+        [Parameter(Mandatory)][string] $Component,
+        [Parameter(Mandatory)][string] $Operation
+    )
+
+    $output = Invoke-MishAdbText -Operation $Operation -Arguments @(
+        'shell', 'am', 'start', '-n', $Component
+    )
+    if (
+        $output -match '(?im)^\s*(Error|Exception):' -or
+        $output -notmatch '(?im)^\s*(Starting: Intent|Warning: Activity not started)'
+    ) {
+        Stop-MishRotationAcceptance 'LAB_ACTIVITY_TRIGGER_FAILED' "Android Activity trigger '$Operation' was not accepted."
+    }
+}
+
 function Get-MishAndroidSnapshot {
     $contentOutput = Invoke-MishAdbText -Operation 'snapshot_v2' -Arguments @(
         'shell', 'content', 'call',
@@ -327,10 +344,7 @@ function Invoke-MishOneRotation {
 
     $startTicks = [Environment]::TickCount64
     Write-Host "MISH_U5_ROTATION_OPERATION_PHASE=$($Ordinal):TRIGGER_START"
-    $startOutput = Invoke-MishAdbText -Operation "rotation_$($Ordinal)_trigger" -Arguments @('shell', 'am', 'start', '-W', '-n', $script:RotationComponent)
-    if ($startOutput -notmatch 'Status:\s+ok') {
-        Stop-MishRotationAcceptance 'LAB_ROTATION_TRIGGER_FAILED' 'Debug PRODUCT rotation trigger did not launch successfully.'
-    }
+    Invoke-MishActivityTrigger -Component $script:RotationComponent -Operation "rotation_$($Ordinal)_trigger"
     Write-Host "MISH_U5_ROTATION_OPERATION_PHASE=$($Ordinal):TRIGGERED"
 
     $deadlineTicks = $startTicks + ([int64]$OperationDeadlineSeconds * 1000)
@@ -514,7 +528,7 @@ function Invoke-MishShutdownRestoreAfterOn {
 
     $startTicks = [Environment]::TickCount64
     Write-Host 'MISH_U5_RESTORE_PHASE=TRIGGER_START'
-    [void](Invoke-MishAdbText -Operation 'restore_rotation_trigger' -Arguments @('shell', 'am', 'start', '-W', '-n', $script:RotationComponent))
+    Invoke-MishActivityTrigger -Component $script:RotationComponent -Operation 'restore_rotation_trigger'
     $deadline = $startTicks + ([int64]$OperationDeadlineSeconds * 1000)
     $observedOnMs = $null
     while ([Environment]::TickCount64 -lt $deadline) {
@@ -538,7 +552,7 @@ function Invoke-MishShutdownRestoreAfterOn {
     Write-Host 'MISH_U5_RESTORE_PHASE=AIRPLANE_ON_OBSERVED'
 
     Write-Host 'MISH_U5_RESTORE_PHASE=STOP_START'
-    [void](Invoke-MishAdbText -Operation 'restore_stop_trigger' -Arguments @('shell', 'am', 'start', '-W', '-n', $script:StopComponent))
+    Invoke-MishActivityTrigger -Component $script:StopComponent -Operation 'restore_stop_trigger'
     $restoreDeadline = [Environment]::TickCount64 + ([int64]$script:RestoreDeadlineSeconds * 1000)
     $offMs = $null
     while ([Environment]::TickCount64 -lt $restoreDeadline) {
@@ -554,7 +568,7 @@ function Invoke-MishShutdownRestoreAfterOn {
     Write-Host 'MISH_U5_RESTORE_PHASE=AIRPLANE_OFF_OBSERVED'
 
     Write-Host 'MISH_U5_RESTORE_PHASE=RESTART_START'
-    [void](Invoke-MishAdbText -Operation 'restore_restart_trigger' -Arguments @('shell', 'am', 'start', '-W', '-n', $script:MainComponent))
+    Invoke-MishActivityTrigger -Component $script:MainComponent -Operation 'restore_restart_trigger'
     $readyDeadline = [Environment]::TickCount64 + ([int64]$script:RecoveryDeadlineSeconds * 1000)
     $ready = $null
     while ([Environment]::TickCount64 -lt $readyDeadline) {
