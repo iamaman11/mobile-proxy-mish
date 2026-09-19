@@ -864,11 +864,15 @@ mod tests {
             .expect("disable");
         machine.observe_airplane(id, false).expect("off");
         machine.observe_root_policy(id, 12, true).expect("root B");
-        let waiting = machine.observe_cellular(id, 13, false).expect("newer loss C");
+        let waiting = machine
+            .observe_cellular(id, 13, false)
+            .expect("newer loss C");
         assert_eq!(waiting.phase, RotationPhase::WaitingCellularRecovery);
         assert_eq!(waiting.after_generation, None);
 
-        let stale = machine.observe_cellular(id, 12, true).expect("stale B ignored");
+        let stale = machine
+            .observe_cellular(id, 12, true)
+            .expect("stale B ignored");
         assert_eq!(stale.phase, RotationPhase::WaitingCellularRecovery);
         assert_eq!(stale.after_generation, None);
         let stale_root = machine
