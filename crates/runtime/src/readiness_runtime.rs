@@ -121,7 +121,8 @@ impl ReadinessRuntimeCoordinator {
     }
 
     pub fn snapshot(&self) -> Readiness {
-        self.state().map_or(Readiness::Unknown, |state| state.projected)
+        self.state()
+            .map_or(Readiness::Unknown, |state| state.projected)
     }
 
     pub fn set_observer(&self, observer: ReadinessObserver) {
@@ -153,18 +154,12 @@ impl ReadinessRuntimeCoordinator {
                     .facts
                     .cellular
                     .is_some_and(|cellular| cellular.root_policy_verified),
-                proxy_healthy: state
-                    .facts
-                    .proxy
-                    .is_some_and(|proxy| proxy.healthy),
+                proxy_healthy: state.facts.proxy.is_some_and(|proxy| proxy.healthy),
                 credential_active: state
                     .facts
                     .credential
                     .is_some_and(|credential| credential.active),
-                mesh_admitted: state
-                    .facts
-                    .mesh
-                    .is_some_and(|mesh| mesh.admitted),
+                mesh_admitted: state.facts.mesh.is_some_and(|mesh| mesh.admitted),
                 binding_eligible: matches!(
                     probe_eligibility(input_for(state.facts, &state.probe, state.observation)),
                     ProbeEligibility::Eligible(_)
@@ -249,9 +244,7 @@ impl ReadinessRuntimeCoordinator {
         })
     }
 
-    pub fn observe_proxy_stopped(
-        self: &Arc<Self>,
-    ) -> Result<(), ReadinessRuntimeError> {
+    pub fn observe_proxy_stopped(self: &Arc<Self>) -> Result<(), ReadinessRuntimeError> {
         self.update_structural(|state| {
             if let Some(proxy) = state.facts.proxy.as_mut() {
                 proxy.healthy = false;
@@ -333,10 +326,10 @@ impl ReadinessRuntimeCoordinator {
 
             let ticket = match eligibility {
                 ProbeEligibility::Eligible(binding) => {
-                    let credentials_current = state
-                        .credentials
-                        .as_ref()
-                        .is_some_and(|credentials| credentials.version == binding.credential_version);
+                    let credentials_current =
+                        state.credentials.as_ref().is_some_and(|credentials| {
+                            credentials.version == binding.credential_version
+                        });
                     if credentials_current {
                         let ticket = state
                             .probe
@@ -367,10 +360,7 @@ impl ReadinessRuntimeCoordinator {
         Ok(())
     }
 
-    fn spawn_probe(
-        self: &Arc<Self>,
-        ticket: ProbeTicket,
-    ) -> Result<(), ReadinessRuntimeError> {
+    fn spawn_probe(self: &Arc<Self>, ticket: ProbeTicket) -> Result<(), ReadinessRuntimeError> {
         let credentials = {
             let state = self.state()?;
             let credentials = state
@@ -385,12 +375,10 @@ impl ReadinessRuntimeCoordinator {
         self.executor
             .spawn(async move {
                 let started = Instant::now();
-                let outcome = execute_readiness_probe_async(
-                    credentials.username,
-                    credentials.password,
-                )
-                .await
-                .unwrap_or_else(map_network_error);
+                let outcome =
+                    execute_readiness_probe_async(credentials.username, credentials.password)
+                        .await
+                        .unwrap_or_else(map_network_error);
                 let elapsed = started.elapsed();
                 this.complete_probe(ticket, outcome, elapsed);
             })
@@ -411,12 +399,11 @@ impl ReadinessRuntimeCoordinator {
             if state.closed {
                 return;
             }
-            let Some(observation) = state.probe.complete_bounded(
-                ticket,
-                outcome,
-                elapsed,
-                DEFAULT_EGRESS_PROBE_BUDGET,
-            ) else {
+            let Some(observation) =
+                state
+                    .probe
+                    .complete_bounded(ticket, outcome, elapsed, DEFAULT_EGRESS_PROBE_BUDGET)
+            else {
                 return;
             };
             state.probe_in_flight = false;
@@ -550,7 +537,9 @@ fn map_network_error(error: ReadinessNetworkError) -> mish_readiness::ProbeOutco
         ReadinessNetworkError::TlsConfiguration => mish_readiness::ProbeOutcome::TlsFailed,
         ReadinessNetworkError::InvalidTarget
         | ReadinessNetworkError::InvalidCredentials
-        | ReadinessNetworkError::ExecutorUnavailable => mish_readiness::ProbeOutcome::TransportFailed,
+        | ReadinessNetworkError::ExecutorUnavailable => {
+            mish_readiness::ProbeOutcome::TransportFailed
+        }
     }
 }
 
