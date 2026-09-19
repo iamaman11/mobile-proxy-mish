@@ -6,10 +6,10 @@
 //! it never composes owner state or invents a generation fence.
 
 use crate::{
-    CellularDnsDiagnosticSnapshot, CellularReconcileDiagnostic, ProductGeneration,
-    ProductRuntimeCoordinator, ProductRuntimeSnapshot, ProxyRuntimePublication,
-    ReadinessDiagnosticSnapshot, RootPolicyReconcileDiagnostic, RootPolicyResult,
-    RootRecoveryDiagnostic, RuntimeExecutionError,
+    CellularDnsDiagnosticSnapshot, CellularPolicyPublication, CellularReconcileDiagnostic,
+    ProductGeneration, ProductRuntimeCoordinator, ProductRuntimeSnapshot, ProxyRuntimePublication,
+    ReadinessDiagnosticSnapshot, RootPolicyReconcileDiagnostic, RootRecoveryDiagnostic,
+    RuntimeExecutionError,
 };
 use mish_cellular::CellularAdmissionSnapshot;
 use mish_transport::{MeshTransportError, MeshTransportSnapshot};
@@ -28,7 +28,8 @@ pub struct ProductGenerationDiagnosticSnapshot {
     pub cellular_admission: CellularAdmissionSnapshot,
     pub cellular_reconcile: CellularReconcileDiagnostic,
     pub dns: CellularDnsDiagnosticSnapshot,
-    pub root_policy_result: Option<RootPolicyResult>,
+    pub root_publication: Option<CellularPolicyPublication>,
+    pub root_session_generation: Option<u64>,
     pub root_reconcile: RootPolicyReconcileDiagnostic,
     pub root_recovery: RootRecoveryDiagnostic,
     pub proxy: ProxyRuntimePublication,
@@ -53,6 +54,18 @@ impl ProductRuntimeCoordinator {
     /// If concurrently changing owner facts prevent a stable double-read after a bounded number of
     /// attempts, the latest same-generation capture is returned with consistent=false.
     pub fn diagnostic_snapshot(&self) -> Result<ProductDiagnosticSnapshot, RuntimeExecutionError> {
+        self.diagnostic_snapshot_with(capture_generation)
+    }
+
+    fn diagnostic_snapshot_with<F>(
+        &self,
+        mut capture: F,
+    ) -> Result<ProductDiagnosticSnapshot, RuntimeExecutionError>
+    where
+        F: FnMut(
+            &Arc<ProductGeneration>,
+        ) -> Result<ProductGenerationDiagnosticSnapshot, RuntimeExecutionError>,
+    {
         let mut latest = None;
 
         for _ in 0..DIAGNOSTIC_STABILITY_ATTEMPTS {
@@ -62,8 +75,8 @@ impl ProductRuntimeCoordinator {
                 continue;
             }
 
-            let first = capture_generation(&generation)?;
-            let second = capture_generation(&generation)?;
+            let first = capture(&generation)?;
+            let second = capture(&generation)?;
             let runtime_after = self.snapshot();
             let current = self.current_generation()?;
 
@@ -95,15 +108,16 @@ fn capture_generation(
     let proxy = generation.proxy();
     let mesh = generation.mesh();
     let readiness = generation.readiness();
+    let executor = generation.executor();
 
     let cellular_admission = cellular
         .admission_snapshot()
         .map_err(|_| RuntimeExecutionError::StateUnavailable)?;
     let cellular_reconcile = policy.reconcile_diagnostic();
     let dns = cellular.dns_diagnostic_snapshot();
-    let root_policy_result = policy.last_policy_result();
-    let root_reconcile =
-        policy.root_policy_diagnostic_blocking(&generation.executor())?;
+    let root_publication = policy.last_publication();
+    let root_session_generation = policy.root_session_generation_blocking(&executor)?;
+    let root_reconcile = policy.root_policy_diagnostic_blocking(&executor)?;
     let root_recovery = policy.recovery_diagnostic();
     let proxy_snapshot = proxy.snapshot();
     let proxy_active_sessions = proxy.active_sessions();
@@ -118,7 +132,8 @@ fn capture_generation(
         cellular_admission,
         cellular_reconcile,
         dns,
-        root_policy_result,
+        root_publication,
+        root_session_generation,
         root_reconcile,
         root_recovery,
         proxy: proxy_snapshot,
@@ -150,18 +165,25 @@ mod tests {
         }
     }
 
-    #[test]
-    fn diagnostic_snapshot_is_pinned_to_one_native_generation() {
-        let runtime = ProductRuntimeCoordinator::new(
+    fn test_runtime(uid: u32) -> Arc<ProductRuntimeCoordinator> {
+        ProductRuntimeCoordinator::new(
             Arc::new(EmptyResolver),
-            10_123,
+            uid,
             RootPolicyNamespace::Debug,
         )
-        .expect("runtime");
+        .expect("runtime")
+    }
+
+    #[test]
+    fn diagnostic_snapshot_is_pinned_to_one_native_generation() {
+        let runtime = test_runtime(10_123);
 
         let first = runtime.diagnostic_snapshot().expect("first snapshot");
         assert_eq!(first.runtime.generation, first.generation.generation);
-        assert_eq!(first.generation.rotation, RotationDiagnosticState::NotSupported);
+        assert_eq!(
+            first.generation.rotation,
+            RotationDiagnosticState::NotSupported
+        );
 
         let lease = runtime
             .begin_stopped_platform_mutation()
@@ -182,13 +204,37 @@ mod tests {
     }
 
     #[test]
+    fn generation_replacement_during_capture_never_returns_a_mixed_snapshot() {
+        let runtime = test_runtime(10_124);
+        let mut replaced = false;
+
+        let snapshot = runtime
+            .diagnostic_snapshot_with(|generation| {
+                let captured = capture_generation(generation)?;
+                if !replaced {
+                    replaced = true;
+                    let lease = runtime
+                        .begin_stopped_platform_mutation()?
+                        .ok_or(RuntimeExecutionError::StateUnavailable)?;
+                    if !runtime.complete_stopped_platform_mutation(lease, true)? {
+                        return Err(RuntimeExecutionError::StateUnavailable);
+                    }
+                }
+                Ok(captured)
+            })
+            .expect("diagnostic snapshot");
+
+        assert!(replaced);
+        assert!(snapshot.consistent);
+        assert_eq!(snapshot.runtime.generation, snapshot.generation.generation);
+        assert_eq!(snapshot.runtime.generation, 2);
+
+        runtime.executor().shutdown().expect("executor shutdown");
+    }
+
+    #[test]
     fn stable_idle_runtime_yields_consistent_atomic_snapshot() {
-        let runtime = ProductRuntimeCoordinator::new(
-            Arc::new(EmptyResolver),
-            10_124,
-            RootPolicyNamespace::Debug,
-        )
-        .expect("runtime");
+        let runtime = test_runtime(10_125);
 
         let snapshot = runtime.diagnostic_snapshot().expect("diagnostic snapshot");
         assert!(snapshot.consistent);
