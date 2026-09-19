@@ -578,9 +578,7 @@ mod tests {
             .expect("enable");
         assert_eq!(snapshot.phase, RotationPhase::WaitingRadioDown);
 
-        let snapshot = machine
-            .observe_cellular(id, 11, false)
-            .expect("loss");
+        let snapshot = machine.observe_cellular(id, 11, false).expect("loss");
         assert_eq!(snapshot.phase, RotationPhase::WaitingRadioDown);
 
         let snapshot = machine.observe_airplane(id, true).expect("airplane on");
@@ -604,9 +602,7 @@ mod tests {
             .airplane_enable_effect_completed(id, RotationMutationOutcome::Applied)
             .expect("enable");
         machine.observe_airplane(id, true).expect("on");
-        let snapshot = machine
-            .observe_cellular(id, 11, false)
-            .expect("loss");
+        let snapshot = machine.observe_cellular(id, 11, false).expect("loss");
         assert_eq!(snapshot.phase, RotationPhase::AirplaneDisabling);
         assert_eq!(
             machine.observe_cellular(id, 12, false),
@@ -621,9 +617,7 @@ mod tests {
             .airplane_enable_effect_completed(id, RotationMutationOutcome::Applied)
             .expect("enable");
         machine.observe_airplane(id, true).expect("on");
-        machine
-            .observe_cellular(id, 11, false)
-            .expect("loss");
+        machine.observe_cellular(id, 11, false).expect("loss");
         machine
             .airplane_disable_effect_completed(id, RotationMutationOutcome::Applied)
             .expect("disable");
@@ -666,16 +660,12 @@ mod tests {
                 .airplane_enable_effect_completed(id, RotationMutationOutcome::Applied)
                 .expect("enable");
             machine.observe_airplane(id, true).expect("on");
-            machine
-                .observe_cellular(id, 11, false)
-                .expect("loss");
+            machine.observe_cellular(id, 11, false).expect("loss");
             machine
                 .airplane_disable_effect_completed(id, RotationMutationOutcome::Applied)
                 .expect("disable");
             machine.observe_airplane(id, false).expect("off");
-            machine
-                .observe_cellular(id, 12, true)
-                .expect("recovery");
+            machine.observe_cellular(id, 12, true).expect("recovery");
             machine
                 .observe_root_policy(id, 12, true)
                 .expect("root authorization");
