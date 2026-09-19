@@ -418,7 +418,9 @@ mod tests {
         wait_until(Instant::now() + TEST_TIMEOUT, || {
             sessions.active_sessions() == 0
         });
-        execution.stop(Some(runtime.handle())).expect("clean Mesh stop");
+        execution
+            .stop(Some(runtime.handle()))
+            .expect("clean Mesh stop");
     }
 
     #[test]
@@ -524,7 +526,9 @@ mod tests {
         wait_until(Instant::now() + TEST_TIMEOUT, || {
             sessions.active_sessions() == 0
         });
-        execution.stop(Some(runtime.handle())).expect("clean Mesh stop");
+        execution
+            .stop(Some(runtime.handle()))
+            .expect("clean Mesh stop");
         assert!(!execution.is_running());
     }
 
@@ -584,7 +588,9 @@ mod tests {
             sessions.active_sessions() == 1
         });
 
-        execution.stop(Some(runtime.handle())).expect("cancel generation");
+        execution
+            .stop(Some(runtime.handle()))
+            .expect("cancel generation");
         assert_eq!(sessions.active_sessions(), 0);
         assert!(!execution.is_healthy());
         drop(client);
