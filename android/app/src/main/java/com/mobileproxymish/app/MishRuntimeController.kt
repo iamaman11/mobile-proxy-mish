@@ -6,19 +6,13 @@ import com.mobileproxymish.app.cellular.CellularRuntimeBridge
 import com.mobileproxymish.app.cellular.CellularRuntimeSnapshot
 import com.mobileproxymish.ffi.MeshAdmissionView
 import com.mobileproxymish.ffi.NativeProductRuntime
+import com.mobileproxymish.ffi.ProductDiagnosticSnapshotView
 import com.mobileproxymish.ffi.NativeReadinessObserver
 import com.mobileproxymish.ffi.ProductReadinessState
 import com.mobileproxymish.ffi.RuntimeLifecycleState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-
-internal data class RuntimeRecoveryDiagnosticObservation(
-    val runtimeGeneration: ULong,
-    val proxyRecoveryPending: Boolean,
-    val proxyRecoveryAttemptsScheduled: Int,
-    val proxyRecoveryNextDelayMs: Long,
-)
 
 /**
  * Android platform facade around one stable Rust-owned PRODUCT process handle.
@@ -74,9 +68,6 @@ class MishRuntimeController internal constructor(
     internal val currentProxyRuntime: ProxyRuntimeSupervisor
         get() = proxyRuntime
 
-    internal val currentProductRuntime: NativeProductRuntime
-        get() = productRuntime
-
     internal val currentMeshRuntime: MeshIngressRuntimeBridge
         get() = meshRuntime
 
@@ -88,16 +79,9 @@ class MishRuntimeController internal constructor(
     internal fun revealCurrentExternalCredential(): ExternalProxyCredentialSnapshot? =
         externalCredentialStore.revealCurrentCredential()
 
-    internal fun recoveryDiagnosticObservation(): RuntimeRecoveryDiagnosticObservation {
-        val lifecycle = productRuntime.runtimeLifecycleSnapshot()
-        val proxy = productRuntime.proxyRuntimeSnapshot()
-        return RuntimeRecoveryDiagnosticObservation(
-            runtimeGeneration = lifecycle.generation,
-            proxyRecoveryPending = proxy.recoveryPending,
-            proxyRecoveryAttemptsScheduled = proxy.recoveryAttemptsSinceSuccess.toInt(),
-            proxyRecoveryNextDelayMs = proxy.recoveryNextDelayMs.toLong(),
-        )
-    }
+    /** One immutable Rust-composed PRODUCT diagnostic snapshot. */
+    internal fun diagnosticSnapshot(): ProductDiagnosticSnapshotView =
+        productRuntime.diagnosticSnapshot()
 
     val isRunning: Boolean
         get() = productRuntime.runtimeLifecycleSnapshot().state != RuntimeLifecycleState.STOPPED
