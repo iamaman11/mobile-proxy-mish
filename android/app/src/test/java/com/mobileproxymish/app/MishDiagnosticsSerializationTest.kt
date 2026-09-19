@@ -109,7 +109,14 @@ class MishDiagnosticsSerializationTest {
             readinessProbeInFlight = false,
             readinessRefreshPending = true,
             readinessProbeState = "SUCCEEDED",
-            rotationState = "NOT_SUPPORTED",
+            rotationState = "WAITING_ROOT_POLICY",
+            rotationOperationId = 9uL,
+            rotationBeforeGeneration = 41uL,
+            rotationAfterGeneration = null,
+            rotationRestoreRequired = false,
+            rotationTerminalResult = null,
+            rotationFailure = null,
+            rotationRestoreResult = null,
         )
 
         val rendered = renderMishDiagnosticSnapshotV2(
@@ -148,7 +155,16 @@ class MishDiagnosticsSerializationTest {
         assertFalse(readiness.getBoolean("probe_in_flight"))
         assertTrue(readiness.getBoolean("refresh_pending"))
 
-        assertEquals("NOT_SUPPORTED", json.getJSONObject("rotation").getString("state"))
+        val rotation = json.getJSONObject("rotation")
+        assertEquals("WAITING_ROOT_POLICY", rotation.getString("state"))
+        assertEquals(9L, rotation.getLong("operation_id"))
+        assertEquals(41L, rotation.getLong("before_generation"))
+        assertTrue(rotation.isNull("after_generation"))
+        assertFalse(rotation.getBoolean("restore_required"))
+        assertTrue(rotation.isNull("terminal_result"))
+        assertTrue(rotation.isNull("failure"))
+        assertTrue(rotation.isNull("restore_result"))
+        assertFalse(rotation.getBoolean("raw_ip_persisted"))
         assertFalse(rendered.contains("username", ignoreCase = true))
         assertFalse(rendered.contains("password", ignoreCase = true))
     }
