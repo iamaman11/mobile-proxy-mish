@@ -49,8 +49,7 @@ pub struct CellularPolicyPublication {
     pub result: RootPolicyResult,
 }
 
-pub type CellularPolicyObserver =
-    Arc<dyn Fn(CellularPolicyPublication) + Send + Sync + 'static>;
+pub type CellularPolicyObserver = Arc<dyn Fn(CellularPolicyPublication) + Send + Sync + 'static>;
 
 struct CoordinatorState {
     latest: Option<ReconcileRequest>,
@@ -85,12 +84,8 @@ impl CellularPolicyCoordinator {
         namespace: RootPolicyNamespace,
     ) -> Result<Arc<Self>, RuntimeExecutionError> {
         let root_session = Arc::new(RootSessionManager::new());
-        let root_policy = RootPolicyRuntime::new(
-            Arc::clone(&root_session),
-            product_uid,
-            namespace,
-        )
-        .ok_or(RuntimeExecutionError::StateUnavailable)?;
+        let root_policy = RootPolicyRuntime::new(Arc::clone(&root_session), product_uid, namespace)
+            .ok_or(RuntimeExecutionError::StateUnavailable)?;
         Ok(Arc::new(Self {
             executor,
             cellular,
@@ -163,9 +158,14 @@ impl CellularPolicyCoordinator {
     ) -> Result<CellularAdmissionSnapshot, CellularRuntimeError> {
         let admission = self.cellular.observe_network(observation)?;
         {
-            let mut state = self.state.lock().map_err(|_| CellularRuntimeError::StateUnavailable)?;
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| CellularRuntimeError::StateUnavailable)?;
             if let Some(interface_name) = interface_name {
-                state.interface_hints.insert(observed_handle, interface_name);
+                state
+                    .interface_hints
+                    .insert(observed_handle, interface_name);
             }
         }
         self.enqueue_owner_generation(admission)?;
@@ -179,7 +179,10 @@ impl CellularPolicyCoordinator {
     ) -> Result<CellularAdmissionSnapshot, CellularRuntimeError> {
         let admission = self.cellular.network_lost(sequence, network_handle)?;
         {
-            let mut state = self.state.lock().map_err(|_| CellularRuntimeError::StateUnavailable)?;
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| CellularRuntimeError::StateUnavailable)?;
             state.interface_hints.remove(&network_handle);
         }
         self.enqueue_owner_generation(admission)?;
@@ -221,7 +224,10 @@ impl CellularPolicyCoordinator {
     }
 
     pub fn last_policy_result(&self) -> Option<RootPolicyResult> {
-        self.state.lock().ok().and_then(|state| state.last_policy_result)
+        self.state
+            .lock()
+            .ok()
+            .and_then(|state| state.last_policy_result)
     }
 
     pub async fn root_policy_diagnostic(&self) -> crate::RootPolicyReconcileDiagnostic {
@@ -266,7 +272,10 @@ impl CellularPolicyCoordinator {
         admission: CellularAdmissionSnapshot,
     ) -> Result<(), CellularRuntimeError> {
         let request = {
-            let state = self.state.lock().map_err(|_| CellularRuntimeError::StateUnavailable)?;
+            let state = self
+                .state
+                .lock()
+                .map_err(|_| CellularRuntimeError::StateUnavailable)?;
             if state.closed {
                 return Err(CellularRuntimeError::StateUnavailable);
             }
