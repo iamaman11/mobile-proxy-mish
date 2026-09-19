@@ -206,13 +206,16 @@ impl RootPolicyContract {
         self.candidates()[0].mark_hex()
     }
 
-    pub fn resolve_identity(
-        &mut self,
-        snapshot: &RootPolicySnapshot,
-    ) -> PolicyIdentityResolution {
+    pub fn resolve_identity(&mut self, snapshot: &RootPolicySnapshot) -> PolicyIdentityResolution {
         let chain = self.chain_name();
-        let ipv4_chain_exists = snapshot.ipv4_mangle.iter().any(|line| line == &format!("-N {chain}"));
-        let ipv6_chain_exists = snapshot.ipv6_mangle.iter().any(|line| line == &format!("-N {chain}"));
+        let ipv4_chain_exists = snapshot
+            .ipv4_mangle
+            .iter()
+            .any(|line| line == &format!("-N {chain}"));
+        let ipv6_chain_exists = snapshot
+            .ipv6_mangle
+            .iter()
+            .any(|line| line == &format!("-N {chain}"));
         let ipv4_chain = chain_lines(&snapshot.ipv4_mangle, chain);
         let ipv6_chain = chain_lines(&snapshot.ipv6_mangle, chain);
 
@@ -230,13 +233,8 @@ impl RootPolicyContract {
             .iter()
             .copied()
             .filter(|identity| {
-                prefix_matches(
-                    &ipv4_chain,
-                    &self.ipv4_owned_chain_lines_for(*identity),
-                ) && prefix_matches(
-                    &ipv6_chain,
-                    &self.ipv6_owned_chain_lines_for(*identity),
-                )
+                prefix_matches(&ipv4_chain, &self.ipv4_owned_chain_lines_for(*identity))
+                    && prefix_matches(&ipv6_chain, &self.ipv6_owned_chain_lines_for(*identity))
             })
             .collect::<Vec<_>>();
 
@@ -288,12 +286,21 @@ impl RootPolicyContract {
         {
             return Err(RootPolicyStructuralFailure::MangleMismatch);
         }
-        if !snapshot.ipv4_rules.iter().any(|line| self.is_owned_ipv4_guard(line))
-            || !snapshot.ipv6_rules.iter().any(|line| self.is_owned_ipv6_guard(line))
+        if !snapshot
+            .ipv4_rules
+            .iter()
+            .any(|line| self.is_owned_ipv4_guard(line))
+            || !snapshot
+                .ipv6_rules
+                .iter()
+                .any(|line| self.is_owned_ipv6_guard(line))
         {
             return Err(RootPolicyStructuralFailure::GuardMismatch);
         }
-        if !self.owned_ipv4_lookup_tables(&snapshot.ipv4_rules).is_empty() {
+        if !self
+            .owned_ipv4_lookup_tables(&snapshot.ipv4_rules)
+            .is_empty()
+        {
             return Err(RootPolicyStructuralFailure::LookupStillPresent);
         }
         Ok(())
@@ -301,9 +308,16 @@ impl RootPolicyContract {
 
     pub fn verify_exact_cleanup(&self, snapshot: &RootPolicySnapshot) -> bool {
         let chain = self.chain_name();
-        self.owned_ipv4_lookup_tables(&snapshot.ipv4_rules).is_empty()
-            && !snapshot.ipv4_rules.iter().any(|line| self.is_owned_ipv4_guard(line))
-            && !snapshot.ipv6_rules.iter().any(|line| self.is_owned_ipv6_guard(line))
+        self.owned_ipv4_lookup_tables(&snapshot.ipv4_rules)
+            .is_empty()
+            && !snapshot
+                .ipv4_rules
+                .iter()
+                .any(|line| self.is_owned_ipv4_guard(line))
+            && !snapshot
+                .ipv6_rules
+                .iter()
+                .any(|line| self.is_owned_ipv6_guard(line))
             && !snapshot
                 .ipv4_mangle
                 .iter()
@@ -349,11 +363,7 @@ impl RootPolicyContract {
         false
     }
 
-    pub fn mangle_family_state(
-        &self,
-        lines: &[String],
-        ipv4: bool,
-    ) -> Option<MangleFamilyState> {
+    pub fn mangle_family_state(&self, lines: &[String], ipv4: bool) -> Option<MangleFamilyState> {
         let identity = self.active_identity?;
         let chain = self.chain_name();
         let definition = format!("-N {chain}");
@@ -449,7 +459,12 @@ impl RootPolicyContract {
 
     pub fn is_exact_known_product_state(&self, lines: &[String], ipv4: bool) -> bool {
         let chain = self.chain_name();
-        if lines.iter().filter(|line| *line == &format!("-N {chain}")).count() != 1 {
+        if lines
+            .iter()
+            .filter(|line| *line == &format!("-N {chain}"))
+            .count()
+            != 1
+        {
             return false;
         }
 
@@ -472,11 +487,14 @@ impl RootPolicyContract {
         }
 
         let expected_chain = actual_chain.iter().collect::<HashSet<_>>();
-        lines.iter().filter(|line| line.contains(chain)).all(|line| {
-            line == &format!("-N {chain}")
-                || expected_chain.contains(line)
-                || self.exact_owner_jump_uid(line).is_some()
-        })
+        lines
+            .iter()
+            .filter(|line| line.contains(chain))
+            .all(|line| {
+                line == &format!("-N {chain}")
+                    || expected_chain.contains(line)
+                    || self.exact_owner_jump_uid(line).is_some()
+            })
     }
 
     fn exact_owner_jump_uid(&self, line: &str) -> Option<u32> {
@@ -692,7 +710,8 @@ impl RootPolicyContract {
     }
 
     fn is_foreign_reserved_ipv4_line(&self, line: &str, identity: PolicyIdentity) -> bool {
-        if self.line_is_owned_lookup_for(line, identity) || self.line_is_owned_guard_for(line, identity)
+        if self.line_is_owned_lookup_for(line, identity)
+            || self.line_is_owned_guard_for(line, identity)
         {
             return false;
         }
@@ -737,12 +756,8 @@ impl RootPolicyContract {
         let mark = identity.mark_hex();
         vec![
             format!("-A {chain} -d 127.0.0.0/8 -j RETURN"),
-            format!(
-                "-A {chain} -j CONNMARK --restore-mark --nfmask {mark} --ctmask {mark}"
-            ),
-            format!(
-                "-A {chain} -m conntrack --ctstate NEW -j MARK --set-xmark {mark}/{mark}"
-            ),
+            format!("-A {chain} -j CONNMARK --restore-mark --nfmask {mark} --ctmask {mark}"),
+            format!("-A {chain} -m conntrack --ctstate NEW -j MARK --set-xmark {mark}/{mark}"),
             format!(
                 "-A {chain} -m conntrack --ctstate NEW -m mark --mark {mark}/{mark} -j CONNMARK --save-mark --nfmask {mark} --ctmask {mark}"
             ),
@@ -754,12 +769,8 @@ impl RootPolicyContract {
         let mark = identity.mark_hex();
         vec![
             format!("-A {chain} -d ::1/128 -j RETURN"),
-            format!(
-                "-A {chain} -j CONNMARK --restore-mark --nfmask {mark} --ctmask {mark}"
-            ),
-            format!(
-                "-A {chain} -m conntrack --ctstate NEW -j MARK --set-xmark {mark}/{mark}"
-            ),
+            format!("-A {chain} -j CONNMARK --restore-mark --nfmask {mark} --ctmask {mark}"),
+            format!("-A {chain} -m conntrack --ctstate NEW -j MARK --set-xmark {mark}/{mark}"),
             format!(
                 "-A {chain} -m conntrack --ctstate NEW -m mark --mark {mark}/{mark} -j CONNMARK --save-mark --nfmask {mark} --ctmask {mark}"
             ),
@@ -806,7 +817,8 @@ pub fn referenced_tables(lines: &[String]) -> Vec<String> {
     for line in lines {
         let tokens = line.split_whitespace().collect::<Vec<_>>();
         for keyword in ["lookup", "table"] {
-            if let Some(table) = token_after(&tokens, keyword).filter(|table| is_safe_table_token(table))
+            if let Some(table) =
+                token_after(&tokens, keyword).filter(|table| is_safe_table_token(table))
                 && !tables.iter().any(|existing| existing == table)
             {
                 tables.push(table.to_owned());
@@ -872,7 +884,9 @@ pub fn audit_mangle_output(
         let tokens = line.split_whitespace().collect::<Vec<_>>();
         match tokens.first().copied() {
             Some("-N") => {
-                if tokens.len() != 2 || !is_safe_chain_name(tokens[1]) || !user_chains.insert(tokens[1])
+                if tokens.len() != 2
+                    || !is_safe_chain_name(tokens[1])
+                    || !user_chains.insert(tokens[1])
                 {
                     return MangleAuditResult::Ambiguous;
                 }
@@ -1091,7 +1105,9 @@ fn mark_spec_touches(spec: &str, reserved_mark: u64) -> Option<bool> {
 
 fn parse_unsigned(raw: &str) -> Option<u64> {
     if let Some(hex) = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")) {
-        (!hex.is_empty()).then(|| u64::from_str_radix(hex, 16).ok()).flatten()
+        (!hex.is_empty())
+            .then(|| u64::from_str_radix(hex, 16).ok())
+            .flatten()
     } else {
         raw.parse::<u64>().ok()
     }
@@ -1107,8 +1123,14 @@ mod tests {
 
     fn empty_snapshot() -> RootPolicySnapshot {
         RootPolicySnapshot::new(
-            vec!["0: from all lookup local".into(), "32766: from all lookup main".into()],
-            vec!["0: from all lookup local".into(), "32766: from all lookup main".into()],
+            vec![
+                "0: from all lookup local".into(),
+                "32766: from all lookup main".into(),
+            ],
+            vec![
+                "0: from all lookup local".into(),
+                "32766: from all lookup main".into(),
+            ],
             Vec::new(),
             Vec::new(),
         )
@@ -1177,7 +1199,8 @@ mod tests {
         snapshot
             .ipv4_mangle
             .push("-A OUTPUT -j MARK --set-xmark 0x200000/0x200000".into());
-        let PolicyIdentityResolution::Selected(second) = contract.resolve_identity(&snapshot) else {
+        let PolicyIdentityResolution::Selected(second) = contract.resolve_identity(&snapshot)
+        else {
             panic!("second identity");
         };
         assert_eq!(second.mark_hex(), "0x400000");
