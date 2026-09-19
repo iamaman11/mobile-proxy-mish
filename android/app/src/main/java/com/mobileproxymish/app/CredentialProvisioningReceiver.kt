@@ -96,10 +96,9 @@ class CredentialProvisioningReceiver : BroadcastReceiver() {
     }
 }
 
-/** Pure crypto/envelope boundary shared by direct JVM tests and the Android receiver. */
+/** Android RSA-OAEP effect around Rust-owned provisioning plaintext. */
 internal object CredentialProvisioningEnvelope {
     private const val MIN_RSA_BITS = 3072
-    private const val CHALLENGE_BYTES = 32
     private const val MAX_RSA_3072_OAEP_SHA256_PLAINTEXT = 318
     private const val PLAINTEXT_HEADROOM_BYTES = 18
 
@@ -108,20 +107,30 @@ internal object CredentialProvisioningEnvelope {
         challenge: ByteArray,
         clientPublicKeyDer: ByteArray,
     ): ByteArray {
-        require(challenge.size == CHALLENGE_BYTES) { "provisioning challenge must be 256-bit" }
-        val publicKey = KeyFactory.getInstance("RSA")
-            .generatePublic(X509EncodedKeySpec(clientPublicKeyDer)) as? RSAPublicKey
-            ?: error("provisioning key is not RSA")
-        require(publicKey.modulus.bitLength() >= MIN_RSA_BITS) {
-            "provisioning RSA key is below the minimum size"
-        }
-
         val plaintext = externalCredentialEncodeProvisioningEnvelope(
             credentialVersion = snapshot.version,
             challenge = challenge,
             username = snapshot.credentials.username,
             password = snapshot.credentials.password,
         )
+        return encryptOwnerPlaintext(plaintext, clientPublicKeyDer)
+    }
+
+    internal fun encryptOwnerPlaintextForPlatformTest(
+        plaintext: ByteArray,
+        clientPublicKeyDer: ByteArray,
+    ): ByteArray = encryptOwnerPlaintext(plaintext, clientPublicKeyDer)
+
+    private fun encryptOwnerPlaintext(
+        plaintext: ByteArray,
+        clientPublicKeyDer: ByteArray,
+    ): ByteArray {
+        val publicKey = KeyFactory.getInstance("RSA")
+            .generatePublic(X509EncodedKeySpec(clientPublicKeyDer)) as? RSAPublicKey
+            ?: error("provisioning key is not RSA")
+        require(publicKey.modulus.bitLength() >= MIN_RSA_BITS) {
+            "provisioning RSA key is below the minimum size"
+        }
         require(
             plaintext.size <=
                 MAX_RSA_3072_OAEP_SHA256_PLAINTEXT - PLAINTEXT_HEADROOM_BYTES,
