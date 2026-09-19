@@ -111,7 +111,7 @@ foreach ($forbidden in @(
     '$output = @(& $AdbPath @Arguments',
     "'shell', 'am', 'start', '-W'",
     '$sawAirplaneOn -and $airplane -ceq',
-    "Invoke-MishActivityTrigger -Component $script:StopComponent -Operation 'restore_stop_trigger'"
+    'Invoke-MishActivityTrigger -Component $script:StopComponent -Operation ''restore_stop_trigger'''
 )) {
     if ($source.Contains($forbidden)) {
         throw "U5 rotation acceptance probe contains forbidden duplicate PRODUCT/control/secret path: $forbidden"
