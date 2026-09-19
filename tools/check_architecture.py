@@ -235,13 +235,17 @@ def main() -> None:
         "fn block_on_mesh_drain",
         "Handle::try_current().is_ok()",
         "tokio::task::block_in_place(|| handle.block_on(future))",
-        "mesh_stop_from_product_tokio_worker_does_not_panic_or_poison_execution_state",
     ):
         require_product(
             mesh_serving,
             required,
             "Mesh drain must remain safe when native composition stops ingress from a PRODUCT Tokio worker",
         )
+    require(
+        mesh_serving,
+        "mesh_stop_from_product_tokio_worker_does_not_panic_or_poison_execution_state",
+        "Mesh serving must retain the Tokio-worker stop regression test",
+    )
     forbid_product(
         mesh_serving,
         "let drained = handle.block_on(async",
