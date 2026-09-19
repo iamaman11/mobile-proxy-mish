@@ -227,6 +227,21 @@ impl ProductRuntimeCoordinator {
         Ok(Arc::clone(&state.generation))
     }
 
+    pub fn start_public_ip_rotation(
+        self: &Arc<Self>,
+    ) -> Result<u64, crate::RotationRuntimeStartError> {
+        let generation = self
+            .active_generation()
+            .map_err(|_| crate::RotationRuntimeStartError::RuntimeNotRunning)?;
+        generation.rotation().start()
+    }
+
+    pub fn rotation_snapshot(&self) -> mish_rotation::RotationSnapshot {
+        self.current_generation()
+            .map(|generation| generation.rotation().snapshot())
+            .unwrap_or_else(|_| mish_rotation::RotationSnapshot::idle())
+    }
+
     pub fn observe_network(
         &self,
         sequence: u64,
@@ -253,9 +268,11 @@ impl ProductRuntimeCoordinator {
             }
             Arc::clone(&state.generation)
         };
-        generation
+        let admission = generation
             .policy()
-            .observe_network(observation, observed_handle, interface_name)
+            .observe_network(observation, observed_handle, interface_name)?;
+        generation.rotation().observe_cellular(admission);
+        Ok(admission)
     }
 
     pub fn network_lost(
@@ -281,9 +298,11 @@ impl ProductRuntimeCoordinator {
             }
             Arc::clone(&state.generation)
         };
-        generation
+        let admission = generation
             .policy()
-            .network_lost(sequence_value, observed_handle)
+            .network_lost(sequence_value, observed_handle)?;
+        generation.rotation().observe_cellular(admission);
+        Ok(admission)
     }
 
     pub fn observe_mesh_vpn(
