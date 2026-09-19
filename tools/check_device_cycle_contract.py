@@ -296,6 +296,12 @@ def main() -> None:
         "Android ps -A -T returned no PRODUCT thread rows.",
         "MISH_U5_TOPOLOGY_RUNTIME_IO_THREADS=",
         "MISH_U5_TOPOLOGY_FORBIDDEN_KOTLIN_OWNER_THREADS=",
+        "LAB_ADB_TIMEOUT",
+        "WaitForExit($script:AdbTransportTimeoutMilliseconds)",
+        "$process.Kill($true)",
+        "MISH_U5_ROTATION_OPERATION_START=",
+        "MISH_U5_ROTATION_TIMELINE=",
+        "MISH_U5_RESTORE_PHASE=",
     ):
         require(rotation_probe, required, "U5 physical rotation evidence drifted")
     for forbidden in (
@@ -318,6 +324,7 @@ def main() -> None:
         "task/*/comm",
         "'shell', 'ps', '-T', '-p'",
         "'-o', 'NAME'",
+        "$output = @(& $AdbPath @Arguments",
     ):
         forbid(rotation_probe, forbidden, "U5 LAB probe must observe PRODUCT rotation, never own airplane/root/build semantics")
 
