@@ -166,12 +166,8 @@ mod tests {
     }
 
     fn test_runtime(uid: u32) -> Arc<ProductRuntimeCoordinator> {
-        ProductRuntimeCoordinator::new(
-            Arc::new(EmptyResolver),
-            uid,
-            RootPolicyNamespace::Debug,
-        )
-        .expect("runtime")
+        ProductRuntimeCoordinator::new(Arc::new(EmptyResolver), uid, RootPolicyNamespace::Debug)
+            .expect("runtime")
     }
 
     #[test]
