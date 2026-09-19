@@ -82,8 +82,6 @@ pub(crate) fn map_stop_action(action: OwnerRuntimeStopAction) -> RuntimeStopActi
     }
 }
 
-
-
 pub(crate) fn map_proxy_snapshot(snapshot: OwnerProxyServingSnapshot) -> ProxyServingSnapshotView {
     ProxyServingSnapshotView {
         state: match snapshot.state() {
