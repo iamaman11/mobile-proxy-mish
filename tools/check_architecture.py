@@ -472,8 +472,10 @@ def main() -> None:
         "U4 network execution module must be part of the runtime crate",
     )
     for required in (
+        "pub(crate) async fn observe_public_egress_ip_async(",
+        "execute_public_ip_probe(probe, &tls).await",
         "pub fn observe_public_egress_ip(",
-        ".block_on(execute_public_ip_probe(probe, &tls))",
+        ".block_on(self.observe_public_egress_ip_async(operation_timeout))",
     ):
         require_product(
             public_ip_runtime,
