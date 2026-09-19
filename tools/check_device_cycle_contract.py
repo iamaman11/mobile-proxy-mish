@@ -31,6 +31,7 @@ def forbid_regex(path: str, pattern: str, reason: str) -> None:
 
 def main() -> None:
     workflow = ".github/workflows/device-cycle.yml"
+    validation_workflow = ".github/workflows/integration-android-preflight.yml"
 
     require(
         workflow,
@@ -39,21 +40,25 @@ def main() -> None:
     )
 
     for required in (
-        "issue_comment:",
-        "types: [created]",
-        "github.actor == 'iamaman11'",
-        "startsWith(github.event.comment.body, '/mish-cycle ')",
-        "expected /mish-cycle <mode> <40-hex-sha> [probe]",
+        "workflow_dispatch:",
+        "pr_number:",
+        "product_sha:",
+        "type: choice",
+        "PR_NUMBER: ${{ inputs.pr_number }}",
+        "EXPECTED_SHA: ${{ inputs.product_sha }}",
+        "MODE: ${{ inputs.mode }}",
+        "PROBE: ${{ inputs.probe }}",
+        "device cycle control must be dispatched from current protected main",
         "device-cycle requires an explicit exact 40-hex PRODUCT SHA",
         "installing a device candidate requires an open PR to main",
         "installing a device candidate requires base main",
         "installing a device candidate requires a ready PR",
         "build first, then explicitly request the cycle",
         "candidate build is not a completed successful PR preflight",
-        "Integration Android Preflight",
+        "PR Validation + PRODUCT Candidate",
         "probe_only supports only the current-function loopback_connect probe",
-        "full accepts only the explicit optional capacity_resources, recovery_lifecycle, dns_lifetime_live, or u5_rotation probe",
-        "install_only/diagnose_only do not accept a probe",
+        "full accepts only none, capacity_resources, recovery_lifecycle, dns_lifetime_live, or u5_rotation",
+        "install_only/diagnose_only require probe=none",
         "capacity_resources",
         "recovery_lifecycle",
         "dns_lifetime_live",
@@ -62,12 +67,9 @@ def main() -> None:
         "diagnose-dns-lifetime-live.ps1",
         "Explicit U5 rotation - PRODUCT-owned airplane cycle acceptance",
         "diagnose-u5-rotation.ps1",
-        ".\\lab\\windows\\test-u5-rotation-probe-contract.ps1",
         'echo "control_sha=$GITHUB_SHA"',
         "actions: read",
-        "Exercise orchestration and installer contracts",
-        ".\\lab\\windows\\test-device-candidate-store.ps1",
-        ".\\lab\\windows\\test-device-candidate.ps1",
+        "manual workflow_dispatch from protected main",
         "Install -> verify installed exact bytes",
         "Download exact completed hosted candidate",
         "Materialize exact hosted candidate in canonical Windows store",
@@ -98,11 +100,26 @@ def main() -> None:
     ):
         require(workflow, required, "explicit single-run orchestration contract drifted")
 
+    for required in (
+        "name: Device Cycle Contracts",
+        "runs-on: windows-latest",
+        "Verify Device Cycle orchestration contracts",
+        ".\\lab\\windows\\test-device-candidate-store.ps1",
+        ".\\lab\\windows\\test-device-candidate.ps1",
+        ".\\lab\\windows\\test-device-cycle.ps1",
+        ".\\lab\\windows\\test-recovery-lifecycle-probe-contract.ps1",
+        ".\\lab\\windows\\test-dns-lifetime-live-probe-contract.ps1",
+        ".\\lab\\windows\\test-u5-rotation-probe-contract.ps1",
+        "python .\\tools\\check_device_cycle_contract.py",
+    ):
+        require(validation_workflow, required, "Device Cycle contract verification must remain in protected-main PR validation")
+
     for forbidden in (
         "fix/root-policy-reconciliation",
         "merged candidate source is not contained in current integration lineage",
         "workflow_run:",
-        "workflow_dispatch:",
+        "issue_comment:",
+        "pull_request:",
         "Dispatch canonical physical installer",
         "device-candidate-physical.yml/dispatches",
         "device-candidate-physical.yml/runs",
@@ -511,11 +528,12 @@ def main() -> None:
         "Diagnostics never chooses a repair",
         "No automatic targeted probe",
         "No successful build, merge to main, label, or completed workflow starts DEVICE-1",
-        "/mish-cycle full <PRODUCT_SHA>",
-        "/mish-cycle full <PRODUCT_SHA> capacity_resources",
-        "/mish-cycle full <PRODUCT_SHA> recovery_lifecycle",
-        "/mish-cycle full <PRODUCT_SHA> dns_lifetime_live",
-        "/mish-cycle full <PRODUCT_SHA> u5_rotation",
+        "workflow_dispatch",
+        "pr_number",
+        "product_sha",
+        "mode",
+        "probe",
+        "u5_rotation",
         "measurement-only",
         "PRODUCT-owned rotation",
         "external Mesh endpoint",

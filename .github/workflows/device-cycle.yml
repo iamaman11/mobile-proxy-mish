@@ -1,33 +1,38 @@
 name: Device Cycle
 
 on:
-  pull_request:
-    paths:
-      - '.github/workflows/device-cycle.yml'
-      - '.github/workflows/integration-android-preflight.yml'
-      - 'lab/windows/materialize-device-candidate.ps1'
-      - 'lab/windows/install-device-candidate.ps1'
-      - 'lab/windows/verify-installed-candidate.ps1'
-      - 'lab/windows/test-device-candidate-store.ps1'
-      - 'lab/windows/test-device-candidate.ps1'
-      - 'lab/windows/start-device-app.ps1'
-      - 'lab/windows/collect-device-diagnostic.ps1'
-      - 'lab/windows/DeviceDiagnosticClassification.psm1'
-      - 'lab/windows/diagnose-loopback-connect.ps1'
-      - 'lab/windows/diagnose-capacity-resources.ps1'
-      - 'lab/windows/diagnose-recovery-lifecycle.ps1'
-      - 'lab/windows/test-recovery-lifecycle-probe-contract.ps1'
-      - 'lab/windows/diagnose-dns-lifetime-live.ps1'
-      - 'lab/windows/test-dns-lifetime-live-probe-contract.ps1'
-      - 'lab/windows/diagnose-u5-rotation.ps1'
-      - 'lab/windows/test-u5-rotation-probe-contract.ps1'
-      - 'lab/windows/new-device-cycle-report.ps1'
-      - 'lab/windows/test-device-cycle.ps1'
-      - 'tools/check_device_cycle_contract.py'
-      - 'tools/check_delivery_contract.py'
-      - 'docs/architecture/DEVELOPMENT_PIPELINE.md'
-  issue_comment:
-    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number that owns the exact PRODUCT candidate'
+        required: true
+        type: string
+      product_sha:
+        description: 'Exact 40-hex PRODUCT source SHA'
+        required: true
+        type: string
+      mode:
+        description: 'Physical cycle mode'
+        required: true
+        default: 'full'
+        type: choice
+        options:
+          - full
+          - install_only
+          - diagnose_only
+          - probe_only
+      probe:
+        description: 'Explicit targeted probe'
+        required: true
+        default: 'none'
+        type: choice
+        options:
+          - none
+          - capacity_resources
+          - recovery_lifecycle
+          - dns_lifetime_live
+          - u5_rotation
+          - loopback_connect
 
 permissions:
   actions: read
@@ -45,35 +50,8 @@ env:
   DEVICE_CANDIDATE_STORE_ROOT: C:\\mish-lab\\runner\\.state\\device-candidate\\versions
 
 jobs:
-  contract:
-    name: Device Cycle Contract
-    if: ${{ github.event_name == 'pull_request' }}
-    runs-on: windows-latest
-    timeout-minutes: 10
-    steps:
-      - name: Checkout exact PR head
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
-      - name: Exercise orchestration and installer contracts
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          .\lab\windows\test-device-candidate-store.ps1
-          .\lab\windows\test-device-candidate.ps1
-          .\lab\windows\test-device-cycle.ps1
-          .\lab\windows\test-recovery-lifecycle-probe-contract.ps1
-          .\lab\windows\test-dns-lifetime-live-probe-contract.ps1
-          .\lab\windows\test-u5-rotation-probe-contract.ps1
-          python .\tools\check_device_cycle_contract.py
-          python .\tools\check_delivery_contract.py
-
   resolve:
     name: Resolve explicit cycle request and completed build
-    if: >-
-      ${{ github.event_name == 'issue_comment' && github.event.issue.pull_request != null &&
-          github.actor == 'iamaman11' && startsWith(github.event.comment.body, '/mish-cycle ') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -94,45 +72,44 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          COMMENT_BODY: ${{ github.event.comment.body }}
-          PR_NUMBER: ${{ github.event.issue.number }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_SHA: ${{ inputs.product_sha }}
+          MODE: ${{ inputs.mode }}
+          PROBE: ${{ inputs.probe }}
         run: |
           set -euo pipefail
 
-          mapfile -t request < <(python3 - <<'PY'
+          python3 - <<'PY'
           import os, re
-          parts = os.environ['COMMENT_BODY'].strip().split()
-          if len(parts) < 3 or parts[0] != '/mish-cycle':
-              raise SystemExit('expected /mish-cycle <mode> <40-hex-sha> [probe]')
-          mode, source = parts[1], parts[2]
-          if mode not in {'full', 'install_only', 'diagnose_only', 'probe_only'}:
-              raise SystemExit('invalid device-cycle mode')
+          pr = os.environ['PR_NUMBER']
+          source = os.environ['EXPECTED_SHA']
+          mode = os.environ['MODE']
+          probe = os.environ['PROBE']
+          if not re.fullmatch(r'[1-9][0-9]*', pr):
+              raise SystemExit('device-cycle requires an explicit positive PR number')
           if not re.fullmatch(r'[0-9a-f]{40}', source):
               raise SystemExit('device-cycle requires an explicit exact 40-hex PRODUCT SHA')
+          if mode not in {'full', 'install_only', 'diagnose_only', 'probe_only'}:
+              raise SystemExit('invalid device-cycle mode')
           if mode == 'probe_only':
-              if len(parts) != 4 or parts[3] != 'loopback_connect':
+              if probe != 'loopback_connect':
                   raise SystemExit('probe_only supports only the current-function loopback_connect probe')
-              probe = parts[3]
           elif mode == 'full':
-              if len(parts) == 3:
-                  probe = 'none'
-              elif len(parts) == 4 and parts[3] in {'capacity_resources', 'recovery_lifecycle', 'dns_lifetime_live', 'u5_rotation'}:
-                  probe = parts[3]
-              else:
-                  raise SystemExit('full accepts only the explicit optional capacity_resources, recovery_lifecycle, dns_lifetime_live, or u5_rotation probe')
-          else:
-              if len(parts) != 3:
-                  raise SystemExit('install_only/diagnose_only do not accept a probe')
-              probe = 'none'
-          print(mode)
-          print(source)
-          print(probe)
+              if probe not in {'none', 'capacity_resources', 'recovery_lifecycle', 'dns_lifetime_live', 'u5_rotation'}:
+                  raise SystemExit('full accepts only none, capacity_resources, recovery_lifecycle, dns_lifetime_live, or u5_rotation')
+          elif probe != 'none':
+              raise SystemExit('install_only/diagnose_only require probe=none')
           PY
-          )
-          MODE="${request[0]}"
-          EXPECTED_SHA="${request[1]}"
-          PROBE="${request[2]}"
-          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+
+          ACCEPTED_MAIN_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha // empty')"
+          if ! [[ "$ACCEPTED_MAIN_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'current protected-main SHA could not be resolved' >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_SHA" != "$ACCEPTED_MAIN_SHA" ]]; then
+            echo 'device cycle control must be dispatched from current protected main' >&2
+            exit 1
+          fi
 
           root="$RUNNER_TEMP/device-cycle-resolve"
           mkdir -p "$root"
@@ -272,8 +249,8 @@ jobs:
           import json, sys
           path, source, branch, pr_number = sys.argv[1:]
           run = json.load(open(path, encoding='utf-8'))
-          if run.get('name') != 'Integration Android Preflight':
-              raise SystemExit('candidate artifact did not originate from Integration Android Preflight')
+          if run.get('name') != 'PR Validation + PRODUCT Candidate':
+              raise SystemExit('candidate artifact did not originate from PR Validation + PRODUCT Candidate')
           if run.get('path') != '.github/workflows/integration-android-preflight.yml':
               raise SystemExit('candidate workflow path mismatch')
           if run.get('event') != 'pull_request' or run.get('status') != 'completed' or run.get('conclusion') != 'success':
@@ -305,7 +282,7 @@ jobs:
         run: |
           {
             echo '### Explicit DEVICE-1 cycle request'
-            echo '- Trigger: **manual analysis decision (`/mish-cycle`)**'
+            echo '- Trigger: **manual workflow_dispatch from protected main**'
             echo '- PR: `#${{ steps.resolve.outputs.pr_number }}`'
             echo '- PRODUCT SHA: `${{ steps.resolve.outputs.source_sha }}`'
             echo '- CONTROL SHA: `${{ steps.resolve.outputs.control_sha }}`'

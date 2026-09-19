@@ -114,15 +114,18 @@ def main() -> None:
         "Verify capacity probe held-session contract",
         "Verify diagnostic protocol probe helpers",
         "Verify physical protocol parity contract",
+        "name: Device Cycle Contracts",
+        "runs-on: windows-latest",
+        "Verify Device Cycle orchestration contracts",
         "name: Rust Workspace",
-        "needs: [control]",
+        "needs: [control, device-contracts]",
         "Require control guards",
         "cargo fmt --all --check",
         "cargo clippy --workspace --all-targets --locked -- -D warnings",
         "cargo test --workspace --locked",
         "Generate and verify native UniFFI contract",
         "name: Android Compose Shell",
-        "needs: [control, rust]",
+        "needs: [control, device-contracts, rust]",
         "Require control and Rust gates",
         "Fast Kotlin compile and lint",
         "Unit test and assemble exact-head candidate",
@@ -201,24 +204,31 @@ def main() -> None:
 
     consumer = ".github/workflows/device-cycle.yml"
     for required in (
-        "issue_comment:",
-        "github.actor == 'iamaman11'",
-        "startsWith(github.event.comment.body, '/mish-cycle ')",
+        "workflow_dispatch:",
+        "pr_number:",
+        "product_sha:",
+        "PR_NUMBER: ${{ inputs.pr_number }}",
+        "EXPECTED_SHA: ${{ inputs.product_sha }}",
+        "MODE: ${{ inputs.mode }}",
+        "PROBE: ${{ inputs.probe }}",
+        "device cycle control must be dispatched from current protected main",
         "device-cycle requires an explicit exact 40-hex PRODUCT SHA",
         "installing a device candidate requires a ready PR",
-        "candidate artifact did not originate from Integration Android Preflight",
+        "candidate artifact did not originate from PR Validation + PRODUCT Candidate",
         "candidate build is not a completed successful PR preflight",
         'ref: ${{ needs.resolve.outputs.control_sha }}',
         "Materialize exact hosted candidate in canonical Windows store",
         "DEVICE_CANDIDATE_STORE_ROOT: C:\\\\mish-lab\\\\runner\\\\.state\\\\device-candidate\\\\versions",
         "Install exact signed candidate without rebuilding",
         "Verify installed APK bytes and signing identity",
+        "manual workflow_dispatch from protected main",
         "Automatic start after build/main: **NO**",
     ):
-        require(consumer, required, "explicit DEVICE-1 consumer contract drifted")
+        require(consumer, required, "explicit manual DEVICE-1 consumer contract drifted")
     for forbidden in (
+        "pull_request:",
+        "issue_comment:",
         "workflow_run:",
-        "workflow_dispatch:",
         "device-candidate-physical.yml/dispatches",
         "gradle --no-daemon",
         "cargo build",
@@ -228,7 +238,7 @@ def main() -> None:
         "pm uninstall",
         "adb uninstall",
     ):
-        forbid(consumer, forbidden, "DEVICE-1 consumer must remain explicit, non-building and non-destructive")
+        forbid(consumer, forbidden, "DEVICE-1 consumer must remain manual-only, non-building and non-destructive")
 
     if (ROOT / ".github/workflows/device-candidate-physical.yml").exists():
         raise SystemExit("delivery contract: obsolete separate device-candidate-physical workflow must not exist")
