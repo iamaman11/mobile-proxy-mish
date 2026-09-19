@@ -1,13 +1,13 @@
 use crate::readiness_ffi::ProductReadinessState;
-use crate::runtime_lifecycle_ffi::{
-    ProxyServingFailure, ProxyServingState, RuntimeLifecycleState, RuntimeStartAction,
-    RuntimeStopAction, map_lifecycle_state, map_proxy_failure_out, map_start_action,
-    map_stop_action,
-};
 use crate::runtime_boundary::{
     AndroidDnsResolver, CellularAdmissionView, CellularBridgeError, CellularController,
     CellularDnsDiagnosticView, PublicIpObservationView, PublicIpProbeError, PublicIpProbeTicket,
     map_public_ip_failure, map_snapshot,
+};
+use crate::runtime_lifecycle_ffi::{
+    ProxyServingFailure, ProxyServingState, RuntimeLifecycleState, RuntimeStartAction,
+    RuntimeStopAction, map_lifecycle_state, map_proxy_failure_out, map_start_action,
+    map_stop_action,
 };
 use crate::transport_ffi::{
     MeshAdmissionView, MeshTransportBoundaryError, map_transport_error, map_view as map_mesh_view,
@@ -535,7 +535,6 @@ impl NativeProductRuntime {
                 | mish_runtime::RuntimeLifecycleState::Running
         )
     }
-
 }
 
 fn map_runtime_snapshot(snapshot: ProductRuntimeSnapshot) -> RuntimeLifecycleSnapshotView {
