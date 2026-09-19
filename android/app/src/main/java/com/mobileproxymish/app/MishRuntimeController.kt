@@ -5,6 +5,7 @@ import android.content.pm.ApplicationInfo
 import com.mobileproxymish.app.cellular.CellularRuntimeBridge
 import com.mobileproxymish.app.cellular.CellularRuntimeSnapshot
 import com.mobileproxymish.ffi.MeshAdmissionView
+import com.mobileproxymish.ffi.NativeCellularRequestRearmEffect
 import com.mobileproxymish.ffi.NativeProductRuntime
 import com.mobileproxymish.ffi.ProductDiagnosticSnapshotView
 import com.mobileproxymish.ffi.NativeReadinessObserver
@@ -85,7 +86,12 @@ class MishRuntimeController internal constructor(
 
     /** Thin PRODUCT command seam. Rust owns the operation, sequencing, effects and result. */
     internal fun startPublicIpRotation(): ULong =
-        productRuntime.startPublicIpRotation()
+        productRuntime.startPublicIpRotation(
+            object : NativeCellularRequestRearmEffect {
+                override fun rearmCellularRequest(): Boolean =
+                    cellularRuntime.rearmNetworkRequest()
+            },
+        )
 
     val isRunning: Boolean
         get() = productRuntime.runtimeLifecycleSnapshot().state != RuntimeLifecycleState.STOPPED
