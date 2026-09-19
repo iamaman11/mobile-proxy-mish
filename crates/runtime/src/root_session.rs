@@ -47,6 +47,7 @@ impl RootCommand {
         Ok(Self { kind, command })
     }
 
+    #[cfg(test)]
     pub(crate) const fn kind(&self) -> RootCommandKind {
         self.kind
     }
@@ -66,6 +67,7 @@ pub(crate) struct RootCommandResult {
 }
 
 impl RootCommandResult {
+    #[cfg(test)]
     pub(crate) const fn authoritative_success(&self) -> bool {
         !self.timed_out && self.output_complete && self.exit_code == 0
     }
