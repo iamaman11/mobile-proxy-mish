@@ -89,70 +89,55 @@ def main() -> None:
     if "build-tools;36.0.0" not in (toolchain.get("android", {}).get("packages") or []):
         raise SystemExit("delivery contract: canonical LAB bootstrap must provision build-tools;36.0.0")
 
-    # Protected-main PR CI always runs cheap authority guards; heavy PRODUCT jobs run only for PRODUCT/build input changes.
-    ci = ".github/workflows/ci.yml"
-    for required in (
-        "branches: [main]",
-        "workflow_dispatch:",
-        "Architecture + Delivery Guards",
-        "python3 tools/check_architecture.py",
-        "python3 tools/check_delivery_contract.py",
-        "PRODUCT Change Classification",
-        "product_changed=true",
-        "android/*|crates/*|config/*|contracts/*|Cargo.toml|Cargo.lock|rust-toolchain.toml)",
-        "needs: [architecture, changes]",
-        "needs.changes.outputs.product_changed == 'true'",
-        "Rust Workspace",
-        "cargo fmt --all --check",
-        "cargo clippy --workspace --all-targets --locked -- -D warnings",
-        "cargo test --workspace --locked",
-        "Android Compose Shell",
-        "Verify packaged native runtime and narrow UniFFI surface",
-        "libmish_android_ffi.so",
-        "obsolete sing-box binary leaked into native PRODUCT APK",
-    ):
-        require(ci, required, "protected-main native CI contract drifted")
-    forbid_regex(ci, r"^\s{2}push:\s*$", "accepted protected main must not automatically rebuild an already accepted PRODUCT")
-    for obsolete in (
-        "materialize_sing_box_android.py",
-        "vendor/sing-box/release.toml",
-        "Load pinned sing-box release manifest",
-        "Exercise hosted sing-box proxy and auth matrix",
-    ):
-        forbid(ci, obsolete, "pre-L8 PRODUCT CI must not return")
+    # One protected-main PR validation pipeline owns both required checks and the exact-head candidate.
+    # The obsolete split CI workflow is forbidden because it duplicated Rust/Android work and obscured
+    # which hosted run produced the immutable candidate consumed by Device Cycle.
+    obsolete_ci = ROOT / ".github/workflows/ci.yml"
+    if obsolete_ci.exists():
+        raise SystemExit("delivery contract: obsolete duplicate ci.yml workflow must not exist")
 
-    # One exact-head candidate producer for PRODUCT-changing PRs to main.
     producer = ".github/workflows/integration-android-preflight.yml"
     for required in (
+        "name: PR Validation + PRODUCT Candidate",
         "branches: [main]",
         "cancel-in-progress: true",
-        "Checkout exact PR head",
+        "Control Guards",
+        "Checkout exact PR head and history",
         "ref: ${{ github.event.pull_request.head.sha }}",
-        "Classify preflight build scope",
-        "build_required=false",
-        "android/*|crates/*|Cargo.toml|Cargo.lock|rust-toolchain.toml|tools/verify_android_candidate.py)",
-        "Architecture constitution",
-        "steps.scope.outputs.build_required == 'true'",
-        "Fast Kotlin compile and lint",
-        "Rust workspace quality gate",
+        "Classify PRODUCT/build scope",
+        "product_changed=false",
+        "android/*|crates/*|config/*|contracts/*|Cargo.toml|Cargo.lock|rust-toolchain.toml|tools/verify_android_candidate.py)",
+        "Verify accepted architecture invariants",
+        "python3 tools/check_architecture.py",
+        "Verify delivery and CI invariants",
+        "python3 tools/check_delivery_contract.py",
+        "Verify capacity probe held-session contract",
+        "Verify diagnostic protocol probe helpers",
+        "Verify physical protocol parity contract",
+        "name: Rust Workspace",
+        "needs: [control]",
+        "Require control guards",
         "cargo fmt --all --check",
         "cargo clippy --workspace --all-targets --locked -- -D warnings",
         "cargo test --workspace --locked",
+        "Generate and verify native UniFFI contract",
+        "name: Android Compose Shell",
+        "needs: [control, rust]",
+        "Require control and Rust gates",
+        "Fast Kotlin compile and lint",
+        "Unit test and assemble exact-head candidate",
         "Verify exact PRODUCT candidate contract",
         "python3 tools/verify_android_candidate.py",
         "mish-device-candidate-v1",
         "device-candidate-pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}",
         "retention-days: 7",
         "Local build required: **NO**",
-        "      - name: Set up JDK 17\n        if: ${{ steps.scope.outputs.build_required == 'true' }}",
-        "contains(github.event.pull_request.body, '[full-hosted]')",
-        "      - name: Unit test and assemble host gate\n        if: ${{ steps.scope.outputs.build_required == 'true' && (github.event.pull_request.draft == false || contains(github.event.pull_request.body, '[full-hosted]')) }}",
-        "      - name: Stage exact-head device candidate\n        if: ${{ steps.scope.outputs.build_required == 'true' && github.event.pull_request.draft == false }}",
-        "      - name: Upload exact-head device candidate\n        if: ${{ steps.scope.outputs.build_required == 'true' && github.event.pull_request.draft == false }}",
-        "Static-only preflight summary",
+        "Physical Device Cycle auto-start: **NO**",
         "Device candidate staged: **NO**",
     ):
-        require(producer, required, "hosted exact-head candidate producer contract drifted")
+        require(producer, required, "single PR validation / exact-head candidate pipeline drifted")
+    forbid(producer, "    paths:", "required PR checks must exist for every protected-main pull request")
+    forbid_regex(producer, r"^\s{2}push:\s*$", "accepted protected main must not automatically rebuild an already accepted PRODUCT")
     forbid(producer, "fix/root-policy-reconciliation", "candidate producer must target protected main after convergence")
     forbid(producer, "sing-box", "native candidate producer must not know the deleted external proxy runtime")
 
