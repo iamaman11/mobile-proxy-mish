@@ -621,9 +621,13 @@ mod tests {
             .observe_cellular_admission(owner.admission())
             .expect("raw admission");
         assert_ne!(readiness.snapshot(), Readiness::Ready);
-        let diagnostic = readiness.diagnostic_snapshot();
-        assert!(diagnostic.cellular_admitted);
-        assert!(!diagnostic.root_policy_verified);
+        {
+            let state = readiness.state().expect("state");
+            let cellular = state.facts.cellular.expect("cellular fact");
+            assert!(cellular.admitted);
+            assert!(!cellular.root_policy_verified);
+        }
+        assert!(!readiness.diagnostic_snapshot().root_policy_verified);
 
         readiness.shutdown();
         executor.shutdown().expect("shutdown");
