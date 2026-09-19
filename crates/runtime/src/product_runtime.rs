@@ -39,6 +39,13 @@ struct ProductObservers {
     proxy: Option<ProxyRuntimeObserver>,
 }
 
+type ObserverRebind = (Arc<ProductGeneration>, ProductObservers);
+
+struct ProductStopCompletion {
+    rebind: Option<ObserverRebind>,
+    restart: Option<ProductStartInput>,
+}
+
 #[derive(Clone)]
 struct StoredCellularObservation {
     sequence: u64,
@@ -613,40 +620,64 @@ impl ProductRuntimeCoordinator {
         expected_generation: u64,
         generation: Arc<ProductGeneration>,
     ) {
-        let clean = generation.shutdown_async().await;
-        let rebound = {
-            let Ok(mut state) = self.state.lock() else {
+        let still_starting = {
+            let Ok(state) = self.state.lock() else {
                 return;
             };
-            if state.lifecycle.generation() != expected_generation
-                || state.lifecycle.state() != RuntimeLifecycleState::Starting
-            {
-                return;
-            }
-            let completion = state.lifecycle.complete_start(false, clean);
-            if completion.install_fresh_generation_now() {
-                match self.build_generation(state.lifecycle.generation()) {
-                    Ok(fresh) => {
-                        state.generation = Arc::clone(&fresh);
-                        self.observer_generation
-                            .store(fresh.generation(), Ordering::Release);
-                        Some((fresh, state.observers.clone()))
-                    }
-                    Err(_) => {
-                        state.lifecycle.mark_stopped_generation_dirty();
-                        None
-                    }
-                }
-            } else {
-                None
-            }
+            !state.closed
+                && state.lifecycle.generation() == expected_generation
+                && state.lifecycle.state() == RuntimeLifecycleState::Starting
+                && Arc::ptr_eq(&state.generation, &generation)
         };
-        if let Some((generation, observers)) = rebound {
+        if !still_starting {
+            return;
+        }
+
+        // A concurrent stop may win after the check above. ProductGeneration shutdown is exact-once,
+        // so both paths can safely await the same cleanup execution/result; only the lifecycle owner
+        // whose state still matches is allowed to publish the terminal transition.
+        let clean = generation.shutdown_async().await;
+        if let Some((generation, observers)) =
+            self.complete_failed_start_after_cleanup(expected_generation, clean)
+        {
             bind_observers(
                 &generation,
                 observers,
                 Arc::clone(&self.observer_generation),
             );
+        }
+    }
+
+    fn complete_failed_start_after_cleanup(
+        &self,
+        expected_generation: u64,
+        clean: bool,
+    ) -> Option<ObserverRebind> {
+        let Ok(mut state) = self.state.lock() else {
+            return None;
+        };
+        if state.lifecycle.generation() != expected_generation
+            || state.lifecycle.state() != RuntimeLifecycleState::Starting
+        {
+            return None;
+        }
+
+        let completion = state.lifecycle.complete_start(false, clean);
+        if !completion.install_fresh_generation_now() {
+            return None;
+        }
+
+        match self.build_generation(state.lifecycle.generation()) {
+            Ok(fresh) => {
+                state.generation = Arc::clone(&fresh);
+                self.observer_generation
+                    .store(fresh.generation(), Ordering::Release);
+                Some((fresh, state.observers.clone()))
+            }
+            Err(_) => {
+                state.lifecycle.mark_stopped_generation_dirty();
+                None
+            }
         }
     }
 
@@ -664,43 +695,11 @@ impl ProductRuntimeCoordinator {
         };
 
         let clean = generation.shutdown_async().await;
-
-        let (rebound, restart) = {
-            let Ok(mut state) = self.state.lock() else {
-                return;
-            };
-            if state.lifecycle.generation() != expected_generation
-                || state.lifecycle.state() != RuntimeLifecycleState::Stopping
-            {
-                return;
-            }
-
-            let disposition = state.lifecycle.complete_stop(clean);
-            let mut rebound = None;
-            if disposition.install_fresh_generation_now() {
-                match self.build_generation(state.lifecycle.generation()) {
-                    Ok(fresh) => {
-                        state.generation = Arc::clone(&fresh);
-                        self.observer_generation
-                            .store(fresh.generation(), Ordering::Release);
-                        rebound = Some((fresh, state.observers.clone()));
-                    }
-                    Err(_) => {
-                        state.lifecycle.mark_stopped_generation_dirty();
-                    }
-                }
-            }
-
-            let restart = if disposition.restart_now() && rebound.is_some() {
-                state.pending_start.take()
-            } else {
-                state.pending_start = None;
-                None
-            };
-            (rebound, restart)
+        let Some(completion) = self.complete_stop_after_cleanup(expected_generation, clean) else {
+            return;
         };
 
-        if let Some((generation, observers)) = rebound {
+        if let Some((generation, observers)) = completion.rebind {
             bind_observers(
                 &generation,
                 observers,
@@ -708,7 +707,7 @@ impl ProductRuntimeCoordinator {
             );
         }
 
-        if let Some(input) = restart {
+        if let Some(input) = completion.restart {
             let expected = {
                 let Ok(mut state) = self.state.lock() else {
                     return;
@@ -720,6 +719,45 @@ impl ProductRuntimeCoordinator {
             };
             self.run_start(expected, input).await;
         }
+    }
+
+    fn complete_stop_after_cleanup(
+        &self,
+        expected_generation: u64,
+        clean: bool,
+    ) -> Option<ProductStopCompletion> {
+        let Ok(mut state) = self.state.lock() else {
+            return None;
+        };
+        if state.lifecycle.generation() != expected_generation
+            || state.lifecycle.state() != RuntimeLifecycleState::Stopping
+        {
+            return None;
+        }
+
+        let disposition = state.lifecycle.complete_stop(clean);
+        let mut rebind = None;
+        if disposition.install_fresh_generation_now() {
+            match self.build_generation(state.lifecycle.generation()) {
+                Ok(fresh) => {
+                    state.generation = Arc::clone(&fresh);
+                    self.observer_generation
+                        .store(fresh.generation(), Ordering::Release);
+                    rebind = Some((fresh, state.observers.clone()));
+                }
+                Err(_) => {
+                    state.lifecycle.mark_stopped_generation_dirty();
+                }
+            }
+        }
+
+        let restart = if disposition.restart_now() && rebind.is_some() {
+            state.pending_start.take()
+        } else {
+            state.pending_start = None;
+            None
+        };
+        Some(ProductStopCompletion { rebind, restart })
     }
 
     fn build_generation(
@@ -962,6 +1000,201 @@ mod tests {
         assert_eq!(mesh.observation, MeshVpnObservation::Absent);
         facts.clear_mesh();
         assert!(facts.mesh.is_none());
+    }
+
+    #[test]
+    fn stop_supersedes_failed_start_completion_and_owns_terminal_transition() {
+        let runtime = ProductRuntimeCoordinator::new(
+            Arc::new(EmptyResolver),
+            10_123,
+            RootPolicyNamespace::Debug,
+        )
+        .expect("runtime");
+
+        {
+            let mut state = runtime.state_mut().expect("state");
+            assert_eq!(state.lifecycle.request_start(), RuntimeStartAction::StartNow);
+            assert_eq!(state.lifecycle.request_stop(), RuntimeStopAction::StopNow);
+        }
+
+        assert!(runtime
+            .complete_failed_start_after_cleanup(1, true)
+            .is_none());
+        assert_eq!(runtime.snapshot().state, RuntimeLifecycleState::Stopping);
+
+        let completion = runtime
+            .complete_stop_after_cleanup(1, true)
+            .expect("stop completion");
+        assert!(completion.restart.is_none());
+        assert!(completion.rebind.is_some());
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.state, RuntimeLifecycleState::Stopped);
+        assert_eq!(snapshot.generation, 2);
+        assert!(!snapshot.generation_requires_replacement);
+        runtime.executor.shutdown().expect("executor shutdown");
+    }
+
+    #[test]
+    fn queued_restart_preserves_latest_platform_facts_for_fresh_generation() {
+        let runtime = ProductRuntimeCoordinator::new(
+            Arc::new(EmptyResolver),
+            10_123,
+            RootPolicyNamespace::Debug,
+        )
+        .expect("runtime");
+        let handle = NetworkHandle::new(11).expect("handle");
+        let sequence = mish_cellular::ObservationSequence::new(7).expect("sequence");
+
+        {
+            let mut state = runtime.state_mut().expect("state");
+            state.platform_facts.record_cellular_observation(
+                7,
+                NetworkObservation::new(sequence, handle, true, true, true, true),
+                handle,
+                Some("rmnet0".to_owned()),
+            );
+            state
+                .platform_facts
+                .record_mesh(9, MeshVpnObservation::Absent);
+            assert_eq!(state.lifecycle.request_start(), RuntimeStartAction::StartNow);
+            state.lifecycle.complete_start(true, true);
+            assert_eq!(state.lifecycle.request_stop(), RuntimeStopAction::StopNow);
+        }
+
+        assert_eq!(
+            runtime
+                .request_start(
+                    Some(4),
+                    Some("queued-user".to_owned()),
+                    Some("queued-password".to_owned()),
+                )
+                .expect("queued start"),
+            RuntimeStartAction::QueuedAfterStop
+        );
+
+        let completion = runtime
+            .complete_stop_after_cleanup(1, true)
+            .expect("stop completion");
+        let restart = completion.restart.expect("queued restart");
+        assert_eq!(restart.credential_version, Some(4));
+        assert_eq!(restart.username.as_deref(), Some("queued-user"));
+        assert_eq!(restart.password.as_deref(), Some("queued-password"));
+        assert!(completion.rebind.is_some());
+
+        let state = runtime.state().expect("state");
+        assert_eq!(state.lifecycle.generation(), 2);
+        let replay = state.platform_facts.cellular_replay();
+        assert_eq!(replay.len(), 1);
+        assert_eq!(replay[0].sequence, 7);
+        assert_eq!(
+            state.platform_facts.mesh.as_ref().map(|mesh| mesh.sequence),
+            Some(9)
+        );
+        drop(state);
+        runtime.executor.shutdown().expect("executor shutdown");
+    }
+
+    #[test]
+    fn newer_explicit_stop_while_stopping_cancels_queued_restart() {
+        let runtime = ProductRuntimeCoordinator::new(
+            Arc::new(EmptyResolver),
+            10_123,
+            RootPolicyNamespace::Debug,
+        )
+        .expect("runtime");
+
+        {
+            let mut state = runtime.state_mut().expect("state");
+            assert_eq!(state.lifecycle.request_start(), RuntimeStartAction::StartNow);
+            state.lifecycle.complete_start(true, true);
+            assert_eq!(state.lifecycle.request_stop(), RuntimeStopAction::StopNow);
+        }
+
+        assert_eq!(
+            runtime
+                .request_start(
+                    Some(3),
+                    Some("queued-user".to_owned()),
+                    Some("queued-password".to_owned()),
+                )
+                .expect("queued start"),
+            RuntimeStartAction::QueuedAfterStop
+        );
+        assert_eq!(
+            runtime.request_stop().expect("newer stop"),
+            RuntimeStopAction::AlreadyStopping
+        );
+
+        let completion = runtime
+            .complete_stop_after_cleanup(1, true)
+            .expect("stop completion");
+        assert!(completion.restart.is_none());
+        assert_eq!(runtime.snapshot().state, RuntimeLifecycleState::Stopped);
+        runtime.executor.shutdown().expect("executor shutdown");
+    }
+
+    #[test]
+    fn stale_generation_proxy_publication_is_fenced_from_android_observer() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let runtime = ProductRuntimeCoordinator::new(
+            Arc::new(EmptyResolver),
+            10_123,
+            RootPolicyNamespace::Debug,
+        )
+        .expect("runtime");
+        let publications = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&publications);
+        runtime.set_proxy_observer(Arc::new(move |_| {
+            observed.fetch_add(1, Ordering::SeqCst);
+        }));
+        let baseline = publications.load(Ordering::SeqCst);
+        let old_generation = runtime.current_generation().expect("generation");
+
+        runtime.observer_generation.store(2, Ordering::Release);
+        let _ = old_generation.proxy().start(None, None, None);
+
+        assert_eq!(publications.load(Ordering::SeqCst), baseline);
+        runtime.executor.shutdown().expect("executor shutdown");
+    }
+
+    #[test]
+    fn failed_start_cleanup_result_controls_exact_generation_replacement() {
+        let clean = ProductRuntimeCoordinator::new(
+            Arc::new(EmptyResolver),
+            10_123,
+            RootPolicyNamespace::Debug,
+        )
+        .expect("clean runtime");
+        {
+            let mut state = clean.state_mut().expect("state");
+            assert_eq!(state.lifecycle.request_start(), RuntimeStartAction::StartNow);
+        }
+        assert!(clean.complete_failed_start_after_cleanup(1, true).is_some());
+        let clean_snapshot = clean.snapshot();
+        assert_eq!(clean_snapshot.state, RuntimeLifecycleState::Stopped);
+        assert_eq!(clean_snapshot.generation, 2);
+        assert!(!clean_snapshot.generation_requires_replacement);
+        clean.executor.shutdown().expect("clean executor shutdown");
+
+        let dirty = ProductRuntimeCoordinator::new(
+            Arc::new(EmptyResolver),
+            10_124,
+            RootPolicyNamespace::Debug,
+        )
+        .expect("dirty runtime");
+        {
+            let mut state = dirty.state_mut().expect("state");
+            assert_eq!(state.lifecycle.request_start(), RuntimeStartAction::StartNow);
+        }
+        assert!(dirty
+            .complete_failed_start_after_cleanup(1, false)
+            .is_none());
+        let dirty_snapshot = dirty.snapshot();
+        assert_eq!(dirty_snapshot.state, RuntimeLifecycleState::Stopped);
+        assert_eq!(dirty_snapshot.generation, 1);
+        assert!(dirty_snapshot.generation_requires_replacement);
+        dirty.executor.shutdown().expect("dirty executor shutdown");
     }
 
     #[test]
