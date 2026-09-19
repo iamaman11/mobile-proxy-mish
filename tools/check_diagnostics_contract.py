@@ -69,7 +69,8 @@ def main() -> None:
         ("generation_replacement_during_capture_never_returns_a_mixed_snapshot", "concurrent generation regression"),
         ("root_publication: Option<CellularPolicyPublication>", "root publication binding"),
         ("root_session_generation: Option<u64>", "root session generation"),
-        ("RotationDiagnosticState::NotSupported", "native pre-G rotation projection"),
+        ("pub rotation: RotationSnapshot", "native rotation owner projection"),
+        ("let rotation_snapshot = generation.rotation().snapshot()", "rotation snapshot capture"),
     ):
         require(diagnostics_owner, needle, label)
 
@@ -83,6 +84,12 @@ def main() -> None:
         ("mesh_serving_generation", "Mesh serving generation"),
         ("readiness_expected_freshness", "readiness expected freshness"),
         ("readiness_observed_freshness", "readiness observed freshness"),
+        ("rotation_operation_id", "rotation operation identity"),
+        ("rotation_before_generation", "rotation before generation"),
+        ("rotation_after_generation", "rotation after generation"),
+        ("rotation_restore_required", "rotation restore requirement"),
+        ("rotation_terminal_result", "rotation terminal result"),
+        ("rotation_restore_result", "rotation restore result"),
     ):
         require(product_ffi, needle, label)
 
@@ -142,6 +149,13 @@ def main() -> None:
         ('snapshot.meshServingGeneration?.toLong() ?: JSONObject.NULL', "Mesh serving generation"),
         ('snapshot.readinessExpectedFreshness?.toLong() ?: JSONObject.NULL', "readiness expected freshness"),
         ('snapshot.readinessObservedFreshness?.toLong() ?: JSONObject.NULL', "readiness observed freshness"),
+        ('snapshot.rotationOperationId?.toLong() ?: JSONObject.NULL', "rotation operation id"),
+        ('snapshot.rotationBeforeGeneration?.toLong() ?: JSONObject.NULL', "rotation before generation"),
+        ('snapshot.rotationAfterGeneration?.toLong() ?: JSONObject.NULL', "rotation after generation"),
+        ('put("restore_required", snapshot.rotationRestoreRequired)', "rotation restore requirement"),
+        ('putNullable("terminal_result", snapshot.rotationTerminalResult)', "rotation terminal result"),
+        ('putNullable("restore_result", snapshot.rotationRestoreResult)', "rotation restore result"),
+        ('put("raw_ip_persisted", false)', "raw public IP persistence prohibition"),
     ):
         require(provider, needle, label)
 
@@ -196,6 +210,9 @@ def main() -> None:
     require(serialization_test, 'getLong("operation_id")', "Proxy operation assertion")
     require(serialization_test, 'getLong("serving_generation")', "Mesh generation assertion")
     require(serialization_test, 'getLong("expected_freshness")', "readiness freshness assertion")
+    require(serialization_test, 'getLong("operation_id")', "rotation operation assertion")
+    require(serialization_test, 'getLong("before_generation")', "rotation generation assertion")
+    require(serialization_test, 'getBoolean("raw_ip_persisted")', "raw IP persistence assertion")
 
     print("diagnostics contract: PASS")
 
