@@ -61,6 +61,7 @@ foreach ($required in @(
     'WaitForExit($script:AdbTransportTimeoutMilliseconds)',
     '$process.Kill($true)',
     'MISH_U5_ROTATION_OPERATION_START=',
+    '[AllowEmptyCollection()][System.Collections.Generic.List[object]] $Timeline',
     'MISH_U5_ROTATION_TIMELINE=',
     'MISH_U5_RESTORE_PHASE=',
     "Invoke-MishActivityTrigger",
