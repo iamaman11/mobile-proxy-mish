@@ -289,9 +289,10 @@ def main() -> None:
         "raw_ip_persisted = $false",
         "U5_ROTATION_PHYSICAL_ACCEPTANCE_PASS",
         "PRODUCT_RESTORE_OFF_FAILED",
-        "'shell', 'run-as', $PackageName, 'sh', '-c', \"cat /proc/$processId/task/*/comm\"",
-        "Wildcard expansion must happen",
-        "PRODUCT /proc task comm observation returned no thread names.",
+        "'shell', 'ps', '-A', '-T', '-w', '-o', 'PID,TID,CMD'",
+        "row = [regex]::Match",
+        "Groups['pid'].Value -eq $processId",
+        "Android ps -A -T returned no PRODUCT thread rows.",
         "MISH_U5_TOPOLOGY_RUNTIME_IO_THREADS=",
         "MISH_U5_TOPOLOGY_FORBIDDEN_KOTLIN_OWNER_THREADS=",
     ):
@@ -310,9 +311,9 @@ def main() -> None:
         "assembleDebug",
         "before_ip",
         "after_ip",
-        "'shell', 'ps', '-T'",
+        "'shell', 'run-as', $PackageName, 'sh', '-c', \"cat /proc/$processId/task/*/comm\"",
+        "'shell', 'ps', '-T', '-p'",
         "'-o', 'NAME'",
-        "'-o', 'CMD'",
     ):
         forbid(rotation_probe, forbidden, "U5 LAB probe must observe PRODUCT rotation, never own airplane/root/build semantics")
 
