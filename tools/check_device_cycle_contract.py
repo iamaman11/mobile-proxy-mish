@@ -302,6 +302,9 @@ def main() -> None:
         "MISH_U5_ROTATION_OPERATION_START=",
         "MISH_U5_ROTATION_TIMELINE=",
         "MISH_U5_RESTORE_PHASE=",
+        "Invoke-MishActivityTrigger",
+        "'shell', 'am', 'start', '-n'",
+        "LAB_ACTIVITY_TRIGGER_FAILED",
     ):
         require(rotation_probe, required, "U5 physical rotation evidence drifted")
     for forbidden in (
@@ -325,6 +328,7 @@ def main() -> None:
         "'shell', 'ps', '-T', '-p'",
         "'-o', 'NAME'",
         "$output = @(& $AdbPath @Arguments",
+        "'shell', 'am', 'start', '-W'",
     ):
         forbid(rotation_probe, forbidden, "U5 LAB probe must observe PRODUCT rotation, never own airplane/root/build semantics")
 
