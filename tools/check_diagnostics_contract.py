@@ -90,6 +90,7 @@ def main() -> None:
         ("rotation_restore_required", "rotation restore requirement"),
         ("rotation_terminal_result", "rotation terminal result"),
         ("rotation_restore_result", "rotation restore result"),
+        ("rotation_active_tasks", "rotation active task count"),
     ):
         require(product_ffi, needle, label)
 
@@ -155,6 +156,7 @@ def main() -> None:
         ('put("restore_required", snapshot.rotationRestoreRequired)', "rotation restore requirement"),
         ('putNullable("terminal_result", snapshot.rotationTerminalResult)', "rotation terminal result"),
         ('putNullable("restore_result", snapshot.rotationRestoreResult)', "rotation restore result"),
+        ('put("active_tasks", snapshot.rotationActiveTasks.toLong())', "rotation active task count"),
         ('put("raw_ip_persisted", false)', "raw public IP persistence prohibition"),
     ):
         require(provider, needle, label)
@@ -212,6 +214,7 @@ def main() -> None:
     require(serialization_test, 'getLong("expected_freshness")', "readiness freshness assertion")
     require(serialization_test, 'getLong("operation_id")', "rotation operation assertion")
     require(serialization_test, 'getLong("before_generation")', "rotation generation assertion")
+    require(serialization_test, 'getLong("active_tasks")', "rotation active-task assertion")
     require(serialization_test, 'getBoolean("raw_ip_persisted")', "raw IP persistence assertion")
 
     print("diagnostics contract: PASS")
