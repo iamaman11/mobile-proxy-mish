@@ -39,117 +39,10 @@ function Invoke-MishAdbText {
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = $AdbPath
     $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardInput = $true
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
-    foreach ($argument in $Arguments) {
-        [void]$startInfo.ArgumentList.Add($argument)
-    }
-
-    $process = [Diagnostics.Process]::new()
-    $process.StartInfo = $startInfo
-    try {
-        if (-not $process.Start()) {
-            Stop-MishRotationAcceptance 'LAB_ADB_FAILED' "ADB operation '$Operation' did not start."
-        }
-        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-        $stderrTask = $process.StandardError.ReadToEndAsync()
-        if (-not $process.WaitForExit($script:AdbTransportTimeoutMilliseconds)) {
-            try { $process.Kill($true) } catch {}
-            try { [void]$process.WaitForExit(2000) } catch {}
-            Stop-MishRotationAcceptance 'LAB_ADB_TIMEOUT' "ADB operation '$Operation' exceeded the bounded transport deadline."
-        }
-        $output = $stdoutTask.GetAwaiter().GetResult()
-        [void]$stderrTask.GetAwaiter().GetResult()
-        $exitCode = $process.ExitCode
-        if ($exitCode -ne 0) {
-            Stop-MishRotationAcceptance 'LAB_ADB_FAILED' "ADB operation '$Operation' failed with exit code $exitCode."
-        }
-        return $output.Trim()
-    }
-    finally {
-        $process.Dispose()
-    }
-}
-
-function Invoke-MishActivityTrigger {
-    param(
-        [Parameter(Mandatory)][string] $Component,
-        [Parameter(Mandatory)][string] $Operation
-    )
-
-    $output = Invoke-MishAdbText -Operation $Operation -Arguments @(
-        'shell', 'am', 'start', '-n', $Component
-    )
-    if (
-        $output -match '(?im)^\s*(Error|Exception):' -or
-        $output -notmatch '(?im)^\s*(Starting: Intent|Warning: Activity not started)'
-    ) {
-        Stop-MishRotationAcceptance 'LAB_ACTIVITY_TRIGGER_FAILED' "Android Activity trigger '$Operation' was not accepted."
-    }
-}
-
-function Start-MishFastAirplaneObserver {
-    param(
-        [Parameter(Mandatory)][string] $Label,
-        [string] $StopComponent = ''
-    )
-
-    $maxSamples = [Math]::Max(
-        1,
-        [int][Math]::Ceiling(($OperationDeadlineSeconds * 1000) / $script:FastAirplaneObserverPeriodMilliseconds)
-    )
-
-    $normalTemplate = @'
-i=0
-seen=0
-while [ "$i" -lt __MAX__ ]; do
-  state=$(settings get global airplane_mode_on)
-  if [ "$state" = "1" ]; then
-    printf 'ON sample=%s\n' "$i"
-    seen=1
-  elif [ "$seen" = "1" ]; then
-    printf 'OFF_AFTER_ON sample=%s\n' "$i"
-    exit 0
-  fi
-  i=$((i+1))
-  sleep 0.05
-done
-exit 4
-'@
-
-    $restoreTemplate = @'
-i=0
-while [ "$i" -lt __MAX__ ]; do
-  state=$(settings get global airplane_mode_on)
-  if [ "$state" = "1" ]; then
-    printf 'ON sample=%s\n' "$i"
-    am start -n '__STOP__'
-    rc=$?
-    printf 'STOP_TRIGGER_EXIT=%s\n' "$rc"
-    exit "$rc"
-  fi
-  i=$((i+1))
-  sleep 0.05
-done
-exit 4
-'@
-
-    $shell = if ([string]::IsNullOrWhiteSpace($StopComponent)) {
-        $normalTemplate.Replace('__MAX__', [string]$maxSamples)
-    } else {
-        $restoreTemplate
-            .Replace('__MAX__', [string]$maxSamples)
-            .Replace('__STOP__', $StopComponent)
-    }
-
-    $startInfo = [Diagnostics.ProcessStartInfo]::new()
-    $startInfo.FileName = $AdbPath
-    $startInfo.UseShellExecute = $false
-    $startInfo.RedirectStandardOutput = $true
-    $startInfo.RedirectStandardError = $true
-    foreach ($argument in @('shell', $shell)) {
-        [void]$startInfo.ArgumentList.Add($argument)
-    }
+    [void]$startInfo.ArgumentList.Add('shell')
 
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
@@ -158,12 +51,33 @@ exit 4
         Stop-MishRotationAcceptance 'LAB_AIRPLANE_OBSERVER_FAILED' "Fast airplane observer '$Label' did not start."
     }
 
-    return [pscustomobject]@{
-        label = $Label
-        process = $process
-        stdout_task = $process.StandardOutput.ReadToEndAsync()
-        stderr_task = $process.StandardError.ReadToEndAsync()
-        completed = $false
+    try {
+        $deviceScript = $shell.Replace("`r`n", "`n")
+        $process.StandardInput.Write($deviceScript)
+        $process.StandardInput.Close()
+
+        $readyTask = $process.StandardOutput.ReadLineAsync()
+        if (-not $readyTask.Wait($script:AdbTransportTimeoutMilliseconds)) {
+            try { $process.Kill($true) } catch {}
+            Stop-MishRotationAcceptance 'LAB_AIRPLANE_OBSERVER_FAILED' "Fast airplane observer '$Label' did not become ready."
+        }
+        if ([string]$readyTask.Result -cne 'OBSERVER_READY') {
+            try { $process.Kill($true) } catch {}
+            Stop-MishRotationAcceptance 'LAB_AIRPLANE_OBSERVER_FAILED' "Fast airplane observer '$Label' returned an invalid readiness marker."
+        }
+
+        return [pscustomobject]@{
+            label = $Label
+            process = $process
+            stdout_task = $process.StandardOutput.ReadToEndAsync()
+            stderr_task = $process.StandardError.ReadToEndAsync()
+            completed = $false
+        }
+    }
+    catch {
+        try { $process.Kill($true) } catch {}
+        $process.Dispose()
+        Stop-MishRotationAcceptance 'LAB_AIRPLANE_OBSERVER_FAILED' "Fast airplane observer '$Label' setup failed."
     }
 }
 
