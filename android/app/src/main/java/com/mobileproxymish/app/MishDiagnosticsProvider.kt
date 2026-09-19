@@ -222,6 +222,7 @@ internal fun renderMishDiagnosticSnapshotV2(
         putNullable("terminal_result", snapshot.rotationTerminalResult)
         putNullable("failure", snapshot.rotationFailure)
         putNullable("restore_result", snapshot.rotationRestoreResult)
+        put("active_tasks", snapshot.rotationActiveTasks.toLong())
         put("raw_ip_persisted", false)
     })
 }.toString()
