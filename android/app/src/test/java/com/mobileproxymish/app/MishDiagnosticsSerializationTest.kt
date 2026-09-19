@@ -117,6 +117,7 @@ class MishDiagnosticsSerializationTest {
             rotationTerminalResult = null,
             rotationFailure = null,
             rotationRestoreResult = null,
+            rotationActiveTasks = 0uL,
         )
 
         val rendered = renderMishDiagnosticSnapshotV2(
@@ -164,6 +165,7 @@ class MishDiagnosticsSerializationTest {
         assertTrue(rotation.isNull("terminal_result"))
         assertTrue(rotation.isNull("failure"))
         assertTrue(rotation.isNull("restore_result"))
+        assertEquals(0L, rotation.getLong("active_tasks"))
         assertFalse(rotation.getBoolean("raw_ip_persisted"))
         assertFalse(rendered.contains("username", ignoreCase = true))
         assertFalse(rendered.contains("password", ignoreCase = true))
