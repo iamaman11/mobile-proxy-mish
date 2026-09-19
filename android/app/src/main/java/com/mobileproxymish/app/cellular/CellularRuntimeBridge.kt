@@ -214,8 +214,11 @@ class CellularRuntimeBridge(
 
     fun stop() {
         if (closed.get() || !started.compareAndSet(true, false)) return
-        observer.close()
-        productRuntime.invalidateCellularPlatformFacts()
+        var clean = runCatching(observer::close).isSuccess
+        clean = runCatching { productRuntime.invalidateCellularPlatformFacts() }.isSuccess && clean
+        if (!clean) {
+            throw IllegalStateException("Cellular platform observation cleanup failed")
+        }
     }
 
     override fun onEvent(event: CellularNetworkEvent) {
@@ -296,8 +299,11 @@ class CellularRuntimeBridge(
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         started.set(false)
-        observer.close()
-        productRuntime.invalidateCellularPlatformFacts()
+        var clean = runCatching(observer::close).isSuccess
+        clean = runCatching { productRuntime.invalidateCellularPlatformFacts() }.isSuccess && clean
+        if (!clean) {
+            throw IllegalStateException("Cellular platform observation cleanup failed")
+        }
     }
 
     private companion object {
