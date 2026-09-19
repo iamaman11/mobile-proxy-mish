@@ -209,6 +209,20 @@ internal fun renderMishDiagnosticSnapshotV2(
     })
     put("rotation", JSONObject().apply {
         put("state", snapshot.rotationState)
+        put("operation_id", snapshot.rotationOperationId?.toLong() ?: JSONObject.NULL)
+        put(
+            "before_generation",
+            snapshot.rotationBeforeGeneration?.toLong() ?: JSONObject.NULL,
+        )
+        put(
+            "after_generation",
+            snapshot.rotationAfterGeneration?.toLong() ?: JSONObject.NULL,
+        )
+        put("restore_required", snapshot.rotationRestoreRequired)
+        putNullable("terminal_result", snapshot.rotationTerminalResult)
+        putNullable("failure", snapshot.rotationFailure)
+        putNullable("restore_result", snapshot.rotationRestoreResult)
+        put("raw_ip_persisted", false)
     })
 }.toString()
 
