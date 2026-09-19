@@ -21,7 +21,11 @@ use mish_runtime::{
     ReadinessDiagnosticSnapshot, ReadinessObserver,
     RootAuthorityStatus as OwnerRootAuthorityStatus, RootPolicyFailure as OwnerRootPolicyFailure,
     RootPolicyReconcileDiagnostic, RootPolicyResult as OwnerRootPolicyResult,
-    RootRecoveryDiagnostic, RotationDiagnosticState, RuntimeExecutionError,
+    RootRecoveryDiagnostic, RotationRuntimeStartError, RuntimeExecutionError,
+};
+use mish_rotation::{
+    RotationFailure, RotationPhase, RotationRestoreResult, RotationSnapshot,
+    RotationTerminalResult,
 };
 use mish_transport::MeshVpnObservation;
 use std::fmt;
@@ -49,6 +53,47 @@ impl fmt::Display for NativeProductRuntimeError {
 }
 
 impl std::error::Error for NativeProductRuntimeError {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Error)]
+pub enum NativeRotationStartError {
+    RuntimeNotRunning,
+    AlreadyInProgress,
+    NoCurrentCellular,
+    RootPolicyUnavailable,
+    CredentialUnavailable,
+    ExecutorUnavailable,
+    StateUnavailable,
+}
+
+impl fmt::Display for NativeRotationStartError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::RuntimeNotRunning => "PRODUCT runtime is not running",
+            Self::AlreadyInProgress => "an IP rotation is already in progress",
+            Self::NoCurrentCellular => "no current admitted Cellular generation",
+            Self::RootPolicyUnavailable => "root policy is not authorized for current Cellular generation",
+            Self::CredentialUnavailable => "current proxy credential is unavailable",
+            Self::ExecutorUnavailable => "native PRODUCT executor is unavailable",
+            Self::StateUnavailable => "native rotation state is unavailable",
+        })
+    }
+}
+
+impl std::error::Error for NativeRotationStartError {}
+
+impl From<RotationRuntimeStartError> for NativeRotationStartError {
+    fn from(error: RotationRuntimeStartError) -> Self {
+        match error {
+            RotationRuntimeStartError::RuntimeNotRunning => Self::RuntimeNotRunning,
+            RotationRuntimeStartError::AlreadyInProgress => Self::AlreadyInProgress,
+            RotationRuntimeStartError::NoCurrentCellular => Self::NoCurrentCellular,
+            RotationRuntimeStartError::RootPolicyUnavailable => Self::RootPolicyUnavailable,
+            RotationRuntimeStartError::CredentialUnavailable => Self::CredentialUnavailable,
+            RotationRuntimeStartError::ExecutorUnavailable => Self::ExecutorUnavailable,
+            RotationRuntimeStartError::StateUnavailable => Self::StateUnavailable,
+        }
+    }
+}
 
 impl From<RuntimeExecutionError> for NativeProductRuntimeError {
     fn from(error: RuntimeExecutionError) -> Self {
@@ -176,6 +221,18 @@ pub struct ProxyRuntimePublicationView {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct RotationSnapshotView {
+    pub operation_id: Option<u64>,
+    pub phase: String,
+    pub before_generation: Option<u64>,
+    pub after_generation: Option<u64>,
+    pub restore_required: bool,
+    pub terminal_result: Option<String>,
+    pub failure: Option<String>,
+    pub restore_result: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct ProductDiagnosticSnapshotView {
     pub consistent: bool,
     pub runtime_running: bool,
@@ -228,6 +285,13 @@ pub struct ProductDiagnosticSnapshotView {
     pub readiness_refresh_pending: bool,
     pub readiness_probe_state: String,
     pub rotation_state: String,
+    pub rotation_operation_id: Option<u64>,
+    pub rotation_before_generation: Option<u64>,
+    pub rotation_after_generation: Option<u64>,
+    pub rotation_restore_required: bool,
+    pub rotation_terminal_result: Option<String>,
+    pub rotation_failure: Option<String>,
+    pub rotation_restore_result: Option<String>,
 }
 
 #[uniffi::export(foreign)]
@@ -303,6 +367,16 @@ impl NativeProductRuntime {
 
     pub fn stop_runtime(self: &Arc<Self>) -> Result<(), NativeProductRuntimeError> {
         self.runtime.request_stop().map(|_| ()).map_err(Into::into)
+    }
+
+    pub fn start_public_ip_rotation(
+        self: &Arc<Self>,
+    ) -> Result<u64, NativeRotationStartError> {
+        self.runtime.start_public_ip_rotation().map_err(Into::into)
+    }
+
+    pub fn rotation_snapshot(&self) -> RotationSnapshotView {
+        map_rotation_snapshot(self.runtime.rotation_snapshot())
     }
 
     pub fn begin_stopped_platform_mutation(
@@ -614,6 +688,8 @@ fn map_product_diagnostic_snapshot(
         .observed_freshness
         .map(|freshness| freshness.raw());
 
+    let rotation = map_rotation_snapshot(generation.rotation);
+
     ProductDiagnosticSnapshotView {
         consistent: snapshot.consistent,
         runtime_running: snapshot.runtime.state != mish_runtime::RuntimeLifecycleState::Stopped,
@@ -665,9 +741,85 @@ fn map_product_diagnostic_snapshot(
         readiness_probe_in_flight: readiness.probe_in_flight,
         readiness_refresh_pending: readiness.refresh_pending,
         readiness_probe_state,
-        rotation_state: match generation.rotation {
-            RotationDiagnosticState::NotSupported => "NOT_SUPPORTED".to_owned(),
-        },
+        rotation_state: rotation.phase.clone(),
+        rotation_operation_id: rotation.operation_id,
+        rotation_before_generation: rotation.before_generation,
+        rotation_after_generation: rotation.after_generation,
+        rotation_restore_required: rotation.restore_required,
+        rotation_terminal_result: rotation.terminal_result,
+        rotation_failure: rotation.failure,
+        rotation_restore_result: rotation.restore_result,
+    }
+}
+
+fn map_rotation_snapshot(snapshot: RotationSnapshot) -> RotationSnapshotView {
+    RotationSnapshotView {
+        operation_id: snapshot.operation_id,
+        phase: rotation_phase_code(snapshot.phase).to_owned(),
+        before_generation: snapshot.before_generation,
+        after_generation: snapshot.after_generation,
+        restore_required: snapshot.restore_required,
+        terminal_result: snapshot
+            .terminal_result
+            .map(rotation_terminal_code)
+            .map(str::to_owned),
+        failure: snapshot.failure.map(rotation_failure_code).map(str::to_owned),
+        restore_result: snapshot
+            .restore_result
+            .map(rotation_restore_code)
+            .map(str::to_owned),
+    }
+}
+
+fn rotation_phase_code(phase: RotationPhase) -> &'static str {
+    match phase {
+        RotationPhase::Idle => "IDLE",
+        RotationPhase::Preparing => "PREPARING",
+        RotationPhase::AirplaneEnabling => "AIRPLANE_ENABLING",
+        RotationPhase::WaitingRadioDown => "WAITING_RADIO_DOWN",
+        RotationPhase::AirplaneDisabling => "AIRPLANE_DISABLING",
+        RotationPhase::WaitingCellularRecovery => "WAITING_CELLULAR_RECOVERY",
+        RotationPhase::WaitingRootPolicy => "WAITING_ROOT_POLICY",
+        RotationPhase::ProbingPublicIp => "PROBING_PUBLIC_IP",
+        RotationPhase::Changed => "CHANGED",
+        RotationPhase::Unchanged => "UNCHANGED",
+        RotationPhase::Failed => "FAILED",
+    }
+}
+
+fn rotation_terminal_code(result: RotationTerminalResult) -> &'static str {
+    match result {
+        RotationTerminalResult::Changed => "CHANGED",
+        RotationTerminalResult::Unchanged => "UNCHANGED",
+        RotationTerminalResult::Failed => "FAILED",
+    }
+}
+
+fn rotation_failure_code(failure: RotationFailure) -> &'static str {
+    match failure {
+        RotationFailure::RuntimeNotRunning => "RUNTIME_NOT_RUNNING",
+        RotationFailure::NoCurrentCellular => "NO_CURRENT_CELLULAR",
+        RotationFailure::RootPolicyUnavailable => "ROOT_POLICY_UNAVAILABLE",
+        RotationFailure::BeforeIpFailed => "BEFORE_IP_FAILED",
+        RotationFailure::AirplaneEnableFailed => "AIRPLANE_ENABLE_FAILED",
+        RotationFailure::AirplaneObservationFailed => "AIRPLANE_OBSERVATION_FAILED",
+        RotationFailure::AirplaneDisableFailed => "AIRPLANE_DISABLE_FAILED",
+        RotationFailure::FreshCellularUnavailable => "FRESH_CELLULAR_UNAVAILABLE",
+        RotationFailure::RootPolicyRecoveryFailed => "ROOT_POLICY_RECOVERY_FAILED",
+        RotationFailure::AfterIpFailed => "AFTER_IP_FAILED",
+        RotationFailure::CredentialChanged => "CREDENTIAL_CHANGED",
+        RotationFailure::DeadlineExceeded => "DEADLINE_EXCEEDED",
+        RotationFailure::StateUnavailable => "STATE_UNAVAILABLE",
+    }
+}
+
+fn rotation_restore_code(result: RotationRestoreResult) -> &'static str {
+    match result {
+        RotationRestoreResult::NotRequired => "NOT_REQUIRED",
+        RotationRestoreResult::AlreadyOff => "ALREADY_OFF",
+        RotationRestoreResult::RestoredOff => "RESTORED_OFF",
+        RotationRestoreResult::Failed => "FAILED",
+        RotationRestoreResult::Uncertain => "UNCERTAIN",
     }
 }
 
