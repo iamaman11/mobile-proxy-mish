@@ -14,8 +14,8 @@ use mish_cellular::{
 };
 use mish_transport::{MeshTransportError, MeshTransportSnapshot, MeshVpnObservation};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::task::spawn_blocking;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -328,11 +328,7 @@ impl ProductRuntimeCoordinator {
             state.observers.cellular = Some(Arc::clone(&observer));
             Arc::clone(&state.generation)
         };
-        bind_cellular_observer(
-            &generation,
-            observer,
-            Arc::clone(&self.observer_generation),
-        );
+        bind_cellular_observer(&generation, observer, Arc::clone(&self.observer_generation));
     }
 
     pub fn set_readiness_observer(&self, observer: ReadinessObserver) {
@@ -343,11 +339,7 @@ impl ProductRuntimeCoordinator {
             state.observers.readiness = Some(Arc::clone(&observer));
             Arc::clone(&state.generation)
         };
-        bind_readiness_observer(
-            &generation,
-            observer,
-            Arc::clone(&self.observer_generation),
-        );
+        bind_readiness_observer(&generation, observer, Arc::clone(&self.observer_generation));
     }
 
     pub fn set_proxy_observer(&self, observer: ProxyRuntimeObserver) {
@@ -358,11 +350,7 @@ impl ProductRuntimeCoordinator {
             state.observers.proxy = Some(Arc::clone(&observer));
             Arc::clone(&state.generation)
         };
-        bind_proxy_observer(
-            &generation,
-            observer,
-            Arc::clone(&self.observer_generation),
-        );
+        bind_proxy_observer(&generation, observer, Arc::clone(&self.observer_generation));
     }
 
     pub fn request_start(
@@ -407,8 +395,8 @@ impl ProductRuntimeCoordinator {
                     }
                 };
                 state.generation = Arc::clone(&generation);
-            self.observer_generation
-                .store(generation.generation(), Ordering::Release);
+                self.observer_generation
+                    .store(generation.generation(), Ordering::Release);
                 Some((generation, state.observers.clone()))
             } else {
                 None
@@ -446,9 +434,7 @@ impl ProductRuntimeCoordinator {
     /// While the lease is active, explicit runtime start fails closed. This closes the previous
     /// snapshot(STOPPED) -> platform mutation -> generation advance TOCTOU window without moving
     /// Android Keystore/storage mechanics into Rust.
-    pub fn begin_stopped_platform_mutation(
-        &self,
-    ) -> Result<Option<u64>, RuntimeExecutionError> {
+    pub fn begin_stopped_platform_mutation(&self) -> Result<Option<u64>, RuntimeExecutionError> {
         let mut state = self.state_mut()?;
         if state.closed
             || state.active_platform_mutation.is_some()
@@ -499,21 +485,15 @@ impl ProductRuntimeCoordinator {
                 }
             };
             state.generation = Arc::clone(&generation);
-                self.observer_generation
-                    .store(generation.generation(), Ordering::Release);
+            self.observer_generation
+                .store(generation.generation(), Ordering::Release);
             (generation, state.observers.clone())
         };
-        bind_observers(
-            &rebound.0,
-            rebound.1,
-            Arc::clone(&self.observer_generation),
-        );
+        bind_observers(&rebound.0, rebound.1, Arc::clone(&self.observer_generation));
         Ok(true)
     }
 
-    pub fn request_stop(
-        self: &Arc<Self>,
-    ) -> Result<RuntimeStopAction, RuntimeExecutionError> {
+    pub fn request_stop(self: &Arc<Self>) -> Result<RuntimeStopAction, RuntimeExecutionError> {
         let (action, expected_generation) = {
             let mut state = self.state_mut()?;
             if state.closed {
@@ -576,16 +556,14 @@ impl ProductRuntimeCoordinator {
             {
                 return;
             }
-            (
-                Arc::clone(&state.generation),
-                state.platform_facts.clone(),
-            )
+            (Arc::clone(&state.generation), state.platform_facts.clone())
         };
 
         if generation.policy().start().is_err()
             || !replay_platform_facts(&generation, &platform_facts)
         {
-            self.finish_failed_start(expected_generation, generation).await;
+            self.finish_failed_start(expected_generation, generation)
+                .await;
             return;
         }
 
@@ -602,7 +580,8 @@ impl ProductRuntimeCoordinator {
         .is_ok();
 
         if !proxy_started {
-            self.finish_failed_start(expected_generation, generation).await;
+            self.finish_failed_start(expected_generation, generation)
+                .await;
             return;
         }
 
@@ -859,11 +838,13 @@ fn bind_cellular_observer(
     observer_generation: Arc<AtomicU64>,
 ) {
     let expected_generation = generation.generation();
-    generation.policy().set_observer(Arc::new(move |publication| {
-        if observer_generation.load(Ordering::Acquire) == expected_generation {
-            observer(publication);
-        }
-    }));
+    generation
+        .policy()
+        .set_observer(Arc::new(move |publication| {
+            if observer_generation.load(Ordering::Acquire) == expected_generation {
+                observer(publication);
+            }
+        }));
 }
 
 fn bind_readiness_observer(
@@ -872,11 +853,13 @@ fn bind_readiness_observer(
     observer_generation: Arc<AtomicU64>,
 ) {
     let expected_generation = generation.generation();
-    generation.readiness().set_observer(Arc::new(move |readiness| {
-        if observer_generation.load(Ordering::Acquire) == expected_generation {
-            observer(readiness);
-        }
-    }));
+    generation
+        .readiness()
+        .set_observer(Arc::new(move |readiness| {
+            if observer_generation.load(Ordering::Acquire) == expected_generation {
+                observer(readiness);
+            }
+        }));
 }
 
 fn bind_proxy_observer(
@@ -885,11 +868,13 @@ fn bind_proxy_observer(
     observer_generation: Arc<AtomicU64>,
 ) {
     let expected_generation = generation.generation();
-    generation.proxy().set_observer(Arc::new(move |publication| {
-        if observer_generation.load(Ordering::Acquire) == expected_generation {
-            observer(publication);
-        }
-    }));
+    generation
+        .proxy()
+        .set_observer(Arc::new(move |publication| {
+            if observer_generation.load(Ordering::Acquire) == expected_generation {
+                observer(publication);
+            }
+        }));
 }
 
 fn snapshot(state: &ProductRuntimeState) -> ProductRuntimeSnapshot {
@@ -1016,13 +1001,18 @@ mod tests {
 
         {
             let mut state = runtime.state_mut().expect("state");
-            assert_eq!(state.lifecycle.request_start(), RuntimeStartAction::StartNow);
+            assert_eq!(
+                state.lifecycle.request_start(),
+                RuntimeStartAction::StartNow
+            );
             assert_eq!(state.lifecycle.request_stop(), RuntimeStopAction::StopNow);
         }
 
-        assert!(runtime
-            .complete_failed_start_after_cleanup(1, true)
-            .is_none());
+        assert!(
+            runtime
+                .complete_failed_start_after_cleanup(1, true)
+                .is_none()
+        );
         assert_eq!(runtime.snapshot().state, RuntimeLifecycleState::Stopping);
 
         let completion = runtime
@@ -1059,7 +1049,10 @@ mod tests {
             state
                 .platform_facts
                 .record_mesh(9, MeshVpnObservation::Absent);
-            assert_eq!(state.lifecycle.request_start(), RuntimeStartAction::StartNow);
+            assert_eq!(
+                state.lifecycle.request_start(),
+                RuntimeStartAction::StartNow
+            );
             state.lifecycle.complete_start(true, true);
             assert_eq!(state.lifecycle.request_stop(), RuntimeStopAction::StopNow);
         }
@@ -1108,7 +1101,10 @@ mod tests {
 
         {
             let mut state = runtime.state_mut().expect("state");
-            assert_eq!(state.lifecycle.request_start(), RuntimeStartAction::StartNow);
+            assert_eq!(
+                state.lifecycle.request_start(),
+                RuntimeStartAction::StartNow
+            );
             state.lifecycle.complete_start(true, true);
             assert_eq!(state.lifecycle.request_stop(), RuntimeStopAction::StopNow);
         }
@@ -1171,7 +1167,10 @@ mod tests {
         .expect("clean runtime");
         {
             let mut state = clean.state_mut().expect("state");
-            assert_eq!(state.lifecycle.request_start(), RuntimeStartAction::StartNow);
+            assert_eq!(
+                state.lifecycle.request_start(),
+                RuntimeStartAction::StartNow
+            );
         }
         assert!(clean.complete_failed_start_after_cleanup(1, true).is_some());
         let clean_snapshot = clean.snapshot();
@@ -1188,11 +1187,16 @@ mod tests {
         .expect("dirty runtime");
         {
             let mut state = dirty.state_mut().expect("state");
-            assert_eq!(state.lifecycle.request_start(), RuntimeStartAction::StartNow);
+            assert_eq!(
+                state.lifecycle.request_start(),
+                RuntimeStartAction::StartNow
+            );
         }
-        assert!(dirty
-            .complete_failed_start_after_cleanup(1, false)
-            .is_none());
+        assert!(
+            dirty
+                .complete_failed_start_after_cleanup(1, false)
+                .is_none()
+        );
         let dirty_snapshot = dirty.snapshot();
         assert_eq!(dirty_snapshot.state, RuntimeLifecycleState::Stopped);
         assert_eq!(dirty_snapshot.generation, 1);
@@ -1210,12 +1214,17 @@ mod tests {
         .expect("starting runtime");
         {
             let mut state = starting.state_mut().expect("state");
-            assert_eq!(state.lifecycle.request_start(), RuntimeStartAction::StartNow);
+            assert_eq!(
+                state.lifecycle.request_start(),
+                RuntimeStartAction::StartNow
+            );
             state.closed = true;
         }
-        assert!(starting
-            .complete_failed_start_after_cleanup(1, true)
-            .is_none());
+        assert!(
+            starting
+                .complete_failed_start_after_cleanup(1, true)
+                .is_none()
+        );
         assert_eq!(starting.snapshot().generation, 1);
         starting
             .executor
@@ -1230,7 +1239,10 @@ mod tests {
         .expect("stopping runtime");
         {
             let mut state = stopping.state_mut().expect("state");
-            assert_eq!(state.lifecycle.request_start(), RuntimeStartAction::StartNow);
+            assert_eq!(
+                state.lifecycle.request_start(),
+                RuntimeStartAction::StartNow
+            );
             state.lifecycle.complete_start(true, true);
             assert_eq!(state.lifecycle.request_stop(), RuntimeStopAction::StopNow);
             state.closed = true;
@@ -1260,9 +1272,11 @@ mod tests {
             runtime.request_start(None, None, None),
             Err(RuntimeExecutionError::StateUnavailable),
         );
-        assert!(!runtime
-            .complete_stopped_platform_mutation(lease, false)
-            .expect("complete"));
+        assert!(
+            !runtime
+                .complete_stopped_platform_mutation(lease, false)
+                .expect("complete")
+        );
         assert!(runtime.snapshot().generation_requires_replacement);
         runtime.executor.shutdown().expect("executor shutdown");
     }
@@ -1280,15 +1294,19 @@ mod tests {
             .expect("lease call")
             .expect("lease");
 
-        assert!(runtime
-            .complete_stopped_platform_mutation(lease, true)
-            .expect("complete"));
+        assert!(
+            runtime
+                .complete_stopped_platform_mutation(lease, true)
+                .expect("complete")
+        );
         let snapshot = runtime.snapshot();
         assert_eq!(snapshot.generation, 2);
         assert!(!snapshot.generation_requires_replacement);
-        assert!(!runtime
-            .complete_stopped_platform_mutation(lease, true)
-            .expect("stale complete"));
+        assert!(
+            !runtime
+                .complete_stopped_platform_mutation(lease, true)
+                .expect("stale complete")
+        );
         runtime.executor.shutdown().expect("executor shutdown");
     }
 }
