@@ -162,6 +162,14 @@ pub enum ExternalCredentialError {
     VersionExhausted,
     Revoked,
     InvalidDerivationOutput,
+    MalformedState,
+    NonCanonicalState,
+    MixedPersistenceSchemas,
+    IncompleteLegacyState,
+    InvalidLegacyVersion,
+    MissingRootForState,
+    RootWithoutState,
+    InvalidProvisioningEnvelope,
 }
 
 impl fmt::Display for ExternalCredentialError {
@@ -171,6 +179,22 @@ impl fmt::Display for ExternalCredentialError {
             Self::VersionExhausted => "external credential version space is exhausted",
             Self::Revoked => "external credential version is revoked",
             Self::InvalidDerivationOutput => "external credential derivation output is invalid",
+            Self::MalformedState => "external credential state protobuf is malformed",
+            Self::NonCanonicalState => "external credential state protobuf is non-canonical",
+            Self::MixedPersistenceSchemas => {
+                "external credential storage mixes canonical and legacy state"
+            }
+            Self::IncompleteLegacyState => "legacy external credential state is incomplete",
+            Self::InvalidLegacyVersion => "legacy external credential version is invalid",
+            Self::MissingRootForState => {
+                "external credential root is missing for durable owner state"
+            }
+            Self::RootWithoutState => {
+                "external credential root exists without durable owner state"
+            }
+            Self::InvalidProvisioningEnvelope => {
+                "external proxy provisioning envelope is invalid"
+            }
         })
     }
 }
@@ -277,6 +301,10 @@ mod tests {
         let material = state
             .materialize(&[1; DERIVATION_OUTPUT_BYTES], &[2; DERIVATION_OUTPUT_BYTES])
             .expect("exact outputs");
+        let revealed_again = state
+            .materialize(&[1; DERIVATION_OUTPUT_BYTES], &[2; DERIVATION_OUTPUT_BYTES])
+            .expect("same current credential");
+        assert_eq!(material, revealed_again);
         assert!(material.username().starts_with("mish-"));
         assert_eq!(material.username().len(), 5 + 32);
         assert_eq!(material.password().len(), 64);
