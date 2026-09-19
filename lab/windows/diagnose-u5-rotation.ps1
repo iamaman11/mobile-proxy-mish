@@ -147,7 +147,7 @@ exit 4
     $startInfo.UseShellExecute = $false
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
-    foreach ($argument in @('shell', 'sh', '-c', $shell)) {
+    foreach ($argument in @('shell', $shell)) {
         [void]$startInfo.ArgumentList.Add($argument)
     }
 
@@ -185,7 +185,8 @@ function Stop-MishFastAirplaneObserver {
         }
 
         $stdout = [string]$Observer.stdout_task.GetAwaiter().GetResult()
-        [void]$Observer.stderr_task.GetAwaiter().GetResult()
+        $stderr = [string]$Observer.stderr_task.GetAwaiter().GetResult()
+        $exitCode = if ($process.HasExited) { [int]$process.ExitCode } else { $null }
         $onMatches = [regex]::Matches($stdout, '(?m)^ON sample=(?<sample>\d+)\s*$')
         $offMatch = [regex]::Match($stdout, '(?m)^OFF_AFTER_ON sample=(?<sample>\d+)\s*$')
         $stopMatch = [regex]::Match($stdout, '(?m)^STOP_TRIGGER_EXIT=(?<code>-?\d+)\s*$')
@@ -198,6 +199,8 @@ function Stop-MishFastAirplaneObserver {
             observed_off_after_on = $offMatch.Success
             first_off_after_on_sample = if ($offMatch.Success) { [int64]$offMatch.Groups['sample'].Value } else { $null }
             stop_trigger_exit = if ($stopMatch.Success) { [int]$stopMatch.Groups['code'].Value } else { $null }
+            observer_exit_code = $exitCode
+            stderr_empty = [string]::IsNullOrWhiteSpace($stderr)
             period_ms = $script:FastAirplaneObserverPeriodMilliseconds
         }
         $Observer | Add-Member -NotePropertyName result -NotePropertyValue $result -Force
@@ -510,6 +513,14 @@ function Invoke-MishOneRotation {
             }
         }
 
+        if ($airplane -ceq 'ENABLED') {
+            $sawAirplaneOn = $true
+            if ($null -eq $airplaneOnMs) { $airplaneOnMs = $elapsed }
+        }
+        if ($sawAirplaneOn -and $airplane -ceq 'DISABLED' -and $null -eq $airplaneOffMs) {
+            $airplaneOffMs = $elapsed
+        }
+
         if (-not [bool]$snapshot.cellular.admitted) {
             if ($null -eq $cellularLossMs) { $cellularLossMs = $elapsed }
             if ([string]$snapshot.readiness.state -ceq 'READY' -or [bool]$snapshot.mesh.ingress_running) {
@@ -570,18 +581,22 @@ function Invoke-MishOneRotation {
 
     if ([bool]$airplaneObserverResult.observed_on) {
         $sawAirplaneOn = $true
-        $airplaneOnMs = [int64]$airplaneObserverResult.first_on_sample * $script:FastAirplaneObserverPeriodMilliseconds
+        $fastOnEstimate = [int64]$airplaneObserverResult.first_on_sample * $script:FastAirplaneObserverPeriodMilliseconds
+        if ($null -eq $airplaneOnMs -or $fastOnEstimate -lt $airplaneOnMs) { $airplaneOnMs = $fastOnEstimate }
     }
     if ([bool]$airplaneObserverResult.observed_off_after_on) {
-        $airplaneOffMs = [int64]$airplaneObserverResult.first_off_after_on_sample * $script:FastAirplaneObserverPeriodMilliseconds
+        $fastOffEstimate = [int64]$airplaneObserverResult.first_off_after_on_sample * $script:FastAirplaneObserverPeriodMilliseconds
+        if ($null -eq $airplaneOffMs -or $fastOffEstimate -lt $airplaneOffMs) { $airplaneOffMs = $fastOffEstimate }
     }
-    Write-Host ("MISH_U5_FAST_AIRPLANE=ordinal={0};on={1};first={2};last={3};count={4};off_after_on={5}" -f @(
+    Write-Host ("MISH_U5_FAST_AIRPLANE=ordinal={0};on={1};first={2};last={3};count={4};off_after_on={5};exit={6};stderr_empty={7}" -f @(
         $Ordinal,
         [bool]$airplaneObserverResult.observed_on,
         $airplaneObserverResult.first_on_sample,
         $airplaneObserverResult.last_on_sample,
         $airplaneObserverResult.on_sample_count,
-        [bool]$airplaneObserverResult.observed_off_after_on
+        [bool]$airplaneObserverResult.observed_off_after_on,
+        $airplaneObserverResult.observer_exit_code,
+        [bool]$airplaneObserverResult.stderr_empty
     ))
 
     if ($null -eq $terminalSnapshot) {
