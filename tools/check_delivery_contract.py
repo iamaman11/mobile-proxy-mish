@@ -248,6 +248,22 @@ def main() -> None:
     if (ROOT / ".github/workflows/device-candidate-physical.yml").exists():
         raise SystemExit("delivery contract: obsolete separate device-candidate-physical workflow must not exist")
 
+    for obsolete in (
+        ".github/workflows/android-release.yml",
+        ".github/workflows/e3-physical-cellular.yml",
+        "scripts/release/android_release.py",
+        "scripts/release/e3_harness.py",
+        "scripts/release/failed_rc_reservation.py",
+        "scripts/release/test_android_release.py",
+        "scripts/release/test_e3_harness.py",
+        "scripts/release/test_failed_rc_reservation.py",
+        "scripts/release/test_release_workflow_topology.py",
+    ):
+        if (ROOT / obsolete).exists():
+            raise SystemExit(
+                "delivery contract: obsolete RC/release-lineage path must stay deleted: " + obsolete
+            )
+
     pipeline = "docs/architecture/DEVELOPMENT_PIPELINE.md"
     for required in (
         "Android 11 / API 30",
