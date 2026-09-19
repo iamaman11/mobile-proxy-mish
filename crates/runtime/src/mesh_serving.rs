@@ -31,6 +31,33 @@ where
     }
 }
 
+fn wait_for_mesh_startup(
+    startup_rx: &mpsc::Receiver<()>,
+    expected_listeners: usize,
+) -> Result<(), MeshIngressError> {
+    let wait = || {
+        let deadline = Instant::now() + MESH_START_TIMEOUT;
+        for _ in 0..expected_listeners {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() || startup_rx.recv_timeout(remaining).is_err() {
+                return Err(MeshIngressError::ExecutorUnavailable);
+            }
+        }
+        Ok(())
+    };
+
+    // Readiness can publish READY from a task already running on the one PRODUCT Tokio runtime.
+    // A plain recv_timeout there can occupy one worker while another PRODUCT task occupies the
+    // second worker, starving the listener tasks whose startup acknowledgement this thread awaits.
+    // block_in_place hands this bounded wait to Tokio's blocking boundary so listener tasks can run
+    // on a replacement worker without creating a second runtime or PRODUCT scheduler.
+    if Handle::try_current().is_ok() {
+        tokio::task::block_in_place(wait)
+    } else {
+        wait()
+    }
+}
+
 /// Cross-owner runtime composition policy for realizing public Mesh ingress.
 ///
 /// Android supplies current owner projections and executes the platform effect, but it must not
@@ -158,20 +185,20 @@ impl MeshExecutionOwner {
 
         // Every listener must explicitly acknowledge that its Tokio task is live. This replaces
         // startup polling with one bounded, deterministic publication barrier.
-        let deadline = Instant::now() + MESH_START_TIMEOUT;
-        for _ in 0..expected_listeners {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() || startup_rx.recv_timeout(remaining).is_err() {
-                let _ = self.stop(Some(handle));
-                return Err(MeshIngressError::ExecutorUnavailable);
-            }
+        if let Err(start_error) = wait_for_mesh_startup(&startup_rx, expected_listeners) {
+            return match self.stop(Some(handle)) {
+                Ok(()) => Err(start_error),
+                Err(cleanup_error) => Err(cleanup_error),
+            };
         }
 
         if self.is_healthy() {
             Ok(())
         } else {
-            let _ = self.stop(Some(handle));
-            Err(MeshIngressError::ExecutorUnavailable)
+            match self.stop(Some(handle)) {
+                Ok(()) => Err(MeshIngressError::ExecutorUnavailable),
+                Err(cleanup_error) => Err(cleanup_error),
+            }
         }
     }
 
@@ -569,6 +596,50 @@ mod tests {
             sessions.active_sessions() == 0
         });
         execution.stop(Some(runtime.handle())).expect("stop");
+    }
+
+    #[test]
+    fn mesh_start_from_product_tokio_worker_does_not_starve_listener_startup() {
+        let runtime = test_runtime();
+        let execution = Arc::new(MeshExecutionOwner::new());
+        let ingress_port = reserve_port();
+        let backend_port = reserve_port();
+        let (blocker_started_tx, blocker_started_rx) = mpsc::sync_channel(1);
+
+        let blocker = runtime.spawn(async move {
+            blocker_started_tx.send(()).expect("signal blocker");
+            // Intentionally occupy the second worker longer than the Mesh startup deadline.
+            // The start path must use Tokio's blocking boundary so listener tasks get a replacement
+            // worker instead of timing out and leaving a half-published execution generation.
+            thread::sleep(MESH_START_TIMEOUT + Duration::from_secs(1));
+        });
+        blocker_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("blocker started");
+
+        let owned = Arc::clone(&execution);
+        let handle = runtime.handle().clone();
+        let start = runtime.spawn(async move {
+            let sessions = MeshSessionOwner::product_generation();
+            owned.start(
+                &handle,
+                Ipv4Addr::LOCALHOST,
+                &[MeshPortForward::new(ingress_port, backend_port)],
+                sessions,
+            )
+        });
+
+        let start_result = runtime
+            .block_on(start)
+            .expect("Tokio worker must not panic while starting Mesh");
+        assert_eq!(start_result, Ok(()));
+        assert!(execution.is_running());
+        assert!(execution.is_healthy());
+
+        execution
+            .stop(Some(runtime.handle()))
+            .expect("clean Mesh stop after worker startup");
+        runtime.block_on(blocker).expect("blocker join");
     }
 
     #[test]
