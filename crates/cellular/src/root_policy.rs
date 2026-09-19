@@ -673,12 +673,11 @@ impl RootPolicyContract {
             let mark = token_after(&tokens, "fwmark");
             let table = token_after(&tokens, "lookup");
             let expected_mark = mark_spec(identity);
-            if mark == Some(expected_mark.as_str()) {
-                if let Some(table) = table.filter(|table| is_safe_table_token(table)) {
-                    if !result.iter().any(|existing| existing == table) {
-                        result.push(table.to_owned());
-                    }
-                }
+            if mark == Some(expected_mark.as_str())
+                && let Some(table) = table.filter(|table| is_safe_table_token(table))
+                && !result.iter().any(|existing| existing == table)
+            {
+                result.push(table.to_owned());
             }
         }
         result
@@ -706,7 +705,7 @@ impl RootPolicyContract {
         let tokens = line.split_whitespace().collect::<Vec<_>>();
         let expected_mark = mark_spec(identity);
         token_after(&tokens, "fwmark") == Some(expected_mark.as_str())
-            && tokens.iter().any(|token| *token == "unreachable")
+            && tokens.contains(&"unreachable")
     }
 
     fn is_foreign_reserved_ipv4_line(&self, line: &str, identity: PolicyIdentity) -> bool {
@@ -748,7 +747,7 @@ impl RootPolicyContract {
         let tokens = line.split_whitespace().collect::<Vec<_>>();
         let expected_mark = mark_spec(identity);
         token_after(&tokens, "fwmark") == Some(expected_mark.as_str())
-            && tokens.iter().any(|token| *token == "unreachable")
+            && tokens.contains(&"unreachable")
     }
 
     fn ipv4_owned_chain_lines_for(&self, identity: PolicyIdentity) -> Vec<String> {
