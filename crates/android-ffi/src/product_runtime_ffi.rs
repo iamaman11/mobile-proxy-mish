@@ -530,7 +530,10 @@ fn map_product_diagnostic_snapshot(
     let root_publication = generation.root_publication;
     let root_result = root_publication.map(|publication| publication.result);
     let root_publication_current = root_publication.is_some_and(|publication| {
-        publication.admission.last_sequence().map(|sequence| sequence.raw())
+        publication
+            .admission
+            .last_sequence()
+            .map(|sequence| sequence.raw())
             == cellular_owner_sequence
     });
     let current_root_result = root_publication_current.then_some(root_result).flatten();
@@ -557,9 +560,7 @@ fn map_product_diagnostic_snapshot(
         Some(OwnerRootPolicyResult::AuthorityUnavailable(_)) => "UNAVAILABLE",
         _ => "NOT_OBSERVED",
     };
-    let root_last_failure_class = root_result
-        .and_then(root_failure_class)
-        .map(str::to_owned);
+    let root_last_failure_class = root_result.and_then(root_failure_class).map(str::to_owned);
 
     let proxy = map_proxy_publication(generation.proxy);
     let proxy_state = proxy_state_code(proxy.state).to_owned();
@@ -581,7 +582,9 @@ fn map_product_diagnostic_snapshot(
     let mesh_ingress_running = mesh
         .as_ref()
         .is_some_and(|snapshot| snapshot.ingress_running);
-    let mesh_serving_generation = mesh_ingress_running.then_some(mesh_admission_epoch).flatten();
+    let mesh_serving_generation = mesh_ingress_running
+        .then_some(mesh_admission_epoch)
+        .flatten();
     let mesh_active_sessions = mesh.as_ref().map(|snapshot| snapshot.active_sessions);
     let mesh_capacity_rejects = mesh.as_ref().map(|snapshot| snapshot.capacity_rejects);
 
@@ -604,10 +607,12 @@ fn map_product_diagnostic_snapshot(
     let readiness_binding_credential_version = readiness_owner
         .binding
         .map(|binding| binding.credential_version.raw());
-    let readiness_expected_freshness =
-        readiness_owner.expected_freshness.map(|freshness| freshness.raw());
-    let readiness_observed_freshness =
-        readiness_owner.observed_freshness.map(|freshness| freshness.raw());
+    let readiness_expected_freshness = readiness_owner
+        .expected_freshness
+        .map(|freshness| freshness.raw());
+    let readiness_observed_freshness = readiness_owner
+        .observed_freshness
+        .map(|freshness| freshness.raw());
 
     ProductDiagnosticSnapshotView {
         consistent: snapshot.consistent,
@@ -671,7 +676,9 @@ fn root_failure_class(result: OwnerRootPolicyResult) -> Option<&'static str> {
         OwnerRootPolicyResult::Enforced | OwnerRootPolicyResult::FailClosed(None) => None,
         OwnerRootPolicyResult::AuthorityUnavailable(status) => Some(match status {
             OwnerRootAuthorityStatus::Ready => "AUTHORITY_READY",
-            OwnerRootAuthorityStatus::InteractiveGrantRequired => "AUTHORITY_INTERACTIVE_GRANT_REQUIRED",
+            OwnerRootAuthorityStatus::InteractiveGrantRequired => {
+                "AUTHORITY_INTERACTIVE_GRANT_REQUIRED"
+            }
             OwnerRootAuthorityStatus::Denied => "AUTHORITY_DENIED",
             OwnerRootAuthorityStatus::Unavailable => "AUTHORITY_UNAVAILABLE",
             OwnerRootAuthorityStatus::Incomplete => "AUTHORITY_INCOMPLETE",
@@ -686,7 +693,9 @@ fn root_failure_class(result: OwnerRootPolicyResult) -> Option<&'static str> {
             OwnerRootPolicyFailure::MutationRejected => "MUTATION_REJECTED",
             OwnerRootPolicyFailure::MutationUncertain => "MUTATION_UNCERTAIN",
             OwnerRootPolicyFailure::LookupRuleCreationFailed => "LOOKUP_RULE_CREATION_FAILED",
-            OwnerRootPolicyFailure::RouteLookupVerificationFailed => "ROUTE_LOOKUP_VERIFICATION_FAILED",
+            OwnerRootPolicyFailure::RouteLookupVerificationFailed => {
+                "ROUTE_LOOKUP_VERIFICATION_FAILED"
+            }
             OwnerRootPolicyFailure::ExactCleanupFailed => "EXACT_CLEANUP_FAILED",
         }),
     }
