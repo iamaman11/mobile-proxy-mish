@@ -4,9 +4,9 @@
 //! effect gate. Proxy Serving consumes the same owner directly through a narrow connector; there is
 //! no private loopback bridge, duplicate cellular owner, DNS fallback or proxy-specific root path.
 
+use crate::RuntimeExecutor;
 use crate::public_ip_network::execute_public_ip_probe;
 use crate::tls_client::ProductTlsClient;
-use crate::RuntimeExecutor;
 use crate::{
     CellularDnsDiagnosticSnapshot, CellularDnsResolver, CellularOutboundRuntimeConnector,
     PreparedPublicIpProbe, PublicEgressIpObservation, PublicIpProbeEffectFailure,
@@ -142,7 +142,10 @@ impl CellularRuntimeCoordinator {
         timeout: Duration,
     ) -> Result<bool, CellularRuntimeError> {
         validate_operation_timeout(timeout)?;
-        Ok(self.root_policy_effect_gate.wait_quiesced_async(timeout).await)
+        Ok(self
+            .root_policy_effect_gate
+            .wait_quiesced_async(timeout)
+            .await)
     }
 
     pub fn authorize_root_policy(
