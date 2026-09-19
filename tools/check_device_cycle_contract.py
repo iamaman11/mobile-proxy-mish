@@ -289,6 +289,8 @@ def main() -> None:
         "raw_ip_persisted = $false",
         "U5_ROTATION_PHYSICAL_ACCEPTANCE_PASS",
         "PRODUCT_RESTORE_OFF_FAILED",
+        "'shell', 'ps', '-T', '-p'",
+        "Android ps -T returned no PRODUCT thread names.",
     ):
         require(rotation_probe, required, "U5 physical rotation evidence drifted")
     for forbidden in (
