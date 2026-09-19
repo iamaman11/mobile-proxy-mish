@@ -32,7 +32,7 @@ import org.junit.runner.RunWith
  * E3 physical-device acceptance harness for the PRODUCT root-policy Cellular Egress path.
  *
  * Hosted CI only compiles this androidTest APK. Protected-main physical execution uses
- * the exact MishApplication process-generation runtime: the Rust natural owner decides
+ * the exact MishApplication process-level runtime: the Rust natural owner decides
  * admission/currentness and the PRODUCT Magisk adapter realizes that decision. The test
  * never recreates a second controller, never calls the historical per-socket bind seam,
  * and never substitutes ADB root for PRODUCT runtime root authority.
@@ -115,7 +115,7 @@ class CellularE3InstrumentedTest {
                 )
                 requirePublicIpLiteral(observation.address)
             }
-            val u4StaleTicket = runtime.nativeController()
+            val u4StaleTicket = application.runtimeController.currentProductRuntime
                 .preparePublicIpProbe(U4_PUBLIC_IP_TIMEOUT_MILLIS.toULong())
             assertTrue("fresh U4 ticket must begin current", u4StaleTicket.isCurrent())
 
