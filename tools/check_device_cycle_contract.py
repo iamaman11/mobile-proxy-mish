@@ -311,7 +311,7 @@ def main() -> None:
         "assembleDebug",
         "before_ip",
         "after_ip",
-        "'shell', 'run-as', $PackageName, 'sh', '-c', \"cat /proc/$processId/task/*/comm\"",
+        "task/*/comm",
         "'shell', 'ps', '-T', '-p'",
         "'-o', 'NAME'",
     ):
