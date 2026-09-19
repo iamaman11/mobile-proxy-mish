@@ -92,11 +92,11 @@ class PhysicalCompositionDiagnosticTest {
             ProxyRuntimeSnapshot.Running -> "RUNNING"
             is ProxyRuntimeSnapshot.Failed -> "FAILED_${snapshot.reason.name}"
         }
-        val runtimeObservation = application.proxyRuntime.diagnosticObservation()
+        val diagnostic = application.runtimeController.diagnosticSnapshot()
         println(
             "PHYSICAL_PROXY_DIAGNOSTIC runtime_state=$state " +
-                "native_healthy=${runtimeObservation.healthy} " +
-                "credential_bound=${runtimeObservation.credentialVersion != null}",
+                "native_healthy=${diagnostic.proxyHealthy} " +
+                "credential_bound=${diagnostic.credentialVersion != null}",
         )
 
         val sockets = runProductRoot("ss -ltnpe")
