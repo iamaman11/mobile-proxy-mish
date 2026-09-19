@@ -34,6 +34,7 @@ pub struct ProductGenerationDiagnosticSnapshot {
     pub mesh_failure: Option<MeshTransportError>,
     pub readiness: ReadinessDiagnosticSnapshot,
     pub rotation: RotationSnapshot,
+    pub rotation_active_tasks: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,7 +123,9 @@ fn capture_generation(
         Err(error) => (None, Some(error)),
     };
     let readiness_snapshot = readiness.diagnostic_snapshot();
-    let rotation_snapshot = generation.rotation().snapshot();
+    let rotation = generation.rotation();
+    let rotation_snapshot = rotation.snapshot();
+    let rotation_active_tasks = rotation.active_task_count();
 
     Ok(ProductGenerationDiagnosticSnapshot {
         generation: generation.generation(),
@@ -139,6 +142,7 @@ fn capture_generation(
         mesh_failure: mesh_snapshot.1,
         readiness: readiness_snapshot,
         rotation: rotation_snapshot,
+        rotation_active_tasks,
     })
 }
 
