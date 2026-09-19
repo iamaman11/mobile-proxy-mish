@@ -59,4 +59,8 @@ pub use product_generation::*;
 
 mod product_runtime;
 pub use product_runtime::*;
+
+mod product_diagnostics;
+pub use product_diagnostics::*;
+
 pub use proxy_runtime::*;
