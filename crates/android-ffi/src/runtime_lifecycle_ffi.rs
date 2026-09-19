@@ -2,8 +2,7 @@ use mish_runtime::{
     ProxyServingFailure as OwnerProxyServingFailure,
     ProxyServingSnapshot as OwnerProxyServingSnapshot, ProxyServingState as OwnerProxyServingState,
     RuntimeLifecycleState as OwnerRuntimeLifecycleState,
-    RuntimeStartAction as OwnerRuntimeStartAction,
-    RuntimeStopAction as OwnerRuntimeStopAction,
+    RuntimeStartAction as OwnerRuntimeStartAction, RuntimeStopAction as OwnerRuntimeStopAction,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
