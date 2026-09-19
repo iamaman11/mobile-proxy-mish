@@ -9,7 +9,7 @@ use mish_cellular::{
     CellularAdmissionReason as OwnerAdmissionReason,
     CellularAdmissionSnapshot as OwnerAdmissionSnapshot,
     CellularAdmissionState as OwnerAdmissionState, CellularNetworkAuthority, NetworkHandle,
-    NetworkObservation, ObservationSequence,
+    ObservationSequence,
 };
 use mish_proxy::ProxyOutboundConnectError;
 use mish_runtime::{
