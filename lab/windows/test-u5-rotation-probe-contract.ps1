@@ -50,7 +50,7 @@ foreach ($required in @(
     'owner_sessions_quiescent_after_normal_rotations',
     'U5_ROTATION_PHYSICAL_ACCEPTANCE_PASS',
     'PRODUCT_RESTORE_OFF_FAILED',
-    "'shell', 'ps', '-T', '-p', ([string]$processId), '-o', 'CMD'",
+    '''shell'', ''ps'', ''-T'', ''-p'', ([string]$processId), ''-o'', ''CMD''',
     'Android Toybox ps exposes the per-thread comm name through CMD.',
     'Android ps -T returned no PRODUCT thread names.',
     "final_airplane = Get-MishAirplaneState"
