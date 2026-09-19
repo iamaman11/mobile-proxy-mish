@@ -52,6 +52,10 @@ def main() -> None:
         "ExternalCredentialPersistenceActionView",
         "ExternalCredentialPersistenceResolutionView",
         "externalCredentialResolvePersistence",
+        "externalCredentialRotate",
+        "externalCredentialRevoke",
+        "externalCredentialDerivation",
+        "externalCredentialMaterialize",
         "externalCredentialEncodeProvisioningEnvelope",
     )
     forbidden = (
