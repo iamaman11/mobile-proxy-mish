@@ -1435,6 +1435,74 @@ def main() -> None:
             "Android must receive only typed first-class rotation command/projection",
         )
 
+    controller = "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt"
+    debug_rotation = "android/app/src/debug/java/com/mobileproxymish/app/DebugRotationActivity.kt"
+    debug_stop = "android/app/src/debug/java/com/mobileproxymish/app/DebugRuntimeStopActivity.kt"
+    debug_manifest = "android/app/src/debug/AndroidManifest.xml"
+    require(
+        controller,
+        "internal fun startPublicIpRotation(): ULong =",
+        "Android may expose only a thin command facade into the Rust-owned rotation operation",
+    )
+    require(
+        controller,
+        "productRuntime.startPublicIpRotation()",
+        "rotation command facade must delegate directly to native PRODUCT ownership",
+    )
+    for required in (
+        "class DebugRotationActivity : Activity()",
+        "runCatching(runtime::startPublicIpRotation)",
+        'const val TAG = "MishRotationAcceptance"',
+    ):
+        require(
+            debug_rotation,
+            required,
+            "H acceptance trigger must remain a zero-input debug-only PRODUCT command",
+        )
+    for required in (
+        "class DebugRuntimeStopActivity : Activity()",
+        "val stopped = runtime.stop()",
+        'const val TAG = "MishRuntimeStopAcceptance"',
+    ):
+        require(
+            debug_stop,
+            required,
+            "H restore acceptance must use only the normal PRODUCT stop path",
+        )
+    for debug_path in (debug_rotation, debug_stop):
+        for forbidden in (
+            "cmd connectivity airplane-mode",
+            "Thread.sleep",
+            "SystemClock.sleep",
+            "kotlinx.coroutines.delay",
+            "AIRPLANE_ENABLING",
+            "WAITING_RADIO_DOWN",
+            "AIRPLANE_DISABLING",
+            "WAITING_CELLULAR_RECOVERY",
+            "WAITING_ROOT_POLICY",
+            "PROBING_PUBLIC_IP",
+        ):
+            forbid(
+                debug_path,
+                forbidden,
+                "debug H trigger must never become a second rotation/platform-effect owner",
+            )
+    for required in (
+        'android:name=".DebugRotationActivity"',
+        'android:name=".DebugRuntimeStopActivity"',
+    ):
+        require(
+            debug_manifest,
+            required,
+            "H acceptance triggers must be packaged only by the debug source set",
+        )
+    for forbidden in ("DebugRotationActivity", "DebugRuntimeStopActivity"):
+        forbid(
+            "android/app/src/main/AndroidManifest.xml",
+            forbidden,
+            "H acceptance trigger must not leak into release PRODUCT manifest",
+        )
+
     for kotlin_path in (
         "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt",
         "android/app/src/main/java/com/mobileproxymish/app/MainViewModel.kt",
