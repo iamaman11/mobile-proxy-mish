@@ -130,18 +130,23 @@ function Get-MishProcessMetrics {
         Stop-MishRotationAcceptance 'LAB_PROCESS_METRICS_UNAVAILABLE' 'PRODUCT FD count is unavailable.'
     }
 
-    # Read Linux per-thread comm directly as the app UID. Wildcard expansion must happen
-    # inside run-as sh; passing /proc/<pid>/task/*/comm directly to cat does not expand it.
+    # Toybox CMD is the per-thread command name. Enumerate all visible threads and filter
+    # PRODUCT PID locally: DEVICE-1 does not reliably expose all worker rows through ps -T -p.
     $threadText = Invoke-MishAdbText -Arguments @(
-        'shell', 'run-as', $PackageName, 'sh', '-c', "cat /proc/$processId/task/*/comm"
+        'shell', 'ps', '-A', '-T', '-w', '-o', 'PID,TID,CMD'
     )
     $threadNames = @(
         $threadText -split '\r?\n' |
-            ForEach-Object { $_.Trim() } |
+            ForEach-Object {
+                $row = [regex]::Match($_, '^\s*(?<pid>\d+)\s+(?<tid>\d+)\s+(?<name>.+?)\s*$')
+                if ($row.Success -and [int]$row.Groups['pid'].Value -eq $processId) {
+                    $row.Groups['name'].Value.Trim()
+                }
+            } |
             Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
     )
     if ($threadNames.Count -eq 0) {
-        Stop-MishRotationAcceptance 'LAB_PROCESS_METRICS_UNAVAILABLE' 'PRODUCT /proc task comm observation returned no thread names.'
+        Stop-MishRotationAcceptance 'LAB_PROCESS_METRICS_UNAVAILABLE' 'Android ps -A -T returned no PRODUCT thread rows.'
     }
     $runtimeIo = @($threadNames | Where-Object { $_ -ceq 'mish-runtime-io' }).Count
     $forbiddenKotlinOwners = @(
