@@ -172,19 +172,28 @@ mod tests {
         let executor = RuntimeExecutor::new().expect("executor");
         let executions = Arc::new(AtomicUsize::new(0));
         let result = Arc::new(OnceCell::new());
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
 
         let first_result = Arc::clone(&result);
         let first_executions = Arc::clone(&executions);
+        let first_started = Arc::clone(&started);
+        let first_release = Arc::clone(&release);
         let first = executor
             .spawn(async move {
                 run_shutdown_once(&first_result, || async move {
                     first_executions.fetch_add(1, Ordering::SeqCst);
-                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    first_started.notify_one();
+                    first_release.notified().await;
                     true
                 })
                 .await
             })
             .expect("first shutdown caller");
+
+        executor
+            .block_on(started.notified())
+            .expect("first cleanup entered");
 
         let second_result = Arc::clone(&result);
         let second_executions = Arc::clone(&executions);
@@ -198,6 +207,7 @@ mod tests {
             })
             .expect("second shutdown caller");
 
+        release.notify_one();
         let (first_value, second_value) = executor
             .block_on(async {
                 (
