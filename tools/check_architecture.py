@@ -336,6 +336,11 @@ def main() -> None:
     tls_client = "crates/runtime/src/tls_client.rs"
     product_ffi = "crates/android-ffi/src/product_runtime_ffi.rs"
     cellular_bridge = "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRuntimeBridge.kt"
+    require(
+        cellular_bridge,
+        "CellularNetworkObservationInput(",
+        "Android Cellular adapter must send one typed raw platform observation to the stable native handle",
+    )
     for required in (
         "execute_public_ip_probe(",
         "TcpStream::connect(",
@@ -838,6 +843,8 @@ def main() -> None:
         "pub fn complete_stopped_platform_mutation(",
         "pub fn invalidate_cellular_platform_facts(",
         "pub fn invalidate_mesh_platform_fact(",
+        "pub struct CellularNetworkObservationInput",
+        "input: CellularNetworkObservationInput",
         "pub fn observe_proxy_runtime(",
         "pub fn proxy_runtime_snapshot(",
     ):
