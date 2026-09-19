@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Base64
+import com.mobileproxymish.ffi.externalCredentialEncodeProvisioningEnvelope
 import java.security.KeyFactory
 import java.security.interfaces.RSAPublicKey
 import java.security.spec.MGF1ParameterSpec
