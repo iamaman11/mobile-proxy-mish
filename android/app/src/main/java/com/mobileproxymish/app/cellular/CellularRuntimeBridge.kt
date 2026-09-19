@@ -94,6 +94,15 @@ class CellularRuntimeBridge(
         return productRuntime.observePublicEgressIp(timeoutMs.toULong())
     }
 
+    /** Android framework effect only; Rust owns if/when a rotation requests this once. */
+    internal fun rearmNetworkRequest(): Boolean {
+        if (closed.get() || !started.get()) return false
+        return runCatching {
+            observer.rearm()
+            true
+        }.getOrDefault(false)
+    }
+
     fun start() {
         if (closed.get() || !started.compareAndSet(false, true)) return
 
