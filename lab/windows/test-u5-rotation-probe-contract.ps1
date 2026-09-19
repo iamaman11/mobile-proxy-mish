@@ -57,6 +57,12 @@ foreach ($required in @(
     'Android ps -A -T returned no PRODUCT thread rows.',
     'MISH_U5_TOPOLOGY_RUNTIME_IO_THREADS=',
     'MISH_U5_TOPOLOGY_FORBIDDEN_KOTLIN_OWNER_THREADS=',
+    'LAB_ADB_TIMEOUT',
+    'WaitForExit($script:AdbTransportTimeoutMilliseconds)',
+    '$process.Kill($true)',
+    'MISH_U5_ROTATION_OPERATION_START=',
+    'MISH_U5_ROTATION_TIMELINE=',
+    'MISH_U5_RESTORE_PHASE=',
     "final_airplane = Get-MishAirplaneState"
 )) {
     if (-not $source.Contains($required)) {
@@ -90,7 +96,8 @@ foreach ($forbidden in @(
     '$runtimeIoStable -and',
     'task/*/comm',
     "'shell', 'ps', '-T', '-p'",
-    "'-o', 'NAME'"
+    "'-o', 'NAME'",
+    '$output = @(& $AdbPath @Arguments'
 )) {
     if ($source.Contains($forbidden)) {
         throw "U5 rotation acceptance probe contains forbidden duplicate PRODUCT/control/secret path: $forbidden"
