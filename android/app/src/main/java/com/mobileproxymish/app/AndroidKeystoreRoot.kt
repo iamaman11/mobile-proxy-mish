@@ -8,7 +8,9 @@ import javax.crypto.Mac
 import javax.crypto.SecretKey
 
 /** Physical Android Keystore effect for the external-proxy credential root. */
-internal class AndroidKeystoreRoot(\n    private val keyAlias: String = keyAlias,\n) {
+internal class AndroidKeystoreRoot(
+    private val keyAlias: String = ROOT_KEY_ALIAS,
+) {
     fun exists(): Boolean = keyStore().containsAlias(keyAlias)
 
     fun load(): SecretKey {
