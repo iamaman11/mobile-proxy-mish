@@ -139,9 +139,7 @@ exit 4
     $shell = if ([string]::IsNullOrWhiteSpace($StopComponent)) {
         $normalTemplate.Replace('__MAX__', [string]$maxSamples)
     } else {
-        $restoreTemplate
-            .Replace('__MAX__', [string]$maxSamples)
-            .Replace('__STOP__', $StopComponent)
+        $restoreTemplate.Replace('__MAX__', [string]$maxSamples).Replace('__STOP__', $StopComponent)
     }
 
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
