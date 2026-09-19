@@ -48,10 +48,7 @@ impl AirplaneModeEffect {
         parse_airplane_state(&result.stdout).ok_or(AirplaneEffectError::InvalidObservation)
     }
 
-    pub(crate) async fn set(
-        &self,
-        state: AirplaneModeState,
-    ) -> Result<(), AirplaneEffectError> {
+    pub(crate) async fn set(&self, state: AirplaneModeState) -> Result<(), AirplaneEffectError> {
         let command = match state {
             AirplaneModeState::Enabled => {
                 RootCommand::mutation("cmd connectivity airplane-mode enable")
@@ -82,9 +79,7 @@ fn map_session_error(_: RootSessionError) -> AirplaneEffectError {
 
 fn parse_airplane_state(raw: &str) -> Option<AirplaneModeState> {
     match raw.trim().to_ascii_lowercase().as_str() {
-        "enabled" | "true" | "1" | "airplane mode is enabled" => {
-            Some(AirplaneModeState::Enabled)
-        }
+        "enabled" | "true" | "1" | "airplane mode is enabled" => Some(AirplaneModeState::Enabled),
         "disabled" | "false" | "0" | "airplane mode is disabled" => {
             Some(AirplaneModeState::Disabled)
         }
