@@ -84,6 +84,10 @@ class MishRuntimeController internal constructor(
     internal fun currentExternalCredentialProvisioningSnapshot(): ExternalProxyCredentialSnapshot? =
         externalCredentialStore.currentProvisioningSnapshot()
 
+    /** Explicit sensitive user read. It never rotates, provisions or restarts the runtime. */
+    internal fun revealCurrentExternalCredential(): ExternalProxyCredentialSnapshot? =
+        externalCredentialStore.revealCurrentCredential()
+
     internal fun recoveryDiagnosticObservation(): RuntimeRecoveryDiagnosticObservation {
         val lifecycle = productRuntime.runtimeLifecycleSnapshot()
         val proxy = productRuntime.proxyRuntimeSnapshot()
@@ -99,7 +103,7 @@ class MishRuntimeController internal constructor(
         get() = productRuntime.runtimeLifecycleSnapshot().state != RuntimeLifecycleState.STOPPED
 
     fun start(): Boolean = synchronized(platformEffectsLock) {
-        val credential = runCatching { externalCredentialStore.currentCredential() }.getOrNull()
+        val credential = runCatching { externalCredentialStore.currentCredentialForRuntime() }.getOrNull()
         val accepted = runCatching {
             productRuntime.startRuntime(
                 credentialVersion = credential?.version,
