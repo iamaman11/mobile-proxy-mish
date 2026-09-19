@@ -13,7 +13,7 @@ use mish_application::{
     DEFAULT_EGRESS_PROBE_BUDGET, DEFAULT_EGRESS_PROBE_REFRESH_DELAY, EgressProbeCoordinator,
     ProbeTicket,
 };
-use mish_cellular::CellularAdmissionState;
+use mish_cellular::{CellularAdmissionSnapshot, CellularAdmissionState};
 use mish_readiness::{
     CellularOwnerGeneration, CellularReadinessFact, CredentialReadinessFact, CredentialVersion,
     EgressProbeObservation, FreshnessMarker, MeshAdmissionEpoch, MeshReadinessFact, ProbeBinding,
@@ -183,26 +183,22 @@ impl ReadinessRuntimeCoordinator {
         )
     }
 
+    pub fn observe_cellular_admission(
+        self: &Arc<Self>,
+        admission: CellularAdmissionSnapshot,
+    ) -> Result<(), ReadinessRuntimeError> {
+        let fact = cellular_fact(admission, false)?;
+        self.update_structural(|state| state.facts.cellular = fact)
+    }
+
     pub fn observe_cellular(
         self: &Arc<Self>,
         publication: CellularPolicyPublication,
     ) -> Result<(), ReadinessRuntimeError> {
-        let fact = publication
-            .admission
-            .last_sequence()
-            .map(|sequence| {
-                CellularOwnerGeneration::new(sequence.raw())
-                    .map(|owner_generation| CellularReadinessFact {
-                        owner_generation,
-                        admitted: publication.admission.state() == CellularAdmissionState::Admitted,
-                        root_policy_verified: matches!(
-                            publication.result,
-                            RootPolicyResult::Enforced
-                        ),
-                    })
-                    .ok_or(ReadinessRuntimeError::InvalidOwnerKey)
-            })
-            .transpose()?;
+        let fact = cellular_fact(
+            publication.admission,
+            matches!(publication.result, RootPolicyResult::Enforced),
+        )?;
         self.update_structural(|state| state.facts.cellular = fact)
     }
 
@@ -516,6 +512,25 @@ impl ReadinessRuntimeCoordinator {
     }
 }
 
+fn cellular_fact(
+    admission: CellularAdmissionSnapshot,
+    root_policy_verified: bool,
+) -> Result<Option<CellularReadinessFact>, ReadinessRuntimeError> {
+    admission
+        .last_sequence()
+        .map(|sequence| {
+            CellularOwnerGeneration::new(sequence.raw())
+                .map(|owner_generation| CellularReadinessFact {
+                    owner_generation,
+                    admitted: admission.state() == CellularAdmissionState::Admitted,
+                    root_policy_verified: root_policy_verified
+                        && admission.state() == CellularAdmissionState::Admitted,
+                })
+                .ok_or(ReadinessRuntimeError::InvalidOwnerKey)
+        })
+        .transpose()
+}
+
 fn input_for(
     facts: StructuralFacts,
     probe: &EgressProbeCoordinator,
@@ -576,6 +591,40 @@ mod tests {
             ReadinessRuntimeCoordinator::new(executor.clone(), mesh.clone(), 1).expect("readiness");
         assert_eq!(readiness.snapshot(), Readiness::Unknown);
         assert!(!mesh.snapshot().expect("mesh snapshot").ingress_running());
+        readiness.shutdown();
+        executor.shutdown().expect("shutdown");
+    }
+
+    #[test]
+    fn raw_cellular_owner_change_immediately_invalidates_stale_ready_projection() {
+        let executor = RuntimeExecutor::new().expect("executor");
+        let mesh = MeshCompositionCoordinator::new().expect("mesh");
+        let readiness =
+            ReadinessRuntimeCoordinator::new(executor.clone(), mesh, 1).expect("readiness");
+
+        {
+            let mut state = readiness.state_mut().expect("state");
+            state.projected = Readiness::Ready;
+        }
+
+        let mut owner = mish_cellular::CellularEgress::new();
+        owner.observe(mish_cellular::NetworkObservation::new(
+            mish_cellular::ObservationSequence::new(1).expect("sequence"),
+            mish_cellular::NetworkHandle::new(42).expect("network"),
+            true,
+            true,
+            true,
+            true,
+        ));
+
+        readiness
+            .observe_cellular_admission(owner.admission())
+            .expect("raw admission");
+        assert_ne!(readiness.snapshot(), Readiness::Ready);
+        let diagnostic = readiness.diagnostic_snapshot();
+        assert!(diagnostic.cellular_admitted);
+        assert!(!diagnostic.root_policy_verified);
+
         readiness.shutdown();
         executor.shutdown().expect("shutdown");
     }
