@@ -4,9 +4,7 @@
 //! Mutations are never replayed here: an uncertain mutation must be reconciled by fresh
 //! observation in the policy transaction.
 
-use crate::root_session::{
-    RootCommand, RootCommandResult, RootSessionError, RootSessionManager,
-};
+use crate::root_session::{RootCommand, RootCommandResult, RootSessionError, RootSessionManager};
 use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
@@ -59,8 +57,7 @@ impl RootPolicyCommandWindow {
 
     fn record_mutation(&mut self, result: &RootCommandResult) {
         self.diagnostic.commands = self.diagnostic.commands.saturating_add(1);
-        self.diagnostic.mutation_commands =
-            self.diagnostic.mutation_commands.saturating_add(1);
+        self.diagnostic.mutation_commands = self.diagnostic.mutation_commands.saturating_add(1);
         if result.timed_out || !result.output_complete {
             self.diagnostic.incomplete_or_timed_out_commands = self
                 .diagnostic
@@ -68,55 +65,36 @@ impl RootPolicyCommandWindow {
                 .saturating_add(1);
         }
         if result.timed_out || !result.output_complete || result.exit_code != 0 {
-            self.diagnostic.mutation_failures =
-                self.diagnostic.mutation_failures.saturating_add(1);
+            self.diagnostic.mutation_failures = self.diagnostic.mutation_failures.saturating_add(1);
         }
     }
 }
 
 pub(crate) trait RootPolicyIo: Send + Sync {
-    fn session_generation<'a>(
-        &'a self,
-    ) -> Pin<Box<dyn Future<Output = Option<u64>> + Send + 'a>>;
+    fn session_generation<'a>(&'a self) -> Pin<Box<dyn Future<Output = Option<u64>> + Send + 'a>>;
 
     fn raw_observation<'a>(
         &'a self,
         command: &'a str,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<RootCommandResult, RootSessionError>> + Send + 'a,
-        >,
-    >;
+    ) -> Pin<Box<dyn Future<Output = Result<RootCommandResult, RootSessionError>> + Send + 'a>>;
 
     fn observe<'a>(
         &'a self,
         command: &'a str,
         window: &'a mut RootPolicyCommandWindow,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<RootCommandResult, RootPolicyEffectFailure>> + Send + 'a,
-        >,
-    >;
+    ) -> Pin<Box<dyn Future<Output = Result<RootCommandResult, RootPolicyEffectFailure>> + Send + 'a>>;
 
     fn lines<'a>(
         &'a self,
         command: &'a str,
         window: &'a mut RootPolicyCommandWindow,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<Vec<String>, RootPolicyEffectFailure>> + Send + 'a,
-        >,
-    >;
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, RootPolicyEffectFailure>> + Send + 'a>>;
 
     fn mutate<'a>(
         &'a self,
         command: &'a str,
         window: &'a mut RootPolicyCommandWindow,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<(), RootPolicyEffectFailure>> + Send + 'a,
-        >,
-    >;
+    ) -> Pin<Box<dyn Future<Output = Result<(), RootPolicyEffectFailure>> + Send + 'a>>;
 }
 pub(crate) struct RootPolicyEffectExecutor {
     session: Arc<RootSessionManager>,
@@ -217,20 +195,15 @@ impl RootPolicyEffectExecutor {
 }
 
 impl RootPolicyIo for RootPolicyEffectExecutor {
-    fn session_generation<'a>(
-        &'a self,
-    ) -> Pin<Box<dyn Future<Output = Option<u64>> + Send + 'a>> {
+    fn session_generation<'a>(&'a self) -> Pin<Box<dyn Future<Output = Option<u64>> + Send + 'a>> {
         Box::pin(async move { RootPolicyEffectExecutor::session_generation(self).await })
     }
 
     fn raw_observation<'a>(
         &'a self,
         command: &'a str,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<RootCommandResult, RootSessionError>> + Send + 'a,
-        >,
-    > {
+    ) -> Pin<Box<dyn Future<Output = Result<RootCommandResult, RootSessionError>> + Send + 'a>>
+    {
         Box::pin(async move { RootPolicyEffectExecutor::raw_observation(self, command).await })
     }
 
@@ -238,11 +211,8 @@ impl RootPolicyIo for RootPolicyEffectExecutor {
         &'a self,
         command: &'a str,
         window: &'a mut RootPolicyCommandWindow,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<RootCommandResult, RootPolicyEffectFailure>> + Send + 'a,
-        >,
-    > {
+    ) -> Pin<Box<dyn Future<Output = Result<RootCommandResult, RootPolicyEffectFailure>> + Send + 'a>>
+    {
         Box::pin(async move { RootPolicyEffectExecutor::observe(self, command, window).await })
     }
 
@@ -250,11 +220,8 @@ impl RootPolicyIo for RootPolicyEffectExecutor {
         &'a self,
         command: &'a str,
         window: &'a mut RootPolicyCommandWindow,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<Vec<String>, RootPolicyEffectFailure>> + Send + 'a,
-        >,
-    > {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, RootPolicyEffectFailure>> + Send + 'a>>
+    {
         Box::pin(async move { RootPolicyEffectExecutor::lines(self, command, window).await })
     }
 
@@ -262,11 +229,7 @@ impl RootPolicyIo for RootPolicyEffectExecutor {
         &'a self,
         command: &'a str,
         window: &'a mut RootPolicyCommandWindow,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<(), RootPolicyEffectFailure>> + Send + 'a,
-        >,
-    > {
+    ) -> Pin<Box<dyn Future<Output = Result<(), RootPolicyEffectFailure>> + Send + 'a>> {
         Box::pin(async move { RootPolicyEffectExecutor::mutate(self, command, window).await })
     }
 }
