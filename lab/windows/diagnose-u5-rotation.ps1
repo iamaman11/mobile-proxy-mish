@@ -273,7 +273,7 @@ function Test-MishSecureStringEqual {
 
 function Add-MishTimelineSample {
     param(
-        [Parameter(Mandatory)][System.Collections.Generic.List[object]] $Timeline,
+        [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[object]] $Timeline,
         [Parameter(Mandatory)][int64] $ElapsedMs,
         [Parameter(Mandatory)][string] $Airplane,
         [Parameter(Mandatory)] $Snapshot,
