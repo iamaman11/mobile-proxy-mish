@@ -579,7 +579,7 @@ def main() -> None:
         "PublicIpProbeTicket",
         "H removes the obsolete Android-effect public-IP ticket FFI vocabulary",
     )
-    require_product(
+    require(
         public_ip,
         "fn stale_completion_is_rejected_even_with_valid_ip_bytes()",
         "native U4 tests must retain deterministic stale-generation rejection after removing the Android ticket seam",
