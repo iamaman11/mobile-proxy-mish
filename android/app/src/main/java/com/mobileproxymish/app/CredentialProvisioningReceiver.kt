@@ -116,9 +116,8 @@ internal object CredentialProvisioningEnvelope {
             "provisioning RSA key is below the minimum size"
         }
 
-        val plaintext = CredentialContractV1.encodeProvisioningEnvelope(
+        val plaintext = externalCredentialEncodeProvisioningEnvelope(
             credentialVersion = snapshot.version,
-            credentialId = snapshot.credentialId,
             challenge = challenge,
             username = snapshot.credentials.username,
             password = snapshot.credentials.password,
