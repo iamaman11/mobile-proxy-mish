@@ -2,7 +2,7 @@
 
 This document is the stable development-delivery contract. Protected `main` is the latest accepted PRODUCT + CONTROL source. Live stage/checkpoint state belongs to Issue #135. Ordered PRODUCT direction belongs to `PRODUCT_ROADMAP.md`. Executable workflows are the mechanical authority if prose and YAML disagree.
 
-It does not replace `RELEASE.md` for formal RC/release promotion.
+`RELEASE.md` now records the same exact-artifact identity rule. There is no separate RC/release acceptance pipeline.
 
 ## Supported PRODUCT floor
 
@@ -126,6 +126,7 @@ Current accepted command forms are defined by the workflow. At this policy revis
 /mish-cycle full <PRODUCT_SHA> capacity_resources
 /mish-cycle full <PRODUCT_SHA> recovery_lifecycle
 /mish-cycle full <PRODUCT_SHA> dns_lifetime_live
+/mish-cycle full <PRODUCT_SHA> u5_rotation
 /mish-cycle install_only <PRODUCT_SHA>
 /mish-cycle diagnose_only <PRODUCT_SHA>
 /mish-cycle probe_only <PRODUCT_SHA> loopback_connect
@@ -133,11 +134,13 @@ Current accepted command forms are defined by the workflow. At this policy revis
 
 `probe_only` supports only the current-function `loopback_connect` probe unless the executable workflow is deliberately changed and this document is updated with it.
 
-`full` accepts one optional, explicit probe: `capacity_resources`, `recovery_lifecycle`, or `dns_lifetime_live`. None is selected automatically. `install_only` and `diagnose_only` accept no probe argument.
+`full` accepts one optional, explicit probe: `capacity_resources`, `recovery_lifecycle`, `dns_lifetime_live`, or `u5_rotation`. None is selected automatically. `install_only` and `diagnose_only` accept no probe argument.
 
 `capacity_resources` and `recovery_lifecycle` are acceptance probes when their required baseline and exact-candidate evidence are complete. `dns_lifetime_live` is deliberately **measurement-only**: it collects one bounded same-process native DNS lifetime observation across a Cellular loss/recovery generation change. A green DNS measurement does not independently accept the exact PRODUCT candidate; its `exact_candidate_acceptance` remains `NOT_EVALUATED`.
 
 The DNS lifetime observation reuses the accepted external-proxy credential provisioning and ADB-forward seams, sends bounded authenticated proxy-domain requests through the existing PRODUCT HTTP CONNECT listener, requests exactly one bounded `cmd phone data disable` / `enable` transition, and proves actual loss/recovery from canonical owner snapshots. It requires PRODUCT PID continuity and a fresh native DNS owner sequence after recovery. It records occupancy/currentness/stale/deadline facts and then stops for analysis. It does not invoke androidTest, mutate PRODUCT routes/iptables, mutate Cloudflare, add a DNS executor/pool/cancellation owner, or turn measurement into a repair decision. Best-effort mobile-data restore and ADB-forward cleanup are mandatory LAB hygiene.
+
+`u5_rotation` is the final U5 acceptance probe for the PRODUCT-owned rotation. ADB only launches debug-only zero-input PRODUCT trigger Activities and performs read-only observation. The PRODUCT itself calls the Rust-owned `startPublicIpRotation()` operation; LAB never issues airplane enable/disable, root, route or iptables mutation. The probe executes three bounded normal rotations plus one normal runtime-stop-after-observed-ON restore case, records owner generations and the required rotation timings, proves fail-closed behavior during accepted Cellular loss, compares credential version/material in memory without persisting secrets, verifies `raw_ip_persisted=false`, and records owner-backed rotation task quiescence plus process/thread/FD/session evidence before and after. Normal rotations must not replace the runtime generation or persistent root-session generation; the separate restore-case may restart the runtime only after those invariants are proven. CHANGED and UNCHANGED are both valid normal terminal outcomes. Any PRODUCT-classified rotation failure rejects the exact candidate; a LAB collection failure leaves PRODUCT acceptance unevaluated.
 
 ## PRODUCT_SHA and CONTROL_SHA
 
@@ -293,7 +296,7 @@ Historical Android sing-box/runtime identity is not a current PRODUCT diagnostic
 
 ## Recovery sequencing
 
-Automatic airplane recovery is not part of the baseline cycle. Baseline functionality is established first. Cellular-loss/airplane/recovery acceptance is run only as a separately authorized stage when the roadmap requires that physical fact.
+Automatic airplane recovery is not part of the baseline cycle. Baseline functionality is established first. Cellular-loss/airplane/recovery acceptance is run only as the separately authorized `u5_rotation` full probe when the roadmap requires that physical fact.
 
 ## Acceptance fields
 
@@ -313,7 +316,7 @@ A green `probe_only` or `diagnose_only` must never be interpreted as exact candi
 
 ## Formal release boundary
 
-Development debug candidates are stage/development evidence only. They are not PRODUCT release identity and cannot be promoted.
+Development device candidates are the canonical Android physical-acceptance bytes for their exact source head. They are never promoted through an RC lineage; any future distribution packaging is a separate later concern and cannot replace Device Cycle evidence.
 
 Formal promotion remains:
 
