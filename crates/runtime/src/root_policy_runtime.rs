@@ -9,10 +9,10 @@ use crate::root_policy_effect::{
 };
 use crate::root_session::RootSessionManager;
 use mish_cellular::{
-    IP6TABLES, IPTABLES, IPV4_RULE_SHOW, IPV6_RULE_SHOW, MAX_RECONCILE_PASSES,
-    MangleFamilyState, PolicyIdentityResolution, RootPolicyContract, RootPolicyNamespace,
-    RootPolicySnapshot, is_safe_interface_name, referenced_tables,
-    route_get_uses_interface, route_has_default_on_interface,
+    IP6TABLES, IPTABLES, IPV4_RULE_SHOW, IPV6_RULE_SHOW, MAX_RECONCILE_PASSES, MangleFamilyState,
+    PolicyIdentityResolution, RootPolicyContract, RootPolicyNamespace, RootPolicySnapshot,
+    is_safe_interface_name, referenced_tables, route_get_uses_interface,
+    route_has_default_on_interface,
 };
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -159,12 +159,7 @@ impl RootPolicyRuntime {
         let policy_started = Instant::now();
         let mut window = RootPolicyCommandWindow::default();
         let result = self
-            .reconcile_authorized(
-                &mut state.contract,
-                admitted,
-                interface_name,
-                &mut window,
-            )
+            .reconcile_authorized(&mut state.contract, admitted, interface_name, &mut window)
             .await;
         record_reconcile(
             &mut state.diagnostic,
@@ -209,9 +204,7 @@ impl RootPolicyRuntime {
                         .await
                         .is_err()
                 {
-                    return RootPolicyResult::FailClosed(Some(
-                        RootPolicyFailure::MutationRejected,
-                    ));
+                    return RootPolicyResult::FailClosed(Some(RootPolicyFailure::MutationRejected));
                 }
                 return RootPolicyResult::FailClosed(Some(
                     RootPolicyFailure::ReservedPolicyCollision,
@@ -266,9 +259,7 @@ impl RootPolicyRuntime {
             Err(failure) => return RootPolicyResult::FailClosed(Some(failure)),
         };
         if contract.verify_fail_closed_base(&fail_closed).is_err() {
-            return RootPolicyResult::FailClosed(Some(
-                RootPolicyFailure::StructuralMismatch,
-            ));
+            return RootPolicyResult::FailClosed(Some(RootPolicyFailure::StructuralMismatch));
         }
 
         if !admitted {
@@ -293,10 +284,7 @@ impl RootPolicyRuntime {
         let Some(identity) = contract.active_identity() else {
             return RootPolicyResult::FailClosed(Some(RootPolicyFailure::StructuralMismatch));
         };
-        let route_command = format!(
-            "ip -4 route get 1.1.1.1 mark {}",
-            identity.mark_hex()
-        );
+        let route_command = format!("ip -4 route get 1.1.1.1 mark {}", identity.mark_hex());
         let route = match self.io.observe(&route_command, window).await {
             Ok(result) => result,
             Err(error) => return RootPolicyResult::FailClosed(Some(map_effect_failure(error))),
@@ -370,9 +358,7 @@ impl RootPolicyRuntime {
             let command = format!("{binary} -t mangle -S");
             let before = match self.io.raw_observation(&command).await {
                 Ok(result)
-                    if !result.timed_out
-                        && result.output_complete
-                        && result.exit_code == 0 =>
+                    if !result.timed_out && result.output_complete && result.exit_code == 0 =>
                 {
                     parse_lines(&result.stdout)
                 }
@@ -396,9 +382,7 @@ impl RootPolicyRuntime {
 
             let after = match self.io.raw_observation(&command).await {
                 Ok(result)
-                    if !result.timed_out
-                        && result.output_complete
-                        && result.exit_code == 0 =>
+                    if !result.timed_out && result.output_complete && result.exit_code == 0 =>
                 {
                     parse_lines(&result.stdout)
                 }
@@ -448,9 +432,13 @@ impl RootPolicyRuntime {
             .await
             .map_err(map_effect_failure)?;
         let present = if ipv4 {
-            current.iter().any(|line| contract.is_owned_ipv4_guard(line))
+            current
+                .iter()
+                .any(|line| contract.is_owned_ipv4_guard(line))
         } else {
-            current.iter().any(|line| contract.is_owned_ipv6_guard(line))
+            current
+                .iter()
+                .any(|line| contract.is_owned_ipv6_guard(line))
         };
         if present {
             return Ok(());
@@ -472,9 +460,13 @@ impl RootPolicyRuntime {
             .await
             .map_err(map_effect_failure)?;
         let present = if ipv4 {
-            verified.iter().any(|line| contract.is_owned_ipv4_guard(line))
+            verified
+                .iter()
+                .any(|line| contract.is_owned_ipv4_guard(line))
         } else {
-            verified.iter().any(|line| contract.is_owned_ipv6_guard(line))
+            verified
+                .iter()
+                .any(|line| contract.is_owned_ipv6_guard(line))
         };
         present
             .then_some(())
@@ -597,10 +589,9 @@ impl RootPolicyRuntime {
             .lines(&show, window)
             .await
             .map_err(map_effect_failure)?;
-        (contract.mangle_family_state(&verified, ipv4)
-            == Some(MangleFamilyState::AttachedExact))
-        .then_some(())
-        .ok_or(RootPolicyFailure::StructuralMismatch)
+        (contract.mangle_family_state(&verified, ipv4) == Some(MangleFamilyState::AttachedExact))
+            .then_some(())
+            .ok_or(RootPolicyFailure::StructuralMismatch)
     }
 
     async fn remove_exact_rule(
@@ -709,7 +700,10 @@ impl RootPolicyRuntime {
             .await
             .map_err(map_effect_failure)?;
         let existing = contract.owned_ipv4_lookup_tables(&rules);
-        for stale in existing.iter().filter(|existing| existing.as_str() != table) {
+        for stale in existing
+            .iter()
+            .filter(|existing| existing.as_str() != table)
+        {
             let delete = contract
                 .ipv4_lookup_delete(stale)
                 .ok_or(RootPolicyFailure::LookupRuleCreationFailed)?;
@@ -932,9 +926,11 @@ impl RootPolicyRuntime {
             .lines(&show, window)
             .await
             .map_err(map_effect_failure)?;
-        (!fresh.iter().any(|line| line.contains(contract.chain_name())))
-            .then_some(())
-            .ok_or(RootPolicyFailure::ExactCleanupFailed)
+        (!fresh
+            .iter()
+            .any(|line| line.contains(contract.chain_name())))
+        .then_some(())
+        .ok_or(RootPolicyFailure::ExactCleanupFailed)
     }
 
     async fn remove_guard(
@@ -977,9 +973,7 @@ fn map_effect_failure(failure: RootPolicyEffectFailure) -> RootPolicyFailure {
         RootPolicyEffectFailure::ObservationUnavailable => {
             RootPolicyFailure::ObservationUnavailable
         }
-        RootPolicyEffectFailure::ObservationIncomplete => {
-            RootPolicyFailure::ObservationIncomplete
-        }
+        RootPolicyEffectFailure::ObservationIncomplete => RootPolicyFailure::ObservationIncomplete,
         RootPolicyEffectFailure::MutationRejected => RootPolicyFailure::MutationRejected,
         RootPolicyEffectFailure::MutationUncertain => RootPolicyFailure::MutationUncertain,
     }
@@ -1003,8 +997,9 @@ fn record_reconcile(
     let reconcile_ms = duration_ms(started.elapsed());
     let policy_ms = duration_ms(policy_elapsed);
     diagnostic.attempts = diagnostic.attempts.saturating_add(1);
-    diagnostic.total_executor_commands =
-        diagnostic.total_executor_commands.saturating_add(window.commands);
+    diagnostic.total_executor_commands = diagnostic
+        .total_executor_commands
+        .saturating_add(window.commands);
     diagnostic.total_observation_commands = diagnostic
         .total_observation_commands
         .saturating_add(window.observation_commands);
@@ -1015,8 +1010,7 @@ fn record_reconcile(
         .total_duplicate_observations
         .saturating_add(window.duplicate_observations);
     diagnostic.last_reconcile_elapsed_ms = reconcile_ms;
-    diagnostic.max_reconcile_elapsed_ms =
-        diagnostic.max_reconcile_elapsed_ms.max(reconcile_ms);
+    diagnostic.max_reconcile_elapsed_ms = diagnostic.max_reconcile_elapsed_ms.max(reconcile_ms);
     diagnostic.last_policy_effect_elapsed_ms = policy_ms;
     diagnostic.max_policy_effect_elapsed_ms =
         diagnostic.max_policy_effect_elapsed_ms.max(policy_ms);
@@ -1038,29 +1032,26 @@ mod tests {
 
     #[test]
     fn recovery_vocabulary_retries_only_non_authoritative_or_uncertain_failures() {
-        assert!(RootPolicyResult::FailClosed(Some(
-            RootPolicyFailure::ObservationUnavailable
-        ))
-        .retryable());
-        assert!(RootPolicyResult::FailClosed(Some(
-            RootPolicyFailure::ObservationIncomplete
-        ))
-        .retryable());
-        assert!(RootPolicyResult::FailClosed(Some(
-            RootPolicyFailure::MutationUncertain
-        ))
-        .retryable());
-        assert!(!RootPolicyResult::FailClosed(Some(
-            RootPolicyFailure::StructuralMismatch
-        ))
-        .retryable());
-        assert!(!RootPolicyResult::FailClosed(Some(
-            RootPolicyFailure::ReservedPolicyCollision
-        ))
-        .retryable());
-        assert!(!RootPolicyResult::FailClosed(Some(
-            RootPolicyFailure::MutationRejected
-        ))
-        .retryable());
+        assert!(
+            RootPolicyResult::FailClosed(Some(RootPolicyFailure::ObservationUnavailable))
+                .retryable()
+        );
+        assert!(
+            RootPolicyResult::FailClosed(Some(RootPolicyFailure::ObservationIncomplete))
+                .retryable()
+        );
+        assert!(
+            RootPolicyResult::FailClosed(Some(RootPolicyFailure::MutationUncertain)).retryable()
+        );
+        assert!(
+            !RootPolicyResult::FailClosed(Some(RootPolicyFailure::StructuralMismatch)).retryable()
+        );
+        assert!(
+            !RootPolicyResult::FailClosed(Some(RootPolicyFailure::ReservedPolicyCollision))
+                .retryable()
+        );
+        assert!(
+            !RootPolicyResult::FailClosed(Some(RootPolicyFailure::MutationRejected)).retryable()
+        );
     }
 }
