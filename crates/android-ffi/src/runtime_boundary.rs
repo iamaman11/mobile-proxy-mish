@@ -67,7 +67,7 @@ impl fmt::Display for CellularBridgeError {
 impl std::error::Error for CellularBridgeError {}
 
 /// Effect-level Android runtime errors that genuinely cross the FFI exception channel.
-/// Expected Proxy Serving start failures use the typed `NativeProxyStartAttempt` data path instead.
+/// PRODUCT lifecycle and Proxy serving decisions remain behind the stable NativeProductRuntime handle.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct CellularDnsDiagnosticView {
     pub slow_threshold_ms: u64,
