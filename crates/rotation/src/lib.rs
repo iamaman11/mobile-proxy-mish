@@ -119,6 +119,7 @@ struct RotationOperation {
     airplane_on_observed: bool,
     airplane_off_observed: bool,
     cellular_loss_observed: bool,
+    latest_owner_generation: u64,
     fresh_cellular_generation: Option<u64>,
     root_authorized_generation: Option<u64>,
     restore_required: bool,
@@ -138,6 +139,41 @@ impl RotationOperation {
             terminal_result: self.terminal_result,
             failure: self.failure,
             restore_result: self.restore_result,
+        }
+    }
+
+    fn observe_owner_generation(&mut self, generation: u64) -> bool {
+        if generation < self.latest_owner_generation {
+            return false;
+        }
+        if generation > self.latest_owner_generation {
+            self.latest_owner_generation = generation;
+            if self
+                .fresh_cellular_generation
+                .is_some_and(|current| current < generation)
+            {
+                self.fresh_cellular_generation = None;
+            }
+            if self
+                .root_authorized_generation
+                .is_some_and(|current| current < generation)
+            {
+                self.root_authorized_generation = None;
+            }
+        }
+        true
+    }
+
+    fn observe_recovery_cellular(&mut self, generation: u64, admitted: bool) {
+        if admitted {
+            self.fresh_cellular_generation = Some(generation);
+        } else {
+            if self.fresh_cellular_generation == Some(generation) {
+                self.fresh_cellular_generation = None;
+            }
+            if self.root_authorized_generation == Some(generation) {
+                self.root_authorized_generation = None;
+            }
         }
     }
 
@@ -229,6 +265,7 @@ impl RotationStateMachine {
             airplane_on_observed: false,
             airplane_off_observed: false,
             cellular_loss_observed: false,
+            latest_owner_generation: before_generation,
             fresh_cellular_generation: None,
             root_authorized_generation: None,
             restore_required: false,
@@ -347,6 +384,9 @@ impl RotationStateMachine {
             }
             return Err(RotationTransitionError::StaleGeneration);
         }
+        if !operation.observe_owner_generation(generation) {
+            return Ok(operation.snapshot());
+        }
 
         match operation.phase {
             RotationPhase::AirplaneEnabling => {
@@ -361,14 +401,10 @@ impl RotationStateMachine {
                 operation.maybe_advance_radio_down();
             }
             RotationPhase::AirplaneDisabling => {
-                if admitted {
-                    operation.fresh_cellular_generation = Some(generation);
-                }
+                operation.observe_recovery_cellular(generation, admitted);
             }
             RotationPhase::WaitingCellularRecovery | RotationPhase::WaitingRootPolicy => {
-                if admitted {
-                    operation.fresh_cellular_generation = Some(generation);
-                }
+                operation.observe_recovery_cellular(generation, admitted);
                 operation.maybe_advance_recovery();
             }
             _ => return Err(RotationTransitionError::InvalidPhase),
@@ -394,19 +430,22 @@ impl RotationStateMachine {
             }
             return Err(RotationTransitionError::StaleGeneration);
         }
+        if !operation.observe_owner_generation(generation) {
+            return Ok(operation.snapshot());
+        }
 
         match operation.phase {
             RotationPhase::AirplaneDisabling => {
                 if authorized {
                     operation.root_authorized_generation = Some(generation);
-                } else if operation.root_authorized_generation == Some(generation) {
+                } else {
                     operation.root_authorized_generation = None;
                 }
             }
             RotationPhase::WaitingCellularRecovery | RotationPhase::WaitingRootPolicy => {
                 if authorized {
                     operation.root_authorized_generation = Some(generation);
-                } else if operation.root_authorized_generation == Some(generation) {
+                } else {
                     operation.root_authorized_generation = None;
                 }
                 operation.maybe_advance_recovery();
@@ -794,6 +833,71 @@ mod tests {
         assert_eq!(waiting.phase, RotationPhase::WaitingRadioDown);
         let ready_for_off = machine.observe_airplane(id, true).expect("airplane on");
         assert_eq!(ready_for_off.phase, RotationPhase::AirplaneDisabling);
+    }
+
+    #[test]
+    fn newer_owner_loss_invalidates_older_recovery_candidate_and_root_authorization() {
+        let (mut machine, id) = started();
+        machine
+            .airplane_enable_effect_completed(id, RotationMutationOutcome::Applied)
+            .expect("enable");
+        machine.observe_airplane(id, true).expect("on");
+        machine.observe_cellular(id, 11, false).expect("loss");
+        machine
+            .airplane_disable_effect_completed(id, RotationMutationOutcome::Applied)
+            .expect("disable");
+        machine.observe_airplane(id, false).expect("off");
+        machine.observe_root_policy(id, 12, true).expect("root B");
+        let waiting = machine.observe_cellular(id, 12, true).expect("cellular B");
+        assert_eq!(waiting.phase, RotationPhase::ProbingPublicIp);
+
+        // Build the same pre-probe state again, but inject a newer owner generation before
+        // authorization can complete. The older B facts must not survive C.
+        let (mut machine, id) = started();
+        machine
+            .airplane_enable_effect_completed(id, RotationMutationOutcome::Applied)
+            .expect("enable");
+        machine.observe_airplane(id, true).expect("on");
+        machine.observe_cellular(id, 11, false).expect("loss");
+        machine
+            .airplane_disable_effect_completed(id, RotationMutationOutcome::Applied)
+            .expect("disable");
+        machine.observe_airplane(id, false).expect("off");
+        machine.observe_root_policy(id, 12, true).expect("root B");
+        let waiting = machine.observe_cellular(id, 13, false).expect("newer loss C");
+        assert_eq!(waiting.phase, RotationPhase::WaitingCellularRecovery);
+        assert_eq!(waiting.after_generation, None);
+
+        let stale = machine.observe_cellular(id, 12, true).expect("stale B ignored");
+        assert_eq!(stale.phase, RotationPhase::WaitingCellularRecovery);
+        assert_eq!(stale.after_generation, None);
+        let stale_root = machine
+            .observe_root_policy(id, 12, true)
+            .expect("stale root B ignored");
+        assert_eq!(stale_root.phase, RotationPhase::WaitingCellularRecovery);
+    }
+
+    #[test]
+    fn root_fact_can_arrive_before_same_generation_cellular_without_losing_currentness() {
+        let (mut machine, id) = started();
+        machine
+            .airplane_enable_effect_completed(id, RotationMutationOutcome::Applied)
+            .expect("enable");
+        machine.observe_airplane(id, true).expect("on");
+        machine.observe_cellular(id, 11, false).expect("loss");
+        machine
+            .airplane_disable_effect_completed(id, RotationMutationOutcome::Applied)
+            .expect("disable");
+        machine.observe_airplane(id, false).expect("off");
+
+        let root_first = machine
+            .observe_root_policy(id, 12, true)
+            .expect("root B first");
+        assert_eq!(root_first.phase, RotationPhase::WaitingCellularRecovery);
+
+        let recovered = machine.observe_cellular(id, 12, true).expect("cellular B");
+        assert_eq!(recovered.phase, RotationPhase::ProbingPublicIp);
+        assert_eq!(recovered.after_generation, Some(12));
     }
 
     #[test]
