@@ -48,6 +48,11 @@ def main() -> None:
         "ProxyRuntimePublicationView",
         "ReadinessDiagnosticView",
         "MeshAdmissionView",
+        "ExternalCredentialCanonicalStateView",
+        "ExternalCredentialPersistenceActionView",
+        "ExternalCredentialPersistenceResolutionView",
+        "externalCredentialResolvePersistence",
+        "externalCredentialEncodeProvisioningEnvelope",
     )
     forbidden = (
         "CellularController",
@@ -66,6 +71,8 @@ def main() -> None:
         "proxyServingFailureRecoverable",
         "proxyListenerPorts",
         "PrivateBridge",
+        "externalCredentialInitialState",
+        "externalCredentialRestore",
     )
     for symbol in required:
         require(symbol in surface, f"required UniFFI PRODUCT surface is missing: {symbol}")
