@@ -2,7 +2,7 @@
 
 This document is the stable development-delivery contract. Protected `main` is the latest accepted PRODUCT + CONTROL source. Live stage/checkpoint state belongs to Issue #135. Ordered PRODUCT direction belongs to `PRODUCT_ROADMAP.md`. Executable workflows are the mechanical authority if prose and YAML disagree.
 
-It does not replace `RELEASE.md` for formal RC/release promotion.
+`RELEASE.md` now records the same exact-artifact identity rule. There is no separate RC/release acceptance pipeline.
 
 ## Supported PRODUCT floor
 
@@ -316,7 +316,7 @@ A green `probe_only` or `diagnose_only` must never be interpreted as exact candi
 
 ## Formal release boundary
 
-Development debug candidates are stage/development evidence only. They are not PRODUCT release identity and cannot be promoted.
+Development device candidates are the canonical Android physical-acceptance bytes for their exact source head. They are never promoted through an RC lineage; any future distribution packaging is a separate later concern and cannot replace Device Cycle evidence.
 
 Formal promotion remains:
 
