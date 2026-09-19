@@ -20,14 +20,6 @@ sealed interface ProxyRuntimeSnapshot {
     ) : ProxyRuntimeSnapshot
 }
 
-/** Non-secret read-only observation of the native Proxy coordinator. */
-internal data class ProxyRuntimeDiagnosticObservation(
-    val healthy: Boolean,
-    val servingGeneration: Long?,
-    val credentialVersion: ULong?,
-    val activeSessions: UInt?,
-)
-
 /** In-memory only external proxy credential material. */
 internal class ProxyRuntimeCredentials(
     val username: String,
@@ -67,16 +59,6 @@ class ProxyRuntimeSupervisor internal constructor(
                     mutableSnapshot.value = projectOwnerPublication(publication)
                 }
             },
-        )
-    }
-
-    internal fun diagnosticObservation(): ProxyRuntimeDiagnosticObservation {
-        val publication = productRuntime.proxyRuntimeSnapshot()
-        return ProxyRuntimeDiagnosticObservation(
-            healthy = publication.state == ProxyServingState.RUNNING && publication.failure == null,
-            servingGeneration = publication.servingGeneration?.toLong(),
-            credentialVersion = publication.credentialVersion,
-            activeSessions = runCatching { productRuntime.proxyActiveSessions() }.getOrNull(),
         )
     }
 
