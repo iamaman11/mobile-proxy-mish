@@ -959,7 +959,10 @@ mod tests {
         let (mut state, operation_id) = waiting_cellular_recovery_state();
         state.cellular_request_rearm = None;
 
-        assert_eq!(select_cellular_request_rearm(&state, operation_id), Err(()));
+        assert!(matches!(
+            select_cellular_request_rearm(&state, operation_id),
+            Err(())
+        ));
     }
 
     #[test]
