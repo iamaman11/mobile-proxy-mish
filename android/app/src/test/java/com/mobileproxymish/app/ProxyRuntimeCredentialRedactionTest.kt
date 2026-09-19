@@ -5,7 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Test
 
 /**
- * Android retains only the presentation/redaction contract for ephemeral proxy material.
+ * Android retains only the presentation/redaction contract for sensitive in-memory proxy material.
  * Runtime lifecycle and exact generation cleanup are Rust-owned and tested in mish-runtime.
  */
 class ProxyRuntimeCredentialRedactionTest {
