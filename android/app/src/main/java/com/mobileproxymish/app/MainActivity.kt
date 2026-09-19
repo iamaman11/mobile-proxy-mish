@@ -22,7 +22,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        ProxyRuntimeService.requestStart(this)
         setContent {
             val state by viewModel.state.collectAsStateWithLifecycle()
             val credentialReveal by viewModel.credentialReveal.collectAsStateWithLifecycle()
@@ -91,5 +90,10 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        ProxyRuntimeService.requestStart(this)
     }
 }
