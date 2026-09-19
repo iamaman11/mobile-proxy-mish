@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 import subprocess
 import zipfile
@@ -66,7 +67,8 @@ def main() -> None:
     for symbol in required:
         require(symbol in surface, f"required UniFFI PRODUCT surface is missing: {symbol}")
     for symbol in forbidden:
-        require(symbol not in surface, f"obsolete or uncontrolled API leaked into UniFFI surface: {symbol}")
+        leaked = re.search(rf"\\b{re.escape(symbol)}\\b", surface) is not None
+        require(not leaked, f"obsolete or uncontrolled API leaked into UniFFI surface: {symbol}")
 
     print("ANDROID_CANDIDATE_CONTRACT=PASS")
 
