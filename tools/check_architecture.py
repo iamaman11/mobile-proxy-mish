@@ -1136,7 +1136,8 @@ def main() -> None:
         "let second = capture(&generation)?",
         "root_publication: Option<CellularPolicyPublication>",
         "root_session_generation: Option<u64>",
-        "RotationDiagnosticState::NotSupported",
+        "pub rotation: RotationSnapshot",
+        "let rotation_snapshot = generation.rotation().snapshot()",
     ):
         require_product(
             diagnostics_owner,
@@ -1294,6 +1295,181 @@ def main() -> None:
             obsolete,
             "presentation/platform adapters must not expose parallel diagnostic composition APIs",
         )
+
+    # G first-class rotation is one-way: mish-rotation owns semantics, mish-runtime executes
+    # the operation on the existing RuntimeExecutor and persistent root session. Kotlin gets only
+    # a typed start command/projection; it owns no phase, timer, airplane command or retry policy.
+    rotation_semantics = "crates/rotation/src/lib.rs"
+    rotation_runtime = "crates/runtime/src/rotation_runtime.rs"
+    airplane_effect = "crates/runtime/src/airplane_effect.rs"
+    product_generation = "crates/runtime/src/product_generation.rs"
+    proxy_owner = "crates/runtime/src/proxy_coordinator.rs"
+
+    for required in (
+        "pub struct RotationStateMachine",
+        "pub enum RotationMutationOutcome",
+        "pub fn observe_root_policy(",
+        "pub fn deadline_exceeded(",
+        "RotationTerminalResult::Changed",
+        "RotationTerminalResult::Unchanged",
+        "RotationTerminalResult::Failed",
+        "RotationFailure::CredentialChanged",
+    ):
+        require_product(
+            rotation_semantics,
+            required,
+            "mish-rotation must remain the sole IP-rotation semantic owner",
+        )
+    for required in (
+        "uncertain_enable_requires_observation_and_is_never_replayed_by_owner",
+        "uncertain_disable_requires_observation_and_preserves_restore_requirement",
+        "root_authorization_is_an_independent_exact_generation_fact",
+        "absolute_deadline_is_terminal_and_keeps_restore_requirement",
+        "cellular_loss_during_enable_is_retained_until_airplane_on_is_observed",
+    ):
+        require(
+            rotation_semantics,
+            required,
+            "rotation pure tests must pin uncertainty/currentness/deadline semantics",
+        )
+
+    for required in (
+        "pub struct RotationRuntimeCoordinator",
+        "ROTATION_SAFETY_DEADLINE",
+        "sleep_until(deadline)",
+        "observe_public_egress_ip_async",
+        "policy.add_internal_observer",
+        "RotationAction::RestoreOff",
+        "AirplaneModeState::Enabled",
+        "AirplaneModeState::Disabled",
+        "credential_guard_current",
+        "RESTORE_EFFECT_TIMEOUT",
+    ):
+        require_product(
+            rotation_runtime,
+            required,
+            "mish-runtime must execute one event-driven rotation on the shared Tokio runtime",
+        )
+    for forbidden in (
+        "Runtime::new",
+        "Builder::new",
+        "std::thread",
+        "thread::sleep",
+        "tokio::time::sleep(",
+        "retry_until_changed",
+    ):
+        forbid_product(
+            rotation_runtime,
+            forbidden,
+            "rotation runtime must not create a second executor or arbitrary normal-path dwell/retry loop",
+        )
+
+    for required in (
+        "RootSessionManager",
+        'RootCommand::observation("cmd connectivity airplane-mode")',
+        'RootCommand::mutation("cmd connectivity airplane-mode enable")',
+        'RootCommand::mutation("cmd connectivity airplane-mode disable")',
+        "MutationUncertain",
+    ):
+        require_product(
+            airplane_effect,
+            required,
+            "airplane observe/ON/OFF must be sealed typed effects over the one persistent root session",
+        )
+
+    require_product(
+        "crates/runtime/Cargo.toml",
+        'mish-rotation = { path = "../rotation" }',
+        "mish-runtime must depend on the rotation semantic owner",
+    )
+    for required in ("mod airplane_effect;", "mod rotation_runtime;"):
+        require_product(
+            "crates/runtime/src/entry.rs",
+            required,
+            "rotation execution modules must compile inside mish-runtime",
+        )
+    for required in (
+        "rotation: Arc<RotationRuntimeCoordinator>",
+        "let rotation = RotationRuntimeCoordinator::new(",
+        "let rotation_clean = self.rotation.shutdown().await;",
+    ):
+        require_product(
+            product_generation,
+            required,
+            "ProductGeneration must own and drain exactly one rotation runtime",
+        )
+    for required in (
+        "pub fn start_public_ip_rotation(",
+        "generation.rotation().observe_cellular(admission)",
+        "pub fn rotation_snapshot(",
+    ):
+        require_product(
+            "crates/runtime/src/product_runtime.rs",
+            required,
+            "stable PRODUCT runtime must expose and feed the Rust-owned rotation operation",
+        )
+    for required in (
+        "struct ProxyCredentialGuard",
+        "pub(crate) fn credential_guard(&self)",
+        "pub(crate) fn credential_guard_matches",
+    ):
+        require_product(
+            proxy_owner,
+            required,
+            "network rotation must prove external proxy credential version/material stability",
+        )
+    for required in (
+        "pub struct RotationSnapshotView",
+        "pub fn start_public_ip_rotation(",
+        "pub fn rotation_snapshot(",
+        "rotation_operation_id",
+        "rotation_before_generation",
+        "rotation_after_generation",
+        "rotation_restore_required",
+        "rotation_terminal_result",
+        "rotation_restore_result",
+    ):
+        require_product(
+            product_ffi,
+            required,
+            "Android must receive only typed first-class rotation command/projection",
+        )
+
+    for kotlin_path in (
+        "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/MainViewModel.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/MainActivity.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRuntimeBridge.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularNetworkObserver.kt",
+    ):
+        for forbidden in (
+            "cmd connectivity airplane-mode",
+            "AIRPLANE_ENABLING",
+            "WAITING_RADIO_DOWN",
+            "AIRPLANE_DISABLING",
+            "WAITING_CELLULAR_RECOVERY",
+            "WAITING_ROOT_POLICY",
+            "PROBING_PUBLIC_IP",
+            "kotlinx.coroutines.delay",
+            "Thread.sleep",
+        ):
+            forbid(
+                kotlin_path,
+                forbidden,
+                "Kotlin must not regain rotation semantics, airplane commands or normal-path timing",
+            )
+
+    for forbidden in ("before_ip", "after_ip", "beforeIp", "afterIp"):
+        forbid(
+            diagnostics,
+            forbidden,
+            "raw public IP must never cross the durable/diagnostic Android boundary",
+        )
+    require(
+        diagnostics,
+        'put("raw_ip_persisted", false)',
+        "rotation diagnostics must explicitly prove raw IP is not persisted",
+    )
 
     # U5 root ownership is one-way: policy semantics live in mish-cellular, while the one
     # persistent root session + policy execution/recovery live under the process Tokio owner.
