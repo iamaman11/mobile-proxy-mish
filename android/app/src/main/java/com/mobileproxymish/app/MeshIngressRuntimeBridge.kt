@@ -10,22 +10,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-/** Safe, endpoint-free diagnostic classification of the last ingress realization attempt. */
-internal enum class MeshIngressDiagnosticFailure {
-    NONE,
-    START_REJECTED,
-    BIND_FAILED,
-    UNAVAILABLE,
-    SHUTDOWN_FAILED,
-    OWNER_UNAVAILABLE,
-    OTHER,
-}
-
-internal data class MeshSessionDiagnosticObservation(
-    val activeSessions: ULong,
-    val capacityRejects: ULong,
-)
-
 /**
  * Android observation/projection adapter for Rust-owned Mesh composition.
  *
@@ -45,23 +29,10 @@ internal class MeshIngressRuntimeBridge(
         onObservation = ::onVpnObservation,
         onObservationUnavailable = ::onVpnObservationUnavailable,
     )
-    @Volatile
-    private var lastIngressFailure = MeshIngressDiagnosticFailure.NONE
     private var sequence = 0L
 
     val snapshot: StateFlow<MeshAdmissionView?>
         get() = mutableSnapshot.asStateFlow()
-
-    internal fun diagnosticIngressFailure(): MeshIngressDiagnosticFailure = lastIngressFailure
-
-    /** Read one live capacity observation from Rust; Android keeps no parallel counters. */
-    internal fun diagnosticSessionObservation(): MeshSessionDiagnosticObservation? =
-        ownerSnapshotOrNull()?.let { owner ->
-            MeshSessionDiagnosticObservation(
-                activeSessions = owner.activeSessions,
-                capacityRejects = owner.capacityRejects,
-            )
-        }
 
     fun start() {
         check(!closed.get()) { "Mesh ingress runtime is closed" }
@@ -107,15 +78,11 @@ internal class MeshIngressRuntimeBridge(
                 AndroidMeshVpnObservation.AmbiguousVpn ->
                     productRuntime.observeMeshVpnAmbiguous(sequence.toULong())
             }
-            lastIngressFailure = MeshIngressDiagnosticFailure.NONE
         } catch (error: MeshTransportBoundaryException) {
-            lastIngressFailure = classifyBoundaryFailure(error)
             failClosed()
         } catch (_: LinkageError) {
-            lastIngressFailure = MeshIngressDiagnosticFailure.OWNER_UNAVAILABLE
             failClosed()
         } catch (_: Exception) {
-            lastIngressFailure = MeshIngressDiagnosticFailure.OTHER
             failClosed()
         }
     }
@@ -150,18 +117,4 @@ internal class MeshIngressRuntimeBridge(
             throw IllegalStateException("Mesh platform observation cleanup failed")
         }
     }
-}
-
-private fun classifyBoundaryFailure(
-    error: MeshTransportBoundaryException,
-): MeshIngressDiagnosticFailure = when (error) {
-    is MeshTransportBoundaryException.IngressBindFailed ->
-        MeshIngressDiagnosticFailure.BIND_FAILED
-    is MeshTransportBoundaryException.IngressShutdownFailed ->
-        MeshIngressDiagnosticFailure.SHUTDOWN_FAILED
-    is MeshTransportBoundaryException.IngressUnavailable ->
-        MeshIngressDiagnosticFailure.UNAVAILABLE
-    is MeshTransportBoundaryException.OwnerUnavailable ->
-        MeshIngressDiagnosticFailure.OWNER_UNAVAILABLE
-    else -> MeshIngressDiagnosticFailure.OTHER
 }
