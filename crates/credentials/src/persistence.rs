@@ -45,26 +45,37 @@ pub fn decode_state(encoded: &[u8]) -> Result<ExternalCredentialState, ExternalC
     let mut revoked_seen = false;
 
     while !reader.exhausted() {
-        let tag = reader.read_tag().map_err(|_| ExternalCredentialError::MalformedState)?;
+        let tag = reader
+            .read_tag()
+            .map_err(|_| ExternalCredentialError::MalformedState)?;
         match tag.field_number {
             1 => {
                 if tag.wire_type != WIRE_VARINT || version.is_some() {
                     return Err(ExternalCredentialError::MalformedState);
                 }
-                version = Some(reader.read_varint().map_err(|_| ExternalCredentialError::MalformedState)?);
+                version = Some(
+                    reader
+                        .read_varint()
+                        .map_err(|_| ExternalCredentialError::MalformedState)?,
+                );
             }
             2 => {
                 if tag.wire_type != WIRE_VARINT || revoked_seen {
                     return Err(ExternalCredentialError::MalformedState);
                 }
                 revoked_seen = true;
-                revoked = match reader.read_varint().map_err(|_| ExternalCredentialError::MalformedState)? {
+                revoked = match reader
+                    .read_varint()
+                    .map_err(|_| ExternalCredentialError::MalformedState)?
+                {
                     0 => false,
                     1 => true,
                     _ => return Err(ExternalCredentialError::MalformedState),
                 };
             }
-            _ => reader.skip(tag.wire_type).map_err(|_| ExternalCredentialError::MalformedState)?,
+            _ => reader
+                .skip(tag.wire_type)
+                .map_err(|_| ExternalCredentialError::MalformedState)?,
         }
     }
 
@@ -185,9 +196,8 @@ mod tests {
         assert_eq!(migrated.state().version(), 7);
         assert_eq!(migrated.canonical_state(), &[0x08, 0x07]);
 
-        let current =
-            resolve_persistence(Some(migrated.canonical_state()), None, None, true)
-                .expect("current read");
+        let current = resolve_persistence(Some(migrated.canonical_state()), None, None, true)
+            .expect("current read");
         assert_eq!(
             current.action(),
             ExternalCredentialPersistenceAction::UseCurrent
