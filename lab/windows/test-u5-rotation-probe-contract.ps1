@@ -54,6 +54,8 @@ foreach ($required in @(
     "row = [regex]::Match",
     'Groups[''pid''].Value -eq $processId',
     'Android ps -A -T returned no PRODUCT thread rows.',
+    "$_ -like 'mish-runtime-i*'",
+    'MISH_U5_TOPOLOGY_THREAD_NAME_SET=',
     'MISH_U5_TOPOLOGY_RUNTIME_IO_THREADS=',
     'MISH_U5_TOPOLOGY_FORBIDDEN_KOTLIN_OWNER_THREADS=',
     "final_airplane = Get-MishAirplaneState"
