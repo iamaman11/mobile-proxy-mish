@@ -1989,10 +1989,25 @@ def main() -> None:
         "fun showCurrentCredentials()",
         "PRODUCT must keep one explicit sensitive current-credential access operation",
     )
+    main_activity = "android/app/src/main/java/com/mobileproxymish/app/MainActivity.kt"
     require(
-        "android/app/src/main/java/com/mobileproxymish/app/MainActivity.kt",
+        main_activity,
         "Show current proxy credentials",
         "explicit user credential access must remain visible and opt-in",
+    )
+    require(
+        main_activity,
+        """override fun onStart() {
+        super.onStart()
+        ProxyRuntimeService.requestStart(this)
+    }""",
+        "foreground activity resume must request the Android service lifetime without owning PRODUCT recovery",
+    )
+    forbid(
+        main_activity,
+        """super.onCreate(savedInstanceState)
+        ProxyRuntimeService.requestStart(this)""",
+        "creation-only service delivery can miss an already-live Activity task after a normal runtime stop",
     )
     diagnostics_provider = "android/app/src/main/java/com/mobileproxymish/app/MishDiagnosticsProvider.kt"
     for forbidden in (
