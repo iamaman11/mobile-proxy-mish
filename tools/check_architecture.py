@@ -1555,6 +1555,7 @@ def main() -> None:
     controller = "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt"
     debug_rotation = "android/app/src/debug/java/com/mobileproxymish/app/DebugRotationActivity.kt"
     debug_stop = "android/app/src/debug/java/com/mobileproxymish/app/DebugRuntimeStopActivity.kt"
+    debug_start = "android/app/src/debug/java/com/mobileproxymish/app/DebugRuntimeStartActivity.kt"
     debug_manifest = "android/app/src/debug/AndroidManifest.xml"
     require(
         controller,
@@ -1628,7 +1629,17 @@ def main() -> None:
             required,
             "H restore acceptance must use only the normal PRODUCT stop path",
         )
-    for debug_path in (debug_rotation, debug_stop):
+    for required in (
+        "class DebugRuntimeStartActivity : Activity()",
+        "ProxyRuntimeService.requestStart(this)",
+        'const val TAG = "MishRuntimeStartAcceptance"',
+    ):
+        require(
+            debug_start,
+            required,
+            "H restore acceptance start trigger must remain a zero-input debug-only service-lifetime request",
+        )
+    for debug_path in (debug_rotation, debug_stop, debug_start):
         for forbidden in (
             "cmd connectivity airplane-mode",
             "Thread.sleep",
@@ -1649,13 +1660,14 @@ def main() -> None:
     for required in (
         'android:name=".DebugRotationActivity"',
         'android:name=".DebugRuntimeStopActivity"',
+        'android:name=".DebugRuntimeStartActivity"',
     ):
         require(
             debug_manifest,
             required,
             "H acceptance triggers must be packaged only by the debug source set",
         )
-    for forbidden in ("DebugRotationActivity", "DebugRuntimeStopActivity"):
+    for forbidden in ("DebugRotationActivity", "DebugRuntimeStopActivity", "DebugRuntimeStartActivity"):
         forbid(
             "android/app/src/main/AndroidManifest.xml",
             forbidden,

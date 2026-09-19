@@ -16,5 +16,11 @@
             android:name=".DebugRuntimeStopActivity"
             android:exported="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+        <!-- Debug-only, zero-input restart trigger. It exercises the production Service start
+             request seam without depending on MainActivity lifecycle delivery. -->
+        <activity
+            android:name=".DebugRuntimeStartActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
     </application>
 </manifest>
