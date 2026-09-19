@@ -115,8 +115,8 @@ class CellularE3InstrumentedTest {
                 )
                 requirePublicIpLiteral(observation.address)
             }
-            val u4StaleTicket = application.runtimeController.currentProductRuntime
-                .preparePublicIpProbe(U4_PUBLIC_IP_TIMEOUT_MILLIS.toULong())
+            val u4StaleTicket =
+                runtime.preparePublicIpProbeForInstrumentation(U4_PUBLIC_IP_TIMEOUT_MILLIS)
             assertTrue("fresh U4 ticket must begin current", u4StaleTicket.isCurrent())
 
             // Establish a second real PRODUCT HTTPS/TCP flow while cellular authority is
