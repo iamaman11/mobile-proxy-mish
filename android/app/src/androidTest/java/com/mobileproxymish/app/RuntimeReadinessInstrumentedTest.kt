@@ -4,6 +4,8 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.SystemClock
 import androidx.test.platform.app.InstrumentationRegistry
+import com.mobileproxymish.app.cellular.CellularRuntimeSnapshot
+import com.mobileproxymish.ffi.CellularAdmissionState
 import com.mobileproxymish.ffi.ProductReadinessState
 import org.junit.Test
 
@@ -26,7 +28,20 @@ class RuntimeReadinessInstrumentedTest {
         val proxy = app.runtimeController.proxySnapshot.value
         val readiness = app.runtimeController.readinessSnapshot.value
         val mesh = app.runtimeController.meshSnapshot.value
-        val readinessDiagnostic = app.runtimeController.currentReadinessRuntime.diagnosticObservation()
+        val cellular = app.runtimeController.cellularSnapshot.value
+        val readinessDiagnostic =
+            app.runtimeController.currentProductRuntime.readinessDiagnosticSnapshot()
+        val cellularState = when (cellular) {
+            is CellularRuntimeSnapshot.OwnerSnapshot -> cellular.admission.state.name
+            is CellularRuntimeSnapshot.BoundaryUnavailable -> "BOUNDARY_UNAVAILABLE"
+        }
+        val cellularReason = when (cellular) {
+            is CellularRuntimeSnapshot.OwnerSnapshot -> ""
+            is CellularRuntimeSnapshot.BoundaryUnavailable -> cellular.reason.javaClass.simpleName
+        }
+        val cellularAdmitted =
+            cellular is CellularRuntimeSnapshot.OwnerSnapshot &&
+                cellular.admission.state == CellularAdmissionState.ADMITTED
         val connectivity = context.getSystemService(ConnectivityManager::class.java)
         val currentVpnCount = connectivity.allNetworks.count { network ->
             connectivity.getNetworkCapabilities(network)
@@ -39,9 +54,9 @@ class RuntimeReadinessInstrumentedTest {
         println("MISH_RESTART_MESH_EPOCH_PRESENT=${mesh?.admissionEpoch != null}")
         println("MISH_RESTART_MESH_INGRESS=${mesh?.ingressRunning == true}")
         println("MISH_RESTART_PLATFORM_VPN_COUNT=$currentVpnCount")
-        println("MISH_RESTART_CELLULAR_STATE=${readinessDiagnostic.cellularState}")
-        println("MISH_RESTART_CELLULAR_REASON=${readinessDiagnostic.cellularReason}")
-        println("MISH_RESTART_CELLULAR_ADMITTED=${readinessDiagnostic.cellularAdmitted}")
+        println("MISH_RESTART_CELLULAR_STATE=$cellularState")
+        println("MISH_RESTART_CELLULAR_REASON=$cellularReason")
+        println("MISH_RESTART_CELLULAR_ADMITTED=$cellularAdmitted")
         println("MISH_RESTART_ROOT_POLICY=${readinessDiagnostic.rootPolicyVerified}")
         println("MISH_RESTART_PROXY_HEALTHY=${readinessDiagnostic.proxyHealthy}")
         println("MISH_RESTART_CREDENTIAL_ACTIVE=${readinessDiagnostic.credentialActive}")
