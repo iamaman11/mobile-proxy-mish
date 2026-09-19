@@ -132,17 +132,21 @@ jobs:
           test -f "$GENERATED"
           grep -q '^package com.mobileproxymish.ffi$' "$GENERATED"
           for symbol in \
-            CellularController \
-            MeshTransportController \
-            RuntimeLifecycleController \
-            NativeProxyRuntime \
+            NativeProductRuntime \
+            NativeCellularPolicyObserver \
+            NativeReadinessObserver \
             NativeProxyRuntimeObserver \
-            startNativeProxyRuntime \
-            proxyServingFailureRecoverable \
-            proxyListenerPorts; do
+            RuntimeLifecycleSnapshotView \
+            ProxyRuntimePublicationView; do
             grep -Fq "$symbol" "$GENERATED"
           done
           for forbidden in \
+            CellularController \
+            MeshTransportController \
+            RuntimeLifecycleController \
+            startNativeProxyRuntime \
+            proxyServingFailureRecoverable \
+            proxyListenerPorts \
             CellularNetworkLease \
             admittedNetworkLease \
             bindSocket \
@@ -155,6 +159,10 @@ jobs:
               exit 1
             fi
           done
+          if grep -Eq '(^|[^[:alnum:]_])NativeProxyRuntime([^[:alnum:]_]|$)' "$GENERATED"; then
+            echo 'obsolete NativeProxyRuntime control object leaked into UniFFI surface' >&2
+            exit 1
+          fi
 
   android:
     name: Android Compose Shell
@@ -243,17 +251,21 @@ jobs:
           fi
 
           for symbol in \
-            CellularController \
-            MeshTransportController \
-            RuntimeLifecycleController \
-            NativeProxyRuntime \
+            NativeProductRuntime \
+            NativeCellularPolicyObserver \
+            NativeReadinessObserver \
             NativeProxyRuntimeObserver \
-            startNativeProxyRuntime \
-            proxyServingFailureRecoverable \
-            proxyListenerPorts; do
+            RuntimeLifecycleSnapshotView \
+            ProxyRuntimePublicationView; do
             grep -Fq "$symbol" "$GENERATED"
           done
           for forbidden in \
+            CellularController \
+            MeshTransportController \
+            RuntimeLifecycleController \
+            startNativeProxyRuntime \
+            proxyServingFailureRecoverable \
+            proxyListenerPorts \
             CellularNetworkLease \
             admittedNetworkLease \
             bindSocket \
@@ -266,3 +278,7 @@ jobs:
               exit 1
             fi
           done
+          if grep -Eq '(^|[^[:alnum:]_])NativeProxyRuntime([^[:alnum:]_]|$)' "$GENERATED"; then
+            echo 'obsolete NativeProxyRuntime control object leaked into UniFFI surface' >&2
+            exit 1
+          fi
