@@ -240,10 +240,6 @@ impl CellularController {
             .map_err(|_| CellularBridgeError::OwnerUnavailable)
     }
 
-    pub(crate) fn dns_diagnostic_snapshot(&self) -> CellularDnsDiagnosticView {
-        map_dns_diagnostic(self.runtime.dns_diagnostic_snapshot())
-    }
-
     pub(crate) fn prepare_public_ip_probe(
         &self,
         timeout_ms: u64,
