@@ -131,9 +131,19 @@ function Get-MishProcessMetrics {
     }
 
     $threadText = Invoke-MishAdbText -Arguments @(
-        'shell', 'run-as', $PackageName, 'sh', '-c', "cat /proc/$processId/task/*/comm 2>/dev/null"
+        'shell', 'ps', '-T', '-p', ([string]$processId), '-o', 'NAME'
     )
-    $threadNames = @($threadText -split '\r?\n' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $threadNames = @(
+        $threadText -split '\r?\n' |
+            ForEach-Object { $_.Trim() } |
+            Where-Object {
+                -not [string]::IsNullOrWhiteSpace($_) -and
+                $_ -cne 'NAME'
+            }
+    )
+    if ($threadNames.Count -eq 0) {
+        Stop-MishRotationAcceptance 'LAB_PROCESS_METRICS_UNAVAILABLE' 'Android ps -T returned no PRODUCT thread names.'
+    }
     $runtimeIo = @($threadNames | Where-Object { $_ -ceq 'mish-runtime-io' }).Count
     $forbiddenKotlinOwners = @(
         $threadNames | Where-Object {

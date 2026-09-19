@@ -50,6 +50,8 @@ foreach ($required in @(
     'owner_sessions_quiescent_after_normal_rotations',
     'U5_ROTATION_PHYSICAL_ACCEPTANCE_PASS',
     'PRODUCT_RESTORE_OFF_FAILED',
+    "'shell', 'ps', '-T', '-p'",
+    'Android ps -T returned no PRODUCT thread names.',
     "final_airplane = Get-MishAirplaneState"
 )) {
     if (-not $source.Contains($required)) {
@@ -77,7 +79,8 @@ foreach ($forbidden in @(
     'before_ip',
     'after_ip',
     'retry-until-changed',
-    'retry_until_changed'
+    'retry_until_changed',
+    'task/*/comm'
 )) {
     if ($source.Contains($forbidden)) {
         throw "U5 rotation acceptance probe contains forbidden duplicate PRODUCT/control/secret path: $forbidden"
