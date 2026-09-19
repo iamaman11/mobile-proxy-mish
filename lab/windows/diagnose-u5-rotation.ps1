@@ -130,21 +130,18 @@ function Get-MishProcessMetrics {
         Stop-MishRotationAcceptance 'LAB_PROCESS_METRICS_UNAVAILABLE' 'PRODUCT FD count is unavailable.'
     }
 
-    # Android Toybox ps exposes the per-thread comm name through CMD.
-    # NAME is argv[0] of the process and therefore cannot prove PRODUCT worker topology.
+    # Read Linux per-thread comm directly as the app UID. Wildcard expansion must happen
+    # inside run-as sh; passing /proc/<pid>/task/*/comm directly to cat does not expand it.
     $threadText = Invoke-MishAdbText -Arguments @(
-        'shell', 'ps', '-T', '-p', ([string]$processId), '-o', 'CMD'
+        'shell', 'run-as', $PackageName, 'sh', '-c', "cat /proc/$processId/task/*/comm"
     )
     $threadNames = @(
         $threadText -split '\r?\n' |
             ForEach-Object { $_.Trim() } |
-            Where-Object {
-                -not [string]::IsNullOrWhiteSpace($_) -and
-                $_ -cne 'CMD'
-            }
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
     )
     if ($threadNames.Count -eq 0) {
-        Stop-MishRotationAcceptance 'LAB_PROCESS_METRICS_UNAVAILABLE' 'Android ps -T returned no PRODUCT thread names.'
+        Stop-MishRotationAcceptance 'LAB_PROCESS_METRICS_UNAVAILABLE' 'PRODUCT /proc task comm observation returned no thread names.'
     }
     $runtimeIo = @($threadNames | Where-Object { $_ -ceq 'mish-runtime-io' }).Count
     $forbiddenKotlinOwners = @(
@@ -157,6 +154,10 @@ function Get-MishProcessMetrics {
             $_ -like 'mish-root-shell-*'
         }
     ).Count
+
+    Write-Host "MISH_U5_TOPOLOGY_THREAD_NAMES_OBSERVED=$($threadNames.Count)"
+    Write-Host "MISH_U5_TOPOLOGY_RUNTIME_IO_THREADS=$runtimeIo"
+    Write-Host "MISH_U5_TOPOLOGY_FORBIDDEN_KOTLIN_OWNER_THREADS=$forbiddenKotlinOwners"
 
     return [ordered]@{
         pid = $processId
