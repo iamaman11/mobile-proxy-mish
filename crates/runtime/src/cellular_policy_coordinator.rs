@@ -50,6 +50,8 @@ pub struct CellularPolicyPublication {
 }
 
 pub type CellularPolicyObserver = Arc<dyn Fn(CellularPolicyPublication) + Send + Sync + 'static>;
+pub type CellularAdmissionObserver =
+    Arc<dyn Fn(CellularAdmissionSnapshot) + Send + Sync + 'static>;
 
 struct CoordinatorState {
     latest: Option<ReconcileRequest>,
@@ -63,8 +65,10 @@ struct CoordinatorState {
     recovery_epoch: u64,
     last_policy_result: Option<RootPolicyResult>,
     last_publication: Option<CellularPolicyPublication>,
+    last_admission: Option<CellularAdmissionSnapshot>,
     observer: Option<CellularPolicyObserver>,
     internal_observers: Vec<CellularPolicyObserver>,
+    admission_observers: Vec<CellularAdmissionObserver>,
     closed: bool,
 }
 
@@ -103,8 +107,10 @@ impl CellularPolicyCoordinator {
                 recovery_epoch: 0,
                 last_policy_result: None,
                 last_publication: None,
+                last_admission: None,
                 observer: None,
                 internal_observers: Vec::new(),
+                admission_observers: Vec::new(),
                 closed: false,
             }),
         }))
@@ -116,6 +122,7 @@ impl CellularPolicyCoordinator {
 
     pub fn start(self: &Arc<Self>) -> Result<(), CellularRuntimeError> {
         let admission = self.cellular.admission_snapshot()?;
+        self.publish_admission(admission);
         self.enqueue_owner_generation(admission)
     }
 
@@ -149,6 +156,23 @@ impl CellularPolicyCoordinator {
         }
     }
 
+    /// Registers a synchronous raw Cellular admission/currentness observer.
+    ///
+    /// This negative/currentness path invalidates stale readiness immediately on owner change/loss.
+    /// Root-policy authorization still comes exclusively from policy publications after reconcile.
+    pub fn add_internal_admission_observer(&self, observer: CellularAdmissionObserver) {
+        let admission = {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            state.admission_observers.push(Arc::clone(&observer));
+            state.last_admission
+        };
+        if let Some(admission) = admission {
+            notify_admission_observer(Some((observer, admission)));
+        }
+    }
+
     pub fn observe_network(
         self: &Arc<Self>,
         observation: NetworkObservation,
@@ -167,6 +191,7 @@ impl CellularPolicyCoordinator {
                     .insert(observed_handle, interface_name);
             }
         }
+        self.publish_admission(admission);
         self.enqueue_owner_generation(admission)?;
         Ok(admission)
     }
@@ -184,6 +209,7 @@ impl CellularPolicyCoordinator {
                 .map_err(|_| CellularRuntimeError::StateUnavailable)?;
             state.interface_hints.remove(&network_handle);
         }
+        self.publish_admission(admission);
         self.enqueue_owner_generation(admission)?;
         Ok(admission)
     }
@@ -496,6 +522,22 @@ impl CellularPolicyCoordinator {
         }
     }
 
+    fn publish_admission(&self, admission: CellularAdmissionSnapshot) {
+        let observers = {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            if state.last_admission == Some(admission) {
+                return;
+            }
+            state.last_admission = Some(admission);
+            state.admission_observers.clone()
+        };
+        for observer in observers {
+            notify_admission_observer(Some((observer, admission)));
+        }
+    }
+
     fn publish(&self, admission: CellularAdmissionSnapshot, result: RootPolicyResult) {
         let publication = CellularPolicyPublication { admission, result };
         let observers = {
@@ -528,6 +570,14 @@ impl CellularPolicyCoordinator {
 fn notify_observer(notification: Option<(CellularPolicyObserver, CellularPolicyPublication)>) {
     if let Some((observer, publication)) = notification {
         let _ = catch_unwind(AssertUnwindSafe(|| observer(publication)));
+    }
+}
+
+fn notify_admission_observer(
+    notification: Option<(CellularAdmissionObserver, CellularAdmissionSnapshot)>,
+) {
+    if let Some((observer, admission)) = notification {
+        let _ = catch_unwind(AssertUnwindSafe(|| observer(admission)));
     }
 }
 
