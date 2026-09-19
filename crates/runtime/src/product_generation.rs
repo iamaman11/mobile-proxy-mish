@@ -49,12 +49,9 @@ impl ProductGeneration {
         )?;
         let mesh = MeshCompositionCoordinator::new()
             .map_err(|_| RuntimeExecutionError::StateUnavailable)?;
-        let readiness = ReadinessRuntimeCoordinator::new(
-            Arc::clone(&executor),
-            Arc::clone(&mesh),
-            generation,
-        )
-        .map_err(|_| RuntimeExecutionError::StateUnavailable)?;
+        let readiness =
+            ReadinessRuntimeCoordinator::new(Arc::clone(&executor), Arc::clone(&mesh), generation)
+                .map_err(|_| RuntimeExecutionError::StateUnavailable)?;
 
         let readiness_cellular = Arc::clone(&readiness);
         policy.add_internal_observer(Arc::new(move |publication| {
