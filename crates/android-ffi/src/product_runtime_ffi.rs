@@ -170,6 +170,7 @@ pub struct ProxyRuntimePublicationView {
     pub serving_generation: Option<u64>,
     pub credential_version: Option<u64>,
     pub recovery_pending: bool,
+    pub recovery_operation_id: u64,
     pub recovery_attempts_since_success: u32,
     pub recovery_next_delay_ms: u64,
 }
@@ -188,6 +189,9 @@ pub struct ProductDiagnosticSnapshotView {
     pub dns: CellularDnsDiagnosticView,
     pub root_authority_observation: String,
     pub root_policy_authorized: bool,
+    pub root_session_generation: Option<u64>,
+    pub root_last_failure_class: Option<String>,
+    pub root_policy_authorized_generation: Option<u64>,
     pub root_reconcile: RootPolicyReconcileDiagnosticView,
     pub root_recovery: RootRecoveryDiagnosticView,
     pub proxy_state: String,
@@ -196,6 +200,7 @@ pub struct ProductDiagnosticSnapshotView {
     pub proxy_serving_generation: Option<u64>,
     pub proxy_active_sessions: u64,
     pub proxy_recovery_pending: bool,
+    pub proxy_recovery_operation_id: u64,
     pub proxy_recovery_attempts_scheduled: u32,
     pub proxy_recovery_next_delay_ms: u64,
     pub credential_active: bool,
@@ -206,11 +211,21 @@ pub struct ProductDiagnosticSnapshotView {
     pub mesh_admission_epoch: Option<u64>,
     pub mesh_epoch_present: bool,
     pub mesh_ingress_running: bool,
+    pub mesh_serving_generation: Option<u64>,
     pub mesh_ingress_failure: String,
     pub mesh_active_sessions: Option<u64>,
     pub mesh_capacity_rejects: Option<u64>,
     pub readiness_state: String,
     pub readiness_binding_eligible: bool,
+    pub readiness_binding_cellular_owner_generation: Option<u64>,
+    pub readiness_binding_runtime_generation: Option<u64>,
+    pub readiness_binding_proxy_serving_generation: Option<u64>,
+    pub readiness_binding_mesh_admission_epoch: Option<u64>,
+    pub readiness_binding_credential_version: Option<u64>,
+    pub readiness_expected_freshness: Option<u64>,
+    pub readiness_observed_freshness: Option<u64>,
+    pub readiness_probe_in_flight: bool,
+    pub readiness_refresh_pending: bool,
     pub readiness_probe_state: String,
     pub rotation_state: String,
 }
@@ -511,34 +526,40 @@ fn map_product_diagnostic_snapshot(
 ) -> ProductDiagnosticSnapshotView {
     let generation = snapshot.generation;
     let admission = map_snapshot(generation.cellular_admission);
-    let root_result = generation.root_policy_result;
-    let boundary_failure = cellular_boundary_failure(root_result);
-    let cellular_state = if boundary_failure.is_some() {
-        "BOUNDARY_UNAVAILABLE".to_owned()
-    } else {
-        cellular_admission_state_code(admission.state).to_owned()
-    };
-    let cellular_reason = if boundary_failure.is_some() {
-        "NONE".to_owned()
-    } else {
-        admission
-            .reason
-            .map(cellular_admission_reason_code)
-            .unwrap_or("NONE")
-            .to_owned()
-    };
-    let cellular_admitted =
-        boundary_failure.is_none() && admission.state == CellularAdmissionState::Admitted;
-    let cellular_owner_sequence = boundary_failure
-        .is_none()
-        .then_some(admission.last_sequence)
-        .flatten();
+    let cellular_owner_sequence = admission.last_sequence;
+    let root_publication = generation.root_publication;
+    let root_result = root_publication.map(|publication| publication.result);
+    let root_publication_current = root_publication.is_some_and(|publication| {
+        publication.admission.last_sequence().map(|sequence| sequence.raw())
+            == cellular_owner_sequence
+    });
+    let current_root_result = root_publication_current.then_some(root_result).flatten();
+    let boundary_failure = cellular_boundary_failure(current_root_result);
+    let cellular_state = cellular_admission_state_code(admission.state).to_owned();
+    let cellular_reason = admission
+        .reason
+        .map(cellular_admission_reason_code)
+        .unwrap_or("NONE")
+        .to_owned();
+    let cellular_admitted = admission.state == CellularAdmissionState::Admitted;
 
-    let (root_authority_observation, root_policy_authorized) = match root_result {
-        Some(OwnerRootPolicyResult::Enforced) => ("READY_AT_POLICY_AUTHORIZATION", true),
-        Some(OwnerRootPolicyResult::AuthorityUnavailable(_)) => ("UNAVAILABLE", false),
-        _ => ("NOT_OBSERVED", false),
+    let root_policy_authorized_generation = root_publication.and_then(|publication| {
+        matches!(publication.result, OwnerRootPolicyResult::Enforced)
+            .then_some(publication.admission.last_sequence())
+            .flatten()
+            .map(|sequence| sequence.raw())
+    });
+    let root_policy_authorized = cellular_admitted
+        && cellular_owner_sequence.is_some()
+        && root_policy_authorized_generation == cellular_owner_sequence;
+    let root_authority_observation = match current_root_result {
+        Some(OwnerRootPolicyResult::Enforced) => "READY_AT_POLICY_AUTHORIZATION",
+        Some(OwnerRootPolicyResult::AuthorityUnavailable(_)) => "UNAVAILABLE",
+        _ => "NOT_OBSERVED",
     };
+    let root_last_failure_class = root_result
+        .and_then(root_failure_class)
+        .map(str::to_owned);
 
     let proxy = map_proxy_publication(generation.proxy);
     let proxy_state = proxy_state_code(proxy.state).to_owned();
@@ -560,12 +581,33 @@ fn map_product_diagnostic_snapshot(
     let mesh_ingress_running = mesh
         .as_ref()
         .is_some_and(|snapshot| snapshot.ingress_running);
+    let mesh_serving_generation = mesh_ingress_running.then_some(mesh_admission_epoch).flatten();
     let mesh_active_sessions = mesh.as_ref().map(|snapshot| snapshot.active_sessions);
     let mesh_capacity_rejects = mesh.as_ref().map(|snapshot| snapshot.capacity_rejects);
 
-    let readiness = map_readiness_diagnostic(generation.readiness);
+    let readiness_owner = generation.readiness;
+    let readiness = map_readiness_diagnostic(readiness_owner);
     let readiness_state = readiness_state_code(readiness.state).to_owned();
     let readiness_probe_state = readiness_probe_state_code(readiness.state).to_owned();
+    let readiness_binding_cellular_owner_generation = readiness_owner
+        .binding
+        .map(|binding| binding.cellular_owner_generation.raw());
+    let readiness_binding_runtime_generation = readiness_owner
+        .binding
+        .map(|binding| binding.runtime_generation.raw());
+    let readiness_binding_proxy_serving_generation = readiness_owner
+        .binding
+        .map(|binding| binding.proxy_serving_generation.raw());
+    let readiness_binding_mesh_admission_epoch = readiness_owner
+        .binding
+        .map(|binding| binding.mesh_admission_epoch.raw());
+    let readiness_binding_credential_version = readiness_owner
+        .binding
+        .map(|binding| binding.credential_version.raw());
+    let readiness_expected_freshness =
+        readiness_owner.expected_freshness.map(|freshness| freshness.raw());
+    let readiness_observed_freshness =
+        readiness_owner.observed_freshness.map(|freshness| freshness.raw());
 
     ProductDiagnosticSnapshotView {
         consistent: snapshot.consistent,
@@ -580,6 +622,9 @@ fn map_product_diagnostic_snapshot(
         dns: map_dns_diagnostic(generation.dns),
         root_authority_observation: root_authority_observation.to_owned(),
         root_policy_authorized,
+        root_session_generation: generation.root_session_generation,
+        root_last_failure_class,
+        root_policy_authorized_generation,
         root_reconcile: map_root_policy_diagnostic(generation.root_reconcile),
         root_recovery: map_recovery_diagnostic(generation.root_recovery),
         proxy_state,
@@ -588,6 +633,7 @@ fn map_product_diagnostic_snapshot(
         proxy_serving_generation: proxy.serving_generation,
         proxy_active_sessions: u64::from(generation.proxy_active_sessions),
         proxy_recovery_pending: proxy.recovery_pending,
+        proxy_recovery_operation_id: proxy.recovery_operation_id,
         proxy_recovery_attempts_scheduled: proxy.recovery_attempts_since_success,
         proxy_recovery_next_delay_ms: proxy.recovery_next_delay_ms,
         credential_active: generation.readiness.credential_active,
@@ -598,15 +644,51 @@ fn map_product_diagnostic_snapshot(
         mesh_admission_epoch,
         mesh_epoch_present,
         mesh_ingress_running,
+        mesh_serving_generation,
         mesh_ingress_failure: mesh_failure_code(generation.mesh_failure).to_owned(),
         mesh_active_sessions,
         mesh_capacity_rejects,
         readiness_state,
         readiness_binding_eligible: readiness.binding_eligible,
+        readiness_binding_cellular_owner_generation,
+        readiness_binding_runtime_generation,
+        readiness_binding_proxy_serving_generation,
+        readiness_binding_mesh_admission_epoch,
+        readiness_binding_credential_version,
+        readiness_expected_freshness,
+        readiness_observed_freshness,
+        readiness_probe_in_flight: readiness.probe_in_flight,
+        readiness_refresh_pending: readiness.refresh_pending,
         readiness_probe_state,
         rotation_state: match generation.rotation {
             RotationDiagnosticState::NotSupported => "NOT_SUPPORTED".to_owned(),
         },
+    }
+}
+
+fn root_failure_class(result: OwnerRootPolicyResult) -> Option<&'static str> {
+    match result {
+        OwnerRootPolicyResult::Enforced | OwnerRootPolicyResult::FailClosed(None) => None,
+        OwnerRootPolicyResult::AuthorityUnavailable(status) => Some(match status {
+            OwnerRootAuthorityStatus::Ready => "AUTHORITY_READY",
+            OwnerRootAuthorityStatus::InteractiveGrantRequired => "AUTHORITY_INTERACTIVE_GRANT_REQUIRED",
+            OwnerRootAuthorityStatus::Denied => "AUTHORITY_DENIED",
+            OwnerRootAuthorityStatus::Unavailable => "AUTHORITY_UNAVAILABLE",
+            OwnerRootAuthorityStatus::Incomplete => "AUTHORITY_INCOMPLETE",
+        }),
+        OwnerRootPolicyResult::FailClosed(Some(failure)) => Some(match failure {
+            OwnerRootPolicyFailure::InvalidInterface => "INVALID_INTERFACE",
+            OwnerRootPolicyFailure::ReservedPolicyCollision => "RESERVED_POLICY_COLLISION",
+            OwnerRootPolicyFailure::ObservationUnavailable => "OBSERVATION_UNAVAILABLE",
+            OwnerRootPolicyFailure::ObservationIncomplete => "OBSERVATION_INCOMPLETE",
+            OwnerRootPolicyFailure::StructuralMismatch => "STRUCTURAL_MISMATCH",
+            OwnerRootPolicyFailure::RouteTableDiscoveryFailed => "ROUTE_TABLE_DISCOVERY_FAILED",
+            OwnerRootPolicyFailure::MutationRejected => "MUTATION_REJECTED",
+            OwnerRootPolicyFailure::MutationUncertain => "MUTATION_UNCERTAIN",
+            OwnerRootPolicyFailure::LookupRuleCreationFailed => "LOOKUP_RULE_CREATION_FAILED",
+            OwnerRootPolicyFailure::RouteLookupVerificationFailed => "ROUTE_LOOKUP_VERIFICATION_FAILED",
+            OwnerRootPolicyFailure::ExactCleanupFailed => "EXACT_CLEANUP_FAILED",
+        }),
     }
 }
 
@@ -735,6 +817,7 @@ fn unavailable_proxy_publication() -> ProxyRuntimePublicationView {
         serving_generation: None,
         credential_version: None,
         recovery_pending: false,
+        recovery_operation_id: 0,
         recovery_attempts_since_success: 0,
         recovery_next_delay_ms: 0,
     }
@@ -752,6 +835,7 @@ fn map_proxy_publication(publication: ProxyRuntimePublication) -> ProxyRuntimePu
         serving_generation: publication.serving_generation,
         credential_version: publication.credential_version,
         recovery_pending: publication.recovery_pending,
+        recovery_operation_id: publication.recovery_operation_id,
         recovery_attempts_since_success: publication.recovery_attempts_since_success,
         recovery_next_delay_ms: publication.recovery_next_delay_ms,
     }
