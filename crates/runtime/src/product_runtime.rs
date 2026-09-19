@@ -268,9 +268,10 @@ impl ProductRuntimeCoordinator {
             }
             Arc::clone(&state.generation)
         };
-        let admission = generation
-            .policy()
-            .observe_network(observation, observed_handle, interface_name)?;
+        let admission =
+            generation
+                .policy()
+                .observe_network(observation, observed_handle, interface_name)?;
         generation.rotation().observe_cellular(admission);
         Ok(admission)
     }
