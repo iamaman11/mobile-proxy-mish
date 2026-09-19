@@ -4,6 +4,7 @@ param(
     [string] $PackageName = 'com.mobileproxymish.app.debug',
     [ValidateRange(1, 8)][int] $SuccessfulOperations = 3,
     [ValidateRange(30, 180)][int] $OperationDeadlineSeconds = 120,
+    [ValidateRange(2, 30)][int] $AdbTransportTimeoutSeconds = 10,
     [string] $EvidencePath = (Join-Path $env:TEMP 'mish-u5-rotation-acceptance-v1.json')
 )
 
@@ -13,6 +14,7 @@ $ErrorActionPreference = 'Stop'
 $script:Schema = 'mish.lab.u5-rotation-acceptance/v1'
 $script:SnapshotMethod = 'snapshot_v2'
 $script:PollMilliseconds = 75
+$script:AdbTransportTimeoutMilliseconds = $AdbTransportTimeoutSeconds * 1000
 $script:RecoveryDeadlineSeconds = 45
 $script:RestoreDeadlineSeconds = 20
 $script:RotationComponent = "$PackageName/com.mobileproxymish.app.DebugRotationActivity"
@@ -28,17 +30,48 @@ function Stop-MishRotationAcceptance {
 }
 
 function Invoke-MishAdbText {
-    param([Parameter(Mandatory)][string[]] $Arguments)
-    $output = @(& $AdbPath @Arguments 2>$null)
-    $exitCode = $LASTEXITCODE
-    if ($null -eq $exitCode -or $exitCode -ne 0) {
-        Stop-MishRotationAcceptance 'LAB_ADB_FAILED' "ADB command failed with exit code $exitCode."
+    param(
+        [Parameter(Mandatory)][string[]] $Arguments,
+        [Parameter(Mandatory)][string] $Operation
+    )
+
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $AdbPath
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    foreach ($argument in $Arguments) {
+        [void]$startInfo.ArgumentList.Add($argument)
     }
-    return ($output -join "`n").Trim()
+
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) {
+            Stop-MishRotationAcceptance 'LAB_ADB_FAILED' "ADB operation '$Operation' did not start."
+        }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit($script:AdbTransportTimeoutMilliseconds)) {
+            try { $process.Kill($true) } catch {}
+            try { [void]$process.WaitForExit(2000) } catch {}
+            Stop-MishRotationAcceptance 'LAB_ADB_TIMEOUT' "ADB operation '$Operation' exceeded the bounded transport deadline."
+        }
+        $output = $stdoutTask.GetAwaiter().GetResult()
+        [void]$stderrTask.GetAwaiter().GetResult()
+        $exitCode = $process.ExitCode
+        if ($exitCode -ne 0) {
+            Stop-MishRotationAcceptance 'LAB_ADB_FAILED' "ADB operation '$Operation' failed with exit code $exitCode."
+        }
+        return $output.Trim()
+    }
+    finally {
+        $process.Dispose()
+    }
 }
 
 function Get-MishAndroidSnapshot {
-    $contentOutput = Invoke-MishAdbText -Arguments @(
+    $contentOutput = Invoke-MishAdbText -Operation 'snapshot_v2' -Arguments @(
         'shell', 'content', 'call',
         '--uri', "content://$PackageName.diagnostics",
         '--method', $script:SnapshotMethod
@@ -70,7 +103,7 @@ function Get-MishAndroidSnapshot {
 }
 
 function Get-MishAirplaneState {
-    $raw = (Invoke-MishAdbText -Arguments @('shell', 'cmd', 'connectivity', 'airplane-mode')).Trim().ToLowerInvariant()
+    $raw = (Invoke-MishAdbText -Operation 'observe_airplane' -Arguments @('shell', 'cmd', 'connectivity', 'airplane-mode')).Trim().ToLowerInvariant()
     if ($raw -in @('enabled', 'true', '1', 'airplane mode is enabled')) { return 'ENABLED' }
     if ($raw -in @('disabled', 'false', '0', 'airplane mode is disabled')) { return 'DISABLED' }
     return 'UNKNOWN'
@@ -109,13 +142,13 @@ function Assert-MishReadyBaseline {
 function Get-MishProcessMetrics {
     param([Parameter(Mandatory)] $Snapshot)
 
-    $processText = Invoke-MishAdbText -Arguments @('shell', 'pidof', $PackageName)
+    $processText = Invoke-MishAdbText -Operation 'observe_pid' -Arguments @('shell', 'pidof', $PackageName)
     if ([string]::IsNullOrWhiteSpace($processText) -or $processText -match '\s') {
         Stop-MishRotationAcceptance 'PRODUCT_PROCESS_IDENTITY_INVALID' 'Exactly one PRODUCT process is required.'
     }
     [int]$processId = $processText
 
-    $status = Invoke-MishAdbText -Arguments @(
+    $status = Invoke-MishAdbText -Operation 'observe_process_status' -Arguments @(
         'shell', 'run-as', $PackageName, 'cat', "/proc/$processId/status"
     )
     $threadsMatch = [regex]::Match($status, '(?m)^Threads:\s+(?<count>\d+)\s*$')
@@ -123,7 +156,7 @@ function Get-MishProcessMetrics {
         Stop-MishRotationAcceptance 'LAB_PROCESS_METRICS_UNAVAILABLE' 'PRODUCT thread count is unavailable.'
     }
 
-    $fdText = Invoke-MishAdbText -Arguments @(
+    $fdText = Invoke-MishAdbText -Operation 'observe_fd_count' -Arguments @(
         'shell', 'run-as', $PackageName, 'sh', '-c', "ls /proc/$processId/fd 2>/dev/null | wc -l"
     )
     if ($fdText -notmatch '^\d+$') {
@@ -132,7 +165,7 @@ function Get-MishProcessMetrics {
 
     # Toybox CMD is the per-thread command name. Enumerate all visible threads and filter
     # PRODUCT PID locally: DEVICE-1 does not reliably expose all worker rows through ps -T -p.
-    $threadText = Invoke-MishAdbText -Arguments @(
+    $threadText = Invoke-MishAdbText -Operation 'observe_thread_topology' -Arguments @(
         'shell', 'ps', '-A', '-T', '-w', '-o', 'PID,TID,CMD'
     )
     $threadNames = @(
@@ -248,6 +281,18 @@ function Add-MishTimelineSample {
     ) -join '|'
     if ($key -ceq [string]$LastKey.Value) { return }
     $LastKey.Value = $key
+    Write-Host ("MISH_U5_ROTATION_TIMELINE=elapsed_ms={0};airplane={1};state={2};operation_id={3};owner={4};cellular={5};root={6};readiness={7};mesh={8};after_generation={9}" -f @(
+        $ElapsedMs,
+        $Airplane,
+        [string]$Snapshot.rotation.state,
+        $operationId,
+        $owner,
+        [bool]$Snapshot.cellular.admitted,
+        [bool]$Snapshot.root.policy_authorized,
+        [string]$Snapshot.readiness.state,
+        [bool]$Snapshot.mesh.ingress_running,
+        $afterGeneration
+    ))
     $Timeline.Add([pscustomobject][ordered]@{
         elapsed_ms = $ElapsedMs
         airplane = $Airplane
@@ -269,6 +314,7 @@ function Invoke-MishOneRotation {
         [Parameter(Mandatory)][int64] $ExpectedCredentialVersion
     )
 
+    Write-Host "MISH_U5_ROTATION_OPERATION_START=$Ordinal"
     $before = Get-MishAndroidSnapshot
     Assert-MishReadyBaseline -Snapshot $before
     $generationA = Get-MishOptionalInt64 $before.cellular.owner_sequence
@@ -280,10 +326,12 @@ function Invoke-MishOneRotation {
     }
 
     $startTicks = [Environment]::TickCount64
-    $startOutput = Invoke-MishAdbText -Arguments @('shell', 'am', 'start', '-W', '-n', $script:RotationComponent)
+    Write-Host "MISH_U5_ROTATION_OPERATION_PHASE=$Ordinal:TRIGGER_START"
+    $startOutput = Invoke-MishAdbText -Operation "rotation_$($Ordinal)_trigger" -Arguments @('shell', 'am', 'start', '-W', '-n', $script:RotationComponent)
     if ($startOutput -notmatch 'Status:\s+ok') {
         Stop-MishRotationAcceptance 'LAB_ROTATION_TRIGGER_FAILED' 'Debug PRODUCT rotation trigger did not launch successfully.'
     }
+    Write-Host "MISH_U5_ROTATION_OPERATION_PHASE=$Ordinal:TRIGGERED"
 
     $deadlineTicks = $startTicks + ([int64]$OperationDeadlineSeconds * 1000)
     $timeline = [System.Collections.Generic.List[object]]::new()
@@ -428,6 +476,7 @@ function Invoke-MishOneRotation {
     if ($null -eq $readinessReadyMs) {
         Stop-MishRotationAcceptance 'PRODUCT_RECOVERY_NOT_READY' 'Readiness/Mesh did not naturally recover after generation B.'
     }
+    Write-Host "MISH_U5_ROTATION_OPERATION_PHASE=$Ordinal:RECOVERED"
     if ((Get-MishAirplaneState) -cne 'DISABLED') {
         Stop-MishRotationAcceptance 'PRODUCT_AIRPLANE_FINAL_ON' 'Normal rotation did not finish with airplane OFF.'
     }
@@ -464,7 +513,8 @@ function Invoke-MishShutdownRestoreAfterOn {
     }
 
     $startTicks = [Environment]::TickCount64
-    [void](Invoke-MishAdbText -Arguments @('shell', 'am', 'start', '-W', '-n', $script:RotationComponent))
+    Write-Host 'MISH_U5_RESTORE_PHASE=TRIGGER_START'
+    [void](Invoke-MishAdbText -Operation 'restore_rotation_trigger' -Arguments @('shell', 'am', 'start', '-W', '-n', $script:RotationComponent))
     $deadline = $startTicks + ([int64]$OperationDeadlineSeconds * 1000)
     $observedOnMs = $null
     while ([Environment]::TickCount64 -lt $deadline) {
@@ -485,8 +535,10 @@ function Invoke-MishShutdownRestoreAfterOn {
     if ($null -eq $observedOnMs) {
         Stop-MishRotationAcceptance 'PRODUCT_AIRPLANE_ON_UNOBSERVED' 'Restore case never physically observed airplane ON.'
     }
+    Write-Host 'MISH_U5_RESTORE_PHASE=AIRPLANE_ON_OBSERVED'
 
-    [void](Invoke-MishAdbText -Arguments @('shell', 'am', 'start', '-W', '-n', $script:StopComponent))
+    Write-Host 'MISH_U5_RESTORE_PHASE=STOP_START'
+    [void](Invoke-MishAdbText -Operation 'restore_stop_trigger' -Arguments @('shell', 'am', 'start', '-W', '-n', $script:StopComponent))
     $restoreDeadline = [Environment]::TickCount64 + ([int64]$script:RestoreDeadlineSeconds * 1000)
     $offMs = $null
     while ([Environment]::TickCount64 -lt $restoreDeadline) {
@@ -499,8 +551,10 @@ function Invoke-MishShutdownRestoreAfterOn {
     if ($null -eq $offMs) {
         Stop-MishRotationAcceptance 'PRODUCT_RESTORE_OFF_FAILED' 'Normal PRODUCT stop did not restore airplane OFF after observed ON.'
     }
+    Write-Host 'MISH_U5_RESTORE_PHASE=AIRPLANE_OFF_OBSERVED'
 
-    [void](Invoke-MishAdbText -Arguments @('shell', 'am', 'start', '-W', '-n', $script:MainComponent))
+    Write-Host 'MISH_U5_RESTORE_PHASE=RESTART_START'
+    [void](Invoke-MishAdbText -Operation 'restore_restart_trigger' -Arguments @('shell', 'am', 'start', '-W', '-n', $script:MainComponent))
     $readyDeadline = [Environment]::TickCount64 + ([int64]$script:RecoveryDeadlineSeconds * 1000)
     $ready = $null
     while ([Environment]::TickCount64 -lt $readyDeadline) {
@@ -515,6 +569,7 @@ function Invoke-MishShutdownRestoreAfterOn {
         Start-Sleep -Milliseconds 150
     }
     Assert-MishReadyBaseline -Snapshot $ready
+    Write-Host 'MISH_U5_RESTORE_PHASE=READY'
 
     return [pscustomobject][ordered]@{
         airplane_on_observed = $true
