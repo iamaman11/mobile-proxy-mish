@@ -83,19 +83,19 @@ pub fn decode_provisioning_envelope(
     let mut password = None;
 
     while !reader.exhausted() {
-        let tag = reader.read_tag().map_err(map_invalid)?;
+        let tag = reader.read_tag().map_err(|_| ExternalCredentialError::InvalidProvisioningEnvelope)?;
         match tag.field_number {
             1 => {
                 if tag.wire_type != WIRE_VARINT || schema_version.is_some() {
                     return Err(ExternalCredentialError::InvalidProvisioningEnvelope);
                 }
-                schema_version = Some(reader.read_varint().map_err(map_invalid)?);
+                schema_version = Some(reader.read_varint().map_err(|_| ExternalCredentialError::InvalidProvisioningEnvelope)?);
             }
             2 => {
                 if tag.wire_type != WIRE_VARINT || credential_version.is_some() {
                     return Err(ExternalCredentialError::InvalidProvisioningEnvelope);
                 }
-                credential_version = Some(reader.read_varint().map_err(map_invalid)?);
+                credential_version = Some(reader.read_varint().map_err(|_| ExternalCredentialError::InvalidProvisioningEnvelope)?);
             }
             3 => {
                 if tag.wire_type != WIRE_LENGTH_DELIMITED || credential_id.is_some() {
@@ -107,7 +107,7 @@ pub fn decode_provisioning_envelope(
                 if tag.wire_type != WIRE_LENGTH_DELIMITED || challenge.is_some() {
                     return Err(ExternalCredentialError::InvalidProvisioningEnvelope);
                 }
-                challenge = Some(reader.read_bytes().map_err(map_invalid)?.to_vec());
+                challenge = Some(reader.read_bytes().map_err(|_| ExternalCredentialError::InvalidProvisioningEnvelope)?.to_vec());
             }
             5 => {
                 if tag.wire_type != WIRE_LENGTH_DELIMITED || username.is_some() {
@@ -121,7 +121,7 @@ pub fn decode_provisioning_envelope(
                 }
                 password = Some(read_utf8(&mut reader)?);
             }
-            _ => reader.skip(tag.wire_type).map_err(map_invalid)?,
+            _ => reader.skip(tag.wire_type).map_err(|_| ExternalCredentialError::InvalidProvisioningEnvelope)?,
         }
     }
 
@@ -153,7 +153,7 @@ pub fn decode_provisioning_envelope(
 }
 
 fn read_utf8(reader: &mut ProtoReader<'_>) -> Result<String, ExternalCredentialError> {
-    let bytes = reader.read_bytes().map_err(map_invalid)?;
+    let bytes = reader.read_bytes().map_err(|_| ExternalCredentialError::InvalidProvisioningEnvelope)?;
     Ok(str::from_utf8(bytes)
         .map_err(|_| ExternalCredentialError::InvalidProvisioningEnvelope)?
         .to_owned())
@@ -186,10 +186,6 @@ fn valid_lower_hex(value: &str, expected_len: usize) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-fn map_invalid(_: ExternalCredentialError) -> ExternalCredentialError {
-    ExternalCredentialError::InvalidProvisioningEnvelope
 }
 
 #[cfg(test)]
