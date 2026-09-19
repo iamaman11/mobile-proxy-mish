@@ -262,7 +262,8 @@ def main() -> None:
         "CONTROL_SHA",
         "No successful build, merge to main, label, or completed workflow starts DEVICE-1",
         "one GitHub Actions Device Cycle run",
-        "They are not PRODUCT release identity and cannot be promoted",
+        "Development device candidates are the canonical Android physical-acceptance bytes for their exact source head",
+        "They are never promoted through an RC lineage",
     ):
         require(pipeline, required, "stable development delivery documentation drifted")
 
