@@ -363,7 +363,7 @@ Next stage: **U5 — First-class IP Rotation**.
 
 # U5 — First-class IP Rotation
 
-`crates/rotation` remains the natural owner. Android executes only the narrow airplane-mode effect.
+`crates/rotation` remains the natural semantic owner. `mish-runtime` executes the sealed airplane observe/ON/OFF effects through the existing persistent Rust/Tokio root session; Android/Kotlin owns no airplane command or rotation policy.
 
 One operation at a time:
 
