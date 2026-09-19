@@ -125,7 +125,7 @@ jobs:
           :app:lintDebug
 
       - name: Rust workspace quality gate
-        if: ${{ steps.scope.outputs.build_required == 'true' && github.event.pull_request.draft == false }}
+        if: ${{ steps.scope.outputs.build_required == 'true' && (github.event.pull_request.draft == false || contains(github.event.pull_request.body, '[full-hosted]')) }}
         shell: bash
         run: |
           set -euo pipefail
@@ -134,7 +134,7 @@ jobs:
           cargo test --workspace --locked
 
       - name: Set up Android Rust toolchain
-        if: ${{ steps.scope.outputs.build_required == 'true' && github.event.pull_request.draft == false }}
+        if: ${{ steps.scope.outputs.build_required == 'true' && (github.event.pull_request.draft == false || contains(github.event.pull_request.body, '[full-hosted]')) }}
         shell: bash
         run: |
           set -euo pipefail
@@ -151,7 +151,7 @@ jobs:
           echo "MISH_TARGET_ABI=$TARGET_ABI" >> "$GITHUB_ENV"
 
       - name: Set up pinned Android NDK
-        if: ${{ steps.scope.outputs.build_required == 'true' && github.event.pull_request.draft == false }}
+        if: ${{ steps.scope.outputs.build_required == 'true' && (github.event.pull_request.draft == false || contains(github.event.pull_request.body, '[full-hosted]')) }}
         shell: bash
         run: |
           set -euo pipefail
@@ -168,7 +168,7 @@ jobs:
           echo "ANDROID_NDK=$NDK_PATH" >> "$GITHUB_ENV"
 
       - name: Unit test and assemble host gate
-        if: ${{ steps.scope.outputs.build_required == 'true' && github.event.pull_request.draft == false }}
+        if: ${{ steps.scope.outputs.build_required == 'true' && (github.event.pull_request.draft == false || contains(github.event.pull_request.body, '[full-hosted]')) }}
         run: >-
           gradle --no-daemon -p android
           :app:testDebugUnitTest
@@ -176,7 +176,7 @@ jobs:
           :app:assembleDebugAndroidTest
 
       - name: Verify exact PRODUCT candidate contract
-        if: ${{ steps.scope.outputs.build_required == 'true' && github.event.pull_request.draft == false }}
+        if: ${{ steps.scope.outputs.build_required == 'true' && (github.event.pull_request.draft == false || contains(github.event.pull_request.body, '[full-hosted]')) }}
         run: python3 tools/verify_android_candidate.py
 
       - name: Stage exact-head device candidate

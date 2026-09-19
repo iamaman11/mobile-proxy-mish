@@ -1,5 +1,8 @@
 # E4 stateless acceptance runner
 
+> **Historical identity note (superseded):** Any RC tag/GitHub Release identity described below is not an active project pipeline. The Android RC workflows and release-lineage helpers were removed. Current Android build/physical acceptance uses the exact Integration Android Preflight device-candidate artifact and canonical Device Cycle. If this E3/E4 capability is reactivated, its identity boundary must be migrated to that exact candidate lineage; it must not recreate an RC/prerelease authority.
+
+
 This document defines the repository-owned execution boundary for E4. It operationalizes the scenario contract in `docs/testing/E4_FULL_STACK.md` without turning LAB code into a second PRODUCT owner, release registry, provider control plane, or build system.
 
 ## Current scope

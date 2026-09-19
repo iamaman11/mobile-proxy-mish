@@ -145,7 +145,8 @@ def main() -> None:
         "retention-days: 7",
         "Local build required: **NO**",
         "      - name: Set up JDK 17\n        if: ${{ steps.scope.outputs.build_required == 'true' }}",
-        "      - name: Unit test and assemble host gate\n        if: ${{ steps.scope.outputs.build_required == 'true' && github.event.pull_request.draft == false }}",
+        "contains(github.event.pull_request.body, '[full-hosted]')",
+        "      - name: Unit test and assemble host gate\n        if: ${{ steps.scope.outputs.build_required == 'true' && (github.event.pull_request.draft == false || contains(github.event.pull_request.body, '[full-hosted]')) }}",
         "      - name: Stage exact-head device candidate\n        if: ${{ steps.scope.outputs.build_required == 'true' && github.event.pull_request.draft == false }}",
         "      - name: Upload exact-head device candidate\n        if: ${{ steps.scope.outputs.build_required == 'true' && github.event.pull_request.draft == false }}",
         "Static-only preflight summary",
@@ -247,6 +248,22 @@ def main() -> None:
     if (ROOT / ".github/workflows/device-candidate-physical.yml").exists():
         raise SystemExit("delivery contract: obsolete separate device-candidate-physical workflow must not exist")
 
+    for obsolete in (
+        ".github/workflows/android-release.yml",
+        ".github/workflows/e3-physical-cellular.yml",
+        "scripts/release/android_release.py",
+        "scripts/release/e3_harness.py",
+        "scripts/release/failed_rc_reservation.py",
+        "scripts/release/test_android_release.py",
+        "scripts/release/test_e3_harness.py",
+        "scripts/release/test_failed_rc_reservation.py",
+        "scripts/release/test_release_workflow_topology.py",
+    ):
+        if (ROOT / obsolete).exists():
+            raise SystemExit(
+                "delivery contract: obsolete RC/release-lineage path must stay deleted: " + obsolete
+            )
+
     pipeline = "docs/architecture/DEVELOPMENT_PIPELINE.md"
     for required in (
         "Android 11 / API 30",
@@ -261,7 +278,8 @@ def main() -> None:
         "CONTROL_SHA",
         "No successful build, merge to main, label, or completed workflow starts DEVICE-1",
         "one GitHub Actions Device Cycle run",
-        "They are not PRODUCT release identity and cannot be promoted",
+        "Development device candidates are the canonical Android physical-acceptance bytes for their exact source head",
+        "They are never promoted through an RC lineage",
     ):
         require(pipeline, required, "stable development delivery documentation drifted")
 

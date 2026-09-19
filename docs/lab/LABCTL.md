@@ -1,5 +1,8 @@
 # LABCTL — stateless physical-lab execution adapter
 
+> **Historical identity note (superseded):** Any RC tag/GitHub Release identity described below is not an active project pipeline. The Android RC workflows and release-lineage helpers were removed. Current Android build/physical acceptance uses the exact Integration Android Preflight device-candidate artifact and canonical Device Cycle. If this E3/E4 capability is reactivated, its identity boundary must be migrated to that exact candidate lineage; it must not recreate an RC/prerelease authority.
+
+
 `labctl` is the repository-owned stateless execution adapter for Windows physical workflows.
 
 It is not a build system, daemon, scheduler, artifact registry, release selector, device registry, status database, or second control plane.

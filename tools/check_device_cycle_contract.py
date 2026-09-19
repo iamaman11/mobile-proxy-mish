@@ -52,13 +52,17 @@ def main() -> None:
         "candidate build is not a completed successful PR preflight",
         "Integration Android Preflight",
         "probe_only supports only the current-function loopback_connect probe",
-        "full accepts only the explicit optional capacity_resources probe",
+        "full accepts only the explicit optional capacity_resources, recovery_lifecycle, dns_lifetime_live, or u5_rotation probe",
         "install_only/diagnose_only do not accept a probe",
         "capacity_resources",
         "recovery_lifecycle",
         "dns_lifetime_live",
+        "u5_rotation",
         "Explicit U3 DNS lifetime - live same-process observation",
         "diagnose-dns-lifetime-live.ps1",
+        "Explicit U5 rotation - PRODUCT-owned airplane cycle acceptance",
+        "diagnose-u5-rotation.ps1",
+        ".\\lab\\windows\\test-u5-rotation-probe-contract.ps1",
         'echo "control_sha=$GITHUB_SHA"',
         "actions: read",
         "Exercise orchestration and installer contracts",
@@ -261,6 +265,59 @@ def main() -> None:
     ):
         forbid(dns_probe, forbidden, "DNS lifetime observation must not become a second PRODUCT/root/build path")
 
+    rotation_probe = "lab/windows/diagnose-u5-rotation.ps1"
+    for required in (
+        "mish.lab.u5-rotation-acceptance/v1",
+        "DebugRotationActivity",
+        "DebugRuntimeStopActivity",
+        "'shell', 'cmd', 'connectivity', 'airplane-mode'",
+        "SuccessfulOperations = 3",
+        "rotation_active_tasks",
+        "runtime_generation_stable_across_normal_rotations",
+        "root_session_stable_across_normal_rotations",
+        "rotation_tasks_quiescent",
+        "request_to_airplane_on_ms",
+        "request_to_cellular_loss_ms",
+        "loss_to_airplane_off_request_ms",
+        "off_to_fresh_owner_ms",
+        "off_to_root_policy_authorized_ms",
+        "off_to_readiness_ready_ms",
+        "off_to_functional_public_ip_ms",
+        "total_rotation_ms",
+        "material_unchanged = $credentialMaterialUnchanged",
+        "secrets_persisted_in_evidence = $false",
+        "raw_ip_persisted = $false",
+        "U5_ROTATION_PHYSICAL_ACCEPTANCE_PASS",
+        "PRODUCT_RESTORE_OFF_FAILED",
+    ):
+        require(rotation_probe, required, "U5 physical rotation evidence drifted")
+    for forbidden in (
+        "airplane-mode enable",
+        "airplane-mode disable",
+        "'shell', 'su'",
+        "'shell', 'iptables'",
+        "'shell', 'ip6tables'",
+        "settings put",
+        "svc data",
+        "'cmd', 'phone', 'data'",
+        "gradle ",
+        "cargo build",
+        "assembleDebug",
+        "before_ip",
+        "after_ip",
+    ):
+        forbid(rotation_probe, forbidden, "U5 LAB probe must observe PRODUCT rotation, never own airplane/root/build semantics")
+
+    rotation_probe_contract = "lab/windows/test-u5-rotation-probe-contract.ps1"
+    for required in (
+        "U5_ROTATION_PROBE_CONTRACT=PASS",
+        "airplane-mode enable",
+        "airplane-mode disable",
+        "DebugRotationActivity",
+        "DebugRuntimeStopActivity",
+    ):
+        require(rotation_probe_contract, required, "U5 physical-probe self-test drifted")
+
     capacity_probe = "lab/windows/diagnose-capacity-resources.ps1"
     for required in (
         "mish.diagnostics/v2",
@@ -355,7 +412,9 @@ def main() -> None:
         "capacity_resources",
         "recovery_lifecycle",
         "dns_lifetime_live",
+        "u5_rotation",
         "FULL_BASELINE_PLUS_DNS_LIFETIME_OBSERVATION",
+        "FULL_BASELINE_PLUS_U5_ROTATION",
         "Get-MishTargetedAcceptance",
         "protocol_matrix_pass",
         "acceptance_result",
@@ -378,6 +437,9 @@ def main() -> None:
         "DNS lifetime observation PASS must remain measurement-only",
         "DNS lifetime collection failure must remain LAB-only",
         "A baseline PRODUCT failure must still outrank measurement-only DNS evidence",
+        "U5 rotation PASS must accept the exact candidate only with baseline + targeted physical evidence",
+        "Observed U5 rotation PRODUCT failure must reject the exact candidate",
+        "LAB U5 rotation collection failure must not reject the PRODUCT candidate",
         "Baseline PRODUCT failure must outrank absent capacity evidence",
         "diagnose-capacity-resources.ps1",
         "U2_CAPACITY_AND_RESOURCE_MEASUREMENTS_PASS",
@@ -395,7 +457,9 @@ def main() -> None:
         "/mish-cycle full <PRODUCT_SHA> capacity_resources",
         "/mish-cycle full <PRODUCT_SHA> recovery_lifecycle",
         "/mish-cycle full <PRODUCT_SHA> dns_lifetime_live",
+        "/mish-cycle full <PRODUCT_SHA> u5_rotation",
         "measurement-only",
+        "PRODUCT-owned rotation",
         "external Mesh endpoint",
         "owner-backed",
         "one GitHub Actions Device Cycle run",

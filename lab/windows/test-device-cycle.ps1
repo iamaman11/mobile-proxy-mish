@@ -309,6 +309,54 @@ try {
         throw 'Baseline PRODUCT failure must outrank absent capacity evidence.'
     }
 
+    $rotationPassPath = Join-Path $root 'u5-rotation-pass.json'
+    [ordered]@{
+        schema = 'mish.lab.u5-rotation-acceptance/v1'
+        acceptance_result = 'PASS'
+        classification = 'U5_ROTATION_PHYSICAL_ACCEPTANCE_PASS'
+        raw_ip_persisted = $false
+        credential = [ordered]@{ version_unchanged = $true; material_unchanged = $true }
+    } | ConvertTo-Json -Depth 6 | Set-Content -Encoding UTF8 -LiteralPath $rotationPassPath
+    $rotationPass = & $reportScript -Mode full -PrNumber 269 -SourceSha ('8' * 40) -ControlSha $controlSha -DiagnosticEvidencePath $passDiagnostic -RequestedProbe u5_rotation -TargetedEvidencePath $rotationPassPath -OutputPath (Join-Path $root 'u5-rotation-pass-report.json') | Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$rotationPass.cycle_result -cne 'PASS' -or
+        [string]$rotationPass.classification -cne 'U5_ROTATION_PHYSICAL_ACCEPTANCE_PASS' -or
+        [string]$rotationPass.acceptance_scope -cne 'FULL_BASELINE_PLUS_U5_ROTATION' -or
+        [string]$rotationPass.exact_candidate_acceptance -cne 'PASS'
+    ) {
+        throw 'U5 rotation PASS must accept the exact candidate only with baseline + targeted physical evidence.'
+    }
+
+    $rotationProductPath = Join-Path $root 'u5-rotation-product-fail.json'
+    [ordered]@{
+        schema = 'mish.lab.u5-rotation-acceptance/v1'
+        acceptance_result = 'FAIL'
+        classification = 'PRODUCT_ROTATION_FAILED'
+    } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 -LiteralPath $rotationProductPath
+    $rotationProduct = & $reportScript -Mode full -PrNumber 269 -SourceSha ('9' * 40) -ControlSha $controlSha -DiagnosticEvidencePath $passDiagnostic -RequestedProbe u5_rotation -TargetedEvidencePath $rotationProductPath -OutputPath (Join-Path $root 'u5-rotation-product-report.json') | Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$rotationProduct.cycle_result -cne 'PRODUCT_FAIL' -or
+        [string]$rotationProduct.classification -cne 'PRODUCT_ROTATION_FAILED' -or
+        [string]$rotationProduct.exact_candidate_acceptance -cne 'FAIL'
+    ) {
+        throw 'Observed U5 rotation PRODUCT failure must reject the exact candidate.'
+    }
+
+    $rotationLabPath = Join-Path $root 'u5-rotation-lab-fail.json'
+    [ordered]@{
+        schema = 'mish.lab.u5-rotation-acceptance/v1'
+        acceptance_result = 'FAIL'
+        classification = 'LAB_ADB_FAILED'
+    } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 -LiteralPath $rotationLabPath
+    $rotationLab = & $reportScript -Mode full -PrNumber 269 -SourceSha ('a' * 40) -ControlSha $controlSha -DiagnosticEvidencePath $passDiagnostic -RequestedProbe u5_rotation -TargetedEvidencePath $rotationLabPath -OutputPath (Join-Path $root 'u5-rotation-lab-report.json') | Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$rotationLab.cycle_result -cne 'LAB_FAIL' -or
+        [string]$rotationLab.classification -cne 'LAB_ADB_FAILED' -or
+        [string]$rotationLab.exact_candidate_acceptance -cne 'NOT_EVALUATED'
+    ) {
+        throw 'LAB U5 rotation collection failure must not reject the PRODUCT candidate.'
+    }
+
     Write-Host 'DEVICE_CYCLE_CONTRACT=PASS'
 }
 finally {
