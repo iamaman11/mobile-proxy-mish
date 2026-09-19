@@ -345,4 +345,3 @@ fn map_android_network_error(error: AndroidNetworkError) -> ProxyOutboundConnect
         | AndroidNetworkError::NativeAddressConversionFailed => ProxyOutboundConnectError::Failed,
     }
 }
-
