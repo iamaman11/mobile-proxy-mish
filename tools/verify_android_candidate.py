@@ -54,6 +54,8 @@ def main() -> None:
         "MeshTransportController",
         "RuntimeLifecycleController",
         "RuntimeProcessLifecycleController",
+        "RuntimeStartAction",
+        "RuntimeStopAction",
         "NativeProxyRuntime",
         "ProxyServingLifecycleController",
         "CellularNetworkLease",
