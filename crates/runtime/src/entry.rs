@@ -18,6 +18,8 @@ pub use readiness_runtime::*;
 
 mod root_session;
 
+mod airplane_effect;
+
 mod root_policy_effect;
 mod root_policy_runtime;
 pub use root_policy_runtime::*;
@@ -62,5 +64,8 @@ pub use product_runtime::*;
 
 mod product_diagnostics;
 pub use product_diagnostics::*;
+
+mod rotation_runtime;
+pub use rotation_runtime::*;
 
 pub use proxy_runtime::*;
