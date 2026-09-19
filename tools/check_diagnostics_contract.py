@@ -64,6 +64,9 @@ def main() -> None:
         ("runtime_before == runtime_after", "lifecycle stability fence"),
         ("first == second", "owner-fact stability fence"),
         ("capture_generation(&generation)", "single pinned generation source"),
+        ("generation_replacement_during_capture_never_returns_a_mixed_snapshot", "concurrent generation regression"),
+        ("root_publication: Option<CellularPolicyPublication>", "root publication binding"),
+        ("root_session_generation: Option<u64>", "root session generation"),
         ("RotationDiagnosticState::NotSupported", "native pre-G rotation projection"),
     ):
         require(diagnostics_owner, needle, label)
@@ -72,6 +75,12 @@ def main() -> None:
         ("pub struct ProductDiagnosticSnapshotView", "aggregate UniFFI record"),
         ("pub fn diagnostic_snapshot(", "single UniFFI diagnostic method"),
         ("map_product_diagnostic_snapshot", "Rust semantic projection"),
+        ("root_policy_authorized_generation", "root authorization generation"),
+        ("root_last_failure_class", "root last failure class"),
+        ("proxy_recovery_operation_id", "Proxy recovery operation identity"),
+        ("mesh_serving_generation", "Mesh serving generation"),
+        ("readiness_expected_freshness", "readiness expected freshness"),
+        ("readiness_observed_freshness", "readiness observed freshness"),
     ):
         require(product_ffi, needle, label)
 
@@ -125,6 +134,12 @@ def main() -> None:
         ('put("next_delay_ms", snapshot.rootRecovery.nextDelayMs.toLong())', "root recovery backoff"),
         ('snapshot.proxyRecoveryAttemptsScheduled.toLong()', "proxy recovery attempt"),
         ('put("next_delay_ms", snapshot.proxyRecoveryNextDelayMs.toLong())', "proxy recovery backoff"),
+        ('snapshot.rootPolicyAuthorizedGeneration?.toLong() ?: JSONObject.NULL', "root authorized generation"),
+        ('putNullable("last_failure_class", snapshot.rootLastFailureClass)', "root last failure class"),
+        ('put("operation_id", snapshot.proxyRecoveryOperationId.toLong())', "Proxy recovery operation"),
+        ('snapshot.meshServingGeneration?.toLong() ?: JSONObject.NULL', "Mesh serving generation"),
+        ('snapshot.readinessExpectedFreshness?.toLong() ?: JSONObject.NULL', "readiness expected freshness"),
+        ('snapshot.readinessObservedFreshness?.toLong() ?: JSONObject.NULL', "readiness observed freshness"),
     ):
         require(provider, needle, label)
 
@@ -169,6 +184,16 @@ def main() -> None:
     require(workflow, "github.event.comment.body == '/mish-diag snapshot'", "strict command grammar")
     require(workflow, "collect-device-diagnostic.ps1", "canonical collector")
     require(workflow, "mish-device-diagnostic-v2.json", "V2 evidence path")
+
+    serialization_test = read(
+        "android/app/src/test/java/com/mobileproxymish/app/MishDiagnosticsSerializationTest.kt"
+    )
+    require(serialization_test, "ProductDiagnosticSnapshotView(", "atomic snapshot fixture")
+    require(serialization_test, "renderMishDiagnosticSnapshotV2(", "serializer invocation")
+    require(serialization_test, 'getLong("policy_authorized_generation")', "root generation assertion")
+    require(serialization_test, 'getLong("operation_id")', "Proxy operation assertion")
+    require(serialization_test, 'getLong("serving_generation")', "Mesh generation assertion")
+    require(serialization_test, 'getLong("expected_freshness")', "readiness freshness assertion")
 
     print("diagnostics contract: PASS")
 
