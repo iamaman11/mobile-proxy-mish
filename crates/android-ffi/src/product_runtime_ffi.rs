@@ -14,6 +14,9 @@ use crate::transport_ffi::{
     map_view as map_mesh_view,
 };
 use mish_cellular::{NetworkHandle, NetworkObservation, ObservationSequence, RootPolicyNamespace};
+use mish_rotation::{
+    RotationFailure, RotationPhase, RotationRestoreResult, RotationSnapshot, RotationTerminalResult,
+};
 use mish_runtime::{
     CellularPolicyObserver, CellularPolicyPublication, CellularReconcileDiagnostic,
     ProductDiagnosticSnapshot, ProductRuntimeCoordinator, ProductRuntimeSnapshot,
@@ -22,10 +25,6 @@ use mish_runtime::{
     RootAuthorityStatus as OwnerRootAuthorityStatus, RootPolicyFailure as OwnerRootPolicyFailure,
     RootPolicyReconcileDiagnostic, RootPolicyResult as OwnerRootPolicyResult,
     RootRecoveryDiagnostic, RotationRuntimeStartError, RuntimeExecutionError,
-};
-use mish_rotation::{
-    RotationFailure, RotationPhase, RotationRestoreResult, RotationSnapshot,
-    RotationTerminalResult,
 };
 use mish_transport::MeshVpnObservation;
 use std::fmt;
@@ -71,7 +70,9 @@ impl fmt::Display for NativeRotationStartError {
             Self::RuntimeNotRunning => "PRODUCT runtime is not running",
             Self::AlreadyInProgress => "an IP rotation is already in progress",
             Self::NoCurrentCellular => "no current admitted Cellular generation",
-            Self::RootPolicyUnavailable => "root policy is not authorized for current Cellular generation",
+            Self::RootPolicyUnavailable => {
+                "root policy is not authorized for current Cellular generation"
+            }
             Self::CredentialUnavailable => "current proxy credential is unavailable",
             Self::ExecutorUnavailable => "native PRODUCT executor is unavailable",
             Self::StateUnavailable => "native rotation state is unavailable",
@@ -369,9 +370,7 @@ impl NativeProductRuntime {
         self.runtime.request_stop().map(|_| ()).map_err(Into::into)
     }
 
-    pub fn start_public_ip_rotation(
-        self: &Arc<Self>,
-    ) -> Result<u64, NativeRotationStartError> {
+    pub fn start_public_ip_rotation(self: &Arc<Self>) -> Result<u64, NativeRotationStartError> {
         self.runtime.start_public_ip_rotation().map_err(Into::into)
     }
 
@@ -763,7 +762,10 @@ fn map_rotation_snapshot(snapshot: RotationSnapshot) -> RotationSnapshotView {
             .terminal_result
             .map(rotation_terminal_code)
             .map(str::to_owned),
-        failure: snapshot.failure.map(rotation_failure_code).map(str::to_owned),
+        failure: snapshot
+            .failure
+            .map(rotation_failure_code)
+            .map(str::to_owned),
         restore_result: snapshot
             .restore_result
             .map(rotation_restore_code)
