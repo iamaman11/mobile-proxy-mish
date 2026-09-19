@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
-use tokio::time::{Instant, sleep_until, timeout, timeout_at};
+use tokio::time::{Instant, timeout, timeout_at};
 
 const ROTATION_SAFETY_DEADLINE: Duration = Duration::from_secs(90);
 const PUBLIC_IP_EFFECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -298,28 +298,26 @@ impl RotationRuntimeCoordinator {
     ) -> Result<(), RotationRuntimeStartError> {
         let this = Arc::clone(self);
         self.spawn_owned(async move {
-            tokio::select! {
-                _ = sleep_until(deadline) => {
-                    let snapshot = {
-                        let Ok(mut state) = this.state.lock() else {
-                            return;
-                        };
-                        if state.closed {
-                            return;
-                        }
-                        let current = state.machine.snapshot();
-                        if current.operation_id != Some(operation_id) || current.phase.terminal() {
-                            return;
-                        }
-                        match state.machine.deadline_exceeded(operation_id) {
-                            Ok(snapshot) => snapshot,
-                            Err(_) => return,
-                        }
-                    };
-                    this.after_transition(snapshot);
-                }
-                _ = cancel.notified() => {}
+            if timeout_at(deadline, cancel.notified()).await.is_ok() {
+                return;
             }
+            let snapshot = {
+                let Ok(mut state) = this.state.lock() else {
+                    return;
+                };
+                if state.closed {
+                    return;
+                }
+                let current = state.machine.snapshot();
+                if current.operation_id != Some(operation_id) || current.phase.terminal() {
+                    return;
+                }
+                match state.machine.deadline_exceeded(operation_id) {
+                    Ok(snapshot) => snapshot,
+                    Err(_) => return,
+                }
+            };
+            this.after_transition(snapshot);
         })
         .map_err(|_| RotationRuntimeStartError::ExecutorUnavailable)
     }
