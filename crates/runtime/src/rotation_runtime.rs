@@ -111,6 +111,19 @@ impl RotationRuntimeCoordinator {
             .unwrap_or_else(|_| RotationSnapshot::idle())
     }
 
+    pub fn active_task_count(&self) -> u32 {
+        self.state()
+            .map(|state| {
+                state
+                    .tasks
+                    .iter()
+                    .filter(|task| !task.is_finished())
+                    .count()
+                    .min(u32::MAX as usize) as u32
+            })
+            .unwrap_or(u32::MAX)
+    }
+
     pub fn set_observer(&self, observer: RotationObserver) {
         let snapshot = {
             let Ok(mut state) = self.state.lock() else {
