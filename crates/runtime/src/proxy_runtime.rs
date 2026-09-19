@@ -736,12 +736,9 @@ mod tests {
         let plan = ProxyServingPlan::canonical(Ipv4Addr::LOCALHOST.into(), credentials)
             .expect("canonical plan");
         let executor = RuntimeExecutor::new().expect("executor");
-        let runtime = ProxyServingRuntime::start(
-            Arc::clone(&executor),
-            plan,
-            Arc::new(RejectingConnector),
-        )
-        .expect("runtime");
+        let runtime =
+            ProxyServingRuntime::start(Arc::clone(&executor), plan, Arc::new(RejectingConnector))
+                .expect("runtime");
         assert!(runtime.is_healthy());
         assert_eq!(runtime.snapshot().state(), ProxyServingState::Running);
         assert_eq!(runtime.snapshot().failure(), None);
