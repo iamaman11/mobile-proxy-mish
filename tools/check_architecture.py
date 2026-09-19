@@ -1131,6 +1131,9 @@ def main() -> None:
         "runtime_before == runtime_after",
         "first == second",
         "capture_generation(&generation)",
+        "root_publication: Option<CellularPolicyPublication>",
+        "root_session_generation: Option<u64>",
+        "generation_replacement_during_capture_never_returns_a_mixed_snapshot",
         "RotationDiagnosticState::NotSupported",
     ):
         require_product(
@@ -1150,6 +1153,14 @@ def main() -> None:
         "pub fn diagnostic_snapshot(",
         ".diagnostic_snapshot()",
         "map_product_diagnostic_snapshot",
+        "root_policy_authorized_generation",
+        "root_last_failure_class",
+        "root_session_generation",
+        "proxy_recovery_operation_id",
+        "mesh_serving_generation",
+        "readiness_binding_cellular_owner_generation",
+        "readiness_expected_freshness",
+        "readiness_observed_freshness",
     ):
         require_product(
             product_ffi,
@@ -1183,6 +1194,35 @@ def main() -> None:
         "snapshot: ProductDiagnosticSnapshotView",
         "Kotlin diagnostics serializer must consume the aggregate native record directly",
     )
+    for required in (
+        '"policy_authorized_generation"',
+        '"last_failure_class"',
+        '"session_generation"',
+        '"operation_id"',
+        '"serving_generation"',
+        '"expected_freshness"',
+        '"observed_freshness"',
+    ):
+        require(
+            diagnostics,
+            required,
+            "snapshot_v2 must retain the final U5 owner-backed diagnostic fields",
+        )
+    diagnostics_test = "android/app/src/test/java/com/mobileproxymish/app/MishDiagnosticsSerializationTest.kt"
+    for required in (
+        "ProductDiagnosticSnapshotView(",
+        "renderMishDiagnosticSnapshotV2(",
+        'getLong("policy_authorized_generation")',
+        'getLong("operation_id")',
+        'getLong("serving_generation")',
+        'getLong("expected_freshness")',
+        'getLong("observed_freshness")',
+    ):
+        require(
+            diagnostics_test,
+            required,
+            "Android JVM tests must pin serialization of one native atomic snapshot",
+        )
     for obsolete in (
         "MISH_DIAGNOSTICS_SCHEMA_V1",
         "snapshot_v1",
