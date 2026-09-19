@@ -440,10 +440,10 @@ impl CellularPolicyCoordinator {
             }
             this.fire_recovery(scheduled.0, request);
         });
-        if spawn.is_err() {
-            if let Ok(mut state) = self.state.lock() {
-                state.recovery_pending = false;
-            }
+        if spawn.is_err()
+            && let Ok(mut state) = self.state.lock()
+        {
+            state.recovery_pending = false;
         }
     }
 
