@@ -50,9 +50,11 @@ foreach ($required in @(
     'owner_sessions_quiescent_after_normal_rotations',
     'U5_ROTATION_PHYSICAL_ACCEPTANCE_PASS',
     'PRODUCT_RESTORE_OFF_FAILED',
-    '''shell'', ''ps'', ''-T'', ''-p'', ([string]$processId), ''-o'', ''CMD''',
-    'Android Toybox ps exposes the per-thread comm name through CMD.',
-    'Android ps -T returned no PRODUCT thread names.',
+    '''shell'', ''run-as'', $PackageName, ''sh'', ''-c'', "cat /proc/$processId/task/*/comm"',
+    'Wildcard expansion must happen',
+    'PRODUCT /proc task comm observation returned no thread names.',
+    'MISH_U5_TOPOLOGY_RUNTIME_IO_THREADS=',
+    'MISH_U5_TOPOLOGY_FORBIDDEN_KOTLIN_OWNER_THREADS=',
     "final_airplane = Get-MishAirplaneState"
 )) {
     if (-not $source.Contains($required)) {
@@ -81,8 +83,9 @@ foreach ($forbidden in @(
     'after_ip',
     'retry-until-changed',
     'retry_until_changed',
-    'task/*/comm',
-    "'-o', 'NAME'"
+    "'shell', 'ps', '-T'",
+    "'-o', 'NAME'",
+    "'-o', 'CMD'"
 )) {
     if ($source.Contains($forbidden)) {
         throw "U5 rotation acceptance probe contains forbidden duplicate PRODUCT/control/secret path: $forbidden"
