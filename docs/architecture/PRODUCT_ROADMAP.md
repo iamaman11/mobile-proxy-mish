@@ -436,7 +436,7 @@ Keep simpler mechanisms when budgets are healthy. Do not add frameworks for hypo
 
 ---
 
-# U8 — Production durability and release closure
+# U8 — Production durability and deployment closure
 
 Prove the appliance can remain operational across normal lifecycle events:
 
@@ -447,10 +447,10 @@ Prove the appliance can remain operational across normal lifecycle events:
 - one persistent `su` transport remains bounded and replaceable on shell death without becoming a second privileged daemon/lifecycle;
 - bounded recovery from cellular/provider loss;
 - long soak with no unbounded FD/thread/task/memory growth;
-- immutable RC/release bytes, formal release gates and rollback/recovery documentation;
+- exact accepted Android artifact provenance remains reproducible through the single hosted candidate -> Device Cycle path; any future external distribution/signing is downstream packaging, not an RC acceptance lineage;
 - diagnostics/support bundle remains typed, bounded and secret-safe.
 
-Exit: formal release acceptance on immutable bytes and accepted physical evidence.
+Exit: production durability is accepted on exact artifact provenance plus accepted physical evidence; any external distribution package must derive from accepted source without creating a competing acceptance pipeline.
 
 ---
 
