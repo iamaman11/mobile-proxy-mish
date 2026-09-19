@@ -2,12 +2,25 @@
 //!
 //! Owns durable external proxy credential lifecycle semantics. Platform adapters may protect a
 //! non-exportable root key and persist the non-secret owner state, but they do not own version,
-//! rotation, revocation, derivation domains, or secret formatting.
+//! rotation, revocation, persistence schema/migration, provisioning contract, derivation domains,\n//! or secret formatting.
 //!
 //! Secret values must never be projected into logs, metrics, UI, crash reports, evidence, or
 //! ordinary durable configuration.
 
 use std::{error::Error, fmt};
+
+mod persistence;
+mod proto;
+mod provisioning;
+
+pub use persistence::{
+    ExternalCredentialPersistenceAction, ExternalCredentialPersistenceResolution, decode_state,
+    encode_state, resolve_persistence,
+};
+pub use provisioning::{
+    ExternalProxyProvisioningEnvelope, PROVISIONING_CHALLENGE_BYTES,
+    PROVISIONING_SCHEMA_VERSION, decode_provisioning_envelope, encode_provisioning_envelope,
+};
 
 pub const DERIVATION_OUTPUT_BYTES: usize = 32;
 
