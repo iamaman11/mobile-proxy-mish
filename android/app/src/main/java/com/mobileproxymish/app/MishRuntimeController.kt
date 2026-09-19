@@ -83,6 +83,10 @@ class MishRuntimeController internal constructor(
     internal fun diagnosticSnapshot(): ProductDiagnosticSnapshotView =
         productRuntime.diagnosticSnapshot()
 
+    /** Thin PRODUCT command seam. Rust owns the operation, sequencing, effects and result. */
+    internal fun startPublicIpRotation(): ULong =
+        productRuntime.startPublicIpRotation()
+
     val isRunning: Boolean
         get() = productRuntime.runtimeLifecycleSnapshot().state != RuntimeLifecycleState.STOPPED
 
