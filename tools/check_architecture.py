@@ -1281,15 +1281,139 @@ def main() -> None:
         "Desired Configuration must own readiness probe target validation",
     )
 
-    # Credentials stay versioned in Rust with Android Keystore only as the physical secret root.
+    # E one-way cutover: mish-credentials is the only credential semantic owner. Android keeps
+    # only Keystore/HMAC, opaque persistence bytes, transport crypto and explicit UI mechanics.
     proto = "contracts/proto/mish/credentials/v1/credentials.proto"
     require(proto, "package mish.credentials.v1;", "credential protobuf package must remain versioned")
-    require(proto, "message ExternalProxyProvisioningEnvelope", "provisioning contract must remain protobuf")
     require(
-        "android/app/src/main/java/com/mobileproxymish/app/ExternalProxyCredentialStore.kt",
-        "state_pb_b64_v1",
-        "Android durable credential metadata must remain one protobuf state blob",
+        proto,
+        "message ExternalProxyProvisioningEnvelope",
+        "provisioning contract must remain protobuf",
     )
+
+    credential_owner = "crates/credentials/src/lib.rs"
+    credential_persistence = "crates/credentials/src/persistence.rs"
+    credential_provisioning = "crates/credentials/src/provisioning.rs"
+    for path, required in (
+        (credential_owner, "ExternalCredentialState"),
+        (credential_owner, "ExternalCredentialPurpose"),
+        (credential_persistence, "pub fn encode_state("),
+        (credential_persistence, "pub fn decode_state("),
+        (credential_persistence, "pub fn resolve_persistence("),
+        (credential_persistence, "ExternalCredentialPersistenceAction"),
+        (credential_provisioning, "pub fn encode_provisioning_envelope("),
+        (credential_provisioning, "pub fn decode_provisioning_envelope("),
+        (credential_provisioning, "PROVISIONING_SCHEMA_VERSION"),
+    ):
+        require(path, required, "mish-credentials must own credential persistence/protobuf semantics")
+
+    credential_ffi = "crates/android-ffi/src/credentials_ffi.rs"
+    for required in (
+        "pub fn external_credential_resolve_persistence(",
+        "pub fn external_credential_encode_provisioning_envelope(",
+        "ExternalCredentialPersistenceActionView",
+        "ExternalCredentialCanonicalStateView",
+    ):
+        require(
+            credential_ffi,
+            required,
+            "Android FFI must expose Rust-owned credential decisions rather than duplicate them",
+        )
+    for obsolete in (
+        "external_credential_initial_state",
+        "external_credential_restore",
+    ):
+        forbid(
+            credential_ffi,
+            obsolete,
+            "legacy scalar credential construction must not bypass Rust persistence semantics",
+        )
+
+    credential_metadata = (
+        "android/app/src/main/java/com/mobileproxymish/app/CredentialMetadataStore.kt"
+    )
+    for required in (
+        'const val KEY_STATE_PROTOBUF = "state_pb_b64_v1"',
+        "data class RawCredentialPersistence(",
+        "fun readRaw()",
+        "fun persistCanonical(encoded: ByteArray)",
+    ):
+        require(
+            credential_metadata,
+            required,
+            "Android credential metadata must remain opaque platform storage only",
+        )
+    for forbidden in (
+        "CredentialContractV1",
+        "externalCredentialRestore",
+        "externalCredentialInitialState",
+        "toULongOrNull(",
+        "credential version must",
+        "mixed protobuf and legacy",
+        "username",
+        "password",
+    ):
+        forbid(
+            credential_metadata,
+            forbidden,
+            "Kotlin credential metadata must not regain schema, migration or secret semantics",
+        )
+    forbid_exists(
+        "android/app/src/main/java/com/mobileproxymish/app/CredentialContractV1.kt",
+        "credential protobuf codec and validation are Rust-owned after E",
+    )
+
+    credential_store = (
+        "android/app/src/main/java/com/mobileproxymish/app/ExternalProxyCredentialStore.kt"
+    )
+    for required in (
+        "externalCredentialResolvePersistence(",
+        "currentCredentialForRuntime()",
+        "revealCurrentCredential()",
+        "externalCredentialRotate(",
+        "externalCredentialRevoke(",
+    ):
+        require(
+            credential_store,
+            required,
+            "Android credential facade must apply only explicit Rust-owner transitions/effects",
+        )
+    credential_receiver = (
+        "android/app/src/main/java/com/mobileproxymish/app/CredentialProvisioningReceiver.kt"
+    )
+    require(
+        credential_receiver,
+        "externalCredentialEncodeProvisioningEnvelope(",
+        "Rust must encode and validate the provisioning plaintext contract",
+    )
+    forbid(
+        credential_receiver,
+        "CredentialContractV1",
+        "Android provisioning transport must not regain protobuf semantics",
+    )
+
+    require(
+        "android/app/src/main/java/com/mobileproxymish/app/MainViewModel.kt",
+        "fun showCurrentCredentials()",
+        "PRODUCT must keep one explicit sensitive current-credential access operation",
+    )
+    require(
+        "android/app/src/main/java/com/mobileproxymish/app/MainActivity.kt",
+        "Show current proxy credentials",
+        "explicit user credential access must remain visible and opt-in",
+    )
+    diagnostics_provider = "android/app/src/main/java/com/mobileproxymish/app/MishDiagnosticsProvider.kt"
+    for forbidden in (
+        "credential_username",
+        "credential_password",
+        "credentials.username",
+        "credentials.password",
+    ):
+        forbid(
+            diagnostics_provider,
+            forbidden,
+            "diagnostics must never project proxy username/password",
+        )
 
     # No second Android VPN/TUN ownership may appear in PRODUCT.
     manifest = read("android/app/src/main/AndroidManifest.xml")
