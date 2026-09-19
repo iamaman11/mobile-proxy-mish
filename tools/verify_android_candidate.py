@@ -56,6 +56,7 @@ def main() -> None:
         "RuntimeProcessLifecycleController",
         "RuntimeStartAction",
         "RuntimeStopAction",
+        "ProxyServingSnapshotView",
         "NativeProxyRuntime",
         "ProxyServingLifecycleController",
         "CellularNetworkLease",
