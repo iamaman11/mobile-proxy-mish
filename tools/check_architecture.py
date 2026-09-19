@@ -847,17 +847,13 @@ def main() -> None:
         )
 
     lifecycle_ffi = "crates/android-ffi/src/runtime_lifecycle_ffi.rs"
-    require(
-        lifecycle_ffi,
-        "pub struct ProxyServingSnapshotView",
-        "UniFFI must expose the immutable native Proxy Serving snapshot type",
-    )
     for forbidden in (
         "ProxyServingLifecycleController",
         "RuntimeLifecycleController",
         "RuntimeProcessLifecycle",
         "pub enum RuntimeStartAction",
         "pub enum RuntimeStopAction",
+        "pub struct ProxyServingSnapshotView",
         "map_start_action",
         "map_stop_action",
     ):
