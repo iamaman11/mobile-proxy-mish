@@ -31,6 +31,15 @@ def require_product(path: str, needle: str, reason: str) -> None:
         raise SystemExit(f"architecture guard: {reason}: PRODUCT {path} lacks {needle!r}")
 
 
+def require_product_count(path: str, needle: str, expected: int, reason: str) -> None:
+    observed = product_source(path).count(needle)
+    if observed != expected:
+        raise SystemExit(
+            f"architecture guard: {reason}: PRODUCT {path} contains {needle!r} "
+            f"{observed} times, expected exactly {expected}"
+        )
+
+
 def forbid(path: str, needle: str, reason: str) -> None:
     if needle in read(path):
         raise SystemExit(f"architecture guard: {reason}: {path} contains {needle!r}")
@@ -1581,6 +1590,23 @@ def main() -> None:
         rotation_runtime,
         "effect.rearm_cellular_request()",
         "Rust rotation owner must invoke the typed Cellular request re-arm effect",
+    )
+    require_product(
+        rotation_runtime,
+        "RotationFailure::FreshCellularUnavailable",
+        "a failed Cellular request re-arm must fail the Rust-owned rotation closed",
+    )
+    require_product_count(
+        rotation_runtime,
+        "effect.rearm_cellular_request()",
+        1,
+        "Cellular request re-arm must have one PRODUCT invocation site and no retry loop",
+    )
+    require_product_count(
+        rotation_runtime,
+        "!self.rearm_cellular_request_if_waiting(operation_id)",
+        1,
+        "confirmed airplane OFF must trigger exactly one Rust-owned re-arm decision",
     )
     for required in (
         "class DebugRotationActivity : Activity()",
