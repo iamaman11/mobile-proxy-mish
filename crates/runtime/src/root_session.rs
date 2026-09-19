@@ -104,8 +104,14 @@ impl RootShellSession {
             .kill_on_drop(true)
             .spawn()
             .map_err(|_| RootSessionError::SpawnUnavailable)?;
-        let stdin = child.stdin.take().ok_or(RootSessionError::SpawnUnavailable)?;
-        let stdout = child.stdout.take().ok_or(RootSessionError::SpawnUnavailable)?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or(RootSessionError::SpawnUnavailable)?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or(RootSessionError::SpawnUnavailable)?;
         Ok(Self {
             generation,
             sequence: 0,
@@ -123,7 +129,8 @@ impl RootShellSession {
             command.command(),
             marker,
         );
-        if self.stdin.write_all(framed.as_bytes()).await.is_err() || self.stdin.flush().await.is_err()
+        if self.stdin.write_all(framed.as_bytes()).await.is_err()
+            || self.stdin.flush().await.is_err()
         {
             return self.unavailable_outcome();
         }
@@ -346,7 +353,9 @@ mod tests {
     #[test]
     fn observation_and_mutation_remain_distinct_types() {
         assert_eq!(
-            RootCommand::observation("id -u").expect("observation").kind(),
+            RootCommand::observation("id -u")
+                .expect("observation")
+                .kind(),
             RootCommandKind::Observation
         );
         assert_eq!(
@@ -370,21 +379,25 @@ mod tests {
 
     #[test]
     fn authoritative_success_requires_complete_zero_exit() {
-        assert!(RootCommandResult {
-            exit_code: 0,
-            stdout: String::new(),
-            timed_out: false,
-            output_complete: true,
-            session_generation: 1,
-        }
-        .authoritative_success());
-        assert!(!RootCommandResult {
-            exit_code: 1,
-            stdout: String::new(),
-            timed_out: false,
-            output_complete: true,
-            session_generation: 1,
-        }
-        .authoritative_success());
+        assert!(
+            RootCommandResult {
+                exit_code: 0,
+                stdout: String::new(),
+                timed_out: false,
+                output_complete: true,
+                session_generation: 1,
+            }
+            .authoritative_success()
+        );
+        assert!(
+            !RootCommandResult {
+                exit_code: 1,
+                stdout: String::new(),
+                timed_out: false,
+                output_complete: true,
+                session_generation: 1,
+            }
+            .authoritative_success()
+        );
     }
 }
