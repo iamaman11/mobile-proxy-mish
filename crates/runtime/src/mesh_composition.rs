@@ -27,8 +27,8 @@ pub struct MeshCompositionCoordinator {
 
 impl MeshCompositionCoordinator {
     pub fn new() -> Result<Arc<Self>, MeshTransportError> {
-        let accepted = MeshAcceptedCidr::deployment()
-            .map_err(|_| MeshTransportError::StateUnavailable)?;
+        let accepted =
+            MeshAcceptedCidr::deployment().map_err(|_| MeshTransportError::StateUnavailable)?;
         let transport = MeshTransportCoordinator::new(accepted.network(), accepted.prefix())
             .map_err(MeshTransportError::Owner)?;
         Ok(Arc::new(Self {
@@ -108,9 +108,7 @@ impl MeshCompositionCoordinator {
             (state.proxy.clone(), state.readiness_ready)
         };
 
-        let proxy_running = proxy
-            .as_ref()
-            .is_some_and(|proxy| proxy.is_healthy());
+        let proxy_running = proxy.as_ref().is_some_and(|proxy| proxy.is_healthy());
         let allowed = mesh_ingress_serving_allowed(
             proxy_running,
             readiness_ready,
