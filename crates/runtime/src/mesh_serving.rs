@@ -15,6 +15,22 @@ const MESH_BACKEND_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const MESH_START_TIMEOUT: Duration = Duration::from_secs(2);
 const MESH_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
+fn block_on_mesh_drain<F>(handle: &Handle, future: F) -> F::Output
+where
+    F: std::future::Future,
+{
+    // Native readiness/Mesh composition can request a stop from a task already executing on the
+    // one PRODUCT multi-thread Tokio runtime. Handle::block_on directly from that worker panics.
+    // block_in_place is the Tokio-supported bridge for this bounded synchronous owner effect and
+    // lets the scheduler move unrelated PRODUCT work to another worker while we drain exactly this
+    // Mesh generation.
+    if Handle::try_current().is_ok() {
+        tokio::task::block_in_place(|| handle.block_on(future))
+    } else {
+        handle.block_on(future)
+    }
+}
+
 /// Cross-owner runtime composition policy for realizing public Mesh ingress.
 ///
 /// Android supplies current owner projections and executes the platform effect, but it must not
@@ -181,7 +197,7 @@ impl MeshExecutionOwner {
         // Let each retained listener observe the stop signal and drain its own retained session
         // JoinSet. Aborting the outer listener first would drop that nested JoinSet before its
         // explicit abort+join path can run, making active-session cleanup scheduler-dependent.
-        let drained = handle.block_on(async {
+        let drained = block_on_mesh_drain(handle, async {
             timeout(MESH_SHUTDOWN_TIMEOUT, async {
                 while generation.listeners.join_next().await.is_some() {}
             })
@@ -553,6 +569,35 @@ mod tests {
             sessions.active_sessions() == 0
         });
         execution.stop(Some(runtime.handle())).expect("stop");
+    }
+
+    #[test]
+    fn mesh_stop_from_product_tokio_worker_does_not_panic_or_poison_execution_state() {
+        let runtime = test_runtime();
+        let execution = Arc::new(MeshExecutionOwner::new());
+        let sessions = MeshSessionOwner::product_generation();
+        let backend_port = reserve_port();
+        let ingress_port = reserve_port();
+
+        execution
+            .start(
+                runtime.handle(),
+                Ipv4Addr::LOCALHOST,
+                &[MeshPortForward::new(ingress_port, backend_port)],
+                Arc::clone(&sessions),
+            )
+            .expect("start Mesh execution");
+
+        let owned = Arc::clone(&execution);
+        let handle = runtime.handle().clone();
+        let stop = runtime.spawn(async move { owned.stop(Some(&handle)) });
+        let stop_result = runtime
+            .block_on(stop)
+            .expect("Tokio worker must not panic while stopping Mesh");
+        assert_eq!(stop_result, Ok(()));
+        assert!(!execution.is_running());
+        assert!(!execution.is_healthy());
+        assert_eq!(sessions.active_sessions(), 0);
     }
 
     #[test]
