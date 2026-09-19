@@ -130,15 +130,17 @@ function Get-MishProcessMetrics {
         Stop-MishRotationAcceptance 'LAB_PROCESS_METRICS_UNAVAILABLE' 'PRODUCT FD count is unavailable.'
     }
 
+    # Android Toybox ps exposes the per-thread comm name through CMD.
+    # NAME is argv[0] of the process and therefore cannot prove PRODUCT worker topology.
     $threadText = Invoke-MishAdbText -Arguments @(
-        'shell', 'ps', '-T', '-p', ([string]$processId), '-o', 'NAME'
+        'shell', 'ps', '-T', '-p', ([string]$processId), '-o', 'CMD'
     )
     $threadNames = @(
         $threadText -split '\r?\n' |
             ForEach-Object { $_.Trim() } |
             Where-Object {
                 -not [string]::IsNullOrWhiteSpace($_) -and
-                $_ -cne 'NAME'
+                $_ -cne 'CMD'
             }
     )
     if ($threadNames.Count -eq 0) {
