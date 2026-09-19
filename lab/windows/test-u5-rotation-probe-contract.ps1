@@ -52,7 +52,7 @@ foreach ($required in @(
     'PRODUCT_RESTORE_OFF_FAILED',
     '''shell'', ''ps'', ''-A'', ''-T'', ''-w'', ''-o'', ''PID,TID,CMD''',
     "row = [regex]::Match",
-    "Groups['pid'].Value -eq $processId",
+    'Groups[''pid''].Value -eq $processId',
     'Android ps -A -T returned no PRODUCT thread rows.',
     'MISH_U5_TOPOLOGY_RUNTIME_IO_THREADS=',
     'MISH_U5_TOPOLOGY_FORBIDDEN_KOTLIN_OWNER_THREADS=',
