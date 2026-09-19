@@ -46,6 +46,12 @@ struct ProxyCoordinatorState {
     closed: bool,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct ProxyCredentialGuard {
+    version: u64,
+    material: ProxyCredentialMaterial,
+}
+
 pub struct ProxyRuntimeCoordinator {
     executor: Arc<RuntimeExecutor>,
     cellular: Arc<CellularRuntimeCoordinator>,
@@ -118,6 +124,21 @@ impl ProxyRuntimeCoordinator {
             .and_then(|state| state.current.clone())
             .map(|runtime| runtime.active_sessions().min(u32::MAX as usize) as u32)
             .unwrap_or(0)
+    }
+
+    pub(crate) fn credential_guard(&self) -> Option<ProxyCredentialGuard> {
+        let state = self.state().ok()?;
+        Some(ProxyCredentialGuard {
+            version: state.credential_version?,
+            material: state.credentials.clone()?,
+        })
+    }
+
+    pub(crate) fn credential_guard_matches(&self, guard: &ProxyCredentialGuard) -> bool {
+        self.state().is_ok_and(|state| {
+            state.credential_version == Some(guard.version)
+                && state.credentials.as_ref() == Some(&guard.material)
+        })
     }
 
     pub fn start(
