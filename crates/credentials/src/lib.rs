@@ -304,6 +304,21 @@ mod tests {
     }
 
     #[test]
+    fn get_current_reveals_same_material_without_advancing_version() {
+        let state = ExternalCredentialState::initial();
+        let first = state
+            .materialize(&[3; DERIVATION_OUTPUT_BYTES], &[4; DERIVATION_OUTPUT_BYTES])
+            .expect("first current reveal");
+        let second = state
+            .materialize(&[3; DERIVATION_OUTPUT_BYTES], &[4; DERIVATION_OUTPUT_BYTES])
+            .expect("second current reveal");
+
+        assert_eq!(first, second);
+        assert_eq!(state.version(), 1);
+        assert_eq!(state.status(), ExternalCredentialStatus::Active);
+    }
+
+    #[test]
     fn materialization_requires_exact_hmac_sha256_outputs() {
         let state = ExternalCredentialState::initial();
         assert_eq!(
