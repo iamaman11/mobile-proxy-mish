@@ -289,9 +289,11 @@ def main() -> None:
         "raw_ip_persisted = $false",
         "U5_ROTATION_PHYSICAL_ACCEPTANCE_PASS",
         "PRODUCT_RESTORE_OFF_FAILED",
-        "'shell', 'ps', '-T', '-p', ([string]$processId), '-o', 'CMD'",
-        "Android Toybox ps exposes the per-thread comm name through CMD.",
-        "Android ps -T returned no PRODUCT thread names.",
+        "'shell', 'run-as', $PackageName, 'sh', '-c', \"cat /proc/$processId/task/*/comm\"",
+        "Wildcard expansion must happen",
+        "PRODUCT /proc task comm observation returned no thread names.",
+        "MISH_U5_TOPOLOGY_RUNTIME_IO_THREADS=",
+        "MISH_U5_TOPOLOGY_FORBIDDEN_KOTLIN_OWNER_THREADS=",
     ):
         require(rotation_probe, required, "U5 physical rotation evidence drifted")
     for forbidden in (
@@ -308,6 +310,9 @@ def main() -> None:
         "assembleDebug",
         "before_ip",
         "after_ip",
+        "'shell', 'ps', '-T'",
+        "'-o', 'NAME'",
+        "'-o', 'CMD'",
     ):
         forbid(rotation_probe, forbidden, "U5 LAB probe must observe PRODUCT rotation, never own airplane/root/build semantics")
 
