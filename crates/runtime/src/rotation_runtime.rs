@@ -240,6 +240,7 @@ impl RotationRuntimeCoordinator {
                 return true;
             }
             state.closed = true;
+            state.cellular_request_rearm = None;
             let current = state.machine.snapshot();
             let snapshot = if let Some(operation_id) = current.operation_id {
                 if current.phase.terminal() {
