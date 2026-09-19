@@ -92,6 +92,17 @@ pub enum RootPolicyStateView {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct CellularNetworkObservationInput {
+    pub sequence: u64,
+    pub network_handle: u64,
+    pub is_cellular: bool,
+    pub has_internet: bool,
+    pub is_validated: bool,
+    pub is_not_vpn: bool,
+    pub interface_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct CellularPolicyPublicationView {
     pub admission: CellularAdmissionView,
     pub state: RootPolicyStateView,
@@ -321,28 +332,27 @@ impl NativeProductRuntime {
 
     pub fn observe_network(
         &self,
-        sequence: u64,
-        network_handle: u64,
-        is_cellular: bool,
-        has_internet: bool,
-        is_validated: bool,
-        is_not_vpn: bool,
-        interface_name: Option<String>,
+        input: CellularNetworkObservationInput,
     ) -> Result<CellularAdmissionView, CellularBridgeError> {
-        let sequence = ObservationSequence::new(sequence)
+        let sequence = ObservationSequence::new(input.sequence)
             .ok_or(CellularBridgeError::InvalidObservationSequence)?;
-        let network_handle =
-            NetworkHandle::new(network_handle).ok_or(CellularBridgeError::InvalidNetworkHandle)?;
+        let network_handle = NetworkHandle::new(input.network_handle)
+            .ok_or(CellularBridgeError::InvalidNetworkHandle)?;
         let observation = NetworkObservation::new(
             sequence,
             network_handle,
-            is_cellular,
-            has_internet,
-            is_validated,
-            is_not_vpn,
+            input.is_cellular,
+            input.has_internet,
+            input.is_validated,
+            input.is_not_vpn,
         );
         self.runtime
-            .observe_network(sequence.raw(), observation, network_handle, interface_name)
+            .observe_network(
+                sequence.raw(),
+                observation,
+                network_handle,
+                input.interface_name,
+            )
             .map(map_snapshot)
             .map_err(|_| CellularBridgeError::OwnerUnavailable)
     }
