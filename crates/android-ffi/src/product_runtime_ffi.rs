@@ -2,7 +2,8 @@ use crate::readiness_ffi::ProductReadinessState;
 use crate::runtime_boundary::{
     AndroidDnsResolver, CellularAdmissionReason, CellularAdmissionState, CellularAdmissionView,
     CellularBridgeError, CellularController, CellularDnsDiagnosticView, PublicIpObservationView,
-    PublicIpProbeError, PublicIpProbeTicket, map_dns_diagnostic, map_public_ip_failure, map_snapshot,
+    PublicIpProbeError, PublicIpProbeTicket, map_dns_diagnostic, map_public_ip_failure,
+    map_snapshot,
 };
 use crate::runtime_lifecycle_ffi::{
     ProxyServingFailure, ProxyServingState, RuntimeLifecycleState, map_lifecycle_state,
@@ -16,8 +17,7 @@ use mish_cellular::{NetworkHandle, NetworkObservation, ObservationSequence, Root
 use mish_runtime::{
     CellularPolicyObserver, CellularPolicyPublication, CellularReconcileDiagnostic,
     ProductDiagnosticSnapshot, ProductRuntimeCoordinator, ProductRuntimeSnapshot,
-    ProxyRuntimeObserver,
-    ProxyRuntimePublication, ProxyServingState as OwnerProxyServingState,
+    ProxyRuntimeObserver, ProxyRuntimePublication, ProxyServingState as OwnerProxyServingState,
     ReadinessDiagnosticSnapshot, ReadinessObserver,
     RootAuthorityStatus as OwnerRootAuthorityStatus, RootPolicyFailure as OwnerRootPolicyFailure,
     RootPolicyReconcileDiagnostic, RootPolicyResult as OwnerRootPolicyResult,
@@ -557,7 +557,9 @@ fn map_product_diagnostic_snapshot(
     let mesh_observation_sequence = mesh.as_ref().and_then(|snapshot| snapshot.last_sequence);
     let mesh_admission_epoch = mesh.as_ref().and_then(|snapshot| snapshot.admission_epoch);
     let mesh_epoch_present = mesh_admission_epoch.is_some();
-    let mesh_ingress_running = mesh.as_ref().is_some_and(|snapshot| snapshot.ingress_running);
+    let mesh_ingress_running = mesh
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.ingress_running);
     let mesh_active_sessions = mesh.as_ref().map(|snapshot| snapshot.active_sessions);
     let mesh_capacity_rejects = mesh.as_ref().map(|snapshot| snapshot.capacity_rejects);
 
@@ -613,15 +615,23 @@ fn cellular_boundary_failure(result: Option<OwnerRootPolicyResult>) -> Option<&'
         Some(OwnerRootPolicyResult::AuthorityUnavailable(_)) => Some("ROOT_AUTHORITY_UNAVAILABLE"),
         Some(OwnerRootPolicyResult::FailClosed(Some(failure))) => Some(match failure {
             OwnerRootPolicyFailure::InvalidInterface => "ROOT_POLICY_INVALID_INTERFACE",
-            OwnerRootPolicyFailure::ReservedPolicyCollision => "ROOT_POLICY_RESERVED_POLICY_COLLISION",
+            OwnerRootPolicyFailure::ReservedPolicyCollision => {
+                "ROOT_POLICY_RESERVED_POLICY_COLLISION"
+            }
             OwnerRootPolicyFailure::ObservationUnavailable => "ROOT_POLICY_OBSERVATION_UNAVAILABLE",
             OwnerRootPolicyFailure::ObservationIncomplete => "ROOT_POLICY_OBSERVATION_INCOMPLETE",
             OwnerRootPolicyFailure::StructuralMismatch => "ROOT_POLICY_STRUCTURAL_MISMATCH",
-            OwnerRootPolicyFailure::RouteTableDiscoveryFailed => "ROOT_POLICY_ROUTE_TABLE_DISCOVERY_FAILED",
+            OwnerRootPolicyFailure::RouteTableDiscoveryFailed => {
+                "ROOT_POLICY_ROUTE_TABLE_DISCOVERY_FAILED"
+            }
             OwnerRootPolicyFailure::MutationRejected => "ROOT_POLICY_MUTATION_REJECTED",
             OwnerRootPolicyFailure::MutationUncertain => "ROOT_POLICY_MUTATION_UNCERTAIN",
-            OwnerRootPolicyFailure::LookupRuleCreationFailed => "ROOT_POLICY_LOOKUP_RULE_CREATION_FAILED",
-            OwnerRootPolicyFailure::RouteLookupVerificationFailed => "ROOT_POLICY_ROUTE_LOOKUP_VERIFICATION_FAILED",
+            OwnerRootPolicyFailure::LookupRuleCreationFailed => {
+                "ROOT_POLICY_LOOKUP_RULE_CREATION_FAILED"
+            }
+            OwnerRootPolicyFailure::RouteLookupVerificationFailed => {
+                "ROOT_POLICY_ROUTE_LOOKUP_VERIFICATION_FAILED"
+            }
             OwnerRootPolicyFailure::ExactCleanupFailed => "ROOT_POLICY_EXACT_CLEANUP_FAILED",
         }),
         _ => None,
@@ -679,9 +689,7 @@ fn mesh_state_code(state: MeshAdmissionState) -> &'static str {
     }
 }
 
-fn mesh_failure_code(
-    failure: Option<mish_transport::MeshTransportError>,
-) -> &'static str {
+fn mesh_failure_code(failure: Option<mish_transport::MeshTransportError>) -> &'static str {
     let Some(failure) = failure else {
         return "NONE";
     };
