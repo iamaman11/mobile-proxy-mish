@@ -18,6 +18,7 @@ use mish_rotation::{
 };
 use mish_runtime::{
     CellularPolicyObserver, CellularPolicyPublication, CellularReconcileDiagnostic,
+    CellularRequestRearmEffect,
     ProductDiagnosticSnapshot, ProductRuntimeCoordinator, ProductRuntimeSnapshot,
     ProxyRuntimeObserver, ProxyRuntimePublication, ProxyServingState as OwnerProxyServingState,
     ReadinessDiagnosticSnapshot, ReadinessObserver,
@@ -310,6 +311,21 @@ pub trait NativeCellularPolicyObserver: Send + Sync {
     fn on_cellular_policy_publication(&self, publication: CellularPolicyPublicationView);
 }
 
+#[uniffi::export(foreign)]
+pub trait NativeCellularRequestRearmEffect: Send + Sync {
+    fn rearm_cellular_request(&self) -> bool;
+}
+
+struct ForeignCellularRequestRearmEffect {
+    effect: Arc<dyn NativeCellularRequestRearmEffect>,
+}
+
+impl CellularRequestRearmEffect for ForeignCellularRequestRearmEffect {
+    fn rearm_cellular_request(&self) -> bool {
+        self.effect.rearm_cellular_request()
+    }
+}
+
 /// Stable opaque FFI handle over the Rust-owned PRODUCT process runtime.
 ///
 /// ProductRuntimeCoordinator owns Tokio execution, lifecycle/generation replacement and native
@@ -370,8 +386,15 @@ impl NativeProductRuntime {
         self.runtime.request_stop().map(|_| ()).map_err(Into::into)
     }
 
-    pub fn start_public_ip_rotation(self: &Arc<Self>) -> Result<u64, NativeRotationStartError> {
-        self.runtime.start_public_ip_rotation().map_err(Into::into)
+    pub fn start_public_ip_rotation(
+        self: &Arc<Self>,
+        cellular_request_rearm: Arc<dyn NativeCellularRequestRearmEffect>,
+    ) -> Result<u64, NativeRotationStartError> {
+        self.runtime
+            .start_public_ip_rotation(Arc::new(ForeignCellularRequestRearmEffect {
+                effect: cellular_request_rearm,
+            }))
+            .map_err(Into::into)
     }
 
     pub fn rotation_snapshot(&self) -> RotationSnapshotView {
