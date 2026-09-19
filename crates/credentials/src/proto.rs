@@ -1,5 +1,3 @@
-use crate::ProtoError;
-
 pub(crate) const WIRE_VARINT: u8 = 0;
 pub(crate) const WIRE_FIXED64: u8 = 1;
 pub(crate) const WIRE_LENGTH_DELIMITED: u8 = 2;
@@ -32,7 +30,10 @@ fn write_varint(output: &mut Vec<u8>, value: u64) {
 }
 
 #[derive(Debug, Clone, Copy)]
-#[derive(Debug, Clone, Copy)]\npub(crate) struct ProtoError;\n\n#[derive(Debug, Clone, Copy)]\npub(crate) struct ProtoTag {
+pub(crate) struct ProtoError;
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ProtoTag {
     pub(crate) field_number: u32,
     pub(crate) wire_type: u8,
 }
@@ -54,14 +55,12 @@ impl<'a> ProtoReader<'a> {
     pub(crate) fn read_tag(&mut self) -> Result<ProtoTag, ProtoError> {
         let raw = self.read_varint()?;
         if raw == 0 || raw > u64::from(u32::MAX) {
-            return Err(ProtoError::MalformedProtobuf);
+            return Err(ProtoError);
         }
-        let field_number =
-            u32::try_from(raw >> 3).map_err(|_| ProtoError::MalformedProtobuf)?;
-        let wire_type =
-            u8::try_from(raw & 0x07).map_err(|_| ProtoError::MalformedProtobuf)?;
+        let field_number = u32::try_from(raw >> 3).map_err(|_| ProtoError)?;
+        let wire_type = u8::try_from(raw & 0x07).map_err(|_| ProtoError)?;
         if field_number == 0 {
-            return Err(ProtoError::MalformedProtobuf);
+            return Err(ProtoError);
         }
         Ok(ProtoTag {
             field_number,
@@ -72,33 +71,23 @@ impl<'a> ProtoReader<'a> {
     pub(crate) fn read_varint(&mut self) -> Result<u64, ProtoError> {
         let mut result = 0_u64;
         for index in 0..10 {
-            let byte = *self
-                .input
-                .get(self.offset)
-                .ok_or(ProtoError::MalformedProtobuf)?;
+            let byte = *self.input.get(self.offset).ok_or(ProtoError)?;
             self.offset += 1;
             if index == 9 && byte & 0xfe != 0 {
-                return Err(ProtoError::MalformedProtobuf);
+                return Err(ProtoError);
             }
             result |= u64::from(byte & 0x7f) << (index * 7);
             if byte & 0x80 == 0 {
                 return Ok(result);
             }
         }
-        Err(ProtoError::MalformedProtobuf)
+        Err(ProtoError)
     }
 
     pub(crate) fn read_bytes(&mut self) -> Result<&'a [u8], ProtoError> {
-        let length = usize::try_from(self.read_varint()?)
-            .map_err(|_| ProtoError::MalformedProtobuf)?;
-        let end = self
-            .offset
-            .checked_add(length)
-            .ok_or(ProtoError::MalformedProtobuf)?;
-        let bytes = self
-            .input
-            .get(self.offset..end)
-            .ok_or(ProtoError::MalformedProtobuf)?;
+        let length = usize::try_from(self.read_varint()?).map_err(|_| ProtoError)?;
+        let end = self.offset.checked_add(length).ok_or(ProtoError)?;
+        let bytes = self.input.get(self.offset..end).ok_or(ProtoError)?;
         self.offset = end;
         Ok(bytes)
     }
@@ -111,22 +100,18 @@ impl<'a> ProtoReader<'a> {
             }
             WIRE_FIXED64 => self.advance(8),
             WIRE_LENGTH_DELIMITED => {
-                let length = usize::try_from(self.read_varint()?)
-                    .map_err(|_| ProtoError::MalformedProtobuf)?;
+                let length = usize::try_from(self.read_varint()?).map_err(|_| ProtoError)?;
                 self.advance(length)
             }
             WIRE_FIXED32 => self.advance(4),
-            _ => Err(ProtoError::MalformedProtobuf),
+            _ => Err(ProtoError),
         }
     }
 
     fn advance(&mut self, count: usize) -> Result<(), ProtoError> {
-        let end = self
-            .offset
-            .checked_add(count)
-            .ok_or(ProtoError::MalformedProtobuf)?;
+        let end = self.offset.checked_add(count).ok_or(ProtoError)?;
         if end > self.input.len() {
-            return Err(ProtoError::MalformedProtobuf);
+            return Err(ProtoError);
         }
         self.offset = end;
         Ok(())
