@@ -607,7 +607,8 @@ impl ProductRuntimeCoordinator {
         }
 
         if let Ok(mut state) = self.state.lock() {
-            if state.lifecycle.generation() == expected_generation
+            if !state.closed
+                && state.lifecycle.generation() == expected_generation
                 && state.lifecycle.state() == RuntimeLifecycleState::Starting
             {
                 state.lifecycle.complete_start(true, true);
@@ -656,7 +657,8 @@ impl ProductRuntimeCoordinator {
         let Ok(mut state) = self.state.lock() else {
             return None;
         };
-        if state.lifecycle.generation() != expected_generation
+        if state.closed
+            || state.lifecycle.generation() != expected_generation
             || state.lifecycle.state() != RuntimeLifecycleState::Starting
         {
             return None;
@@ -729,7 +731,8 @@ impl ProductRuntimeCoordinator {
         let Ok(mut state) = self.state.lock() else {
             return None;
         };
-        if state.lifecycle.generation() != expected_generation
+        if state.closed
+            || state.lifecycle.generation() != expected_generation
             || state.lifecycle.state() != RuntimeLifecycleState::Stopping
         {
             return None;
@@ -1195,6 +1198,49 @@ mod tests {
         assert_eq!(dirty_snapshot.generation, 1);
         assert!(dirty_snapshot.generation_requires_replacement);
         dirty.executor.shutdown().expect("dirty executor shutdown");
+    }
+
+    #[test]
+    fn final_process_close_blocks_late_generation_completion() {
+        let starting = ProductRuntimeCoordinator::new(
+            Arc::new(EmptyResolver),
+            10_123,
+            RootPolicyNamespace::Debug,
+        )
+        .expect("starting runtime");
+        {
+            let mut state = starting.state_mut().expect("state");
+            assert_eq!(state.lifecycle.request_start(), RuntimeStartAction::StartNow);
+            state.closed = true;
+        }
+        assert!(starting
+            .complete_failed_start_after_cleanup(1, true)
+            .is_none());
+        assert_eq!(starting.snapshot().generation, 1);
+        starting
+            .executor
+            .shutdown()
+            .expect("starting executor shutdown");
+
+        let stopping = ProductRuntimeCoordinator::new(
+            Arc::new(EmptyResolver),
+            10_124,
+            RootPolicyNamespace::Debug,
+        )
+        .expect("stopping runtime");
+        {
+            let mut state = stopping.state_mut().expect("state");
+            assert_eq!(state.lifecycle.request_start(), RuntimeStartAction::StartNow);
+            state.lifecycle.complete_start(true, true);
+            assert_eq!(state.lifecycle.request_stop(), RuntimeStopAction::StopNow);
+            state.closed = true;
+        }
+        assert!(stopping.complete_stop_after_cleanup(1, true).is_none());
+        assert_eq!(stopping.snapshot().generation, 1);
+        stopping
+            .executor
+            .shutdown()
+            .expect("stopping executor shutdown");
     }
 
     #[test]
