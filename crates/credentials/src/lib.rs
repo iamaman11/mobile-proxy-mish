@@ -5,8 +5,9 @@
 //! rotation, revocation, persistence schema/migration, provisioning contract, derivation domains,
 //! or secret formatting.
 //!
-//! Secret values must never be projected into logs, metrics, UI, crash reports, evidence, or
-//! ordinary durable configuration.
+//! Secret values must never be projected into logs, metrics, diagnostics, crash reports, evidence,
+//! or ordinary durable configuration. Plaintext is exposed only by an explicit sensitive
+//! reveal/provisioning operation.
 
 use std::{error::Error, fmt};
 
