@@ -1803,8 +1803,8 @@ def main() -> None:
         )
 
     # Android physical acceptance has one artifact authority. The obsolete RC/prerelease
-    # pipeline and its release-lineage helpers must never return beside Integration Preflight
-    # + Device Cycle.
+    # pipeline and its release-lineage helpers must never return beside PR Validation + PRODUCT Candidate
+    # + manual Device Cycle.
     for obsolete_path in (
         ".github/workflows/android-release.yml",
         ".github/workflows/e3-physical-cellular.yml",
@@ -1824,11 +1824,11 @@ def main() -> None:
     require(
         ".github/workflows/integration-android-preflight.yml",
         "name: device-candidate-pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}",
-        "Integration Android Preflight must remain the exact-head Android candidate producer",
+        "PR Validation + PRODUCT Candidate must remain the exact-head Android candidate producer",
     )
     require(
         ".github/workflows/device-cycle.yml",
-        "candidate artifact did not originate from Integration Android Preflight",
+        "candidate artifact did not originate from PR Validation + PRODUCT Candidate",
         "Device Cycle must consume only the exact hosted candidate producer",
     )
 
