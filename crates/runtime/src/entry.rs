@@ -13,8 +13,8 @@ mod public_ip_network;
 mod readiness_network;
 
 mod readiness_runtime;
-pub use readiness_runtime::*;
 pub use readiness_network::*;
+pub use readiness_runtime::*;
 
 mod root_session;
 
