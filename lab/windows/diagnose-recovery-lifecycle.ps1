@@ -375,8 +375,7 @@ try {
         'loss_fail_closed_elapsed_ms=(?<lossFailClosed>\d+) ' +
         'recovery_owner_elapsed_ms=(?<recoveryOwner>\d+) ' +
         'recovery_functional_elapsed_ms=(?<recoveryFunctional>\d+) ' +
-        'proxy_close_elapsed_ms=(?<proxyClose>\d+) ' +
-        'cellular_close_elapsed_ms=(?<cellularClose>\d+) ' +
+        'native_shutdown_elapsed_ms=(?<nativeShutdown>\d+) ' +
         'cleanup_verify_elapsed_ms=(?<cleanupVerify>\d+) ' +
         'stop_total_elapsed_ms=(?<stopTotal>\d+)\s*$'
     $latencyMatch = [regex]::Match($instrumentationOutput, $latencyPattern)
@@ -391,8 +390,7 @@ try {
             functional_ready_elapsed_ms = [int64]$latencyMatch.Groups['recoveryFunctional'].Value
         }
         $lifecycleLatencyBudget.stop = [ordered]@{
-            proxy_close_elapsed_ms = [int64]$latencyMatch.Groups['proxyClose'].Value
-            cellular_close_elapsed_ms = [int64]$latencyMatch.Groups['cellularClose'].Value
+            native_shutdown_elapsed_ms = [int64]$latencyMatch.Groups['nativeShutdown'].Value
             cleanup_verify_elapsed_ms = [int64]$latencyMatch.Groups['cleanupVerify'].Value
             total_elapsed_ms = [int64]$latencyMatch.Groups['stopTotal'].Value
         }

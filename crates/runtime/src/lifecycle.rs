@@ -164,7 +164,11 @@ impl RuntimeLifecycle {
     pub fn request_stop(&mut self) -> RuntimeStopAction {
         match self.state {
             RuntimeLifecycleState::Stopped => RuntimeStopAction::AlreadyStopped,
-            RuntimeLifecycleState::Stopping => RuntimeStopAction::AlreadyStopping,
+            RuntimeLifecycleState::Stopping => {
+                // A newer explicit stop supersedes a start that was queued during cleanup.
+                self.restart_after_stop = false;
+                RuntimeStopAction::AlreadyStopping
+            }
             RuntimeLifecycleState::Starting | RuntimeLifecycleState::Running => {
                 self.state = RuntimeLifecycleState::Stopping;
                 RuntimeStopAction::StopNow
@@ -350,6 +354,21 @@ mod tests {
         assert!(disposition.restart_now());
         assert_eq!(owner.state(), RuntimeLifecycleState::Stopped);
         assert_eq!(owner.generation(), 2);
+    }
+
+    #[test]
+    fn explicit_stop_while_stopping_cancels_queued_restart() {
+        let mut owner = RuntimeLifecycle::new();
+        owner.request_start();
+        owner.complete_start(true, true);
+        assert_eq!(owner.request_stop(), RuntimeStopAction::StopNow);
+        assert_eq!(owner.request_start(), RuntimeStartAction::QueuedAfterStop);
+        assert_eq!(owner.request_stop(), RuntimeStopAction::AlreadyStopping);
+
+        let disposition = owner.complete_stop(true);
+        assert!(disposition.install_fresh_generation_now());
+        assert!(!disposition.restart_now());
+        assert_eq!(owner.state(), RuntimeLifecycleState::Stopped);
     }
 
     #[test]

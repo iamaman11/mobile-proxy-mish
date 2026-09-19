@@ -32,7 +32,7 @@ import org.junit.runner.RunWith
  * E3 physical-device acceptance harness for the PRODUCT root-policy Cellular Egress path.
  *
  * Hosted CI only compiles this androidTest APK. Protected-main physical execution uses
- * the exact MishApplication process-generation runtime: the Rust natural owner decides
+ * the exact MishApplication process-level runtime: the Rust natural owner decides
  * admission/currentness and the PRODUCT Magisk adapter realizes that decision. The test
  * never recreates a second controller, never calls the historical per-socket bind seam,
  * and never substitutes ADB root for PRODUCT runtime root authority.
@@ -102,9 +102,9 @@ class CellularE3InstrumentedTest {
             )
             requirePublicIpLiteral(initialPublicIp)
 
-            // U4 reuses the same PRODUCT Cellular owner/root-policy authority. The Android
-            // instrumentation does not resolve or select a network: the Rust-issued observation
-            // performs owner-bound DNS, ordinary PRODUCT-UID TLS/HTTPS and strict IP parsing.
+            // U4 reuses the same PRODUCT Cellular owner/root-policy authority. Android only invokes
+            // the bounded native operation: Rust performs owner-bound DNS, ordinary PRODUCT-UID
+            // Tokio TCP/TLS/HTTPS and strict generation-current IP parsing.
             val u4FdBefore = openFdCount()
             repeat(U4_REPEATED_OBSERVATIONS) {
                 val observation = runtime.observePublicEgressIp(U4_PUBLIC_IP_TIMEOUT_MILLIS)
@@ -115,10 +115,6 @@ class CellularE3InstrumentedTest {
                 )
                 requirePublicIpLiteral(observation.address)
             }
-            val u4StaleTicket = runtime.nativeController()
-                .preparePublicIpProbe(U4_PUBLIC_IP_TIMEOUT_MILLIS.toULong())
-            assertTrue("fresh U4 ticket must begin current", u4StaleTicket.isCurrent())
-
             // Establish a second real PRODUCT HTTPS/TCP flow while cellular authority is
             // current, but intentionally send no HTTP application request yet. The TLS
             // handshake proves that this exact socket existed over the admitted path before
@@ -151,14 +147,6 @@ class CellularE3InstrumentedTest {
             assertTrue(
                 "negative owner sequence must supersede the positive generation",
                 negativeSequence > positiveSequence,
-            )
-            assertFalse(
-                "old U4 ticket must become stale after the real cellular loss generation",
-                u4StaleTicket.isCurrent(),
-            )
-            assertTrue(
-                "old-generation U4 completion must be rejected",
-                runCatching { u4StaleTicket.complete("198.51.100.77") }.isFailure,
             )
             assertTrue(
                 "U4 must not fall back to default/Wi-Fi/WARP after NOT_ADMITTED",
@@ -228,22 +216,21 @@ class CellularE3InstrumentedTest {
             )
             emitEvidence(
                 "phase=u4 positive_https=true owner_bound_dns=true ordinary_uid_socket=true " +
-                    "stale_generation_rejected=true no_default_fallback=true " +
+                    "generation_current=true no_default_fallback=true " +
                     "fresh_generation=true repeated_observations_bounded=true raw_ip_persisted=false",
             )
             val recoveryFunctionalElapsedMs = SystemClock.elapsedRealtime() - recoveryStartedAt
 
-            // Deliberate shutdown follows the real composition dependency order: the proxy
-            // runtime releases its private Cellular bridge before root-policy quiescence and
-            // cleanup. Verification remains read-only after the production adapters stop.
+            // D2 exact shutdown uses the one stable native process handle. Android platform
+            // observers are closed by the facade; Rust owns Proxy/root/readiness/Mesh drain.
             val stopStartedAt = SystemClock.elapsedRealtime()
-            val proxyCloseStartedAt = SystemClock.elapsedRealtime()
-            application.proxyRuntime.close()
-            val proxyCloseElapsedMs = SystemClock.elapsedRealtime() - proxyCloseStartedAt
-
-            val cellularCloseStartedAt = SystemClock.elapsedRealtime()
-            runtime.close()
-            val cellularCloseElapsedMs = SystemClock.elapsedRealtime() - cellularCloseStartedAt
+            val nativeShutdownStartedAt = SystemClock.elapsedRealtime()
+            assertTrue(
+                "stable native runtime shutdown must clean the current generation",
+                application.runtimeController.shutdownProcessExact(),
+            )
+            val nativeShutdownElapsedMs =
+                SystemClock.elapsedRealtime() - nativeShutdownStartedAt
             runtimeClosed = true
 
             val cleanupVerifyStartedAt = SystemClock.elapsedRealtime()
@@ -257,8 +244,7 @@ class CellularE3InstrumentedTest {
                     "loss_fail_closed_elapsed_ms=$lossFailClosedElapsedMs " +
                     "recovery_owner_elapsed_ms=$recoveryOwnerElapsedMs " +
                     "recovery_functional_elapsed_ms=$recoveryFunctionalElapsedMs " +
-                    "proxy_close_elapsed_ms=$proxyCloseElapsedMs " +
-                    "cellular_close_elapsed_ms=$cellularCloseElapsedMs " +
+                    "native_shutdown_elapsed_ms=$nativeShutdownElapsedMs " +
                     "cleanup_verify_elapsed_ms=$cleanupVerifyElapsedMs " +
                     "stop_total_elapsed_ms=$stopTotalElapsedMs",
             )
@@ -277,8 +263,11 @@ class CellularE3InstrumentedTest {
                 runCatching { executeMobileDataTransition("enable") }
             }
             if (!runtimeClosed) {
-                application.proxyRuntime.close()
-                val cleanupFailure = runCatching { runtime.close() }.exceptionOrNull()
+                val cleanupFailure = runCatching {
+                    check(application.runtimeController.shutdownProcessExact()) {
+                        "stable native runtime cleanup was incomplete"
+                    }
+                }.exceptionOrNull()
                 if (cleanupFailure != null) {
                     println(
                         "E3_SAFE_FAILURE stage=root_policy_cleanup " +

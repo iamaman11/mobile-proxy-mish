@@ -2,12 +2,27 @@
 //!
 //! Owns durable external proxy credential lifecycle semantics. Platform adapters may protect a
 //! non-exportable root key and persist the non-secret owner state, but they do not own version,
-//! rotation, revocation, derivation domains, or secret formatting.
+//! rotation, revocation, persistence schema/migration, provisioning contract, derivation domains,
+//! or secret formatting.
 //!
-//! Secret values must never be projected into logs, metrics, UI, crash reports, evidence, or
-//! ordinary durable configuration.
+//! Secret values must never be projected into logs, metrics, diagnostics, crash reports, evidence,
+//! or ordinary durable configuration. Plaintext is exposed only by an explicit sensitive
+//! reveal/provisioning operation.
 
 use std::{error::Error, fmt};
+
+mod persistence;
+mod proto;
+mod provisioning;
+
+pub use persistence::{
+    ExternalCredentialPersistenceAction, ExternalCredentialPersistenceResolution, decode_state,
+    encode_state, resolve_persistence,
+};
+pub use provisioning::{
+    ExternalProxyProvisioningEnvelope, PROVISIONING_CHALLENGE_BYTES, PROVISIONING_SCHEMA_VERSION,
+    decode_provisioning_envelope, encode_provisioning_envelope,
+};
 
 pub const DERIVATION_OUTPUT_BYTES: usize = 32;
 
@@ -162,6 +177,14 @@ pub enum ExternalCredentialError {
     VersionExhausted,
     Revoked,
     InvalidDerivationOutput,
+    MalformedState,
+    NonCanonicalState,
+    MixedPersistenceSchemas,
+    IncompleteLegacyState,
+    InvalidLegacyVersion,
+    MissingRootForState,
+    RootWithoutState,
+    InvalidProvisioningEnvelope,
 }
 
 impl fmt::Display for ExternalCredentialError {
@@ -171,6 +194,18 @@ impl fmt::Display for ExternalCredentialError {
             Self::VersionExhausted => "external credential version space is exhausted",
             Self::Revoked => "external credential version is revoked",
             Self::InvalidDerivationOutput => "external credential derivation output is invalid",
+            Self::MalformedState => "external credential state protobuf is malformed",
+            Self::NonCanonicalState => "external credential state protobuf is non-canonical",
+            Self::MixedPersistenceSchemas => {
+                "external credential storage mixes canonical and legacy state"
+            }
+            Self::IncompleteLegacyState => "legacy external credential state is incomplete",
+            Self::InvalidLegacyVersion => "legacy external credential version is invalid",
+            Self::MissingRootForState => {
+                "external credential root is missing for durable owner state"
+            }
+            Self::RootWithoutState => "external credential root exists without durable owner state",
+            Self::InvalidProvisioningEnvelope => "external proxy provisioning envelope is invalid",
         })
     }
 }
@@ -265,6 +300,21 @@ mod tests {
     }
 
     #[test]
+    fn get_current_reveals_same_material_without_advancing_version() {
+        let state = ExternalCredentialState::initial();
+        let first = state
+            .materialize(&[3; DERIVATION_OUTPUT_BYTES], &[4; DERIVATION_OUTPUT_BYTES])
+            .expect("first current reveal");
+        let second = state
+            .materialize(&[3; DERIVATION_OUTPUT_BYTES], &[4; DERIVATION_OUTPUT_BYTES])
+            .expect("second current reveal");
+
+        assert_eq!(first, second);
+        assert_eq!(state.version(), 1);
+        assert_eq!(state.status(), ExternalCredentialStatus::Active);
+    }
+
+    #[test]
     fn materialization_requires_exact_hmac_sha256_outputs() {
         let state = ExternalCredentialState::initial();
         assert_eq!(
@@ -277,6 +327,10 @@ mod tests {
         let material = state
             .materialize(&[1; DERIVATION_OUTPUT_BYTES], &[2; DERIVATION_OUTPUT_BYTES])
             .expect("exact outputs");
+        let revealed_again = state
+            .materialize(&[1; DERIVATION_OUTPUT_BYTES], &[2; DERIVATION_OUTPUT_BYTES])
+            .expect("same current credential");
+        assert_eq!(material, revealed_again);
         assert!(material.username().starts_with("mish-"));
         assert_eq!(material.username().len(), 5 + 32);
         assert_eq!(material.password().len(), 64);

@@ -7,6 +7,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.mobileproxymish.app.MishApplication
 import com.mobileproxymish.app.ProxyRuntimeSnapshot
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -23,7 +24,6 @@ import org.junit.runner.RunWith
 class PhysicalCompositionDiagnosticTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context = instrumentation.targetContext
-    private val rootTransport: RootCommandTransport = SuProcess()
     private val debugIsolation = context.packageName.endsWith(".debug") &&
         (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
     private val mishChain = if (debugIsolation) DEBUG_MISH_CHAIN else RELEASE_MISH_CHAIN
@@ -92,11 +92,11 @@ class PhysicalCompositionDiagnosticTest {
             ProxyRuntimeSnapshot.Running -> "RUNNING"
             is ProxyRuntimeSnapshot.Failed -> "FAILED_${snapshot.reason.name}"
         }
-        val runtimeObservation = application.proxyRuntime.diagnosticObservation()
+        val diagnostic = application.runtimeController.diagnosticSnapshot()
         println(
             "PHYSICAL_PROXY_DIAGNOSTIC runtime_state=$state " +
-                "native_healthy=${runtimeObservation.healthy} " +
-                "credential_bound=${runtimeObservation.credentialVersion != null}",
+                "native_healthy=${diagnostic.proxyHealthy} " +
+                "credential_bound=${diagnostic.credentialVersion != null}",
         )
 
         val sockets = runProductRoot("ss -ltnpe")
@@ -182,14 +182,56 @@ class PhysicalCompositionDiagnosticTest {
         raw.lineSequence().map(String::trim).filter(String::isNotEmpty).toList()
 
     private fun runProductRoot(command: String): RootReadResult {
-        val result = try {
-            rootTransport.execute(RootObservation(command))
+        val process = try {
+            // Test-only read path. PRODUCT root ownership stays exclusively in Rust/Tokio.
+            ProcessBuilder("su", "-c", command)
+                .redirectErrorStream(true)
+                .start()
         } catch (_: Exception) {
             return RootReadResult(false, "")
         }
+
+        val output = StringBuilder()
+        val complete = AtomicBoolean(true)
+        val reader = Thread({
+            try {
+                process.inputStream.bufferedReader().useLines { lines ->
+                    lines.forEach { line ->
+                        if (output.length + line.length + 1 <= MAX_ROOT_OUTPUT_CHARS) {
+                            output.append(line).append('\n')
+                        } else {
+                            complete.set(false)
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+                complete.set(false)
+            }
+        }, "mish-physical-root-read").apply {
+            isDaemon = true
+            start()
+        }
+
+        val finished = try {
+            process.waitFor(ROOT_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
+        }
+        if (!finished) {
+            process.destroyForcibly()
+        }
+        try {
+            reader.join(TimeUnit.SECONDS.toMillis(ROOT_READ_TIMEOUT_SECONDS))
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            complete.set(false)
+        }
+
+        val exitCode = if (finished) runCatching { process.exitValue() }.getOrDefault(-1) else -1
         return RootReadResult(
-            ok = result.exitCode == 0 && !result.timedOut && result.outputComplete,
-            stdout = result.stdout.take(MAX_ROOT_OUTPUT_CHARS),
+            ok = finished && !reader.isAlive && complete.get() && exitCode == 0,
+            stdout = output.toString(),
         )
     }
 
@@ -206,6 +248,7 @@ class PhysicalCompositionDiagnosticTest {
         const val RELEASE_MISH_CHAIN = "MISH_EGRESS_V1"
         const val DEBUG_MISH_CHAIN = "MISH_DEBUG_EGRESS_V1"
         const val PROXY_WAIT_SECONDS = 10L
+        const val ROOT_READ_TIMEOUT_SECONDS = 10L
         const val MAX_ROOT_OUTPUT_CHARS = 64 * 1024
         const val FULL_MASK = 0xffffffffUL
         val PUBLIC_PORTS = setOf(1080, 1081, 3128)

@@ -14,7 +14,7 @@ import android.os.IBinder
 /**
  * User-visible Android lifecycle owner for the continuously available mobile-proxy runtime.
  *
- * The Service owns process-generation lifetime only. It does not own proxy protocol/auth,
+ * The Service owns only Android foreground-service lifetime. It does not own PRODUCT generation,
  * Cellular Egress admission, root-policy semantics, Mesh state, or readiness truth.
  * Android Force Stop remains the explicit platform-owned user override for this always-running
  * product model; no competing PRODUCT desired-running flag is introduced here.

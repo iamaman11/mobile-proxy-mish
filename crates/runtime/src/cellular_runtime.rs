@@ -4,6 +4,9 @@
 //! effect gate. Proxy Serving consumes the same owner directly through a narrow connector; there is
 //! no private loopback bridge, duplicate cellular owner, DNS fallback or proxy-specific root path.
 
+use crate::RuntimeExecutor;
+use crate::public_ip_network::execute_public_ip_probe;
+use crate::tls_client::ProductTlsClient;
 use crate::{
     CellularDnsDiagnosticSnapshot, CellularDnsResolver, CellularOutboundRuntimeConnector,
     PreparedPublicIpProbe, PublicEgressIpObservation, PublicIpProbeEffectFailure,
@@ -17,6 +20,8 @@ use mish_proxy::{ProxyConnectTarget, ProxyOutboundConnectError, ProxyOutboundCon
 use std::net::TcpStream;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Duration;
+use tokio::sync::Notify;
+use tokio::time::{Instant as TokioInstant, timeout as tokio_timeout};
 
 const OPERATION_TIMEOUT_MAX_MS: u64 = 120_000;
 
@@ -59,7 +64,7 @@ impl CellularRuntimeCoordinator {
     ) -> Result<RuntimePublicIpProbe, PublicIpProbeFailure> {
         validate_operation_timeout(operation_timeout)
             .map_err(|_| PublicIpProbeFailure::DeadlineExceeded)?;
-        let _permit = self
+        let permit = self
             .root_policy_effect_gate
             .acquire()
             .ok_or(PublicIpProbeFailure::RootPolicyUnavailable)?;
@@ -71,7 +76,30 @@ impl CellularRuntimeCoordinator {
         Ok(RuntimePublicIpProbe {
             inner,
             effect_gate: Arc::clone(&self.root_policy_effect_gate),
+            permit: Mutex::new(Some(permit)),
         })
+    }
+
+    pub(crate) async fn observe_public_egress_ip_async(
+        &self,
+        operation_timeout: Duration,
+    ) -> Result<PublicEgressIpObservation, PublicIpProbeFailure> {
+        let tls = ProductTlsClient::new().map_err(|_| PublicIpProbeFailure::TlsHandshake)?;
+        let probe = self.prepare_public_ip_probe(operation_timeout)?;
+        execute_public_ip_probe(probe, &tls).await
+    }
+
+    /// Executes one generation-bound public-IP observation entirely on the shared PRODUCT Tokio
+    /// runtime. Owner-bound DNS, root-policy currentness, TCP/TLS/HTTPS and final parsing remain
+    /// within Rust; Android receives only the typed terminal observation.
+    pub fn observe_public_egress_ip(
+        &self,
+        executor: &RuntimeExecutor,
+        operation_timeout: Duration,
+    ) -> Result<PublicEgressIpObservation, PublicIpProbeFailure> {
+        executor
+            .block_on(self.observe_public_egress_ip_async(operation_timeout))
+            .map_err(|_| PublicIpProbeFailure::Io)?
     }
 
     pub fn observe_network(
@@ -114,6 +142,17 @@ impl CellularRuntimeCoordinator {
         self.root_policy_effect_gate
             .wait_quiesced(timeout)
             .ok_or(CellularRuntimeError::StateUnavailable)
+    }
+
+    pub async fn await_root_policy_quiesced_async(
+        &self,
+        timeout: Duration,
+    ) -> Result<bool, CellularRuntimeError> {
+        validate_operation_timeout(timeout)?;
+        Ok(self
+            .root_policy_effect_gate
+            .wait_quiesced_async(timeout)
+            .await)
     }
 
     pub fn authorize_root_policy(
@@ -175,6 +214,7 @@ fn validate_operation_timeout(timeout: Duration) -> Result<(), CellularRuntimeEr
 struct RootPolicyEffectGate {
     state: Mutex<RootPolicyEffectGateState>,
     quiesced: Condvar,
+    async_quiesced: Notify,
 }
 
 #[derive(Default)]
@@ -191,6 +231,7 @@ impl RootPolicyEffectGate {
         state.ready = ready;
         if !ready && state.in_flight == 0 {
             self.quiesced.notify_all();
+            self.async_quiesced.notify_waiters();
         }
         true
     }
@@ -219,6 +260,26 @@ impl RootPolicyEffectGate {
             .ok()?;
         Some(state.in_flight == 0)
     }
+
+    async fn wait_quiesced_async(&self, timeout: Duration) -> bool {
+        let deadline = TokioInstant::now() + timeout;
+        loop {
+            if self.state.lock().is_ok_and(|state| state.in_flight == 0) {
+                return true;
+            }
+            let notified = self.async_quiesced.notified();
+            if self.state.lock().is_ok_and(|state| state.in_flight == 0) {
+                return true;
+            }
+            let now = TokioInstant::now();
+            if now >= deadline {
+                return false;
+            }
+            if tokio_timeout(deadline - now, notified).await.is_err() {
+                return false;
+            }
+        }
+    }
 }
 
 struct RootPolicyEffectPermit {
@@ -233,6 +294,7 @@ impl Drop for RootPolicyEffectPermit {
             state.in_flight -= 1;
             if state.in_flight == 0 {
                 self.gate.quiesced.notify_all();
+                self.gate.async_quiesced.notify_waiters();
             }
         }
     }
@@ -241,6 +303,7 @@ impl Drop for RootPolicyEffectPermit {
 pub struct RuntimePublicIpProbe {
     inner: PreparedPublicIpProbe,
     effect_gate: Arc<RootPolicyEffectGate>,
+    permit: Mutex<Option<RootPolicyEffectPermit>>,
 }
 
 impl RuntimePublicIpProbe {
@@ -281,16 +344,28 @@ impl RuntimePublicIpProbe {
         &self,
         raw_body: &str,
     ) -> Result<PublicEgressIpObservation, PublicIpProbeFailure> {
-        self.ensure_current_policy()?;
-        let observation = self.inner.complete(raw_body)?;
-        self.ensure_current_policy()?;
-        Ok(observation)
+        let result = (|| {
+            self.ensure_current_policy()?;
+            let observation = self.inner.complete(raw_body)?;
+            self.ensure_current_policy()?;
+            Ok(observation)
+        })();
+        self.release_permit();
+        result
     }
 
     pub fn effect_failed(&self, effect: PublicIpProbeEffectFailure) -> PublicIpProbeFailure {
-        match self.ensure_current_policy() {
+        let failure = match self.ensure_current_policy() {
             Ok(()) => self.inner.effect_failed(effect),
             Err(failure) => failure,
+        };
+        self.release_permit();
+        failure
+    }
+
+    fn release_permit(&self) {
+        if let Ok(mut permit) = self.permit.lock() {
+            permit.take();
         }
     }
 
@@ -390,6 +465,46 @@ mod tests {
             !runtime
                 .authorize_root_policy(sequence(1), handle(42))
                 .expect("stale")
+        );
+    }
+
+    #[test]
+    fn public_ip_ticket_holds_root_policy_quiescence_until_terminal_completion() {
+        let runtime = coordinator();
+        runtime
+            .observe_network(NetworkObservation::new(
+                sequence(1),
+                handle(42),
+                true,
+                true,
+                true,
+                true,
+            ))
+            .expect("observe");
+        assert!(
+            runtime
+                .authorize_root_policy(sequence(1), handle(42))
+                .expect("authorize")
+        );
+
+        let probe = runtime
+            .prepare_public_ip_probe(Duration::from_secs(2))
+            .expect("probe");
+        runtime.close_root_policy_gate().expect("close gate");
+        assert!(
+            !runtime
+                .await_root_policy_quiesced(Duration::from_millis(1))
+                .expect("quiescence")
+        );
+
+        assert_eq!(
+            probe.complete("198.51.100.42"),
+            Err(PublicIpProbeFailure::RootPolicyUnavailable)
+        );
+        assert!(
+            runtime
+                .await_root_policy_quiesced(Duration::from_millis(50))
+                .expect("quiescence after terminal completion")
         );
     }
 

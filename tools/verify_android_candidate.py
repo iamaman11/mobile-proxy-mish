@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 import subprocess
 import zipfile
@@ -38,28 +39,77 @@ def main() -> None:
 
     surface = generated.read_text(encoding="utf-8")
     required = (
+        "NativeProductRuntime",
+        "NativeProxyRuntimeObserver",
+        "NativeReadinessObserver",
+        "NativeCellularPolicyObserver",
+        "CellularNetworkObservationInput",
+        "RuntimeLifecycleSnapshotView",
+        "ProxyRuntimePublicationView",
+        "ProductDiagnosticSnapshotView",
+        "RotationSnapshotView",
+        "NativeRotationStartError",
+        "diagnosticSnapshot",
+        "startPublicIpRotation",
+        "rotationSnapshot",
+        "rootPolicyAuthorizedGeneration",
+        "rootLastFailureClass",
+        "rootSessionGeneration",
+        "proxyRecoveryOperationId",
+        "meshServingGeneration",
+        "readinessBindingCellularOwnerGeneration",
+        "readinessExpectedFreshness",
+        "readinessObservedFreshness",
+        "rotationOperationId",
+        "rotationBeforeGeneration",
+        "rotationAfterGeneration",
+        "rotationRestoreRequired",
+        "rotationTerminalResult",
+        "rotationRestoreResult",
+        "rotationActiveTasks",
+        "ReadinessDiagnosticView",
+        "MeshAdmissionView",
+        "ExternalCredentialCanonicalStateView",
+        "ExternalCredentialPersistenceActionView",
+        "ExternalCredentialPersistenceResolutionView",
+        "externalCredentialResolvePersistence",
+        "externalCredentialRotate",
+        "externalCredentialRevoke",
+        "externalCredentialDerivation",
+        "externalCredentialMaterialize",
+        "externalCredentialEncodeProvisioningEnvelope",
+    )
+    forbidden = (
         "CellularController",
         "MeshTransportController",
         "RuntimeLifecycleController",
-        "NativeProxyRuntime",
-        "NativeProxyRuntimeObserver",
+        "RuntimeProcessLifecycleController",
+        "RuntimeStartAction",
+        "RuntimeStopAction",
         "ProxyServingSnapshotView",
-        "proxyServingFailureRecoverable",
-        "proxyListenerPorts",
-    )
-    forbidden = (
+        "NativeProxyRuntime",
+        "ProxyServingLifecycleController",
         "CellularNetworkLease",
         "admittedNetworkLease",
         "bindSocket",
         "resolveHost",
-        "RuntimeProcessLifecycleController",
-        "ProxyServingLifecycleController",
+        "proxyServingFailureRecoverable",
+        "proxyListenerPorts",
         "PrivateBridge",
+        "readinessDiagnosticSnapshot",
+        "proxyActiveSessions",
+        "dnsDiagnosticSnapshot",
+        "cellularReconcileDiagnostic",
+        "rootRecoveryDiagnostic",
+        "rootPolicyReconcileDiagnostic",
+        "externalCredentialInitialState",
+        "externalCredentialRestore",
     )
     for symbol in required:
         require(symbol in surface, f"required UniFFI PRODUCT surface is missing: {symbol}")
     for symbol in forbidden:
-        require(symbol not in surface, f"obsolete or uncontrolled API leaked into UniFFI surface: {symbol}")
+        leaked = re.search(rf"\\b{re.escape(symbol)}\\b", surface) is not None
+        require(not leaked, f"obsolete or uncontrolled API leaked into UniFFI surface: {symbol}")
 
     print("ANDROID_CANDIDATE_CONTRACT=PASS")
 

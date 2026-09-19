@@ -363,7 +363,7 @@ Next stage: **U5 — First-class IP Rotation**.
 
 # U5 — First-class IP Rotation
 
-`crates/rotation` remains the natural owner. Android executes only the narrow airplane-mode effect.
+`crates/rotation` remains the natural semantic owner. `mish-runtime` executes the sealed airplane observe/ON/OFF effects through the existing persistent Rust/Tokio root session; Android/Kotlin owns no airplane command or rotation policy.
 
 One operation at a time:
 
@@ -384,7 +384,7 @@ Requirements:
 
 - monotonic operation id and stale-completion rejection;
 - fail-closed serving before/during cellular loss;
-- narrow typed Android adapter: observe / enable / disable; no generic root command API;
+- airplane observe / enable / disable are sealed Rust effects over the existing persistent root session; Android/Kotlin owns no airplane command or generic root command API;
 - effective ON requires observed airplane ON plus cellular loss, not only shell exit 0;
 - bounded best-effort restore to airplane OFF after any failure;
 - fresh cellular generation -> fresh root policy -> native proxy/readiness -> public-IP probe;
@@ -436,7 +436,7 @@ Keep simpler mechanisms when budgets are healthy. Do not add frameworks for hypo
 
 ---
 
-# U8 — Production durability and release closure
+# U8 — Production durability and deployment closure
 
 Prove the appliance can remain operational across normal lifecycle events:
 
@@ -447,10 +447,10 @@ Prove the appliance can remain operational across normal lifecycle events:
 - one persistent `su` transport remains bounded and replaceable on shell death without becoming a second privileged daemon/lifecycle;
 - bounded recovery from cellular/provider loss;
 - long soak with no unbounded FD/thread/task/memory growth;
-- immutable RC/release bytes, formal release gates and rollback/recovery documentation;
+- exact accepted Android artifact provenance remains reproducible through the single hosted candidate -> Device Cycle path; any future external distribution/signing is downstream packaging, not an RC acceptance lineage;
 - diagnostics/support bundle remains typed, bounded and secret-safe.
 
-Exit: formal release acceptance on immutable bytes and accepted physical evidence.
+Exit: production durability is accepted on exact artifact provenance plus accepted physical evidence; any external distribution package must derive from accepted source without creating a competing acceptance pipeline.
 
 ---
 

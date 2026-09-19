@@ -92,6 +92,11 @@ class CellularNetworkObserver(
         }
 
         connectivityManager.unregisterNetworkCallback(callback)
+        synchronized(eventLock) {
+            // A later registration represents a fresh platform-observation session. The next
+            // identical Android snapshot must be emitted again for the current native generation.
+            lastObserved = null
+        }
         requested = false
     }
 

@@ -4,18 +4,11 @@ import android.content.ContentProvider
 import android.content.ContentValues
 import android.database.Cursor
 import android.net.Uri
-import android.os.BaseBundle
 import android.os.Bundle
 import android.os.Process
 import android.os.SystemClock
 import android.util.Base64
-import com.mobileproxymish.app.cellular.CellularBoundaryFailure
-import com.mobileproxymish.app.cellular.CellularRootPolicyReconcileDiagnostic
-import com.mobileproxymish.app.cellular.CellularRootRecoveryDiagnostic
-import com.mobileproxymish.app.cellular.CellularRuntimeSnapshot
-import com.mobileproxymish.ffi.CellularAdmissionState
-import com.mobileproxymish.ffi.CellularDnsDiagnosticView
-import com.mobileproxymish.ffi.ProductReadinessState
+import com.mobileproxymish.ffi.ProductDiagnosticSnapshotView
 import java.nio.charset.StandardCharsets
 import org.json.JSONObject
 
@@ -23,194 +16,216 @@ internal const val MISH_DIAGNOSTICS_SCHEMA_V2 = "mish.diagnostics/v2"
 internal const val MISH_DIAGNOSTICS_METHOD_SNAPSHOT_V2 = "snapshot_v2"
 internal const val MISH_DIAGNOSTICS_RESULT_PAYLOAD_B64 = "payload_b64"
 
-/** Stable semantic diagnostics for the native L8 product topology. */
-internal data class MishDiagnosticFactsV2(
-    val applicationId: String,
-    val pid: Int,
-    val capturedElapsedMs: Long,
-    val consistent: Boolean,
-    val runtimeRunning: Boolean,
-    val runtimeRecovery: RuntimeRecoveryDiagnosticObservation,
-    val cellularState: String,
-    val cellularReason: String,
-    val cellularAdmitted: Boolean,
-    val cellularOwnerSequence: ULong?,
-    val cellularBoundaryFailure: String?,
-    val cellularReconcileRequested: Long,
-    val cellularReconcileExecuted: Long,
-    val cellularReconcileCoalesced: Long,
-    val cellularReconcilePending: Boolean,
-    val cellularReconcileDrainScheduled: Boolean,
-    val dnsObservation: CellularDnsDiagnosticView?,
-    val rootAuthorityObservation: String,
-    val rootPolicyAuthorized: Boolean,
-    val rootReconcile: CellularRootPolicyReconcileDiagnostic,
-    val rootRecovery: CellularRootRecoveryDiagnostic,
-    val proxyState: String,
-    val proxyHealthy: Boolean,
-    val proxyFailure: String?,
-    val proxyServingGeneration: Long?,
-    val proxyActiveSessions: UInt?,
-    val credentialActive: Boolean,
-    val credentialVersion: ULong?,
-    val meshState: String,
-    val meshAdmitted: Boolean,
-    val meshObservationSequence: ULong?,
-    val meshAdmissionEpoch: ULong?,
-    val meshEpochPresent: Boolean,
-    val meshIngressRunning: Boolean,
-    val meshIngressFailure: String,
-    val meshActiveSessions: ULong?,
-    val meshCapacityRejects: ULong?,
-    val readinessState: String,
-    val readinessBindingEligible: Boolean,
-    val readinessProbeState: String,
-)
-
-internal fun renderMishDiagnosticSnapshotV2(facts: MishDiagnosticFactsV2): String =
-    JSONObject().apply {
-        put("schema", MISH_DIAGNOSTICS_SCHEMA_V2)
-        put("application_id", facts.applicationId)
-        put("pid", facts.pid)
-        put("captured_elapsed_ms", facts.capturedElapsedMs)
-        put("consistent", facts.consistent)
-        put("runtime", JSONObject().apply {
-            put("running", facts.runtimeRunning)
-            put("generation", facts.runtimeRecovery.runtimeGeneration.toLong())
+/**
+ * Serializes one already-composed native PRODUCT diagnostic snapshot.
+ *
+ * Rust owns generation fencing, consistency and all PRODUCT semantic composition. Kotlin adds only
+ * Android process metadata and JSON/Base64 transport for the DUMP-gated ContentProvider boundary.
+ */
+internal fun renderMishDiagnosticSnapshotV2(
+    applicationId: String,
+    pid: Int,
+    capturedElapsedMs: Long,
+    snapshot: ProductDiagnosticSnapshotView,
+): String = JSONObject().apply {
+    put("schema", MISH_DIAGNOSTICS_SCHEMA_V2)
+    put("application_id", applicationId)
+    put("pid", pid)
+    put("captured_elapsed_ms", capturedElapsedMs)
+    put("consistent", snapshot.consistent)
+    put("runtime", JSONObject().apply {
+        put("running", snapshot.runtimeRunning)
+        put("generation", snapshot.runtimeGeneration.toLong())
+    })
+    put("cellular", JSONObject().apply {
+        put("state", snapshot.cellularState)
+        put("reason", snapshot.cellularReason)
+        put("admitted", snapshot.cellularAdmitted)
+        put("owner_sequence", snapshot.cellularOwnerSequence?.toLong() ?: JSONObject.NULL)
+        putNullable("boundary_failure", snapshot.cellularBoundaryFailure)
+        put("reconcile", JSONObject().apply {
+            put("requested", snapshot.cellularReconcile.requested.toLong())
+            put("executed", snapshot.cellularReconcile.executed.toLong())
+            put("coalesced", snapshot.cellularReconcile.coalesced.toLong())
+            put("pending", snapshot.cellularReconcile.pending)
+            put("drain_scheduled", snapshot.cellularReconcile.drainScheduled)
         })
-        put("cellular", JSONObject().apply {
-            put("state", facts.cellularState)
-            put("reason", facts.cellularReason)
-            put("admitted", facts.cellularAdmitted)
-            put("owner_sequence", facts.cellularOwnerSequence?.toLong() ?: JSONObject.NULL)
-            putNullable("boundary_failure", facts.cellularBoundaryFailure)
-            put("reconcile", JSONObject().apply {
-                put("requested", facts.cellularReconcileRequested)
-                put("executed", facts.cellularReconcileExecuted)
-                put("coalesced", facts.cellularReconcileCoalesced)
-                put("pending", facts.cellularReconcilePending)
-                put("drain_scheduled", facts.cellularReconcileDrainScheduled)
-            })
-            put("dns", JSONObject().apply {
-                val dns = facts.dnsObservation
-                put("available", dns != null)
-                put("slow_threshold_ms", dns?.slowThresholdMs?.toLong() ?: JSONObject.NULL)
-                put("started", dns?.started?.toLong() ?: JSONObject.NULL)
-                put("completed", dns?.completed?.toLong() ?: JSONObject.NULL)
-                put("active", dns?.active?.toLong() ?: JSONObject.NULL)
-                put("peak_active", dns?.peakActive?.toLong() ?: JSONObject.NULL)
-                put("slow_completions", dns?.slowCompletions?.toLong() ?: JSONObject.NULL)
-                put("resolver_failed", dns?.resolverFailed?.toLong() ?: JSONObject.NULL)
-                put(
-                    "discarded_after_deadline",
-                    dns?.discardedAfterDeadline?.toLong() ?: JSONObject.NULL,
-                )
-                put(
-                    "completed_after_owner_change",
-                    dns?.completedAfterOwnerChange?.toLong() ?: JSONObject.NULL,
-                )
-                put("discarded_stale", dns?.discardedStale?.toLong() ?: JSONObject.NULL)
-                put(
-                    "authority_validation_failed",
-                    dns?.authorityValidationFailed?.toLong() ?: JSONObject.NULL,
-                )
-                put("unusable_result", dns?.unusableResult?.toLong() ?: JSONObject.NULL)
-                put("accepted_current", dns?.acceptedCurrent?.toLong() ?: JSONObject.NULL)
-                put(
-                    "max_native_elapsed_ms",
-                    dns?.maxNativeElapsedMs?.toLong() ?: JSONObject.NULL,
-                )
-                put(
-                    "last_started_owner_sequence",
-                    dns?.lastStartedOwnerSequence?.toLong() ?: JSONObject.NULL,
-                )
-                put(
-                    "last_completed_start_owner_sequence",
-                    dns?.lastCompletedStartOwnerSequence?.toLong() ?: JSONObject.NULL,
-                )
-                put(
-                    "last_completed_current_owner_sequence",
-                    dns?.lastCompletedCurrentOwnerSequence?.toLong() ?: JSONObject.NULL,
-                )
-            })
+        put("dns", JSONObject().apply {
+            val dns = snapshot.dns
+            put("available", true)
+            put("slow_threshold_ms", dns.slowThresholdMs.toLong())
+            put("started", dns.started.toLong())
+            put("completed", dns.completed.toLong())
+            put("active", dns.active.toLong())
+            put("peak_active", dns.peakActive.toLong())
+            put("slow_completions", dns.slowCompletions.toLong())
+            put("resolver_failed", dns.resolverFailed.toLong())
+            put("discarded_after_deadline", dns.discardedAfterDeadline.toLong())
+            put("completed_after_owner_change", dns.completedAfterOwnerChange.toLong())
+            put("discarded_stale", dns.discardedStale.toLong())
+            put("authority_validation_failed", dns.authorityValidationFailed.toLong())
+            put("unusable_result", dns.unusableResult.toLong())
+            put("accepted_current", dns.acceptedCurrent.toLong())
+            put("max_native_elapsed_ms", dns.maxNativeElapsedMs.toLong())
+            put(
+                "last_started_owner_sequence",
+                dns.lastStartedOwnerSequence?.toLong() ?: JSONObject.NULL,
+            )
+            put(
+                "last_completed_start_owner_sequence",
+                dns.lastCompletedStartOwnerSequence?.toLong() ?: JSONObject.NULL,
+            )
+            put(
+                "last_completed_current_owner_sequence",
+                dns.lastCompletedCurrentOwnerSequence?.toLong() ?: JSONObject.NULL,
+            )
         })
-        put("root", JSONObject().apply {
-            put("authority_observation", facts.rootAuthorityObservation)
-            put("policy_authorized", facts.rootPolicyAuthorized)
-            put("reconcile", JSONObject().apply {
-                put("attempts", facts.rootReconcile.attempts)
-                put("total_executor_commands", facts.rootReconcile.totalExecutorCommands)
-                put("total_observation_commands", facts.rootReconcile.totalObservationCommands)
-                put("total_mutation_commands", facts.rootReconcile.totalMutationCommands)
-                put(
-                    "total_duplicate_observations",
-                    facts.rootReconcile.totalDuplicateObservations,
-                )
-                put("last_reconcile_elapsed_ms", facts.rootReconcile.lastReconcileElapsedMs)
-                put("max_reconcile_elapsed_ms", facts.rootReconcile.maxReconcileElapsedMs)
-                put(
-                    "last_policy_effect_elapsed_ms",
-                    facts.rootReconcile.lastPolicyEffectElapsedMs,
-                )
-                put(
-                    "max_policy_effect_elapsed_ms",
-                    facts.rootReconcile.maxPolicyEffectElapsedMs,
-                )
-                put("last_executor_commands", facts.rootReconcile.lastExecutorCommands)
-                put("last_observation_commands", facts.rootReconcile.lastObservationCommands)
-                put("last_mutation_commands", facts.rootReconcile.lastMutationCommands)
-                put(
-                    "last_duplicate_observations",
-                    facts.rootReconcile.lastDuplicateObservations,
-                )
-                put(
-                    "last_incomplete_or_timed_out_commands",
-                    facts.rootReconcile.lastIncompleteOrTimedOutCommands,
-                )
-                put("last_mutation_failures", facts.rootReconcile.lastMutationFailures)
-            })
-            put("recovery", JSONObject().apply {
-                put("pending", facts.rootRecovery.pending)
-                put("attempts_since_reset", facts.rootRecovery.attemptsSinceReset)
-                put("next_delay_ms", facts.rootRecovery.nextDelayMs)
-            })
+    })
+    put("root", JSONObject().apply {
+        put("authority_observation", snapshot.rootAuthorityObservation)
+        put("policy_authorized", snapshot.rootPolicyAuthorized)
+        put(
+            "session_generation",
+            snapshot.rootSessionGeneration?.toLong() ?: JSONObject.NULL,
+        )
+        putNullable("last_failure_class", snapshot.rootLastFailureClass)
+        put(
+            "policy_authorized_generation",
+            snapshot.rootPolicyAuthorizedGeneration?.toLong() ?: JSONObject.NULL,
+        )
+        put("reconcile", JSONObject().apply {
+            val root = snapshot.rootReconcile
+            put("attempts", root.attempts.toLong())
+            put("total_executor_commands", root.totalExecutorCommands.toLong())
+            put("total_observation_commands", root.totalObservationCommands.toLong())
+            put("total_mutation_commands", root.totalMutationCommands.toLong())
+            put("total_duplicate_observations", root.totalDuplicateObservations.toLong())
+            put("last_reconcile_elapsed_ms", root.lastReconcileElapsedMs.toLong())
+            put("max_reconcile_elapsed_ms", root.maxReconcileElapsedMs.toLong())
+            put("last_policy_effect_elapsed_ms", root.lastPolicyEffectElapsedMs.toLong())
+            put("max_policy_effect_elapsed_ms", root.maxPolicyEffectElapsedMs.toLong())
+            put("last_executor_commands", root.lastExecutorCommands.toLong())
+            put("last_observation_commands", root.lastObservationCommands.toLong())
+            put("last_mutation_commands", root.lastMutationCommands.toLong())
+            put("last_duplicate_observations", root.lastDuplicateObservations.toLong())
+            put(
+                "last_incomplete_or_timed_out_commands",
+                root.lastIncompleteOrTimedOutCommands.toLong(),
+            )
+            put("last_mutation_failures", root.lastMutationFailures.toLong())
         })
-        put("proxy", JSONObject().apply {
-            put("state", facts.proxyState)
-            put("healthy", facts.proxyHealthy)
-            putNullable("failure", facts.proxyFailure)
-            put("serving_generation", facts.proxyServingGeneration ?: JSONObject.NULL)
-            put("active_sessions", facts.proxyActiveSessions?.toLong() ?: JSONObject.NULL)
-            put("recovery", JSONObject().apply {
-                put("pending", facts.runtimeRecovery.proxyRecoveryPending)
-                put("attempts_scheduled", facts.runtimeRecovery.proxyRecoveryAttemptsScheduled)
-                put("next_delay_ms", facts.runtimeRecovery.proxyRecoveryNextDelayMs)
-            })
+        put("recovery", JSONObject().apply {
+            put("pending", snapshot.rootRecovery.pending)
+            put("attempts_since_reset", snapshot.rootRecovery.attemptsSinceReset.toLong())
+            put("next_delay_ms", snapshot.rootRecovery.nextDelayMs.toLong())
         })
-        put("credential", JSONObject().apply {
-            put("active", facts.credentialActive)
-            put("version", facts.credentialVersion?.toLong() ?: JSONObject.NULL)
+    })
+    put("proxy", JSONObject().apply {
+        put("state", snapshot.proxyState)
+        put("healthy", snapshot.proxyHealthy)
+        putNullable("failure", snapshot.proxyFailure)
+        put(
+            "serving_generation",
+            snapshot.proxyServingGeneration?.toLong() ?: JSONObject.NULL,
+        )
+        put("active_sessions", snapshot.proxyActiveSessions.toLong())
+        put("recovery", JSONObject().apply {
+            put("pending", snapshot.proxyRecoveryPending)
+            put("operation_id", snapshot.proxyRecoveryOperationId.toLong())
+            put(
+                "attempts_scheduled",
+                snapshot.proxyRecoveryAttemptsScheduled.toLong(),
+            )
+            put("next_delay_ms", snapshot.proxyRecoveryNextDelayMs.toLong())
         })
-        put("mesh", JSONObject().apply {
-            put("state", facts.meshState)
-            put("admitted", facts.meshAdmitted)
-            put("observation_sequence", facts.meshObservationSequence?.toLong() ?: JSONObject.NULL)
-            put("admission_epoch", facts.meshAdmissionEpoch?.toLong() ?: JSONObject.NULL)
-            put("epoch_present", facts.meshEpochPresent)
-            put("ingress_running", facts.meshIngressRunning)
-            put("ingress_failure", facts.meshIngressFailure)
-            put("active_sessions", facts.meshActiveSessions?.toLong() ?: JSONObject.NULL)
-            put("capacity_rejects", facts.meshCapacityRejects?.toLong() ?: JSONObject.NULL)
+    })
+    put("credential", JSONObject().apply {
+        put("active", snapshot.credentialActive)
+        put("version", snapshot.credentialVersion?.toLong() ?: JSONObject.NULL)
+    })
+    put("mesh", JSONObject().apply {
+        put("state", snapshot.meshState)
+        put("admitted", snapshot.meshAdmitted)
+        put(
+            "observation_sequence",
+            snapshot.meshObservationSequence?.toLong() ?: JSONObject.NULL,
+        )
+        put(
+            "admission_epoch",
+            snapshot.meshAdmissionEpoch?.toLong() ?: JSONObject.NULL,
+        )
+        put("epoch_present", snapshot.meshEpochPresent)
+        put("ingress_running", snapshot.meshIngressRunning)
+        put(
+            "serving_generation",
+            snapshot.meshServingGeneration?.toLong() ?: JSONObject.NULL,
+        )
+        put("ingress_failure", snapshot.meshIngressFailure)
+        put(
+            "active_sessions",
+            snapshot.meshActiveSessions?.toLong() ?: JSONObject.NULL,
+        )
+        put(
+            "capacity_rejects",
+            snapshot.meshCapacityRejects?.toLong() ?: JSONObject.NULL,
+        )
+    })
+    put("readiness", JSONObject().apply {
+        put("state", snapshot.readinessState)
+        put("binding_eligible", snapshot.readinessBindingEligible)
+        put("binding", JSONObject().apply {
+            put(
+                "cellular_owner_generation",
+                snapshot.readinessBindingCellularOwnerGeneration?.toLong() ?: JSONObject.NULL,
+            )
+            put(
+                "runtime_generation",
+                snapshot.readinessBindingRuntimeGeneration?.toLong() ?: JSONObject.NULL,
+            )
+            put(
+                "proxy_serving_generation",
+                snapshot.readinessBindingProxyServingGeneration?.toLong() ?: JSONObject.NULL,
+            )
+            put(
+                "mesh_admission_epoch",
+                snapshot.readinessBindingMeshAdmissionEpoch?.toLong() ?: JSONObject.NULL,
+            )
+            put(
+                "credential_version",
+                snapshot.readinessBindingCredentialVersion?.toLong() ?: JSONObject.NULL,
+            )
         })
-        put("readiness", JSONObject().apply {
-            put("state", facts.readinessState)
-            put("binding_eligible", facts.readinessBindingEligible)
-            put("probe_state", facts.readinessProbeState)
-        })
-        put("rotation", JSONObject().apply {
-            put("state", "NOT_SUPPORTED")
-        })
-    }.toString()
+        put(
+            "expected_freshness",
+            snapshot.readinessExpectedFreshness?.toLong() ?: JSONObject.NULL,
+        )
+        put(
+            "observed_freshness",
+            snapshot.readinessObservedFreshness?.toLong() ?: JSONObject.NULL,
+        )
+        put("probe_in_flight", snapshot.readinessProbeInFlight)
+        put("refresh_pending", snapshot.readinessRefreshPending)
+        put("probe_state", snapshot.readinessProbeState)
+    })
+    put("rotation", JSONObject().apply {
+        put("state", snapshot.rotationState)
+        put("operation_id", snapshot.rotationOperationId?.toLong() ?: JSONObject.NULL)
+        put(
+            "before_generation",
+            snapshot.rotationBeforeGeneration?.toLong() ?: JSONObject.NULL,
+        )
+        put(
+            "after_generation",
+            snapshot.rotationAfterGeneration?.toLong() ?: JSONObject.NULL,
+        )
+        put("restore_required", snapshot.rotationRestoreRequired)
+        putNullable("terminal_result", snapshot.rotationTerminalResult)
+        putNullable("failure", snapshot.rotationFailure)
+        putNullable("restore_result", snapshot.rotationRestoreResult)
+        put("active_tasks", snapshot.rotationActiveTasks.toLong())
+        put("raw_ip_persisted", false)
+    })
+}.toString()
 
 private fun JSONObject.putNullable(name: String, value: String?) {
     put(name, value ?: JSONObject.NULL)
@@ -234,7 +249,13 @@ class MishDiagnosticsProvider : ContentProvider() {
         }
         val app = context?.applicationContext as? MishApplication
             ?: error("MishApplication is unavailable")
-        val json = captureSnapshot(app)
+        val snapshot = app.runtimeController.diagnosticSnapshot()
+        val json = renderMishDiagnosticSnapshotV2(
+            applicationId = app.packageName,
+            pid = Process.myPid(),
+            capturedElapsedMs = SystemClock.elapsedRealtime(),
+            snapshot = snapshot,
+        )
         val encoded = Base64.encodeToString(
             json.toByteArray(StandardCharsets.UTF_8),
             Base64.NO_WRAP,
@@ -243,133 +264,6 @@ class MishDiagnosticsProvider : ContentProvider() {
             putString("schema", MISH_DIAGNOSTICS_SCHEMA_V2)
             putString(MISH_DIAGNOSTICS_RESULT_PAYLOAD_B64, encoded)
         }
-    }
-
-    private fun captureSnapshot(app: MishApplication): String {
-        val runtime = app.runtimeController
-
-        // Capture exact generation object identities before reading projections. Every runtime
-        // replacement installs fresh adapter objects, so identity equality is a cheap generation
-        // fence without introducing a second lifecycle/generation owner into diagnostics.
-        val cellularGeneration = runtime.currentCellularRuntime
-        val proxyGeneration = runtime.currentProxyRuntime
-        val readinessGeneration = runtime.currentReadinessRuntime
-        val meshGeneration = runtime.currentMeshRuntime
-        val runtimeRunningBefore = runtime.isRunning
-
-        val runtimeRecoveryBefore = runtime.recoveryDiagnosticObservation()
-        val cellularBefore = runtime.cellularSnapshot.value
-        val cellularReconcileBefore = cellularGeneration.reconcileDiagnosticObservation()
-        val rootReconcileBefore = cellularGeneration.rootPolicyReconcileDiagnosticObservation()
-        val rootRecoveryBefore = cellularGeneration.rootRecoveryDiagnosticObservation()
-        val dnsBefore = cellularGeneration.dnsDiagnosticObservation()
-        val proxyBefore = runtime.proxySnapshot.value
-        val proxyDiagnosticBefore = proxyGeneration.diagnosticObservation()
-        val readinessBefore = runtime.readinessSnapshot.value
-        val meshBefore = runtime.meshSnapshot.value
-
-        val readinessDiagnostic = readinessGeneration.diagnosticObservation()
-        val meshIngressFailure = meshGeneration.diagnosticIngressFailure().name
-        val meshSessionObservation = meshGeneration.diagnosticSessionObservation()
-
-        val runtimeRecoveryAfter = runtime.recoveryDiagnosticObservation()
-        val cellularAfter = runtime.cellularSnapshot.value
-        val cellularReconcileAfter = cellularGeneration.reconcileDiagnosticObservation()
-        val rootReconcileAfter = cellularGeneration.rootPolicyReconcileDiagnosticObservation()
-        val rootRecoveryAfter = cellularGeneration.rootRecoveryDiagnosticObservation()
-        val dnsAfter = cellularGeneration.dnsDiagnosticObservation()
-        val proxyAfter = runtime.proxySnapshot.value
-        val proxyDiagnosticAfter = proxyGeneration.diagnosticObservation()
-        val readinessAfter = runtime.readinessSnapshot.value
-        val meshAfter = runtime.meshSnapshot.value
-        val runtimeRunningAfter = runtime.isRunning
-
-        val sameGeneration = cellularGeneration === runtime.currentCellularRuntime &&
-            proxyGeneration === runtime.currentProxyRuntime &&
-            readinessGeneration === runtime.currentReadinessRuntime &&
-            meshGeneration === runtime.currentMeshRuntime
-        val consistent = sameGeneration &&
-            runtimeRunningBefore == runtimeRunningAfter &&
-            runtimeRecoveryBefore == runtimeRecoveryAfter &&
-            cellularBefore == cellularAfter &&
-            cellularReconcileBefore == cellularReconcileAfter &&
-            rootReconcileBefore == rootReconcileAfter &&
-            rootRecoveryBefore == rootRecoveryAfter &&
-            dnsBefore == dnsAfter &&
-            proxyBefore == proxyAfter &&
-            proxyDiagnosticBefore == proxyDiagnosticAfter &&
-            readinessBefore == readinessAfter &&
-            meshBefore == meshAfter
-
-        val ownerAdmission = (cellularAfter as? CellularRuntimeSnapshot.OwnerSnapshot)?.admission
-        val boundaryFailure = (cellularAfter as? CellularRuntimeSnapshot.BoundaryUnavailable)?.reason
-        val cellularState = ownerAdmission?.state?.name ?: "BOUNDARY_UNAVAILABLE"
-        val cellularReason = ownerAdmission?.reason?.name ?: "NONE"
-        val cellularAdmitted = ownerAdmission?.state == CellularAdmissionState.ADMITTED
-        val proxyFailure = (proxyAfter as? ProxyRuntimeSnapshot.Failed)?.reason?.name
-        val proxyState = when (proxyAfter) {
-            ProxyRuntimeSnapshot.Stopped -> "STOPPED"
-            ProxyRuntimeSnapshot.Starting -> "STARTING"
-            ProxyRuntimeSnapshot.Running -> "RUNNING"
-            is ProxyRuntimeSnapshot.Failed -> "FAILED"
-        }
-        val rootAuthorityObservation = when {
-            boundaryFailure == CellularBoundaryFailure.RootAuthorityUnavailable -> "UNAVAILABLE"
-            readinessDiagnostic.rootPolicyVerified -> "READY_AT_POLICY_AUTHORIZATION"
-            else -> "NOT_OBSERVED"
-        }
-        val meshState = meshAfter?.state?.name ?: "ABSENT"
-        val readinessProbeState = when (readinessAfter) {
-            ProductReadinessState.READY -> "SUCCEEDED"
-            ProductReadinessState.DEGRADED -> "FAILED"
-            ProductReadinessState.NOT_READY -> "BLOCKED"
-            ProductReadinessState.UNKNOWN -> "NOT_OBSERVED"
-        }
-
-        return renderMishDiagnosticSnapshotV2(
-            MishDiagnosticFactsV2(
-                applicationId = app.packageName,
-                pid = Process.myPid(),
-                capturedElapsedMs = SystemClock.elapsedRealtime(),
-                consistent = consistent,
-                runtimeRunning = runtimeRunningAfter,
-                runtimeRecovery = runtimeRecoveryAfter,
-                cellularState = cellularState,
-                cellularReason = cellularReason,
-                cellularAdmitted = cellularAdmitted,
-                cellularOwnerSequence = ownerAdmission?.lastSequence,
-                cellularBoundaryFailure = boundaryFailure?.diagnosticCode(),
-                cellularReconcileRequested = cellularReconcileAfter.requested,
-                cellularReconcileExecuted = cellularReconcileAfter.executed,
-                cellularReconcileCoalesced = cellularReconcileAfter.coalesced,
-                cellularReconcilePending = cellularReconcileAfter.pending,
-                cellularReconcileDrainScheduled = cellularReconcileAfter.drainScheduled,
-                dnsObservation = dnsAfter,
-                rootAuthorityObservation = rootAuthorityObservation,
-                rootPolicyAuthorized = readinessDiagnostic.rootPolicyVerified,
-                rootReconcile = rootReconcileAfter,
-                rootRecovery = rootRecoveryAfter,
-                proxyState = proxyState,
-                proxyHealthy = readinessDiagnostic.proxyHealthy,
-                proxyFailure = proxyFailure,
-                proxyServingGeneration = proxyDiagnosticAfter.servingGeneration,
-                proxyActiveSessions = proxyDiagnosticAfter.activeSessions,
-                credentialActive = readinessDiagnostic.credentialActive,
-                credentialVersion = proxyDiagnosticAfter.credentialVersion,
-                meshState = meshState,
-                meshAdmitted = readinessDiagnostic.meshAdmitted,
-                meshObservationSequence = meshAfter?.lastSequence,
-                meshAdmissionEpoch = meshAfter?.admissionEpoch,
-                meshEpochPresent = meshAfter?.admissionEpoch != null,
-                meshIngressRunning = meshAfter?.ingressRunning == true,
-                meshIngressFailure = meshIngressFailure,
-                meshActiveSessions = meshSessionObservation?.activeSessions,
-                meshCapacityRejects = meshSessionObservation?.capacityRejects,
-                readinessState = readinessAfter.name,
-                readinessBindingEligible = readinessDiagnostic.bindingEligible,
-                readinessProbeState = readinessProbeState,
-            ),
-        )
     }
 
     override fun query(
@@ -394,14 +288,4 @@ class MishDiagnosticsProvider : ContentProvider() {
         selection: String?,
         selectionArgs: Array<out String>?,
     ): Int = throw UnsupportedOperationException("diagnostics provider is read-only")
-}
-
-private fun CellularBoundaryFailure.diagnosticCode(): String = when (this) {
-    CellularBoundaryFailure.NativeLibraryUnavailable -> "NATIVE_LIBRARY_UNAVAILABLE"
-    CellularBoundaryFailure.ForeignCallFailed -> "FOREIGN_CALL_FAILED"
-    CellularBoundaryFailure.RootAuthorityUnavailable -> "ROOT_AUTHORITY_UNAVAILABLE"
-    CellularBoundaryFailure.RootPolicyReconcileFailed -> "ROOT_POLICY_RECONCILE_FAILED"
-    CellularBoundaryFailure.RootPolicyGenerationChanged -> "ROOT_POLICY_GENERATION_CHANGED"
-    CellularBoundaryFailure.RootPolicyCleanupFailed -> "ROOT_POLICY_CLEANUP_FAILED"
-    is CellularBoundaryFailure.RootPolicyUnavailable -> "ROOT_POLICY_${failure.name.uppercase()}"
 }

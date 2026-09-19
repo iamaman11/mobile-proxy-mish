@@ -11,11 +11,16 @@ publish = false
 path = "src/entry.rs"
 
 [dependencies]
+mish-application = { path = "../application" }
 mish-cellular = { path = "../cellular" }
 mish-configuration = { path = "../configuration" }
 mish-proxy = { path = "../proxy" }
+mish-readiness = { path = "../readiness" }
+mish-rotation = { path = "../rotation" }
 mish-transport = { path = "../transport" }
 tokio.workspace = true
+tokio-rustls.workspace = true
+webpki-roots.workspace = true
 
 [lints]
 workspace = true

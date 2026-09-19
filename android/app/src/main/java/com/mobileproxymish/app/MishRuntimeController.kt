@@ -1,185 +1,126 @@
 package com.mobileproxymish.app
 
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import com.mobileproxymish.app.cellular.CellularRuntimeBridge
 import com.mobileproxymish.app.cellular.CellularRuntimeSnapshot
 import com.mobileproxymish.ffi.MeshAdmissionView
+import com.mobileproxymish.ffi.NativeProductRuntime
+import com.mobileproxymish.ffi.ProductDiagnosticSnapshotView
+import com.mobileproxymish.ffi.NativeReadinessObserver
 import com.mobileproxymish.ffi.ProductReadinessState
-import com.mobileproxymish.ffi.ProxyServingFailure
-import com.mobileproxymish.ffi.RuntimeLifecycleController
 import com.mobileproxymish.ffi.RuntimeLifecycleState
-import com.mobileproxymish.ffi.RuntimeStartAction
-import com.mobileproxymish.ffi.RuntimeStopAction
-import com.mobileproxymish.ffi.proxyRecoveryDelayMs
-import com.mobileproxymish.ffi.proxyServingFailureRecoverable
-import java.util.concurrent.Executors
-import java.util.concurrent.RejectedExecutionException
-import java.util.concurrent.ScheduledExecutorService
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.stateIn
-
-/** Runs every generation cleanup effect in dependency order and reports aggregate success. */
-internal data class RuntimeRecoveryDiagnosticObservation(
-    val runtimeGeneration: ULong,
-    val proxyRecoveryPending: Boolean,
-    val proxyRecoveryAttemptsScheduled: Int,
-    val proxyRecoveryNextDelayMs: Long,
-)
-
-internal fun closeRuntimeGenerationExact(
-    closeMesh: () -> Unit,
-    closeProxy: () -> Unit,
-    closeCellular: () -> Unit,
-): Boolean {
-    var clean = true
-    if (runCatching(closeMesh).isFailure) clean = false
-    if (runCatching(closeProxy).isFailure) clean = false
-    if (runCatching(closeCellular).isFailure) clean = false
-    return clean
-}
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * Android effect/composition adapter for the Rust Runtime Lifecycle natural owner.
+ * Android platform facade around one stable Rust-owned PRODUCT process handle.
  *
- * Rust owns start/stop/restart/generation-replacement and proxy recovery policy. This class only
- * serializes Android effects, executes the runtime-requested delay, stores platform callback
- * closures, and publishes owner projections from the currently installed runtime generation.
+ * Rust owns lifecycle state, generation identity/replacement, Proxy recovery and native drain.
+ * Android only supplies bounded platform credential material and starts/stops Android framework
+ * observers for the foreground-Service lifetime.
  */
 class MishRuntimeController internal constructor(
     context: Context,
 ) {
     private val appContext = context.applicationContext
-    private val lock = Any()
-    private val lifecycle = RuntimeLifecycleController()
-    private val lifecycleExecutor = Executors.newSingleThreadExecutor { task ->
-        Thread(task, "mish-runtime-lifecycle").apply { isDaemon = true }
-    }
-    private val recoveryScheduler: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor { task ->
-        Thread(task, "mish-runtime-recovery-effect").apply { isDaemon = true }
-    }
-    private val observationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val externalCredentialStore = ExternalProxyCredentialStore(appContext)
-    private val generation = MutableStateFlow(newGeneration())
-    private val stopCallbacks = mutableListOf<(Boolean) -> Unit>()
-    private val automaticRecoveryPending = AtomicBoolean(false)
-    private val automaticRecoveryAttempts = AtomicInteger(0)
+    private val platformEffectsLock = Any()
+    private val debugIsolation = appContext.packageName.endsWith(".debug") &&
+        (appContext.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
 
-    @OptIn(ExperimentalCoroutinesApi::class)
-    val cellularSnapshot: StateFlow<CellularRuntimeSnapshot> = generation
-        .flatMapLatest { it.cellularRuntime.snapshot }
-        .stateIn(
-            scope = observationScope,
-            started = SharingStarted.Eagerly,
-            initialValue = generation.value.cellularRuntime.snapshot.value,
-        )
+    private val productRuntime = NativeProductRuntime(
+        appContext.applicationInfo.uid.toUInt(),
+        debugIsolation,
+    )
+    private val cellularRuntime = CellularRuntimeBridge(appContext, productRuntime)
+    private val proxyRuntime = ProxyRuntimeSupervisor(productRuntime)
+    private val meshRuntime = MeshIngressRuntimeBridge(appContext, productRuntime)
+    private val mutableReadiness = MutableStateFlow(productRuntime.readinessSnapshot())
 
-    @OptIn(ExperimentalCoroutinesApi::class)
-    val proxySnapshot: StateFlow<ProxyRuntimeSnapshot> = generation
-        .flatMapLatest { it.proxyRuntime.snapshot }
-        .stateIn(
-            scope = observationScope,
-            started = SharingStarted.Eagerly,
-            initialValue = ProxyRuntimeSnapshot.Stopped,
+    init {
+        productRuntime.observeReadiness(
+            object : NativeReadinessObserver {
+                override fun onReadiness(readiness: ProductReadinessState) {
+                    mutableReadiness.value = readiness
+                }
+            },
         )
+    }
 
-    @OptIn(ExperimentalCoroutinesApi::class)
-    val readinessSnapshot: StateFlow<ProductReadinessState> = generation
-        .flatMapLatest { it.readinessRuntime.state }
-        .stateIn(
-            scope = observationScope,
-            started = SharingStarted.Eagerly,
-            initialValue = generation.value.readinessRuntime.state.value,
-        )
+    val cellularSnapshot: StateFlow<CellularRuntimeSnapshot>
+        get() = cellularRuntime.snapshot
+
+    val proxySnapshot: StateFlow<ProxyRuntimeSnapshot>
+        get() = proxyRuntime.snapshot
+
+    val readinessSnapshot: StateFlow<ProductReadinessState>
+        get() = mutableReadiness.asStateFlow()
 
     /** Read-only Transport Reachability projection for UI and retained device diagnostics. */
-    @OptIn(ExperimentalCoroutinesApi::class)
-    val meshSnapshot: StateFlow<MeshAdmissionView?> = generation
-        .flatMapLatest { it.meshRuntime.snapshot }
-        .stateIn(
-            scope = observationScope,
-            started = SharingStarted.Eagerly,
-            initialValue = generation.value.meshRuntime.snapshot.value,
-        )
+    val meshSnapshot: StateFlow<MeshAdmissionView?>
+        get() = meshRuntime.snapshot
 
     internal val currentCellularRuntime: CellularRuntimeBridge
-        get() = generation.value.cellularRuntime
+        get() = cellularRuntime
 
     internal val currentProxyRuntime: ProxyRuntimeSupervisor
-        get() = generation.value.proxyRuntime
-
-    internal val currentReadinessRuntime: ProductReadinessRuntime
-        get() = generation.value.readinessRuntime
+        get() = proxyRuntime
 
     internal val currentMeshRuntime: MeshIngressRuntimeBridge
-        get() = generation.value.meshRuntime
+        get() = meshRuntime
 
     /** Read-only bounded snapshot for the permission-gated Windows provisioning transaction. */
     internal fun currentExternalCredentialProvisioningSnapshot(): ExternalProxyCredentialSnapshot? =
         externalCredentialStore.currentProvisioningSnapshot()
 
-    internal fun recoveryDiagnosticObservation(): RuntimeRecoveryDiagnosticObservation =
-        synchronized(lock) {
-            val attempts = automaticRecoveryAttempts.get().coerceAtLeast(0)
-            RuntimeRecoveryDiagnosticObservation(
-                runtimeGeneration = lifecycle.generation(),
-                proxyRecoveryPending = automaticRecoveryPending.get(),
-                proxyRecoveryAttemptsScheduled = attempts,
-                proxyRecoveryNextDelayMs = proxyRecoveryDelayMs(attempts.toUInt()).toLong(),
-            )
-        }
+    /** Explicit sensitive user read. It never rotates, provisions or restarts the runtime. */
+    internal fun revealCurrentExternalCredential(): ExternalProxyCredentialSnapshot? =
+        externalCredentialStore.revealCurrentCredential()
+
+    /** One immutable Rust-composed PRODUCT diagnostic snapshot. */
+    internal fun diagnosticSnapshot(): ProductDiagnosticSnapshotView =
+        productRuntime.diagnosticSnapshot()
+
+    /** Thin PRODUCT command seam. Rust owns the operation, sequencing, effects and result. */
+    internal fun startPublicIpRotation(): ULong =
+        productRuntime.startPublicIpRotation()
 
     val isRunning: Boolean
-        get() = synchronized(lock) { lifecycle.state() != RuntimeLifecycleState.STOPPED }
+        get() = productRuntime.runtimeLifecycleSnapshot().state != RuntimeLifecycleState.STOPPED
 
-    fun start(): Boolean {
-        val action = synchronized(lock) { lifecycle.requestStart() }
-        when (action) {
-            RuntimeStartAction.ALREADY_ACTIVE,
-            RuntimeStartAction.QUEUED_AFTER_STOP,
-            -> return true
+    fun start(): Boolean = synchronized(platformEffectsLock) {
+        val credential = runCatching { externalCredentialStore.currentCredentialForRuntime() }.getOrNull()
+        val accepted = runCatching {
+            productRuntime.startRuntime(
+                credentialVersion = credential?.version,
+                username = credential?.credentials?.username,
+                password = credential?.credentials?.password,
+            )
+        }.isSuccess
+        if (!accepted) return@synchronized false
 
-            RuntimeStartAction.START_NOW -> Unit
+        try {
+            cellularRuntime.start()
+            meshRuntime.start()
+            true
+        } catch (_: Exception) {
+            runCatching(meshRuntime::stop)
+            runCatching(cellularRuntime::stop)
+            runCatching { productRuntime.stopRuntime() }
+            false
         }
-
-        if (submit(::startBlocking)) return true
-        synchronized(lock) { lifecycle.startSubmissionFailed() }
-        return false
     }
 
-    fun stop(onComplete: (Boolean) -> Unit = {}) {
-        var completeImmediately = false
-        val action = synchronized(lock) {
-            val requested = lifecycle.requestStop()
-            when (requested) {
-                RuntimeStopAction.ALREADY_STOPPED -> completeImmediately = true
-                RuntimeStopAction.ALREADY_STOPPING -> stopCallbacks += onComplete
-                RuntimeStopAction.STOP_NOW -> stopCallbacks += onComplete
-            }
-            requested
-        }
-
-        if (completeImmediately) {
-            onComplete(true)
-            return
-        }
-        if (action != RuntimeStopAction.STOP_NOW) return
-        if (submit(::stopBlocking)) return
-
-        val callbacks = synchronized(lock) {
-            lifecycle.stopSubmissionFailed()
-            stopCallbacks.toList().also { stopCallbacks.clear() }
-        }
-        callbacks.forEach { callback -> runCatching { callback(false) } }
+    fun stop(): Boolean = synchronized(platformEffectsLock) {
+        // Rust must enter STOPPING before platform observation is removed, so a concurrent start
+        // can only become the native queued-restart decision rather than observe stale RUNNING.
+        val nativeAccepted = runCatching { productRuntime.stopRuntime() }.isSuccess
+        var platformClean = true
+        if (runCatching(meshRuntime::stop).isFailure) platformClean = false
+        if (runCatching(cellularRuntime::stop).isFailure) platformClean = false
+        platformClean && nativeAccepted
     }
 
     internal fun rotateExternalCredentialWhileStopped(): Boolean =
@@ -189,156 +130,26 @@ class MishRuntimeController internal constructor(
         mutateExternalCredentialWhileStopped(externalCredentialStore::revokeWhileStopped)
 
     private fun mutateExternalCredentialWhileStopped(mutation: () -> Boolean): Boolean =
-        synchronized(lock) {
-            if (!lifecycle.canMutateStoppedGeneration()) return false
-            val current = generation.value
-            if (!current.closeExact()) {
-                lifecycle.markStoppedGenerationDirty()
-                return false
-            }
-            if (!mutation()) {
-                lifecycle.markStoppedGenerationDirty()
-                return false
-            }
-            if (!lifecycle.advanceStoppedGeneration()) {
-                lifecycle.markStoppedGenerationDirty()
-                return false
-            }
-            generation.value = newGeneration()
-            true
-        }
+        synchronized(platformEffectsLock) {
+            val lease = runCatching {
+                productRuntime.beginStoppedPlatformMutation()
+            }.getOrNull() ?: return@synchronized false
 
-    private fun startBlocking() {
-        val current = synchronized(lock) {
-            val replacementRequired = lifecycle.generationRequiresReplacement()
-            if (replacementRequired && !lifecycle.takeGenerationReplacementForStart()) {
-                null
-            } else {
-                if (replacementRequired) {
-                    generation.value = newGeneration()
-                }
-                generation.value
-            }
-        }
-        if (current == null) {
-            synchronized(lock) {
-                lifecycle.completeStart(
-                    started = false,
-                    cleanAfterFailedStart = false,
+            val succeeded = runCatching(mutation).getOrDefault(false)
+            runCatching {
+                productRuntime.completeStoppedPlatformMutation(
+                    lease = lease,
+                    succeeded = succeeded,
                 )
-            }
-            return
+            }.getOrDefault(false)
         }
 
-        val started = try {
-            current.cellularRuntime.start()
-            current.proxyRuntime.start()
-            current.meshRuntime.start()
-            true
-        } catch (_: Exception) {
-            false
-        }
-
-        val cleanAfterFailedStart = if (started) true else current.closeExact()
-
-        synchronized(lock) {
-            val completion = lifecycle.completeStart(
-                started = started,
-                cleanAfterFailedStart = cleanAfterFailedStart,
-            )
-            if (completion.installFreshGenerationNow) {
-                generation.value = newGeneration()
-            }
-        }
-    }
-
-    private fun stopBlocking() {
-        val current = synchronized(lock) { generation.value }
-        val clean = current.closeExact()
-
-        val restart: Boolean
-        val callbacks: List<(Boolean) -> Unit>
-        synchronized(lock) {
-            val disposition = lifecycle.completeStop(clean)
-            if (disposition.installFreshGenerationNow) {
-                generation.value = newGeneration()
-            }
-            restart = disposition.restartNow
-            callbacks = stopCallbacks.toList()
-            stopCallbacks.clear()
-        }
-
-        callbacks.forEach { callback -> runCatching { callback(clean) } }
-        if (restart) start()
-    }
-
-    /** Execute only the Rust-owned proxy recovery policy; the typed reason is already owner-owned. */
-    private fun scheduleProxyRecoveryIfAllowed(reason: ProxyServingFailure) {
-        if (!proxyServingFailureRecoverable(reason)) return
-        if (!isRunning || !automaticRecoveryPending.compareAndSet(false, true)) return
-        val attempt = automaticRecoveryAttempts.getAndIncrement().coerceAtLeast(0).toUInt()
-        val delayMs = proxyRecoveryDelayMs(attempt).toLong()
-        recoveryScheduler.schedule({
-            if (!isRunning || proxySnapshot.value !is ProxyRuntimeSnapshot.Failed) {
-                automaticRecoveryPending.set(false)
-                return@schedule
-            }
-            stop { clean ->
-                automaticRecoveryPending.set(false)
-                if (clean) start()
-            }
-        }, delayMs, TimeUnit.MILLISECONDS)
-    }
-
-    private fun submit(block: () -> Unit): Boolean = try {
-        lifecycleExecutor.execute(block)
-        true
-    } catch (_: RejectedExecutionException) {
-        false
-    }
-
-    private fun newGeneration(): RuntimeGeneration {
-        val runtimeGeneration = lifecycle.generation()
-        val cellularRuntime = CellularRuntimeBridge(appContext)
-        val proxyRuntime = ProxyRuntimeSupervisor(
-            cellularRuntime = cellularRuntime,
-            publicCredentials = externalCredentialStore,
-            onFailureObserved = ::scheduleProxyRecoveryIfAllowed,
-        )
-        val meshRuntime = MeshIngressRuntimeBridge(
-            context = appContext,
-            proxyRuntime = proxyRuntime,
-        )
-        val readinessRuntime = ProductReadinessRuntime(
-            runtimeGeneration = runtimeGeneration,
-            cellularRuntime = cellularRuntime,
-            proxyRuntime = proxyRuntime,
-            meshRuntime = meshRuntime,
-            credentialStore = externalCredentialStore,
-        )
-        meshRuntime.requireEgressReadiness(readinessRuntime.state)
-        return RuntimeGeneration(
-            cellularRuntime = cellularRuntime,
-            proxyRuntime = proxyRuntime,
-            meshRuntime = meshRuntime,
-            readinessRuntime = readinessRuntime,
-        )
-    }
-
-    private data class RuntimeGeneration(
-        val cellularRuntime: CellularRuntimeBridge,
-        val proxyRuntime: ProxyRuntimeSupervisor,
-        val meshRuntime: MeshIngressRuntimeBridge,
-        val readinessRuntime: ProductReadinessRuntime,
-    ) {
-        fun closeExact(): Boolean {
-            var clean = runCatching(readinessRuntime::close).isSuccess
-            clean = closeRuntimeGenerationExact(
-                closeMesh = meshRuntime::close,
-                closeProxy = proxyRuntime::close,
-                closeCellular = cellularRuntime::close,
-            ) && clean
-            return clean
-        }
+    /** Final process cleanup seam retained for instrumentation; Service stop uses stop(), not this. */
+    internal fun shutdownProcessExact(): Boolean = synchronized(platformEffectsLock) {
+        var clean = true
+        if (runCatching(meshRuntime::close).isFailure) clean = false
+        if (runCatching(cellularRuntime::close).isFailure) clean = false
+        if (runCatching { productRuntime.shutdown() }.isFailure) clean = false
+        clean
     }
 }

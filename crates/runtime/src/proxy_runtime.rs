@@ -1,5 +1,8 @@
 use crate::mesh_serving::MeshExecutionOwner;
-use crate::{ProxyServingFailure, ProxyServingLifecycle, ProxyServingSnapshot, ProxyServingState};
+use crate::{
+    ProxyServingFailure, ProxyServingLifecycle, ProxyServingSnapshot, ProxyServingState,
+    RuntimeExecutionError, RuntimeExecutor,
+};
 use mish_configuration::EXTERNAL_TCP_SESSION_BUDGET;
 use mish_proxy::{
     ProxyCredentialMaterial, ProxyOutboundConnector, ProxyProtocol, ProxyServingPlan,
@@ -14,14 +17,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::copy_bidirectional;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::runtime::{Builder, Runtime};
 use tokio::sync::{Semaphore, watch};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::timeout;
 
 const CONTROL_SESSION_RESERVE: usize = 1;
 const MAX_NATIVE_PROXY_SESSIONS: usize = EXTERNAL_TCP_SESSION_BUDGET + CONTROL_SESSION_RESERVE;
-const IO_WORKER_THREADS: usize = 2;
 const ACCEPT_POLL_TIMEOUT: Duration = Duration::from_millis(200);
 const SESSION_SETUP_TIMEOUT: Duration = Duration::from_secs(15);
 const START_TIMEOUT: Duration = Duration::from_secs(2);
@@ -89,13 +90,19 @@ impl fmt::Display for ProxyServingRuntimeError {
 
 impl std::error::Error for ProxyServingRuntimeError {}
 
+fn map_execution_error(error: RuntimeExecutionError) -> ProxyServingRuntimeError {
+    match error {
+        RuntimeExecutionError::ThreadUnavailable => ProxyServingRuntimeError::ThreadUnavailable,
+        RuntimeExecutionError::StateUnavailable => ProxyServingRuntimeError::StateUnavailable,
+    }
+}
+
 /// One-way terminal event emitted by the Rust runtime owner after startup publication.
 pub type ProxyServingTerminalObserver = Arc<dyn Fn(ProxyServingFailure) + Send + Sync + 'static>;
 
 struct ProxyServingOwnerStateInner {
     lifecycle: ProxyServingLifecycle,
-    observer: Option<ProxyServingTerminalObserver>,
-    notified: bool,
+    observers: Vec<ProxyServingTerminalObserver>,
 }
 
 struct ProxyServingOwnerState {
@@ -112,31 +119,25 @@ impl ProxyServingOwnerState {
             shutdown,
             inner: Mutex::new(ProxyServingOwnerStateInner {
                 lifecycle,
-                observer: None,
-                notified: false,
+                observers: Vec::new(),
             }),
         }
     }
 
     fn set_observer(&self, observer: ProxyServingTerminalObserver) {
-        let notification = {
+        let immediate = {
             let mut state = self
                 .inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.observer = Some(observer);
-            if state.notified {
-                None
-            } else if let (Some(failure), Some(observer)) =
-                (state.lifecycle.snapshot().failure(), state.observer.clone())
-            {
-                state.notified = true;
+            if let Some(failure) = state.lifecycle.snapshot().failure() {
                 Some((observer, failure))
             } else {
+                state.observers.push(observer);
                 None
             }
         };
-        notify_terminal_observer(notification);
+        notify_terminal_observer(immediate);
     }
 
     fn mark_running(&self) -> bool {
@@ -156,28 +157,29 @@ impl ProxyServingOwnerState {
     }
 
     fn publish_failure(&self, failure: ProxyServingFailure) {
-        let notification = {
+        let notifications = {
             let mut state = self
                 .inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if state.lifecycle.snapshot().failure().is_none() {
-                state.lifecycle.mark_failed(failure);
-            }
-            if state.notified {
-                None
-            } else if let (Some(failure), Some(observer)) =
-                (state.lifecycle.snapshot().failure(), state.observer.clone())
-            {
-                state.notified = true;
-                Some((observer, failure))
+            if state.lifecycle.snapshot().failure().is_some() {
+                Vec::new()
             } else {
-                None
+                state.lifecycle.mark_failed(failure);
+                let failure = state.lifecycle.snapshot().failure().unwrap_or(failure);
+                state
+                    .observers
+                    .iter()
+                    .cloned()
+                    .map(|observer| (observer, failure))
+                    .collect::<Vec<_>>()
             }
         };
 
         let _ = self.shutdown.send(true);
-        notify_terminal_observer(notification);
+        for notification in notifications {
+            notify_terminal_observer(Some(notification));
+        }
     }
 
     fn snapshot(&self) -> ProxyServingSnapshot {
@@ -213,13 +215,13 @@ fn notify_terminal_observer(
 /// Tokio is deliberately confined to this runtime layer.
 ///
 /// Every Proxy accept/session task and every Mesh listener/session task is retained under this
-/// runtime generation. Shutdown therefore has one explicit ownership tree: stop Mesh admission and
-/// drain its tasks -> signal Proxy admission stop -> drain Proxy tasks -> destroy the one Tokio
-/// runtime. Android observes owner facts and executes composition effects only.
+/// runtime generation. The process-generation RuntimeExecutor owns the only Tokio runtime; this
+/// component owns only its serving tasks. Shutdown therefore drains Mesh and Proxy tasks without
+/// destroying the process executor.
 pub struct ProxyServingRuntime {
     listener_count: usize,
     shutdown: watch::Sender<bool>,
-    runtime: Mutex<Option<Runtime>>,
+    executor: Arc<RuntimeExecutor>,
     accept_tasks: Mutex<Vec<JoinHandle<()>>>,
     mesh_execution: MeshExecutionOwner,
     stopping: Arc<AtomicBool>,
@@ -230,6 +232,7 @@ pub struct ProxyServingRuntime {
 
 impl ProxyServingRuntime {
     pub fn start(
+        executor: Arc<RuntimeExecutor>,
         plan: ProxyServingPlan,
         connector: Arc<dyn ProxyOutboundConnector>,
     ) -> Result<Arc<Self>, ProxyServingRuntimeError> {
@@ -249,13 +252,7 @@ impl ProxyServingRuntime {
             bound.push((listener.protocol, tcp));
         }
 
-        let runtime = Builder::new_multi_thread()
-            .worker_threads(IO_WORKER_THREADS)
-            .thread_name("mish-runtime-io")
-            .enable_io()
-            .enable_time()
-            .build()
-            .map_err(|_| ProxyServingRuntimeError::ThreadUnavailable)?;
+        let handle = executor.handle().map_err(map_execution_error)?;
         let (shutdown, shutdown_rx) = watch::channel(false);
         let owner_state = Arc::new(ProxyServingOwnerState::new(shutdown.clone()));
         let stopping = Arc::new(AtomicBool::new(false));
@@ -267,11 +264,11 @@ impl ProxyServingRuntime {
         let mut accept_tasks = Vec::with_capacity(listener_count);
 
         {
-            let _enter = runtime.enter();
+            let _enter = handle.enter();
             for (protocol, listener) in bound {
                 let listener = TcpListener::from_std(listener)
                     .map_err(|_| ProxyServingRuntimeError::ListenerUnavailable(protocol))?;
-                accept_tasks.push(runtime.spawn(accept_loop(
+                accept_tasks.push(handle.spawn(accept_loop(
                     protocol,
                     listener,
                     Arc::clone(&credentials),
@@ -289,7 +286,7 @@ impl ProxyServingRuntime {
         let owner = Arc::new(Self {
             listener_count,
             shutdown,
-            runtime: Mutex::new(Some(runtime)),
+            executor,
             accept_tasks: Mutex::new(accept_tasks),
             mesh_execution: MeshExecutionOwner::new(),
             stopping,
@@ -354,18 +351,9 @@ impl ProxyServingRuntime {
                 return Err(ProxyServingRuntimeError::StateUnavailable);
             }
         };
-        let runtime = match self.runtime.lock() {
-            Ok(mut runtime) => runtime.take(),
-            Err(_) => {
-                self.owner_state
-                    .publish_failure(ProxyServingFailure::RuntimeStateUnavailable);
-                return Err(ProxyServingRuntimeError::StateUnavailable);
-            }
-        };
-
-        let mut joined_cleanly = true;
-        if let Some(runtime) = runtime {
-            joined_cleanly = runtime.block_on(async move {
+        let joined_cleanly = self
+            .executor
+            .block_on(async move {
                 timeout(SHUTDOWN_TIMEOUT, async move {
                     for task in accept_tasks {
                         let _ = task.await;
@@ -373,9 +361,8 @@ impl ProxyServingRuntime {
                 })
                 .await
                 .is_ok()
-            });
-            runtime.shutdown_timeout(SHUTDOWN_TIMEOUT);
-        }
+            })
+            .map_err(map_execution_error)?;
 
         if !mesh_clean || !joined_cleanly || self.active_sessions.load(Ordering::Acquire) != 0 {
             self.owner_state
@@ -397,26 +384,23 @@ impl MeshIngressExecutor for ProxyServingRuntime {
         if !self.is_healthy() {
             return Err(MeshIngressError::ExecutorUnavailable);
         }
-        let runtime = self
-            .runtime
-            .lock()
+        let handle = self
+            .executor
+            .handle()
             .map_err(|_| MeshIngressError::ExecutorUnavailable)?;
-        let runtime = runtime
-            .as_ref()
-            .ok_or(MeshIngressError::ExecutorUnavailable)?;
         self.mesh_execution
-            .start(runtime, endpoint, mappings, sessions)
+            .start(&handle, endpoint, mappings, sessions)
     }
 
     fn stop_ingress(&self) -> Result<(), MeshIngressError> {
         if !self.mesh_execution.is_running() {
             return Ok(());
         }
-        let runtime = self
-            .runtime
-            .lock()
+        let handle = self
+            .executor
+            .handle()
             .map_err(|_| MeshIngressError::ExecutorUnavailable)?;
-        self.mesh_execution.stop(runtime.as_ref())
+        self.mesh_execution.stop(Some(&handle))
     }
 
     fn ingress_healthy(&self) -> bool {
@@ -612,7 +596,12 @@ mod tests {
             ProxyCredentialMaterial::new("user", "password").expect("credentials"),
         )
         .expect("explicit non-wildcard plan");
-        let error = match ProxyServingRuntime::start(plan, Arc::new(RejectingConnector)) {
+        let executor = RuntimeExecutor::new().expect("executor");
+        let error = match ProxyServingRuntime::start(
+            Arc::clone(&executor),
+            plan,
+            Arc::new(RejectingConnector),
+        ) {
             Ok(runtime) => {
                 let _ = runtime.stop();
                 panic!("non-loopback plan must fail");
@@ -624,6 +613,7 @@ mod tests {
             error.lifecycle_failure(),
             ProxyServingFailure::ProxyConfigurationRejected
         );
+        executor.shutdown().expect("executor shutdown");
     }
 
     #[test]
@@ -653,6 +643,33 @@ mod tests {
             ProxyServingRuntimeError::ShutdownTimedOut.lifecycle_failure(),
             ProxyServingFailure::ShutdownFailed
         );
+    }
+
+    #[test]
+    fn terminal_owner_supports_multiple_subscribers_without_replacement() {
+        let (shutdown, _) = watch::channel(false);
+        let owner_state = Arc::new(ProxyServingOwnerState::new(shutdown));
+        assert!(owner_state.mark_running());
+
+        let first = Arc::new(AtomicUsize::new(0));
+        let second = Arc::new(AtomicUsize::new(0));
+        for counter in [Arc::clone(&first), Arc::clone(&second)] {
+            owner_state.set_observer(Arc::new(move |_| {
+                counter.fetch_add(1, Ordering::AcqRel);
+            }));
+        }
+
+        owner_state.publish_failure(ProxyServingFailure::ServingUnhealthy);
+        owner_state.publish_failure(ProxyServingFailure::RuntimeStateUnavailable);
+        assert_eq!(first.load(Ordering::Acquire), 1);
+        assert_eq!(second.load(Ordering::Acquire), 1);
+
+        let late = Arc::new(AtomicUsize::new(0));
+        let late_observer = Arc::clone(&late);
+        owner_state.set_observer(Arc::new(move |_| {
+            late_observer.fetch_add(1, Ordering::AcqRel);
+        }));
+        assert_eq!(late.load(Ordering::Acquire), 1);
     }
 
     #[test]
@@ -718,8 +735,10 @@ mod tests {
             ProxyCredentialMaterial::new("runtime-user", "runtime-password").expect("credentials");
         let plan = ProxyServingPlan::canonical(Ipv4Addr::LOCALHOST.into(), credentials)
             .expect("canonical plan");
+        let executor = RuntimeExecutor::new().expect("executor");
         let runtime =
-            ProxyServingRuntime::start(plan, Arc::new(RejectingConnector)).expect("runtime");
+            ProxyServingRuntime::start(Arc::clone(&executor), plan, Arc::new(RejectingConnector))
+                .expect("runtime");
         assert!(runtime.is_healthy());
         assert_eq!(runtime.snapshot().state(), ProxyServingState::Running);
         assert_eq!(runtime.snapshot().failure(), None);
@@ -728,5 +747,6 @@ mod tests {
         assert_eq!(runtime.snapshot().state(), ProxyServingState::Stopped);
         assert_eq!(runtime.snapshot().failure(), None);
         assert_eq!(runtime.active_sessions(), 0);
+        executor.shutdown().expect("executor shutdown");
     }
 }

@@ -26,7 +26,10 @@ class RuntimeReadinessInstrumentedTest {
         val proxy = app.runtimeController.proxySnapshot.value
         val readiness = app.runtimeController.readinessSnapshot.value
         val mesh = app.runtimeController.meshSnapshot.value
-        val readinessDiagnostic = app.runtimeController.currentReadinessRuntime.diagnosticObservation()
+        val diagnostic = app.runtimeController.diagnosticSnapshot()
+        val cellularState = diagnostic.cellularState
+        val cellularReason = diagnostic.cellularReason
+        val cellularAdmitted = diagnostic.cellularAdmitted
         val connectivity = context.getSystemService(ConnectivityManager::class.java)
         val currentVpnCount = connectivity.allNetworks.count { network ->
             connectivity.getNetworkCapabilities(network)
@@ -39,12 +42,12 @@ class RuntimeReadinessInstrumentedTest {
         println("MISH_RESTART_MESH_EPOCH_PRESENT=${mesh?.admissionEpoch != null}")
         println("MISH_RESTART_MESH_INGRESS=${mesh?.ingressRunning == true}")
         println("MISH_RESTART_PLATFORM_VPN_COUNT=$currentVpnCount")
-        println("MISH_RESTART_CELLULAR_STATE=${readinessDiagnostic.cellularState}")
-        println("MISH_RESTART_CELLULAR_REASON=${readinessDiagnostic.cellularReason}")
-        println("MISH_RESTART_CELLULAR_ADMITTED=${readinessDiagnostic.cellularAdmitted}")
-        println("MISH_RESTART_ROOT_POLICY=${readinessDiagnostic.rootPolicyVerified}")
-        println("MISH_RESTART_PROXY_HEALTHY=${readinessDiagnostic.proxyHealthy}")
-        println("MISH_RESTART_CREDENTIAL_ACTIVE=${readinessDiagnostic.credentialActive}")
-        println("MISH_RESTART_BINDING_ELIGIBLE=${readinessDiagnostic.bindingEligible}")
+        println("MISH_RESTART_CELLULAR_STATE=$cellularState")
+        println("MISH_RESTART_CELLULAR_REASON=$cellularReason")
+        println("MISH_RESTART_CELLULAR_ADMITTED=$cellularAdmitted")
+        println("MISH_RESTART_ROOT_POLICY=${diagnostic.rootPolicyAuthorized}")
+        println("MISH_RESTART_PROXY_HEALTHY=${diagnostic.proxyHealthy}")
+        println("MISH_RESTART_CREDENTIAL_ACTIVE=${diagnostic.credentialActive}")
+        println("MISH_RESTART_BINDING_ELIGIBLE=${diagnostic.readinessBindingEligible}")
     }
 }
