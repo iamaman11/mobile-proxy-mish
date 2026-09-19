@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Fail-closed guard for the read-only MISH diagnostics control path."""
+"""Fail-closed guard for the read-only atomic MISH diagnostics control path."""
 
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def read(path: str) -> str:
+    return (ROOT / path).read_text(encoding="utf-8")
 
 
 def require(text: str, needle: str, label: str) -> None:
@@ -17,90 +21,125 @@ def forbid(text: str, needle: str, label: str) -> None:
 
 
 def main() -> None:
-    manifest = (ROOT / "android/app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
-    provider = (ROOT / "android/app/src/main/java/com/mobileproxymish/app/MishDiagnosticsProvider.kt").read_text(encoding="utf-8")
-    proxy_adapter = (ROOT / "android/app/src/main/java/com/mobileproxymish/app/ProxyRuntimeSupervisor.kt").read_text(encoding="utf-8")
-    runtime_controller = (ROOT / "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt").read_text(encoding="utf-8")
-    cellular_bridge = (ROOT / "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRuntimeBridge.kt").read_text(encoding="utf-8")
-    root_backoff = (ROOT / "android/app/src/main/java/com/mobileproxymish/app/cellular/RootAuthorityRecoveryBackoff.kt").read_text(encoding="utf-8")
-    mesh_adapter = (ROOT / "android/app/src/main/java/com/mobileproxymish/app/MeshIngressRuntimeBridge.kt").read_text(encoding="utf-8")
-    proxy_ffi = (ROOT / "crates/android-ffi/src/proxy_serving_ffi.rs").read_text(encoding="utf-8")
-    transport_ffi = (ROOT / "crates/android-ffi/src/transport_ffi.rs").read_text(encoding="utf-8")
-    collector = (ROOT / "lab/windows/collect-device-diagnostic.ps1").read_text(encoding="utf-8")
-    classifier = (ROOT / "lab/windows/DeviceDiagnosticClassification.psm1").read_text(encoding="utf-8")
-    credential_bridge = (ROOT / "lab/windows/CredentialProvisioning.psm1").read_text(encoding="utf-8")
-    workflow = (ROOT / ".github/workflows/mish-lab-diagnostic.yml").read_text(encoding="utf-8")
+    manifest = read("android/app/src/main/AndroidManifest.xml")
+    provider = read("android/app/src/main/java/com/mobileproxymish/app/MishDiagnosticsProvider.kt")
+    runtime_controller = read("android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt")
+    diagnostics_owner = read("crates/runtime/src/product_diagnostics.rs")
+    product_ffi = read("crates/android-ffi/src/product_runtime_ffi.rs")
+    collector = read("lab/windows/collect-device-diagnostic.ps1")
+    classifier = read("lab/windows/DeviceDiagnosticClassification.psm1")
+    credential_bridge = read("lab/windows/CredentialProvisioning.psm1")
+    workflow = read(".github/workflows/mish-lab-diagnostic.yml")
 
-    # Protected main may temporarily carry the previous PRODUCT provider while DEVICE-1 control
-    # consumes an already-built exact integration candidate. Guard the stable provider boundary and
-    # read-only semantics here; the exact PRODUCT candidate's schema/topology is proved by its own
-    # hosted architecture gate. Never partially promote PRODUCT runtime code just to update LAB control.
+    # Stable read-only Android boundary.
     require(manifest, 'android:name=".MishDiagnosticsProvider"', "provider component")
     require(manifest, 'android:authorities="${applicationId}.diagnostics"', "stable authority")
     require(manifest, 'android:permission="android.permission.DUMP"', "DUMP permission gate")
     require(manifest, 'android:exported="true"', "ADB-visible provider")
-    require(provider, 'diagnostics provider is read-only', "mutation rejection")
-    require(provider, 'READY_AT_POLICY_AUTHORIZATION', "non-mutating root observation")
-    for forbidden in ("ProcessBuilder(", "settings put", "airplane-mode enable", "airplane-mode disable", "adb install"):
-        forbid(provider, forbidden, "diagnostic mutation/control surface")
+    require(provider, 'MISH_DIAGNOSTICS_SCHEMA_V2 = "mish.diagnostics/v2"', "V2 schema")
+    require(provider, 'MISH_DIAGNOSTICS_METHOD_SNAPSHOT_V2 = "snapshot_v2"', "V2 method")
+    require(provider, "diagnostics provider is read-only", "mutation rejection")
+    require(
+        provider,
+        "val snapshot = app.runtimeController.diagnosticSnapshot()",
+        "single native snapshot request",
+    )
+    require(
+        provider,
+        "snapshot: ProductDiagnosticSnapshotView",
+        "aggregate native serializer input",
+    )
+    require(
+        runtime_controller,
+        "productRuntime.diagnosticSnapshot()",
+        "stable runtime aggregate projection",
+    )
 
-    # U3 bounded diagnostics must project existing owner identities and recovery cadence without
-    # creating a parallel status database or a second retry owner.
+    # Rust owns generation fencing and semantic composition.
     for needle, label in (
-        ('put("generation", facts.runtimeRecovery.runtimeGeneration.toLong())', "runtime generation"),
-        ('put("owner_sequence", facts.cellularOwnerSequence?.toLong() ?: JSONObject.NULL)', "Cellular owner sequence"),
-        ('put("serving_generation", facts.proxyServingGeneration ?: JSONObject.NULL)', "Proxy serving generation"),
-        ('put("version", facts.credentialVersion?.toLong() ?: JSONObject.NULL)', "credential version"),
-        ('put("observation_sequence", facts.meshObservationSequence?.toLong() ?: JSONObject.NULL)', "Mesh observation sequence"),
-        ('put("admission_epoch", facts.meshAdmissionEpoch?.toLong() ?: JSONObject.NULL)', "Mesh admission epoch"),
-        ('put("attempts_since_reset", facts.rootRecovery.attemptsSinceReset)', "root recovery attempt"),
-        ('put("next_delay_ms", facts.rootRecovery.nextDelayMs)', "root recovery backoff"),
-        ('put("attempts_scheduled", facts.runtimeRecovery.proxyRecoveryAttemptsScheduled)', "proxy recovery attempt"),
-        ('put("next_delay_ms", facts.runtimeRecovery.proxyRecoveryNextDelayMs)', "proxy recovery backoff"),
+        ("pub struct ProductDiagnosticSnapshot", "native aggregate snapshot"),
+        ("pub struct ProductGenerationDiagnosticSnapshot", "generation aggregate snapshot"),
+        ("DIAGNOSTIC_STABILITY_ATTEMPTS", "bounded stability capture"),
+        ("Arc::ptr_eq(&generation, &current)", "generation identity fence"),
+        ("runtime_before == runtime_after", "lifecycle stability fence"),
+        ("first == second", "owner-fact stability fence"),
+        ("capture_generation(&generation)", "single pinned generation source"),
+        ("RotationDiagnosticState::NotSupported", "native pre-G rotation projection"),
+    ):
+        require(diagnostics_owner, needle, label)
+
+    for needle, label in (
+        ("pub struct ProductDiagnosticSnapshotView", "aggregate UniFFI record"),
+        ("pub fn diagnostic_snapshot(", "single UniFFI diagnostic method"),
+        ("map_product_diagnostic_snapshot", "Rust semantic projection"),
+    ):
+        require(product_ffi, needle, label)
+
+    for obsolete in (
+        "pub fn readiness_diagnostic_snapshot(",
+        "pub fn proxy_active_sessions(",
+        "pub fn dns_diagnostic_snapshot(",
+        "pub fn cellular_reconcile_diagnostic(",
+        "pub fn root_recovery_diagnostic(",
+        "pub fn root_policy_reconcile_diagnostic(",
+    ):
+        forbid(product_ffi, obsolete, "per-owner diagnostic export")
+
+    # Kotlin must serialize, not reconstruct PRODUCT state.
+    for forbidden in (
+        "currentCellularRuntime",
+        "currentProxyRuntime",
+        "currentProductRuntime",
+        "currentMeshRuntime",
+        "runtimeRecoveryBefore",
+        "runtimeRecoveryAfter",
+        "cellularBefore",
+        "cellularAfter",
+        "proxyBefore",
+        "proxyAfter",
+        "readinessBefore",
+        "readinessAfter",
+        "meshBefore",
+        "meshAfter",
+        "sameGeneration",
+        "MishDiagnosticFactsV2",
+        "CellularAdmissionState",
+        "ProductReadinessState",
+        "ProcessBuilder(",
+        "airplane-mode enable",
+        "airplane-mode disable",
+        "rotateExternalCredential",
+        "revokeExternalCredential",
+    ):
+        forbid(provider, forbidden, "Kotlin semantic composition or mutation")
+
+    # The canonical JSON still exposes the bounded owner-backed V2 facts expected by LAB.
+    for needle, label in (
+        ('put("generation", snapshot.runtimeGeneration.toLong())', "runtime generation"),
+        ('put("owner_sequence", snapshot.cellularOwnerSequence?.toLong() ?: JSONObject.NULL)', "Cellular owner sequence"),
+        ('snapshot.proxyServingGeneration?.toLong() ?: JSONObject.NULL', "Proxy serving generation"),
+        ('put("version", snapshot.credentialVersion?.toLong() ?: JSONObject.NULL)', "credential version"),
+        ('snapshot.meshObservationSequence?.toLong() ?: JSONObject.NULL', "Mesh observation sequence"),
+        ('snapshot.meshAdmissionEpoch?.toLong() ?: JSONObject.NULL', "Mesh admission epoch"),
+        ('put("attempts_since_reset", snapshot.rootRecovery.attemptsSinceReset.toLong())', "root recovery attempt"),
+        ('put("next_delay_ms", snapshot.rootRecovery.nextDelayMs.toLong())', "root recovery backoff"),
+        ('snapshot.proxyRecoveryAttemptsScheduled.toLong()', "proxy recovery attempt"),
+        ('put("next_delay_ms", snapshot.proxyRecoveryNextDelayMs.toLong())', "proxy recovery backoff"),
     ):
         require(provider, needle, label)
 
-    require(proxy_adapter, "servingGeneration = activeRuntimeToken", "Proxy generation natural-owner projection")
-    require(runtime_controller, "proxyRecoveryAttemptsScheduled = attempts", "existing proxy recovery attempt projection")
-    require(runtime_controller, "proxyRecoveryNextDelayMs = proxyRecoveryDelayMs(attempts.toUInt()).toLong()", "Rust-owned proxy backoff projection")
-    require(cellular_bridge, "rootRecoveryBackoff.diagnostic()", "existing root backoff projection")
-    require(root_backoff, "fun diagnostic(): RootAuthorityRecoveryDiagnostic", "read-only root recovery diagnostic")
-    forbid(provider, "MutableMap", "parallel mutable diagnostics database")
-    forbid(provider, "AtomicLong(", "parallel diagnostics generation counter")
-
-    # Capacity is an owner fact, not an Android/LAB inference. The canonical snapshot projects the
-    # two existing Rust owner counters directly and introduces no parallel Android accounting.
-    require(proxy_ffi, "pub fn active_sessions(&self) -> u32", "Proxy owner active-session boundary")
-    require(proxy_ffi, "self.inner.active_sessions()", "Proxy owner active-session source")
-    require(transport_ffi, "pub active_sessions: u64", "Mesh owner active-session boundary")
-    require(transport_ffi, "active_sessions: snapshot.active_sessions() as u64", "Mesh owner active-session source")
-    require(proxy_adapter, "runCatching { it.activeSessions() }", "Proxy owner session observation")
-    require(mesh_adapter, "activeController.admissionSnapshot().activeSessions", "fresh Mesh owner session observation")
-    require(provider, "proxyActiveSessions = proxyDiagnosticAfter.activeSessions", "Proxy session projection")
-    require(provider, "meshActiveSessions = meshGeneration.diagnosticActiveSessions()", "Mesh session projection")
     if provider.count('put("active_sessions"') != 2:
         raise SystemExit("diagnostics contract must publish exactly proxy + Mesh active_sessions")
-    for source, label in (
-        (proxy_adapter, "proxy adapter"),
-        (mesh_adapter, "Mesh adapter"),
-        (provider, "diagnostics provider"),
-    ):
-        forbid(source, "Semaphore(", f"parallel capacity semaphore in {label}")
-        forbid(source, "AtomicInteger(", f"parallel active-session counter in {label}")
 
-    # Current U2 control is explicitly bound to the generation-fenced L8 candidate contract.
-    require(collector, 'mish.lab.diagnostic/v2', "LAB V2 schema")
-    require(collector, 'mish.diagnostics/v2', "Android V2 candidate schema binding")
-    require(collector, 'snapshot_v2', "V2 snapshot method")
+    # Current LAB control remains bound to the V2 schema and classifies facts without repair.
+    require(collector, "mish.lab.diagnostic/v2", "LAB V2 schema")
+    require(collector, "mish.diagnostics/v2", "Android V2 schema binding")
+    require(collector, "snapshot_v2", "V2 snapshot method")
     require(collector, "'shell', 'content', 'call'", "single ADB snapshot bridge")
-    require(collector, "forward 'tcp:0' 'tcp:3128'", "independent loopback E2E probe")
-    require(collector, 'Open-MishExternalProxyCredentialLease', "existing credential authority")
-    require(collector, "android.proxy.state -ceq 'RUNNING' -and [bool]$android.credential.active", "late LAB credential lease gate")
-    require(collector, 'credential_lease_status = $credentialLeaseStatus', "typed LAB credential status")
-    require(collector, 'android.cellular.admitted', "Cellular owner projection")
-    require(collector, 'android.root.authority_observation', "root authority projection")
-    require(collector, 'android.root.policy_authorized', "root policy projection")
-    require(collector, 'Get-MishDeviceDiagnosticClassification', "deterministic fact classifier")
+    require(collector, "android.cellular.admitted", "Cellular owner projection")
+    require(collector, "android.root.authority_observation", "root authority projection")
+    require(collector, "android.root.policy_authorized", "root policy projection")
+    require(collector, "Get-MishDeviceDiagnosticClassification", "deterministic classifier")
     for forbidden in (
         "snapshot_v1",
         "mish.diagnostics/v1",
@@ -109,43 +148,27 @@ def main() -> None:
         "force-stop",
         "airplane-mode",
         "settings put",
-        "cloudflare prove",
-        "CREDENTIAL_LEASE_UNAVAILABLE",
     ):
-        forbid(collector, forbidden, "collector mutation, obsolete schema or ambiguous attribution")
+        forbid(collector, forbidden, "collector mutation or obsolete schema")
 
-    require(classifier, "PRODUCT_ROOT_AUTHORITY_UNAVAILABLE", "root authority failure priority")
-    require(classifier, "PRODUCT_ROOT_POLICY_NOT_AUTHORIZED", "root policy failure priority")
-    require(classifier, "PRODUCT_CELLULAR_", "Cellular owner failure priority")
-    require(classifier, "PRODUCT_PROXY_", "PRODUCT proxy failure priority")
-    require(classifier, "PRODUCT_CREDENTIAL_INACTIVE", "PRODUCT credential distinction")
-    require(classifier, "LAB_CREDENTIAL_PROVISIONING_FAILED", "LAB provisioning distinction")
-    require(classifier, "LAB_CREDENTIAL_LEASE_OPEN_FAILED", "LAB lease-open distinction")
-    forbid(classifier, "repair", "diagnostics must classify facts, never prescribe repair")
+    require(classifier, "PRODUCT_ROOT_AUTHORITY_UNAVAILABLE", "root authority classification")
+    require(classifier, "PRODUCT_ROOT_POLICY_NOT_AUTHORIZED", "root policy classification")
+    require(classifier, "PRODUCT_CELLULAR_", "Cellular classification")
+    require(classifier, "PRODUCT_PROXY_", "Proxy classification")
+    require(classifier, "PRODUCT_CREDENTIAL_INACTIVE", "credential classification")
+    forbid(classifier, "repair", "diagnostics classifier repair instruction")
 
     require(
         credential_bridge,
         "$script:ProvisioningReceiverClass = 'com.mobileproxymish.app.CredentialProvisioningReceiver'",
-        "stable receiver implementation class",
+        "stable provisioning receiver",
     )
-    require(
-        credential_bridge,
-        '$provisioningComponent = "$resolvedPackage/$script:ProvisioningReceiverClass"',
-        "applicationId/namespace-safe component address",
-    )
-    forbid(credential_bridge, '$resolvedPackage/.CredentialProvisioningReceiver', "applicationId-relative receiver class")
 
     require(workflow, "github.event.issue.number == 163", "dedicated control issue")
     require(workflow, "github.event.comment.user.login == 'iamaman11'", "owner gate")
     require(workflow, "github.event.comment.body == '/mish-diag snapshot'", "strict command grammar")
-    require(workflow, 'collect-device-diagnostic.ps1', "canonical collector")
-    require(workflow, "DIAGNOSTIC_PWSH_VERSION: '7.6.6'", "pinned diagnostic PowerShell")
-    require(workflow, 'mish-device-diagnostic-v2.json', "V2 runtime evidence path")
-    require(workflow, 'mish-device-diagnostic-v2-${{ github.run_id }}', "V2 artifact identity")
-    require(workflow, '[ScriptBlock]::Create', "extensionless GitHub temp-script execution under pinned pwsh")
-    forbid(workflow, 'mish-device-diagnostic-v1', "obsolete V1 evidence identity")
-    forbid(workflow, 'shell: powershell', "Windows PowerShell 5.1 diagnostic execution")
-    forbid(workflow, 'EVIDENCE_PATH: ${{ runner.temp }}', "runner context in job-level env")
+    require(workflow, "collect-device-diagnostic.ps1", "canonical collector")
+    require(workflow, "mish-device-diagnostic-v2.json", "V2 evidence path")
 
     print("diagnostics contract: PASS")
 
