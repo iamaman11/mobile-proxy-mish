@@ -397,6 +397,10 @@ def main() -> None:
         "android/app/src/main/java/com/mobileproxymish/app/cellular/PublicIpProbeEffect.kt",
         "U4 ordinary socket/TLS/HTTPS execution is Rust/Tokio-owned",
     )
+    forbid_exists(
+        "android/app/src/test/java/com/mobileproxymish/app/cellular/PublicIpProbeEffectTest.kt",
+        "deleted Android U4 parser/effect tests must not outlive the Rust/Tokio owner",
+    )
 
     public_ip_physical = (
         "android/app/src/androidTest/java/com/mobileproxymish/app/cellular/"
@@ -404,6 +408,7 @@ def main() -> None:
     )
     for required in (
         "runtime.observePublicEgressIp(",
+        "application.runtimeController.currentProductRuntime",
         ".preparePublicIpProbe(",
         "u4StaleTicket.isCurrent()",
         'u4StaleTicket.complete("198.51.100.77")',
@@ -427,6 +432,7 @@ def main() -> None:
             "D2 lifecycle evidence must observe one stable native generation shutdown boundary",
         )
     for forbidden in (
+        "runtime.nativeController()",
         "proxyCloseElapsedMs",
         "cellularCloseElapsedMs",
         "proxy_close_elapsed_ms",
@@ -437,6 +443,22 @@ def main() -> None:
             forbidden,
             "D2 must not restore per-component Android runtime close ownership",
         )
+
+    readiness_physical = "android/app/src/androidTest/java/com/mobileproxymish/app/RuntimeReadinessInstrumentedTest.kt"
+    require(
+        readiness_physical,
+        "currentProductRuntime.readinessDiagnosticSnapshot()",
+        "readiness instrumentation must project the stable Rust-owned runtime diagnostic snapshot",
+    )
+    forbid(
+        readiness_physical,
+        "currentReadinessRuntime",
+        "Android instrumentation must not recreate a per-generation readiness runtime handle",
+    )
+    forbid_exists(
+        "android/app/src/test/java/com/mobileproxymish/app/ProxyRuntimeLifecycleTest.kt",
+        "Kotlin lifecycle/generation cleanup tests must stay deleted after D2 ownership cutover",
+    )
 
     recovery_lifecycle_probe = "lab/windows/diagnose-recovery-lifecycle.ps1"
     require(
