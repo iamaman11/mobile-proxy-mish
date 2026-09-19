@@ -206,7 +206,7 @@ impl RootShellSession {
                     };
                 }
 
-                let bytes = line.as_bytes().len();
+                let bytes = line.len();
                 if captured_bytes.saturating_add(bytes) <= MAX_OUTPUT_BYTES {
                     captured.push_str(&line);
                     captured_bytes += bytes;
@@ -298,10 +298,10 @@ impl RootSessionManager {
             Some(session) => session.execute(&command).await,
             None => return Err(RootSessionError::StateUnavailable),
         };
-        if !outcome.transport_healthy {
-            if let Some(mut session) = state.session.take() {
-                session.destroy().await;
-            }
+        if !outcome.transport_healthy
+            && let Some(mut session) = state.session.take()
+        {
+            session.destroy().await;
         }
         Ok(outcome.result)
     }
