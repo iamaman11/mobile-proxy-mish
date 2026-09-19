@@ -227,6 +227,27 @@ def main() -> None:
                         f"{kotlin_relative} contains {forbidden!r}"
                     )
 
+    # Native Mesh serving may be stopped by readiness/proxy callbacks already running on the
+    # shared PRODUCT Tokio runtime. A direct Handle::block_on from that worker panics and poisons
+    # the Mesh owner mutex. The bounded drain must use Tokio's multi-thread block-in-place bridge.
+    mesh_serving = "crates/runtime/src/mesh_serving.rs"
+    for required in (
+        "fn block_on_mesh_drain",
+        "Handle::try_current().is_ok()",
+        "tokio::task::block_in_place(|| handle.block_on(future))",
+        "mesh_stop_from_product_tokio_worker_does_not_panic_or_poison_execution_state",
+    ):
+        require_product(
+            mesh_serving,
+            required,
+            "Mesh drain must remain safe when native composition stops ingress from a PRODUCT Tokio worker",
+        )
+    forbid_product(
+        mesh_serving,
+        "let drained = handle.block_on(async",
+        "Mesh serving must not restore a direct nested Handle::block_on drain on a PRODUCT Tokio worker",
+    )
+
     # Cross-owner Mesh composition decisions belong to Rust/runtime, not Android adapters.
     mesh_serving = "crates/runtime/src/mesh_serving.rs"
     require(
