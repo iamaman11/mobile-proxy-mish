@@ -127,8 +127,8 @@ impl RotationRuntimeCoordinator {
             .cellular
             .admission_snapshot()
             .map_err(|_| RotationRuntimeStartError::StateUnavailable)?;
-        let before_generation = admitted_generation(admission)
-            .ok_or(RotationRuntimeStartError::NoCurrentCellular)?;
+        let before_generation =
+            admitted_generation(admission).ok_or(RotationRuntimeStartError::NoCurrentCellular)?;
 
         let root_current = self.policy.last_publication().is_some_and(|publication| {
             publication
@@ -322,7 +322,10 @@ impl RotationRuntimeCoordinator {
         .map_err(|_| RotationRuntimeStartError::ExecutorUnavailable)
     }
 
-    fn schedule_for(self: &Arc<Self>, snapshot: RotationSnapshot) -> Result<(), RotationRuntimeStartError> {
+    fn schedule_for(
+        self: &Arc<Self>,
+        snapshot: RotationSnapshot,
+    ) -> Result<(), RotationRuntimeStartError> {
         let Some(operation_id) = snapshot.operation_id else {
             return Ok(());
         };
@@ -349,14 +352,18 @@ impl RotationRuntimeCoordinator {
 
         let this = Arc::clone(self);
         let future: std::pin::Pin<Box<dyn Future<Output = ()> + Send>> = match action {
-            RotationAction::BeforeIp => Box::pin(async move { this.run_before_ip(operation_id).await }),
+            RotationAction::BeforeIp => {
+                Box::pin(async move { this.run_before_ip(operation_id).await })
+            }
             RotationAction::EnableAirplane => {
                 Box::pin(async move { this.run_enable_airplane(operation_id).await })
             }
             RotationAction::DisableAirplane => {
                 Box::pin(async move { this.run_disable_airplane(operation_id).await })
             }
-            RotationAction::AfterIp => Box::pin(async move { this.run_after_ip(operation_id).await }),
+            RotationAction::AfterIp => {
+                Box::pin(async move { this.run_after_ip(operation_id).await })
+            }
             RotationAction::RestoreOff => {
                 Box::pin(async move { this.restore_off_direct(operation_id).await })
             }
@@ -366,7 +373,8 @@ impl RotationRuntimeCoordinator {
     }
 
     async fn run_before_ip(self: Arc<Self>, operation_id: u64) {
-        let Some((before_generation, deadline)) = self.operation_generation_deadline(operation_id, true)
+        let Some((before_generation, deadline)) =
+            self.operation_generation_deadline(operation_id, true)
         else {
             return;
         };
@@ -416,7 +424,9 @@ impl RotationRuntimeCoordinator {
         let Some(deadline) = self.operation_deadline(operation_id) else {
             return;
         };
-        let outcome = match timeout_at(deadline, self.airplane.set(AirplaneModeState::Enabled)).await {
+        let outcome = match timeout_at(deadline, self.airplane.set(AirplaneModeState::Enabled))
+            .await
+        {
             Err(_) => {
                 self.fail(operation_id, RotationFailure::DeadlineExceeded);
                 return;
@@ -468,7 +478,9 @@ impl RotationRuntimeCoordinator {
         let Some(deadline) = self.operation_deadline(operation_id) else {
             return;
         };
-        let outcome = match timeout_at(deadline, self.airplane.set(AirplaneModeState::Disabled)).await {
+        let outcome = match timeout_at(deadline, self.airplane.set(AirplaneModeState::Disabled))
+            .await
+        {
             Err(_) => {
                 self.fail(operation_id, RotationFailure::DeadlineExceeded);
                 return;
@@ -517,7 +529,8 @@ impl RotationRuntimeCoordinator {
     }
 
     async fn run_after_ip(self: Arc<Self>, operation_id: u64) {
-        let Some((after_generation, deadline)) = self.operation_generation_deadline(operation_id, false)
+        let Some((after_generation, deadline)) =
+            self.operation_generation_deadline(operation_id, false)
         else {
             return;
         };
@@ -580,10 +593,10 @@ impl RotationRuntimeCoordinator {
             if !operation_current(&state, operation_id) {
                 return;
             }
-            match state.machine.observe_airplane(
-                operation_id,
-                observed == AirplaneModeState::Enabled,
-            ) {
+            match state
+                .machine
+                .observe_airplane(operation_id, observed == AirplaneModeState::Enabled)
+            {
                 Ok(snapshot) => snapshot,
                 Err(_) => return,
             }
@@ -654,7 +667,8 @@ impl RotationRuntimeCoordinator {
                 return;
             };
             let current = state.machine.snapshot();
-            if current.operation_id != Some(operation_id) || current.phase != RotationPhase::Failed {
+            if current.operation_id != Some(operation_id) || current.phase != RotationPhase::Failed
+            {
                 return;
             }
             match state.machine.record_restore(operation_id, restore) {
@@ -672,7 +686,8 @@ impl RotationRuntimeCoordinator {
     ) -> Option<(u64, Instant)> {
         let state = self.state().ok()?;
         let snapshot = state.machine.snapshot();
-        if state.closed || snapshot.operation_id != Some(operation_id) || snapshot.phase.terminal() {
+        if state.closed || snapshot.operation_id != Some(operation_id) || snapshot.phase.terminal()
+        {
             return None;
         }
         let generation = if before {
@@ -765,7 +780,9 @@ fn credential_guard_matches(
 }
 
 fn remaining(deadline: Instant) -> Duration {
-    deadline.saturating_duration_since(Instant::now()).max(Duration::from_millis(1))
+    deadline
+        .saturating_duration_since(Instant::now())
+        .max(Duration::from_millis(1))
 }
 
 fn map_start_error(error: RotationStartError) -> RotationRuntimeStartError {
