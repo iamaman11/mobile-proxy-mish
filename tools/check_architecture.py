@@ -267,6 +267,7 @@ def main() -> None:
         )
 
     # Proxy-target DNS/public egress has exactly one Cellular Egress path and no default fallback.
+    cellular_bridge = "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRuntimeBridge.kt"
     runtime_dns = "crates/runtime/src/cellular_connector.rs"
     require(
         runtime_dns,
@@ -360,7 +361,6 @@ def main() -> None:
     public_ip_network = "crates/runtime/src/public_ip_network.rs"
     tls_client = "crates/runtime/src/tls_client.rs"
     product_ffi = "crates/android-ffi/src/product_runtime_ffi.rs"
-    cellular_bridge = "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRuntimeBridge.kt"
     require(
         cellular_bridge,
         "CellularNetworkObservationInput(",
