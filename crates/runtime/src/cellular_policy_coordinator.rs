@@ -229,6 +229,22 @@ impl CellularPolicyCoordinator {
             .and_then(|state| state.last_policy_result)
     }
 
+    /// Last fully published policy result bound to the exact owner admission it authorized/rejected.
+    pub fn last_publication(&self) -> Option<CellularPolicyPublication> {
+        self.state
+            .lock()
+            .ok()
+            .and_then(|state| state.last_publication)
+    }
+
+    /// Current persistent root-session generation, when a live shell exists.
+    pub fn root_session_generation_blocking(
+        &self,
+        executor: &RuntimeExecutor,
+    ) -> Result<Option<u64>, RuntimeExecutionError> {
+        executor.block_on(self.root_session.session_generation())
+    }
+
     pub async fn root_policy_diagnostic(&self) -> crate::RootPolicyReconcileDiagnostic {
         self.root_policy.diagnostic().await
     }
