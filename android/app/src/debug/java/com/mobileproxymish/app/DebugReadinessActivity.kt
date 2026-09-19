@@ -22,34 +22,21 @@ class DebugReadinessActivity : Activity() {
             ) {
                 SystemClock.sleep(POLL_INTERVAL_MS)
             }
-            val diagnostic = runtime.currentProductRuntime.readinessDiagnosticSnapshot()
-            val innerReadiness = diagnostic.state
-            val cellularSnapshot = runtime.cellularSnapshot.value
-            val ownerAdmission =
-                (cellularSnapshot as? com.mobileproxymish.app.cellular.CellularRuntimeSnapshot.OwnerSnapshot)
-                    ?.admission
-            val proxySnapshot = runtime.currentProxyRuntime.snapshot.value
-            val proxyFailure = (proxySnapshot as? ProxyRuntimeSnapshot.Failed)?.reason
-            val proxyFailureCode = proxyFailure?.name ?: "NONE"
-            val mesh = runtime.meshSnapshot.value
-            val ingressFailure = runtime.currentMeshRuntime.diagnosticIngressFailure()
-            Log.i(TAG, "state=${runtime.readinessSnapshot.value}")
-            Log.i(TAG, "inner_readiness=$innerReadiness")
-            Log.i(TAG, "cellular_state=${ownerAdmission?.state?.name ?: "BOUNDARY_UNAVAILABLE"}")
-            Log.i(TAG, "cellular_reason=${ownerAdmission?.reason?.name ?: "NONE"}")
-            Log.i(
-                TAG,
-                "cellular_admitted=${ownerAdmission?.state == com.mobileproxymish.ffi.CellularAdmissionState.ADMITTED}",
-            )
-            Log.i(TAG, "root_policy=${diagnostic.rootPolicyVerified}")
+            val diagnostic = runtime.diagnosticSnapshot()
+            Log.i(TAG, "state=${diagnostic.readinessState}")
+            Log.i(TAG, "inner_readiness=${diagnostic.readinessState}")
+            Log.i(TAG, "cellular_state=${diagnostic.cellularState}")
+            Log.i(TAG, "cellular_reason=${diagnostic.cellularReason}")
+            Log.i(TAG, "cellular_admitted=${diagnostic.cellularAdmitted}")
+            Log.i(TAG, "root_policy=${diagnostic.rootPolicyAuthorized}")
             Log.i(TAG, "proxy_healthy=${diagnostic.proxyHealthy}")
-            Log.i(TAG, "proxy_lifecycle=${proxySnapshot.javaClass.simpleName}")
-            Log.i(TAG, "proxy_failure=$proxyFailureCode")
+            Log.i(TAG, "proxy_lifecycle=${diagnostic.proxyState}")
+            Log.i(TAG, "proxy_failure=${diagnostic.proxyFailure ?: "NONE"}")
             Log.i(TAG, "credential_active=${diagnostic.credentialActive}")
             Log.i(TAG, "mesh_admitted=${diagnostic.meshAdmitted}")
-            Log.i(TAG, "mesh_epoch_present=${mesh?.admissionEpoch != null}")
-            Log.i(TAG, "mesh_ingress_failure=$ingressFailure")
-            Log.i(TAG, "binding_eligible=${diagnostic.bindingEligible}")
+            Log.i(TAG, "mesh_epoch_present=${diagnostic.meshEpochPresent}")
+            Log.i(TAG, "mesh_ingress_failure=${diagnostic.meshIngressFailure}")
+            Log.i(TAG, "binding_eligible=${diagnostic.readinessBindingEligible}")
             runOnUiThread(::finish)
         }.start()
     }
