@@ -293,6 +293,7 @@ pub struct ProductDiagnosticSnapshotView {
     pub rotation_terminal_result: Option<String>,
     pub rotation_failure: Option<String>,
     pub rotation_restore_result: Option<String>,
+    pub rotation_active_tasks: u64,
 }
 
 #[uniffi::export(foreign)]
@@ -748,6 +749,7 @@ fn map_product_diagnostic_snapshot(
         rotation_terminal_result: rotation.terminal_result,
         rotation_failure: rotation.failure,
         rotation_restore_result: rotation.restore_result,
+        rotation_active_tasks: u64::from(generation.rotation_active_tasks),
     }
 }
 
