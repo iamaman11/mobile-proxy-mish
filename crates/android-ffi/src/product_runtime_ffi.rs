@@ -19,9 +19,8 @@ use mish_rotation::{
 use mish_runtime::{
     CellularPolicyObserver, CellularPolicyPublication, CellularReconcileDiagnostic,
     CellularRequestRearmEffect, ProductDiagnosticSnapshot, ProductRuntimeCoordinator,
-    ProductRuntimeSnapshot,
-    ProxyRuntimeObserver, ProxyRuntimePublication, ProxyServingState as OwnerProxyServingState,
-    ReadinessDiagnosticSnapshot, ReadinessObserver,
+    ProductRuntimeSnapshot, ProxyRuntimeObserver, ProxyRuntimePublication,
+    ProxyServingState as OwnerProxyServingState, ReadinessDiagnosticSnapshot, ReadinessObserver,
     RootAuthorityStatus as OwnerRootAuthorityStatus, RootPolicyFailure as OwnerRootPolicyFailure,
     RootPolicyReconcileDiagnostic, RootPolicyResult as OwnerRootPolicyResult,
     RootRecoveryDiagnostic, RotationRuntimeStartError, RuntimeExecutionError,
