@@ -1,25 +1,15 @@
-name: Integration Android Preflight
+name: PR Validation + PRODUCT Candidate
 
 on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - '.github/workflows/integration-android-preflight.yml'
-      - 'android/**'
-      - 'crates/**'
-      - 'docs/architecture/**'
-      - 'tools/check_architecture.py'
-      - 'tools/verify_android_candidate.py'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'rust-toolchain.toml'
 
 permissions:
   contents: read
 
 concurrency:
-  group: integration-android-preflight-${{ github.event.pull_request.number }}
+  group: pr-validation-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 env:
@@ -30,19 +20,20 @@ env:
   CACHE_MODE: ${{ github.event.pull_request.draft && 'static' || 'full' }}
 
 jobs:
-  android-gate:
-    name: Android Fast -> Full Gate
+  control:
+    name: Control Guards
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    outputs:
+      product_changed: ${{ steps.scope.outputs.product_changed }}
     steps:
-      - name: Checkout exact PR head
+      - name: Checkout exact PR head and history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Classify preflight build scope
+      - name: Classify PRODUCT/build scope
         id: scope
         shell: bash
         env:
@@ -55,47 +46,89 @@ jobs:
           git cat-file -e "$BASE_SHA^{commit}"
           git cat-file -e "$HEAD_SHA^{commit}"
 
-          build_required=false
+          product_changed=false
           changed_count=0
           while IFS= read -r path; do
             [[ -n "$path" ]] || continue
             changed_count=$((changed_count + 1))
             case "$path" in
-              android/*|crates/*|Cargo.toml|Cargo.lock|rust-toolchain.toml|tools/verify_android_candidate.py)
-                build_required=true
+              android/*|crates/*|config/*|contracts/*|Cargo.toml|Cargo.lock|rust-toolchain.toml|tools/verify_android_candidate.py)
+                product_changed=true
                 ;;
             esac
           done < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
 
           if [[ "$changed_count" -eq 0 ]]; then
-            echo 'preflight classification found no changed files' >&2
+            echo 'PR validation classification found no changed files' >&2
             exit 1
           fi
 
-          echo "build_required=$build_required" >> "$GITHUB_OUTPUT"
-          echo "BUILD_REQUIRED=$build_required"
+          echo "product_changed=$product_changed" >> "$GITHUB_OUTPUT"
+          echo "PRODUCT_CHANGED=$product_changed"
 
-      - name: Architecture constitution
+      - name: Verify accepted architecture invariants
+        run: python3 tools/check_architecture.py
+
+      - name: Verify delivery and CI invariants
+        run: python3 tools/check_delivery_contract.py
+
+      - name: Verify capacity probe held-session contract
+        shell: pwsh
+        run: ./lab/windows/test-capacity-probe-contract.ps1
+
+      - name: Verify diagnostic protocol probe helpers
+        shell: pwsh
+        run: ./lab/windows/test-diagnostic-connect-probe.ps1
+
+      - name: Verify physical protocol parity contract
+        shell: pwsh
+        run: ./lab/windows/test-protocol-parity-probe-contract.ps1
+
+  device-contracts:
+    name: Device Cycle Contracts
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Verify Device Cycle orchestration contracts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\test-device-candidate-store.ps1
+          .\lab\windows\test-device-candidate.ps1
+          .\lab\windows\test-device-cycle.ps1
+          .\lab\windows\test-recovery-lifecycle-probe-contract.ps1
+          .\lab\windows\test-dns-lifetime-live-probe-contract.ps1
+          .\lab\windows\test-u5-rotation-probe-contract.ps1
+          python .\tools\check_device_cycle_contract.py
+
+  rust:
+    name: Rust Workspace
+    needs: [control, device-contracts]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require control guards
+        if: ${{ needs.control.result != 'success' || needs.device-contracts.result != 'success' }}
         shell: bash
         run: |
-          set -euo pipefail
-          python3 tools/check_architecture.py
+          echo 'Control Guards or Device Cycle Contracts did not pass; refusing Rust required-check success.' >&2
+          exit 1
 
-      - name: Set up JDK 17
-        if: ${{ steps.scope.outputs.build_required == 'true' }}
-        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+      - name: Checkout exact PR head
+        if: ${{ needs.control.result == 'success' && needs.control.outputs.product_changed == 'true' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Set up pinned Gradle
-        if: ${{ steps.scope.outputs.build_required == 'true' }}
-        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
-        with:
-          gradle-version: ${{ env.GRADLE_VERSION }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
 
       - name: Restore Rust build cache
-        if: ${{ steps.scope.outputs.build_required == 'true' }}
+        if: ${{ needs.control.result == 'success' && needs.control.outputs.product_changed == 'true' }}
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
@@ -104,37 +137,122 @@ jobs:
             ~/.cargo/git/db
             ~/.cargo/bin/cargo-ndk
             target
-          key: integration-android-${{ runner.os }}-${{ env.CACHE_MODE }}-rust-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/**/Cargo.toml', 'crates/**/*.rs') }}
+          key: pr-validation-${{ runner.os }}-${{ env.CACHE_MODE }}-rust-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/**/Cargo.toml', 'crates/**/*.rs') }}
           restore-keys: |
-            integration-android-${{ runner.os }}-full-rust-${{ env.RUST_TOOLCHAIN }}-
-            integration-android-${{ runner.os }}-static-rust-${{ env.RUST_TOOLCHAIN }}-
+            pr-validation-${{ runner.os }}-full-rust-${{ env.RUST_TOOLCHAIN }}-
+            pr-validation-${{ runner.os }}-static-rust-${{ env.RUST_TOOLCHAIN }}-
 
-      - name: Set up host Rust toolchain
-        if: ${{ steps.scope.outputs.build_required == 'true' }}
-        shell: bash
+      - name: Install pinned Rust toolchain
+        if: ${{ needs.control.result == 'success' && needs.control.outputs.product_changed == 'true' }}
         run: |
-          set -euo pipefail
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt
           rustup override set "$RUST_TOOLCHAIN"
 
-      - name: Fast Kotlin compile and lint
-        if: ${{ steps.scope.outputs.build_required == 'true' }}
-        run: >-
-          gradle --no-daemon -p android
-          :app:compileDebugKotlin
-          :app:lintDebug
-
-      - name: Rust workspace quality gate
-        if: ${{ steps.scope.outputs.build_required == 'true' && (github.event.pull_request.draft == false || contains(github.event.pull_request.body, '[full-hosted]')) }}
-        shell: bash
+      - name: Rust format, lint and tests
+        if: ${{ needs.control.result == 'success' && needs.control.outputs.product_changed == 'true' && (github.event.pull_request.draft == false || contains(github.event.pull_request.body, '[full-hosted]')) }}
         run: |
           set -euo pipefail
           cargo fmt --all --check
           cargo clippy --workspace --all-targets --locked -- -D warnings
           cargo test --workspace --locked
 
+      - name: Generate and verify native UniFFI contract
+        if: ${{ needs.control.result == 'success' && needs.control.outputs.product_changed == 'true' && (github.event.pull_request.draft == false || contains(github.event.pull_request.body, '[full-hosted]')) }}
+        run: |
+          set -euo pipefail
+          cargo build -p mish-android-ffi --locked
+          rm -rf target/uniffi-kotlin
+          cargo run -p mish-android-ffi --bin uniffi-bindgen --locked --             generate --library target/debug/libmish_android_ffi.so             --language kotlin --out-dir target/uniffi-kotlin --no-format
+          GENERATED="target/uniffi-kotlin/com/mobileproxymish/ffi/mish_android_ffi.kt"
+          test -f "$GENERATED"
+          grep -q '^package com.mobileproxymish.ffi$' "$GENERATED"
+          for symbol in             CellularController             MeshTransportController             RuntimeLifecycleController             NativeProxyRuntime             NativeProxyRuntimeObserver             startNativeProxyRuntime             proxyServingFailureRecoverable             proxyListenerPorts; do
+            grep -Fq "$symbol" "$GENERATED"
+          done
+          for forbidden in             CellularNetworkLease             admittedNetworkLease             bindSocket             resolveHost             RuntimeProcessLifecycleController             ProxyServingLifecycleController             PrivateBridge; do
+            if grep -Fq "$forbidden" "$GENERATED"; then
+              echo "obsolete or uncontrolled API leaked into UniFFI surface: $forbidden" >&2
+              exit 1
+            fi
+          done
+
+      - name: Publish static-only Rust summary
+        if: ${{ needs.control.result == 'success' && (needs.control.outputs.product_changed != 'true' || github.event.pull_request.draft == true && !contains(github.event.pull_request.body, '[full-hosted]')) }}
+        shell: bash
+        run: |
+          {
+            echo '### Rust required check'
+            echo '- PRODUCT/build changed: **${{ needs.control.outputs.product_changed }}**'
+            echo '- Heavy Rust validation executed: **NO**'
+            echo '- Reason: no PRODUCT/build change, or draft without [full-hosted].'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  android:
+    name: Android Compose Shell
+    needs: [control, device-contracts, rust]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Require control and Rust gates
+        if: ${{ needs.control.result != 'success' || needs.device-contracts.result != 'success' || needs.rust.result != 'success' }}
+        shell: bash
+        run: |
+          echo 'Control Guards, Device Cycle Contracts, or Rust Workspace did not pass; refusing Android required-check success.' >&2
+          exit 1
+
+      - name: Checkout exact PR head
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.control.outputs.product_changed == 'true' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Set up JDK 17
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.control.outputs.product_changed == 'true' }}
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up pinned Gradle
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.control.outputs.product_changed == 'true' }}
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+
+      - name: Restore Android/Rust build cache
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.control.outputs.product_changed == 'true' }}
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            ~/.cargo/bin/cargo-ndk
+            target
+          key: pr-validation-${{ runner.os }}-${{ env.CACHE_MODE }}-rust-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/**/Cargo.toml', 'crates/**/*.rs') }}
+          restore-keys: |
+            pr-validation-${{ runner.os }}-full-rust-${{ env.RUST_TOOLCHAIN }}-
+            pr-validation-${{ runner.os }}-static-rust-${{ env.RUST_TOOLCHAIN }}-
+
+      - name: Set up host Rust toolchain
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.control.outputs.product_changed == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup override set "$RUST_TOOLCHAIN"
+
+      - name: Fast Kotlin compile and lint
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.control.outputs.product_changed == 'true' }}
+        run: >-
+          gradle --no-daemon -p android
+          :app:compileDebugKotlin
+          :app:lintDebug
+
       - name: Set up Android Rust toolchain
-        if: ${{ steps.scope.outputs.build_required == 'true' && (github.event.pull_request.draft == false || contains(github.event.pull_request.body, '[full-hosted]')) }}
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.control.outputs.product_changed == 'true' && (github.event.pull_request.draft == false || contains(github.event.pull_request.body, '[full-hosted]')) }}
         shell: bash
         run: |
           set -euo pipefail
@@ -151,7 +269,7 @@ jobs:
           echo "MISH_TARGET_ABI=$TARGET_ABI" >> "$GITHUB_ENV"
 
       - name: Set up pinned Android NDK
-        if: ${{ steps.scope.outputs.build_required == 'true' && (github.event.pull_request.draft == false || contains(github.event.pull_request.body, '[full-hosted]')) }}
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.control.outputs.product_changed == 'true' && (github.event.pull_request.draft == false || contains(github.event.pull_request.body, '[full-hosted]')) }}
         shell: bash
         run: |
           set -euo pipefail
@@ -167,8 +285,8 @@ jobs:
           echo "ANDROID_NDK_ROOT=$NDK_PATH" >> "$GITHUB_ENV"
           echo "ANDROID_NDK=$NDK_PATH" >> "$GITHUB_ENV"
 
-      - name: Unit test and assemble host gate
-        if: ${{ steps.scope.outputs.build_required == 'true' && (github.event.pull_request.draft == false || contains(github.event.pull_request.body, '[full-hosted]')) }}
+      - name: Unit test and assemble exact-head candidate
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.control.outputs.product_changed == 'true' && (github.event.pull_request.draft == false || contains(github.event.pull_request.body, '[full-hosted]')) }}
         run: >-
           gradle --no-daemon -p android
           :app:testDebugUnitTest
@@ -176,11 +294,11 @@ jobs:
           :app:assembleDebugAndroidTest
 
       - name: Verify exact PRODUCT candidate contract
-        if: ${{ steps.scope.outputs.build_required == 'true' && (github.event.pull_request.draft == false || contains(github.event.pull_request.body, '[full-hosted]')) }}
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.control.outputs.product_changed == 'true' && (github.event.pull_request.draft == false || contains(github.event.pull_request.body, '[full-hosted]')) }}
         run: python3 tools/verify_android_candidate.py
 
       - name: Stage exact-head device candidate
-        if: ${{ steps.scope.outputs.build_required == 'true' && github.event.pull_request.draft == false }}
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.control.outputs.product_changed == 'true' && github.event.pull_request.draft == false }}
         shell: bash
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -224,7 +342,7 @@ jobs:
           PY
 
       - name: Upload exact-head device candidate
-        if: ${{ steps.scope.outputs.build_required == 'true' && github.event.pull_request.draft == false }}
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.control.outputs.product_changed == 'true' && github.event.pull_request.draft == false }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: device-candidate-pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
@@ -233,27 +351,25 @@ jobs:
           retention-days: 7
 
       - name: Publish device candidate summary
-        if: ${{ steps.scope.outputs.build_required == 'true' && github.event.pull_request.draft == false }}
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.control.outputs.product_changed == 'true' && github.event.pull_request.draft == false }}
         shell: bash
-        env:
-          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           {
-            echo '### Device candidate ready'
-            echo "- Source SHA: \`$SOURCE_SHA\`"
-            echo "- Artifact: \`device-candidate-pr-${{ github.event.pull_request.number }}-$SOURCE_SHA\`"
+            echo '### Exact-head Android PRODUCT candidate'
+            echo '- Source PR: #${{ github.event.pull_request.number }}'
+            echo '- Source SHA: `${{ github.event.pull_request.head.sha }}`'
+            echo '- Artifact: `device-candidate-pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}`'
             echo '- Local build required: **NO**'
-            echo '- Install target: **com.mobileproxymish.app.debug**'
+            echo '- Physical Device Cycle auto-start: **NO**'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Static-only preflight summary
-        if: ${{ steps.scope.outputs.build_required != 'true' }}
+      - name: Publish static-only Android summary
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.control.outputs.product_changed != 'true' }}
         shell: bash
         run: |
           {
-            echo '### Static-only architecture preflight'
-            echo '- PRODUCT build required: **NO**'
-            echo '- Android/Rust build: **SKIPPED**'
+            echo '### Android required check'
+            echo '- PRODUCT/build changed: **NO**'
+            echo '- Heavy Android build executed: **NO**'
             echo '- Device candidate staged: **NO**'
-            echo '- Architecture constitution: **PASS**'
           } >> "$GITHUB_STEP_SUMMARY"

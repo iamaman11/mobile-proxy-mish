@@ -13,9 +13,9 @@ armeabi-v7a
 
 Canonical build authority remains the Android/Rust build graph. Android 23 and Android 26 are not supported PRODUCT compatibility floors. Do not add lower-API compatibility shims unless a new accepted PRODUCT requirement explicitly reopens support below API 30.
 
-## Integration Android Preflight
+## Protected-main PR validation + PRODUCT candidate
 
-`.github/workflows/integration-android-preflight.yml` is the exact-head hosted candidate producer for PRODUCT-changing PRs targeting protected `main`.
+`.github/workflows/integration-android-preflight.yml` is the single protected-main PR validation workflow and the exact-head hosted candidate producer for PRODUCT-changing PRs. The obsolete separate `.github/workflows/ci.yml` workflow does not exist: cheap CONTROL guards, Rust quality and Android candidate production form one ordered pipeline.
 
 Current contract:
 
@@ -74,13 +74,13 @@ There is deliberately **no** `latest`, `current`, mutable pointer or source-SHA-
 
 `$RUNNER_TEMP` is download/pull scratch space only. It is never a candidate-version authority and is safe to disappear after the job.
 
-The local store is a durable provenance/cache surface, **not a second candidate resolver**. A normal `full` or `install_only` Device Cycle must still resolve an eligible completed Integration Android Preflight run and exact GitHub artifact id/digest first, download that artifact, validate its `candidate.json`, then materialize the exact bytes into the canonical store. An expired/missing GitHub artifact must fail closed; the workflow must never silently install an older local copy.
+The local store is a durable provenance/cache surface, **not a second candidate resolver**. A normal `full` or `install_only` Device Cycle must still resolve an eligible completed PR Validation + PRODUCT Candidate run and exact GitHub artifact id/digest first, download that artifact, validate its `candidate.json`, then materialize the exact bytes into the canonical store. An expired/missing GitHub artifact must fail closed; the workflow must never silently install an older local copy.
 
 Candidate identity has three distinct layers:
 
 ```text
 hosted source candidate
-  = exact APK bytes emitted by Integration Android Preflight
+  = exact APK bytes emitted by PR Validation + PRODUCT Candidate
   = candidate.json hosted_product_apk_sha256
 
 LAB-signed install candidate
@@ -119,22 +119,18 @@ Diagnostics never chooses a repair. No automatic targeted probe is allowed. Anal
 
 One explicit request produces one GitHub Actions Device Cycle run. There is no automatic start from build completion, PR merge, main merge, label or artifact publication.
 
-Current accepted command forms are defined by the workflow. At this policy revision they are:
+Device Cycle is started only with GitHub Actions `workflow_dispatch` from the current protected `main`. There is no PR trigger and no issue-comment command trigger. Every run requires explicit inputs:
 
 ```text
-/mish-cycle full <PRODUCT_SHA>
-/mish-cycle full <PRODUCT_SHA> capacity_resources
-/mish-cycle full <PRODUCT_SHA> recovery_lifecycle
-/mish-cycle full <PRODUCT_SHA> dns_lifetime_live
-/mish-cycle full <PRODUCT_SHA> u5_rotation
-/mish-cycle install_only <PRODUCT_SHA>
-/mish-cycle diagnose_only <PRODUCT_SHA>
-/mish-cycle probe_only <PRODUCT_SHA> loopback_connect
+pr_number  = <PR that owns the immutable candidate>
+product_sha = <exact 40-hex PRODUCT_SHA>
+mode        = full | install_only | diagnose_only | probe_only
+probe       = none | capacity_resources | recovery_lifecycle | dns_lifetime_live | u5_rotation | loopback_connect
 ```
 
-`probe_only` supports only the current-function `loopback_connect` probe unless the executable workflow is deliberately changed and this document is updated with it.
+`probe_only` requires `probe=loopback_connect`.
 
-`full` accepts one optional, explicit probe: `capacity_resources`, `recovery_lifecycle`, `dns_lifetime_live`, or `u5_rotation`. None is selected automatically. `install_only` and `diagnose_only` accept no probe argument.
+`full` accepts `probe=none` or one explicit probe: `capacity_resources`, `recovery_lifecycle`, `dns_lifetime_live`, or `u5_rotation`. None is selected automatically. `install_only` and `diagnose_only` require `probe=none`.
 
 `capacity_resources` and `recovery_lifecycle` are acceptance probes when their required baseline and exact-candidate evidence are complete. `dns_lifetime_live` is deliberately **measurement-only**: it collects one bounded same-process native DNS lifetime observation across a Cellular loss/recovery generation change. A green DNS measurement does not independently accept the exact PRODUCT candidate; its `exact_candidate_acceptance` remains `NOT_EVALUATED`.
 
@@ -171,7 +167,7 @@ Normal path:
 
 ```text
 successful exact hosted artifact already exists
- -> explicit /mish-cycle request after analysis
+ -> explicit workflow_dispatch from protected main after analysis
  -> verify PR/base/source identity
  -> verify accepted producer policy
  -> verify hosted run/artifact/digest provenance
