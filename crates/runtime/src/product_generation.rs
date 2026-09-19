@@ -54,6 +54,11 @@ impl ProductGeneration {
             ReadinessRuntimeCoordinator::new(Arc::clone(&executor), Arc::clone(&mesh), generation)
                 .map_err(|_| RuntimeExecutionError::StateUnavailable)?;
 
+        let readiness_admission = Arc::clone(&readiness);
+        policy.add_internal_admission_observer(Arc::new(move |admission| {
+            let _ = readiness_admission.observe_cellular_admission(admission);
+        }));
+
         let readiness_cellular = Arc::clone(&readiness);
         policy.add_internal_observer(Arc::new(move |publication| {
             let _ = readiness_cellular.observe_cellular(publication);
