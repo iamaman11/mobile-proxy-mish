@@ -306,7 +306,12 @@ def main() -> None:
         "Start-MishFastAirplaneObserver",
         "Stop-MishFastAirplaneObserver",
         "settings get global airplane_mode_on",
-        "foreach ($argument in @('shell', $shell))",
+        "$startInfo.RedirectStandardInput = $true",
+        "[void]$startInfo.ArgumentList.Add('shell')",
+        "$process.StandardInput.Write($deviceScript)",
+        "$process.StandardInput.Close()",
+        "OBSERVER_READY",
+        "$process.StandardOutput.ReadLineAsync()",
         "observer_exit_code",
         "stderr_empty",
         "sleep 0.05",
@@ -341,6 +346,7 @@ def main() -> None:
         "$output = @(& $AdbPath @Arguments",
         "'shell', 'am', 'start', '-W'",
         "@('shell', 'sh', '-c', $shell)",
+        "foreach ($argument in @('shell', $shell))",
         "Invoke-MishActivityTrigger -Component $script:StopComponent -Operation 'restore_stop_trigger'",
     ):
         forbid(rotation_probe, forbidden, "U5 LAB probe must observe PRODUCT rotation, never own airplane/root/build semantics")
