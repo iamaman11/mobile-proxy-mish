@@ -17,8 +17,7 @@ use mish_cellular::CellularAdmissionState;
 use mish_readiness::{
     CellularOwnerGeneration, CellularReadinessFact, CredentialReadinessFact, CredentialVersion,
     EgressProbeObservation, FreshnessMarker, MeshAdmissionEpoch, MeshReadinessFact, ProbeBinding,
-    ProbeEligibility,
-    ProductReadinessInput, ProxyReadinessFact, ProxyServingGeneration, Readiness,
+    ProbeEligibility, ProductReadinessInput, ProxyReadinessFact, ProxyServingGeneration, Readiness,
     RuntimeGeneration, RuntimeReadinessFact, probe_eligibility, project,
 };
 use mish_transport::{MeshAdmissionState, MeshTransportSnapshot};
