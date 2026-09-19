@@ -86,8 +86,12 @@ def main() -> None:
         "RuntimeLifecycleController",
         "generation = MutableStateFlow",
         "generation.value =",
+        "flatMapLatest",
         "newGeneration(",
         "RuntimeGeneration(",
+        "closeRuntimeGenerationExact",
+        "Executors.",
+        "ScheduledExecutorService",
         "completeStart(",
         "completeStop(",
         "takeGenerationReplacementForStart(",
@@ -110,6 +114,70 @@ def main() -> None:
             runtime_controller,
             required,
             "Kotlin runtime facade must delegate lifecycle/generation identity to the stable native process handle",
+        )
+
+    # D2 one-way cutover: PRODUCT lifecycle/retry/generation scheduling may not drift back
+    # into Kotlin. The only Android executor intentionally retained is AndroidVpnObserver's
+    # callback serializer; it observes platform state and owns no PRODUCT semantics.
+    for runtime_adapter in (
+        "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/ProxyRuntimeSupervisor.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/MeshIngressRuntimeBridge.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/ProxyRuntimeService.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/MishDiagnosticsProvider.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRuntimeBridge.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularNetworkObserver.kt",
+    ):
+        for forbidden in (
+            "Executors.",
+            "ScheduledExecutorService",
+            "newSingleThreadExecutor",
+            "newScheduledThreadPool",
+            "kotlinx.coroutines.delay",
+            "kotlinx.coroutines.launch",
+            "RuntimeLifecycleController",
+            "ProxyServingLifecycleController",
+            "ProductReadinessController",
+            "scheduleProxyRecoveryIfAllowed",
+            "automaticRecoveryPending",
+            "automaticRecoveryAttempts",
+            "newGeneration(",
+            "RuntimeGeneration(",
+        ):
+            forbid(
+                runtime_adapter,
+                forbidden,
+                "D2 Kotlin adapters must remain platform effects/presentation only; PRODUCT scheduling and ownership stay in Rust/Tokio",
+            )
+
+    vpn_observer = "android/app/src/main/java/com/mobileproxymish/app/AndroidVpnObserver.kt"
+    for required in (
+        'Thread(task, "mish-mesh-vpn-observer")',
+        "executor.execute",
+        "ConnectivityManager.NetworkCallback",
+        "currentVpnObservation()",
+    ):
+        require(
+            vpn_observer,
+            required,
+            "AndroidVpnObserver may retain only one Android callback-serialization executor",
+        )
+    for forbidden in (
+        "NativeProductRuntime",
+        "RuntimeLifecycleController",
+        "ProxyServingLifecycleController",
+        "ProductReadinessController",
+        "RootPolicy",
+        "scheduleProxyRecoveryIfAllowed",
+        "retry",
+        "backoff",
+        "startRuntime(",
+        "stopRuntime(",
+    ):
+        forbid(
+            vpn_observer,
+            forbidden,
+            "Android VPN observer must remain raw platform observation, never a PRODUCT scheduler/owner",
         )
 
     # Cross-owner Mesh composition decisions belong to Rust/runtime, not Android adapters.
