@@ -347,15 +347,15 @@ impl ReadinessRuntimeCoordinator {
         };
 
         self.publish_readiness(readiness);
-        if let Some(ticket) = ticket {
-            if let Err(error) = self.spawn_probe(ticket) {
-                Arc::clone(self).complete_probe(
-                    ticket,
-                    mish_readiness::ProbeOutcome::TransportFailed,
-                    Duration::ZERO,
-                );
-                return Err(error);
-            }
+        if let Some(ticket) = ticket
+            && let Err(error) = self.spawn_probe(ticket)
+        {
+            Arc::clone(self).complete_probe(
+                ticket,
+                mish_readiness::ProbeOutcome::TransportFailed,
+                Duration::ZERO,
+            );
+            return Err(error);
         }
         Ok(())
     }
@@ -363,13 +363,12 @@ impl ReadinessRuntimeCoordinator {
     fn spawn_probe(self: &Arc<Self>, ticket: ProbeTicket) -> Result<(), ReadinessRuntimeError> {
         let credentials = {
             let state = self.state()?;
-            let credentials = state
+            state
                 .credentials
                 .as_ref()
                 .filter(|credentials| credentials.version == ticket.binding().credential_version)
                 .cloned()
-                .ok_or(ReadinessRuntimeError::StateUnavailable)?;
-            credentials
+                .ok_or(ReadinessRuntimeError::StateUnavailable)?
         };
         let this = Arc::clone(self);
         self.executor
@@ -440,12 +439,10 @@ impl ReadinessRuntimeCoordinator {
                 this.fire_refresh(epoch, binding);
             })
             .is_err()
+            && let Ok(mut state) = self.state.lock()
+            && state.refresh_epoch == epoch
         {
-            if let Ok(mut state) = self.state.lock() {
-                if state.refresh_epoch == epoch {
-                    state.refresh_pending = false;
-                }
-            }
+            state.refresh_pending = false;
         }
     }
 
