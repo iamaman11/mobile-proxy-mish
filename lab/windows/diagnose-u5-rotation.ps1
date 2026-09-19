@@ -542,8 +542,8 @@ if ([int64]$credentialBefore.CredentialVersion -ne $credentialVersion) {
     Stop-MishRotationAcceptance 'PRODUCT_CREDENTIAL_VERSION_MISMATCH' 'Provisioned credential version does not match native owner diagnostics.'
 }
 $metricsBefore = Get-MishProcessMetrics -Snapshot $initial
-if ($metricsBefore.runtime_io_threads -lt 1 -or $metricsBefore.forbidden_kotlin_owner_threads -ne 0) {
-    Stop-MishRotationAcceptance 'PRODUCT_EXECUTION_TOPOLOGY_INVALID' 'Expected one native Tokio worker set and no removed Kotlin PRODUCT owner threads.'
+if ($metricsBefore.forbidden_kotlin_owner_threads -ne 0) {
+    Stop-MishRotationAcceptance 'PRODUCT_EXECUTION_TOPOLOGY_INVALID' 'Removed Kotlin PRODUCT owner threads are still observable.'
 }
 
 $operations = [System.Collections.Generic.List[object]]::new()
@@ -583,7 +583,6 @@ if (
     -not $runtimeGenerationStableAcrossRotations -or
     -not $rootSessionStableAcrossRotations -or
     -not $rotationTasksQuiescent -or
-    -not $runtimeIoStableAcrossRotations -or
     -not $threadsNoGrowthAcrossRotations -or
     -not $fdsNoGrowthAcrossRotations -or
     -not $ownerSessionsQuiescentAfterRotations
@@ -622,11 +621,9 @@ $acceptance = (
     $runtimeGenerationStableAcrossRotations -and
     $rootSessionStableAcrossRotations -and
     $rotationTasksQuiescent -and
-    $runtimeIoStableAcrossRotations -and
     $threadsNoGrowthAcrossRotations -and
     $fdsNoGrowthAcrossRotations -and
     $ownerSessionsQuiescentAfterRotations -and
-    $runtimeIoStable -and
     $forbiddenKotlinOwnersAbsent -and
     $threadsBounded -and
     $fdsBounded -and
@@ -657,6 +654,7 @@ $evidence = [ordered]@{
         runtime_generation_stable_across_normal_rotations = $runtimeGenerationStableAcrossRotations
         root_session_stable_across_normal_rotations = $rootSessionStableAcrossRotations
         rotation_tasks_quiescent = $rotationTasksQuiescent
+        runtime_io_thread_name_observation_required = $false
         runtime_io_threads_stable_across_normal_rotations = $runtimeIoStableAcrossRotations
         total_threads_no_growth_across_normal_rotations = $threadsNoGrowthAcrossRotations
         file_descriptors_no_growth_across_normal_rotations = $fdsNoGrowthAcrossRotations

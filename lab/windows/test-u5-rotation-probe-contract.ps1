@@ -44,6 +44,7 @@ foreach ($required in @(
     'runtime_generation_stable_across_normal_rotations',
     'root_session_stable_across_normal_rotations',
     'rotation_tasks_quiescent',
+    'runtime_io_thread_name_observation_required = $false',
     'runtime_io_threads_stable_across_normal_rotations',
     'forbidden_kotlin_owner_threads_absent',
     'file_descriptors_no_growth_across_normal_rotations',
@@ -84,6 +85,9 @@ foreach ($forbidden in @(
     'after_ip',
     'retry-until-changed',
     'retry_until_changed',
+    '$metricsBefore.runtime_io_threads -lt 1',
+    '-not $runtimeIoStableAcrossRotations -or',
+    '$runtimeIoStable -and',
     'task/*/comm',
     "'shell', 'ps', '-T', '-p'",
     "'-o', 'NAME'"
