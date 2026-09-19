@@ -629,8 +629,8 @@ def main() -> None:
     ):
         forbid(lifecycle, obsolete, "external-child/private-bridge lifecycle semantics are obsolete")
 
-    # Readiness is one pure Rust terminal projection. Android still assembles transitional facts and
-    # schedules refreshes, but ordinary CONNECT/TLS execution is already Rust/Tokio-owned.
+    # Readiness is one pure Rust terminal projection. Native runtime owns composition, freshness,
+    # refresh scheduling and ordinary CONNECT/TLS execution; Android consumes presentation only.
     readiness = "crates/readiness/src/lib.rs"
     require(readiness, "pub enum Readiness", "Readiness must expose one terminal projection type")
     require(readiness, "pub fn project(", "Readiness must remain a pure projection function")
@@ -856,6 +856,10 @@ def main() -> None:
         "ProxyServingLifecycleController",
         "RuntimeLifecycleController",
         "RuntimeProcessLifecycle",
+        "pub enum RuntimeStartAction",
+        "pub enum RuntimeStopAction",
+        "map_start_action",
+        "map_stop_action",
     ):
         forbid(
             lifecycle_ffi,
@@ -976,6 +980,9 @@ def main() -> None:
     for forbidden in (
         "ProductGeneration::new",
         "RuntimeExecutor::new",
+        "InvalidRuntimeGeneration",
+        "RuntimeStartAction",
+        "RuntimeStopAction",
         "pub fn start_proxy_runtime(",
         "pub fn stop_proxy_runtime(",
     ):
