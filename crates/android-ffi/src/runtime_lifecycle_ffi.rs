@@ -1,7 +1,6 @@
 use mish_runtime::{
     ProxyServingFailure as OwnerProxyServingFailure,
     RuntimeLifecycleState as OwnerRuntimeLifecycleState,
-    RuntimeStartAction as OwnerRuntimeStartAction, RuntimeStopAction as OwnerRuntimeStopAction,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -10,20 +9,6 @@ pub enum RuntimeLifecycleState {
     Starting,
     Running,
     Stopping,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
-pub enum RuntimeStartAction {
-    StartNow,
-    AlreadyActive,
-    QueuedAfterStop,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
-pub enum RuntimeStopAction {
-    StopNow,
-    AlreadyStopped,
-    AlreadyStopping,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -62,22 +47,6 @@ pub(crate) fn map_lifecycle_state(state: OwnerRuntimeLifecycleState) -> RuntimeL
         OwnerRuntimeLifecycleState::Starting => RuntimeLifecycleState::Starting,
         OwnerRuntimeLifecycleState::Running => RuntimeLifecycleState::Running,
         OwnerRuntimeLifecycleState::Stopping => RuntimeLifecycleState::Stopping,
-    }
-}
-
-pub(crate) fn map_start_action(action: OwnerRuntimeStartAction) -> RuntimeStartAction {
-    match action {
-        OwnerRuntimeStartAction::StartNow => RuntimeStartAction::StartNow,
-        OwnerRuntimeStartAction::AlreadyActive => RuntimeStartAction::AlreadyActive,
-        OwnerRuntimeStartAction::QueuedAfterStop => RuntimeStartAction::QueuedAfterStop,
-    }
-}
-
-pub(crate) fn map_stop_action(action: OwnerRuntimeStopAction) -> RuntimeStopAction {
-    match action {
-        OwnerRuntimeStopAction::StopNow => RuntimeStopAction::StopNow,
-        OwnerRuntimeStopAction::AlreadyStopped => RuntimeStopAction::AlreadyStopped,
-        OwnerRuntimeStopAction::AlreadyStopping => RuntimeStopAction::AlreadyStopping,
     }
 }
 
