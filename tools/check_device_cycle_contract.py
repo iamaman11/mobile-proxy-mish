@@ -31,6 +31,7 @@ def forbid_regex(path: str, pattern: str, reason: str) -> None:
 
 def main() -> None:
     workflow = ".github/workflows/device-cycle.yml"
+    validation_workflow = ".github/workflows/integration-android-preflight.yml"
 
     require(
         workflow,
@@ -66,7 +67,6 @@ def main() -> None:
         "diagnose-dns-lifetime-live.ps1",
         "Explicit U5 rotation - PRODUCT-owned airplane cycle acceptance",
         "diagnose-u5-rotation.ps1",
-        ".\\lab\\windows\\test-u5-rotation-probe-contract.ps1",
         'echo "control_sha=$GITHUB_SHA"',
         "actions: read",
         "manual workflow_dispatch from protected main",
@@ -99,6 +99,18 @@ def main() -> None:
         "Targeted acceptance",
     ):
         require(workflow, required, "explicit single-run orchestration contract drifted")
+
+    for required in (
+        "Verify Device Cycle orchestration contracts",
+        "./lab/windows/test-device-candidate-store.ps1",
+        "./lab/windows/test-device-candidate.ps1",
+        "./lab/windows/test-device-cycle.ps1",
+        "./lab/windows/test-recovery-lifecycle-probe-contract.ps1",
+        "./lab/windows/test-dns-lifetime-live-probe-contract.ps1",
+        "./lab/windows/test-u5-rotation-probe-contract.ps1",
+        "python ./tools/check_device_cycle_contract.py",
+    ):
+        require(validation_workflow, required, "Device Cycle contract verification must remain in protected-main PR validation")
 
     for forbidden in (
         "fix/root-policy-reconciliation",
