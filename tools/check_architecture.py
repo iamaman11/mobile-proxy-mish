@@ -327,7 +327,7 @@ def main() -> None:
         "snapshot.capacity_rejects",
     ):
         require_product(
-            product_ffi,
+            "crates/android-ffi/src/product_runtime_ffi.rs",
             required,
             "atomic native diagnostics must project Mesh capacity from the captured Transport snapshot",
         )
