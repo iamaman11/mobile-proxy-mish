@@ -561,26 +561,17 @@ impl RotationRuntimeCoordinator {
     }
 
     fn rearm_cellular_request_if_waiting(&self, operation_id: u64) -> bool {
-        let effect = {
+        let selection = {
             let Ok(state) = self.state.lock() else {
                 return false;
             };
-            let snapshot = state.machine.snapshot();
-            if state.closed
-                || snapshot.operation_id != Some(operation_id)
-                || snapshot.phase != RotationPhase::WaitingCellularRecovery
-            {
-                return true;
-            }
-            state
-                .cellular_request_rearm
-                .as_ref()
-                .filter(|(id, _)| *id == operation_id)
-                .map(|(_, effect)| Arc::clone(effect))
+            select_cellular_request_rearm(&state, operation_id)
         };
 
-        let Some(effect) = effect else {
-            return false;
+        let effect = match selection {
+            Ok(None) => return true,
+            Ok(Some(effect)) => effect,
+            Err(()) => return false,
         };
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             effect.rearm_cellular_request()
@@ -817,6 +808,27 @@ impl RotationRuntimeCoordinator {
     }
 }
 
+fn select_cellular_request_rearm(
+    state: &RotationRuntimeState,
+    operation_id: u64,
+) -> Result<Option<Arc<dyn CellularRequestRearmEffect>>, ()> {
+    let snapshot = state.machine.snapshot();
+    if state.closed
+        || snapshot.operation_id != Some(operation_id)
+        || snapshot.phase != RotationPhase::WaitingCellularRecovery
+    {
+        return Ok(None);
+    }
+
+    state
+        .cellular_request_rearm
+        .as_ref()
+        .filter(|(id, _)| *id == operation_id)
+        .map(|(_, effect)| Arc::clone(effect))
+        .map(Some)
+        .ok_or(())
+}
+
 fn admitted_generation(admission: CellularAdmissionSnapshot) -> Option<u64> {
     (admission.state() == CellularAdmissionState::Admitted)
         .then_some(admission.last_sequence())
@@ -866,6 +878,89 @@ fn notify(notification: Option<(RotationObserver, RotationSnapshot)>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    struct TestRearmEffect;
+
+    impl CellularRequestRearmEffect for TestRearmEffect {
+        fn rearm_cellular_request(&self) -> bool {
+            true
+        }
+    }
+
+    fn waiting_cellular_recovery_state() -> (RotationRuntimeState, u64) {
+        let mut machine = RotationStateMachine::new();
+        let operation_id = machine.start(1).expect("rotation start");
+        machine
+            .record_before_ip(operation_id, 1, IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)))
+            .expect("before IP");
+        machine
+            .airplane_enable_effect_completed(operation_id, RotationMutationOutcome::Applied)
+            .expect("airplane enable effect");
+        machine
+            .observe_airplane(operation_id, true)
+            .expect("airplane ON");
+        machine
+            .observe_cellular(operation_id, 2, false)
+            .expect("cellular loss");
+        machine
+            .airplane_disable_effect_completed(operation_id, RotationMutationOutcome::Applied)
+            .expect("airplane disable effect");
+        machine
+            .observe_airplane(operation_id, false)
+            .expect("airplane OFF");
+
+        assert_eq!(
+            machine.snapshot().phase,
+            RotationPhase::WaitingCellularRecovery
+        );
+
+        (
+            RotationRuntimeState {
+                machine,
+                deadline: None,
+                credential_guard: None,
+                cellular_request_rearm: Some((operation_id, Arc::new(TestRearmEffect))),
+                claimed: HashSet::new(),
+                cancel: None,
+                tasks: Vec::new(),
+                observer: None,
+                closed: false,
+            },
+            operation_id,
+        )
+    }
+
+    #[test]
+    fn cellular_request_rearm_is_selected_only_for_current_recovery_operation() {
+        let (mut state, operation_id) = waiting_cellular_recovery_state();
+
+        assert!(
+            select_cellular_request_rearm(&state, operation_id)
+                .expect("selection")
+                .is_some()
+        );
+        assert!(
+            select_cellular_request_rearm(&state, operation_id + 1)
+                .expect("stale operation must not select")
+                .is_none()
+        );
+
+        state.closed = true;
+        assert!(
+            select_cellular_request_rearm(&state, operation_id)
+                .expect("closed runtime must not select")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn waiting_recovery_without_bound_rearm_effect_fails_selection_closed() {
+        let (mut state, operation_id) = waiting_cellular_recovery_state();
+        state.cellular_request_rearm = None;
+
+        assert_eq!(select_cellular_request_rearm(&state, operation_id), Err(()));
+    }
 
     #[test]
     fn normal_path_has_no_arbitrary_dwell_constant() {
