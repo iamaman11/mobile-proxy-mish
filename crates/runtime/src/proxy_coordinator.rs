@@ -26,6 +26,7 @@ pub struct ProxyRuntimePublication {
     pub serving_generation: Option<u64>,
     pub credential_version: Option<u64>,
     pub recovery_pending: bool,
+    pub recovery_operation_id: u64,
     pub recovery_attempts_since_success: u32,
     pub recovery_next_delay_ms: u64,
 }
@@ -105,6 +106,7 @@ impl ProxyRuntimeCoordinator {
                 serving_generation: None,
                 credential_version: None,
                 recovery_pending: false,
+                recovery_operation_id: 0,
                 recovery_attempts_since_success: 0,
                 recovery_next_delay_ms: proxy_recovery_delay_ms(0),
             })
@@ -468,6 +470,7 @@ impl ProxyRuntimeCoordinator {
             serving_generation: None,
             credential_version: None,
             recovery_pending: false,
+            recovery_operation_id: 0,
             recovery_attempts_since_success: 0,
             recovery_next_delay_ms: proxy_recovery_delay_ms(0),
         }
@@ -495,6 +498,7 @@ fn publication(state: &ProxyCoordinatorState) -> ProxyRuntimePublication {
         serving_generation: state.serving_generation,
         credential_version: state.credential_version,
         recovery_pending: state.recovery_pending,
+        recovery_operation_id: state.recovery_epoch,
         recovery_attempts_since_success: state.recovery_attempts,
         recovery_next_delay_ms: proxy_recovery_delay_ms(state.recovery_attempts.saturating_sub(1)),
     }
