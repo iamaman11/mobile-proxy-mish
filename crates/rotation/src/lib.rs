@@ -604,10 +604,11 @@ mod tests {
         machine.observe_airplane(id, true).expect("on");
         let snapshot = machine.observe_cellular(id, 11, false).expect("loss");
         assert_eq!(snapshot.phase, RotationPhase::AirplaneDisabling);
-        assert_eq!(
-            machine.observe_cellular(id, 12, false),
-            Err(RotationTransitionError::InvalidPhase)
-        );
+        let still_disabling = machine
+            .observe_cellular(id, 12, false)
+            .expect("cellular event during disable");
+        assert_eq!(still_disabling.phase, RotationPhase::AirplaneDisabling);
+        assert_eq!(still_disabling.after_generation, None);
     }
 
     #[test]
