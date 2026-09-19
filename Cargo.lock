@@ -368,6 +368,7 @@ dependencies = [
  "mish-credentials",
  "mish-proxy",
  "mish-readiness",
+ "mish-rotation",
  "mish-runtime",
  "mish-transport",
  "uniffi",
