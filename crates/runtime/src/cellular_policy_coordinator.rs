@@ -237,6 +237,10 @@ impl CellularPolicyCoordinator {
             .and_then(|state| state.last_publication)
     }
 
+    pub(crate) fn airplane_effect(&self) -> Arc<crate::airplane_effect::AirplaneModeEffect> {
+        crate::airplane_effect::AirplaneModeEffect::new(Arc::clone(&self.root_session))
+    }
+
     /// Current persistent root-session generation, when a live shell exists.
     pub fn root_session_generation_blocking(
         &self,
