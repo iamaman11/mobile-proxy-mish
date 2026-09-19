@@ -165,8 +165,8 @@ def main() -> None:
             "Android Mesh adapter must remain raw VPN/readiness projection only",
         )
 
-    # U5 execution law: exactly one process-generation Tokio owner exists. Proxy/Mesh borrow its
-    # Handle; neither serving component may construct or destroy another runtime.
+    # U5 execution law: exactly one process-level Tokio owner exists. Native PRODUCT generations
+    # borrow it; no generation or serving component may construct or destroy another runtime.
     execution_owner = "crates/runtime/src/execution.rs"
     for required in (
         "pub struct RuntimeExecutor",
@@ -744,6 +744,8 @@ def main() -> None:
         "MeshCompositionCoordinator::new",
         "ReadinessRuntimeCoordinator::new",
         "ProxyRuntimeCoordinator::new",
+        "shutdown_result: OnceCell<bool>",
+        "run_shutdown_once(&self.shutdown_result",
         "pub fn shutdown_blocking(",
     ):
         require_product(
@@ -783,6 +785,9 @@ def main() -> None:
         "pub fn begin_stopped_platform_mutation(",
         "pub fn complete_stopped_platform_mutation(",
         "active_platform_mutation",
+        "complete_failed_start_after_cleanup",
+        "complete_stop_after_cleanup",
+        "Arc::ptr_eq(&state.generation, &generation)",
         "bind_observers",
     ):
         require_product(
