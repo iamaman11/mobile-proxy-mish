@@ -189,9 +189,6 @@ impl RootPolicyEffectExecutor {
         }
     }
 
-    pub(crate) async fn shutdown(&self) {
-        self.session.shutdown().await;
-    }
 }
 
 impl RootPolicyIo for RootPolicyEffectExecutor {
