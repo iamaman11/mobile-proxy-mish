@@ -1336,7 +1336,7 @@ def main() -> None:
     for required in (
         "pub struct RotationRuntimeCoordinator",
         "ROTATION_SAFETY_DEADLINE",
-        "sleep_until(deadline)",
+        "timeout_at(deadline, cancel.notified())",
         "observe_public_egress_ip_async",
         "policy.add_internal_observer",
         "RotationAction::RestoreOff",
