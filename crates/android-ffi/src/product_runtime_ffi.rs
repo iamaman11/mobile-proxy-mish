@@ -1,25 +1,27 @@
 use crate::readiness_ffi::ProductReadinessState;
 use crate::runtime_boundary::{
-    AndroidDnsResolver, CellularAdmissionView, CellularBridgeError, CellularController,
-    CellularDnsDiagnosticView, PublicIpObservationView, PublicIpProbeError, PublicIpProbeTicket,
-    map_public_ip_failure, map_snapshot,
+    AndroidDnsResolver, CellularAdmissionReason, CellularAdmissionState, CellularAdmissionView,
+    CellularBridgeError, CellularController, CellularDnsDiagnosticView, PublicIpObservationView,
+    PublicIpProbeError, PublicIpProbeTicket, map_dns_diagnostic, map_public_ip_failure, map_snapshot,
 };
 use crate::runtime_lifecycle_ffi::{
     ProxyServingFailure, ProxyServingState, RuntimeLifecycleState, map_lifecycle_state,
     map_proxy_failure_out,
 };
 use crate::transport_ffi::{
-    MeshAdmissionView, MeshTransportBoundaryError, map_transport_error, map_view as map_mesh_view,
+    MeshAdmissionState, MeshAdmissionView, MeshTransportBoundaryError, map_transport_error,
+    map_view as map_mesh_view,
 };
 use mish_cellular::{NetworkHandle, NetworkObservation, ObservationSequence, RootPolicyNamespace};
 use mish_runtime::{
     CellularPolicyObserver, CellularPolicyPublication, CellularReconcileDiagnostic,
-    ProductRuntimeCoordinator, ProductRuntimeSnapshot, ProxyRuntimeObserver,
+    ProductDiagnosticSnapshot, ProductRuntimeCoordinator, ProductRuntimeSnapshot,
+    ProxyRuntimeObserver,
     ProxyRuntimePublication, ProxyServingState as OwnerProxyServingState,
     ReadinessDiagnosticSnapshot, ReadinessObserver,
     RootAuthorityStatus as OwnerRootAuthorityStatus, RootPolicyFailure as OwnerRootPolicyFailure,
     RootPolicyReconcileDiagnostic, RootPolicyResult as OwnerRootPolicyResult,
-    RootRecoveryDiagnostic, RuntimeExecutionError,
+    RootRecoveryDiagnostic, RotationDiagnosticState, RuntimeExecutionError,
 };
 use mish_transport::MeshVpnObservation;
 use std::fmt;
@@ -172,6 +174,47 @@ pub struct ProxyRuntimePublicationView {
     pub recovery_next_delay_ms: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ProductDiagnosticSnapshotView {
+    pub consistent: bool,
+    pub runtime_running: bool,
+    pub runtime_generation: u64,
+    pub cellular_state: String,
+    pub cellular_reason: String,
+    pub cellular_admitted: bool,
+    pub cellular_owner_sequence: Option<u64>,
+    pub cellular_boundary_failure: Option<String>,
+    pub cellular_reconcile: CellularReconcileDiagnosticView,
+    pub dns: CellularDnsDiagnosticView,
+    pub root_authority_observation: String,
+    pub root_policy_authorized: bool,
+    pub root_reconcile: RootPolicyReconcileDiagnosticView,
+    pub root_recovery: RootRecoveryDiagnosticView,
+    pub proxy_state: String,
+    pub proxy_healthy: bool,
+    pub proxy_failure: Option<String>,
+    pub proxy_serving_generation: Option<u64>,
+    pub proxy_active_sessions: u64,
+    pub proxy_recovery_pending: bool,
+    pub proxy_recovery_attempts_scheduled: u32,
+    pub proxy_recovery_next_delay_ms: u64,
+    pub credential_active: bool,
+    pub credential_version: Option<u64>,
+    pub mesh_state: String,
+    pub mesh_admitted: bool,
+    pub mesh_observation_sequence: Option<u64>,
+    pub mesh_admission_epoch: Option<u64>,
+    pub mesh_epoch_present: bool,
+    pub mesh_ingress_running: bool,
+    pub mesh_ingress_failure: String,
+    pub mesh_active_sessions: Option<u64>,
+    pub mesh_capacity_rejects: Option<u64>,
+    pub readiness_state: String,
+    pub readiness_binding_eligible: bool,
+    pub readiness_probe_state: String,
+    pub rotation_state: String,
+}
+
 #[uniffi::export(foreign)]
 pub trait NativeProxyRuntimeObserver: Send + Sync {
     fn on_proxy_runtime(&self, publication: ProxyRuntimePublicationView);
@@ -220,6 +263,15 @@ impl NativeProductRuntime {
 
     pub fn runtime_lifecycle_snapshot(&self) -> RuntimeLifecycleSnapshotView {
         map_runtime_snapshot(self.runtime.snapshot())
+    }
+
+    pub fn diagnostic_snapshot(
+        &self,
+    ) -> Result<ProductDiagnosticSnapshotView, NativeProductRuntimeError> {
+        self.runtime
+            .diagnostic_snapshot()
+            .map(map_product_diagnostic_snapshot)
+            .map_err(Into::into)
     }
 
     pub fn start_runtime(
@@ -277,24 +329,6 @@ impl NativeProductRuntime {
             .unwrap_or(ProductReadinessState::Unknown)
     }
 
-    pub fn readiness_diagnostic_snapshot(&self) -> ReadinessDiagnosticView {
-        self.runtime
-            .current_generation()
-            .map(|generation| {
-                map_readiness_diagnostic(generation.readiness().diagnostic_snapshot())
-            })
-            .unwrap_or(ReadinessDiagnosticView {
-                state: ProductReadinessState::Unknown,
-                root_policy_verified: false,
-                proxy_healthy: false,
-                credential_active: false,
-                mesh_admitted: false,
-                binding_eligible: false,
-                probe_in_flight: false,
-                refresh_pending: false,
-            })
-    }
-
     pub fn observe_proxy_runtime(&self, observer: Arc<dyn NativeProxyRuntimeObserver>) {
         let callback: ProxyRuntimeObserver = Arc::new(move |publication| {
             observer.on_proxy_runtime(map_proxy_publication(publication));
@@ -307,13 +341,6 @@ impl NativeProductRuntime {
             .current_generation()
             .map(|generation| map_proxy_publication(generation.proxy().snapshot()))
             .unwrap_or_else(|_| unavailable_proxy_publication())
-    }
-
-    pub fn proxy_active_sessions(&self) -> u32 {
-        self.runtime
-            .current_generation()
-            .map(|generation| generation.proxy().active_sessions())
-            .unwrap_or(0)
     }
 
     pub fn admission_snapshot(&self) -> Result<CellularAdmissionView, CellularBridgeError> {
@@ -372,33 +399,6 @@ impl NativeProductRuntime {
             .map_err(Into::into)
     }
 
-    pub fn dns_diagnostic_snapshot(&self) -> CellularDnsDiagnosticView {
-        self.runtime
-            .current_generation()
-            .map(|generation| {
-                CellularController::from_runtime(generation.cellular()).dns_diagnostic_snapshot()
-            })
-            .unwrap_or_else(|_| CellularDnsDiagnosticView {
-                slow_threshold_ms: 0,
-                started: 0,
-                completed: 0,
-                active: 0,
-                peak_active: 0,
-                slow_completions: 0,
-                resolver_failed: 0,
-                discarded_after_deadline: 0,
-                completed_after_owner_change: 0,
-                discarded_stale: 0,
-                authority_validation_failed: 0,
-                unusable_result: 0,
-                accepted_current: 0,
-                max_native_elapsed_ms: 0,
-                last_started_owner_sequence: None,
-                last_completed_start_owner_sequence: None,
-                last_completed_current_owner_sequence: None,
-            })
-    }
-
     pub fn prepare_public_ip_probe(
         &self,
         timeout_ms: u64,
@@ -426,41 +426,6 @@ impl NativeProductRuntime {
                 generation: observation.generation(),
             })
             .map_err(map_public_ip_failure)
-    }
-
-    pub fn cellular_reconcile_diagnostic(&self) -> CellularReconcileDiagnosticView {
-        self.runtime
-            .current_generation()
-            .map(|generation| map_reconcile_diagnostic(generation.policy().reconcile_diagnostic()))
-            .unwrap_or(CellularReconcileDiagnosticView {
-                requested: 0,
-                executed: 0,
-                coalesced: 0,
-                pending: false,
-                drain_scheduled: false,
-            })
-    }
-
-    pub fn root_recovery_diagnostic(&self) -> RootRecoveryDiagnosticView {
-        self.runtime
-            .current_generation()
-            .map(|generation| map_recovery_diagnostic(generation.policy().recovery_diagnostic()))
-            .unwrap_or(RootRecoveryDiagnosticView {
-                pending: false,
-                attempts_since_reset: 0,
-                next_delay_ms: 0,
-            })
-    }
-
-    pub fn root_policy_reconcile_diagnostic(
-        &self,
-    ) -> Result<RootPolicyReconcileDiagnosticView, NativeProductRuntimeError> {
-        let generation = self.runtime.current_generation()?;
-        generation
-            .policy()
-            .root_policy_diagnostic_blocking(&generation.executor())
-            .map(map_root_policy_diagnostic)
-            .map_err(Into::into)
     }
 
     pub fn invalidate_mesh_platform_fact(&self) -> Result<(), NativeProductRuntimeError> {
@@ -538,6 +503,212 @@ impl NativeProductRuntime {
             mish_runtime::RuntimeLifecycleState::Starting
                 | mish_runtime::RuntimeLifecycleState::Running
         )
+    }
+}
+
+fn map_product_diagnostic_snapshot(
+    snapshot: ProductDiagnosticSnapshot,
+) -> ProductDiagnosticSnapshotView {
+    let generation = snapshot.generation;
+    let admission = map_snapshot(generation.cellular_admission);
+    let root_result = generation.root_policy_result;
+    let boundary_failure = cellular_boundary_failure(root_result);
+    let cellular_state = if boundary_failure.is_some() {
+        "BOUNDARY_UNAVAILABLE".to_owned()
+    } else {
+        cellular_admission_state_code(admission.state).to_owned()
+    };
+    let cellular_reason = if boundary_failure.is_some() {
+        "NONE".to_owned()
+    } else {
+        admission
+            .reason
+            .map(cellular_admission_reason_code)
+            .unwrap_or("NONE")
+            .to_owned()
+    };
+    let cellular_admitted =
+        boundary_failure.is_none() && admission.state == CellularAdmissionState::Admitted;
+    let cellular_owner_sequence = boundary_failure
+        .is_none()
+        .then_some(admission.last_sequence)
+        .flatten();
+
+    let (root_authority_observation, root_policy_authorized) = match root_result {
+        Some(OwnerRootPolicyResult::Enforced) => ("READY_AT_POLICY_AUTHORIZATION", true),
+        Some(OwnerRootPolicyResult::AuthorityUnavailable(_)) => ("UNAVAILABLE", false),
+        _ => ("NOT_OBSERVED", false),
+    };
+
+    let proxy = map_proxy_publication(generation.proxy);
+    let proxy_state = proxy_state_code(proxy.state).to_owned();
+    let proxy_healthy = proxy.state == ProxyServingState::Running && proxy.failure.is_none();
+    let proxy_failure = proxy.failure.map(proxy_failure_code).map(str::to_owned);
+
+    let mesh = generation.mesh.map(map_mesh_view);
+    let mesh_state = mesh
+        .as_ref()
+        .map(|snapshot| mesh_state_code(snapshot.state))
+        .unwrap_or("ABSENT")
+        .to_owned();
+    let mesh_admitted = mesh
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.state == MeshAdmissionState::Admitted);
+    let mesh_observation_sequence = mesh.as_ref().and_then(|snapshot| snapshot.last_sequence);
+    let mesh_admission_epoch = mesh.as_ref().and_then(|snapshot| snapshot.admission_epoch);
+    let mesh_epoch_present = mesh_admission_epoch.is_some();
+    let mesh_ingress_running = mesh.as_ref().is_some_and(|snapshot| snapshot.ingress_running);
+    let mesh_active_sessions = mesh.as_ref().map(|snapshot| snapshot.active_sessions);
+    let mesh_capacity_rejects = mesh.as_ref().map(|snapshot| snapshot.capacity_rejects);
+
+    let readiness = map_readiness_diagnostic(generation.readiness);
+    let readiness_state = readiness_state_code(readiness.state).to_owned();
+    let readiness_probe_state = readiness_probe_state_code(readiness.state).to_owned();
+
+    ProductDiagnosticSnapshotView {
+        consistent: snapshot.consistent,
+        runtime_running: snapshot.runtime.state != mish_runtime::RuntimeLifecycleState::Stopped,
+        runtime_generation: snapshot.runtime.generation,
+        cellular_state,
+        cellular_reason,
+        cellular_admitted,
+        cellular_owner_sequence,
+        cellular_boundary_failure: boundary_failure.map(str::to_owned),
+        cellular_reconcile: map_reconcile_diagnostic(generation.cellular_reconcile),
+        dns: map_dns_diagnostic(generation.dns),
+        root_authority_observation: root_authority_observation.to_owned(),
+        root_policy_authorized,
+        root_reconcile: map_root_policy_diagnostic(generation.root_reconcile),
+        root_recovery: map_recovery_diagnostic(generation.root_recovery),
+        proxy_state,
+        proxy_healthy,
+        proxy_failure,
+        proxy_serving_generation: proxy.serving_generation,
+        proxy_active_sessions: u64::from(generation.proxy_active_sessions),
+        proxy_recovery_pending: proxy.recovery_pending,
+        proxy_recovery_attempts_scheduled: proxy.recovery_attempts_since_success,
+        proxy_recovery_next_delay_ms: proxy.recovery_next_delay_ms,
+        credential_active: generation.readiness.credential_active,
+        credential_version: proxy.credential_version,
+        mesh_state,
+        mesh_admitted,
+        mesh_observation_sequence,
+        mesh_admission_epoch,
+        mesh_epoch_present,
+        mesh_ingress_running,
+        mesh_ingress_failure: mesh_failure_code(generation.mesh_failure).to_owned(),
+        mesh_active_sessions,
+        mesh_capacity_rejects,
+        readiness_state,
+        readiness_binding_eligible: readiness.binding_eligible,
+        readiness_probe_state,
+        rotation_state: match generation.rotation {
+            RotationDiagnosticState::NotSupported => "NOT_SUPPORTED".to_owned(),
+        },
+    }
+}
+
+fn cellular_boundary_failure(result: Option<OwnerRootPolicyResult>) -> Option<&'static str> {
+    match result {
+        Some(OwnerRootPolicyResult::AuthorityUnavailable(_)) => Some("ROOT_AUTHORITY_UNAVAILABLE"),
+        Some(OwnerRootPolicyResult::FailClosed(Some(failure))) => Some(match failure {
+            OwnerRootPolicyFailure::InvalidInterface => "ROOT_POLICY_INVALID_INTERFACE",
+            OwnerRootPolicyFailure::ReservedPolicyCollision => "ROOT_POLICY_RESERVED_POLICY_COLLISION",
+            OwnerRootPolicyFailure::ObservationUnavailable => "ROOT_POLICY_OBSERVATION_UNAVAILABLE",
+            OwnerRootPolicyFailure::ObservationIncomplete => "ROOT_POLICY_OBSERVATION_INCOMPLETE",
+            OwnerRootPolicyFailure::StructuralMismatch => "ROOT_POLICY_STRUCTURAL_MISMATCH",
+            OwnerRootPolicyFailure::RouteTableDiscoveryFailed => "ROOT_POLICY_ROUTE_TABLE_DISCOVERY_FAILED",
+            OwnerRootPolicyFailure::MutationRejected => "ROOT_POLICY_MUTATION_REJECTED",
+            OwnerRootPolicyFailure::MutationUncertain => "ROOT_POLICY_MUTATION_UNCERTAIN",
+            OwnerRootPolicyFailure::LookupRuleCreationFailed => "ROOT_POLICY_LOOKUP_RULE_CREATION_FAILED",
+            OwnerRootPolicyFailure::RouteLookupVerificationFailed => "ROOT_POLICY_ROUTE_LOOKUP_VERIFICATION_FAILED",
+            OwnerRootPolicyFailure::ExactCleanupFailed => "ROOT_POLICY_EXACT_CLEANUP_FAILED",
+        }),
+        _ => None,
+    }
+}
+
+fn cellular_admission_state_code(state: CellularAdmissionState) -> &'static str {
+    match state {
+        CellularAdmissionState::Unknown => "UNKNOWN",
+        CellularAdmissionState::NotAdmitted => "NOT_ADMITTED",
+        CellularAdmissionState::Admitted => "ADMITTED",
+    }
+}
+
+fn cellular_admission_reason_code(reason: CellularAdmissionReason) -> &'static str {
+    match reason {
+        CellularAdmissionReason::NoObservation => "NO_OBSERVATION",
+        CellularAdmissionReason::NotCellular => "NOT_CELLULAR",
+        CellularAdmissionReason::MissingInternetCapability => "MISSING_INTERNET_CAPABILITY",
+        CellularAdmissionReason::VpnDerivedNetwork => "VPN_DERIVED_NETWORK",
+        CellularAdmissionReason::NotValidated => "NOT_VALIDATED",
+        CellularAdmissionReason::NetworkLost => "NETWORK_LOST",
+    }
+}
+
+fn proxy_state_code(state: ProxyServingState) -> &'static str {
+    match state {
+        ProxyServingState::Stopped => "STOPPED",
+        ProxyServingState::Starting => "STARTING",
+        ProxyServingState::Running => "RUNNING",
+        ProxyServingState::Failed => "FAILED",
+    }
+}
+
+fn proxy_failure_code(failure: ProxyServingFailure) -> &'static str {
+    match failure {
+        ProxyServingFailure::NativeRuntimeMissing => "NATIVE_RUNTIME_MISSING",
+        ProxyServingFailure::ExternalCredentialUnavailable => "EXTERNAL_CREDENTIAL_UNAVAILABLE",
+        ProxyServingFailure::CellularConnectorUnavailable => "CELLULAR_CONNECTOR_UNAVAILABLE",
+        ProxyServingFailure::ProxyConfigurationRejected => "PROXY_CONFIGURATION_REJECTED",
+        ProxyServingFailure::MixedListenerUnavailable => "MIXED_LISTENER_UNAVAILABLE",
+        ProxyServingFailure::Socks5ListenerUnavailable => "SOCKS5_LISTENER_UNAVAILABLE",
+        ProxyServingFailure::HttpConnectListenerUnavailable => "HTTP_CONNECT_LISTENER_UNAVAILABLE",
+        ProxyServingFailure::ExecutorUnavailable => "EXECUTOR_UNAVAILABLE",
+        ProxyServingFailure::RuntimeStateUnavailable => "RUNTIME_STATE_UNAVAILABLE",
+        ProxyServingFailure::ServingUnhealthy => "SERVING_UNHEALTHY",
+        ProxyServingFailure::ShutdownFailed => "SHUTDOWN_FAILED",
+    }
+}
+
+fn mesh_state_code(state: MeshAdmissionState) -> &'static str {
+    match state {
+        MeshAdmissionState::NotAdmitted => "NOT_ADMITTED",
+        MeshAdmissionState::Admitted => "ADMITTED",
+    }
+}
+
+fn mesh_failure_code(
+    failure: Option<mish_transport::MeshTransportError>,
+) -> &'static str {
+    let Some(failure) = failure else {
+        return "NONE";
+    };
+    match map_transport_error(failure) {
+        MeshTransportBoundaryError::IngressBindFailed => "BIND_FAILED",
+        MeshTransportBoundaryError::IngressShutdownFailed => "SHUTDOWN_FAILED",
+        MeshTransportBoundaryError::IngressUnavailable => "UNAVAILABLE",
+        MeshTransportBoundaryError::OwnerUnavailable => "OWNER_UNAVAILABLE",
+        _ => "OTHER",
+    }
+}
+
+fn readiness_state_code(state: ProductReadinessState) -> &'static str {
+    match state {
+        ProductReadinessState::Ready => "READY",
+        ProductReadinessState::NotReady => "NOT_READY",
+        ProductReadinessState::Degraded => "DEGRADED",
+        ProductReadinessState::Unknown => "UNKNOWN",
+    }
+}
+
+fn readiness_probe_state_code(state: ProductReadinessState) -> &'static str {
+    match state {
+        ProductReadinessState::Ready => "SUCCEEDED",
+        ProductReadinessState::Degraded => "FAILED",
+        ProductReadinessState::NotReady => "BLOCKED",
+        ProductReadinessState::Unknown => "NOT_OBSERVED",
     }
 }
 
