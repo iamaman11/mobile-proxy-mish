@@ -1313,7 +1313,7 @@ def main() -> None:
         "RotationTerminalResult::Changed",
         "RotationTerminalResult::Unchanged",
         "RotationTerminalResult::Failed",
-        "RotationFailure::CredentialChanged",
+        "CredentialChanged,",
     ):
         require_product(
             rotation_semantics,
