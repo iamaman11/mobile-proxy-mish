@@ -41,6 +41,13 @@ pub enum RotationRuntimeStartError {
 
 pub type RotationObserver = Arc<dyn Fn(RotationSnapshot) + Send + Sync + 'static>;
 
+/// One narrow platform effect used only after Rust has confirmed airplane OFF and entered
+/// Cellular recovery. The implementation may re-arm Android's existing CELLULAR+INTERNET
+/// request, but owns no retry/timing/currentness semantics.
+pub trait CellularRequestRearmEffect: Send + Sync + 'static {
+    fn rearm_cellular_request(&self) -> bool;
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum RotationAction {
     BeforeIp,
@@ -54,6 +61,7 @@ struct RotationRuntimeState {
     machine: RotationStateMachine,
     deadline: Option<(u64, Instant)>,
     credential_guard: Option<ProxyCredentialGuard>,
+    cellular_request_rearm: Option<(u64, Arc<dyn CellularRequestRearmEffect>)>,
     claimed: HashSet<(u64, RotationAction)>,
     cancel: Option<Arc<Notify>>,
     tasks: Vec<JoinHandle<()>>,
@@ -87,6 +95,7 @@ impl RotationRuntimeCoordinator {
                 machine: RotationStateMachine::new(),
                 deadline: None,
                 credential_guard: None,
+                cellular_request_rearm: None,
                 claimed: HashSet::new(),
                 cancel: None,
                 tasks: Vec::new(),
@@ -135,7 +144,10 @@ impl RotationRuntimeCoordinator {
         notify(Some((observer, snapshot)));
     }
 
-    pub fn start(self: &Arc<Self>) -> Result<u64, RotationRuntimeStartError> {
+    pub fn start(
+        self: &Arc<Self>,
+        cellular_request_rearm: Arc<dyn CellularRequestRearmEffect>,
+    ) -> Result<u64, RotationRuntimeStartError> {
         let admission = self
             .cellular
             .admission_snapshot()
@@ -176,6 +188,7 @@ impl RotationRuntimeCoordinator {
             let cancel = Arc::new(Notify::new());
             state.deadline = Some((operation_id, deadline));
             state.credential_guard = Some(credential_guard);
+            state.cellular_request_rearm = Some((operation_id, cellular_request_rearm));
             state.claimed.clear();
             state.cancel = Some(Arc::clone(&cancel));
             state.tasks.retain(|task| !task.is_finished());
@@ -539,6 +552,39 @@ impl RotationRuntimeCoordinator {
             }
         };
         self.record_airplane_observation(operation_id, observed);
+        if observed == AirplaneModeState::Disabled
+            && !self.rearm_cellular_request_if_waiting(operation_id)
+        {
+            self.fail(operation_id, RotationFailure::FreshCellularUnavailable);
+        }
+    }
+
+    fn rearm_cellular_request_if_waiting(&self, operation_id: u64) -> bool {
+        let effect = {
+            let Ok(state) = self.state.lock() else {
+                return false;
+            };
+            let snapshot = state.machine.snapshot();
+            if state.closed
+                || snapshot.operation_id != Some(operation_id)
+                || snapshot.phase != RotationPhase::WaitingCellularRecovery
+            {
+                return true;
+            }
+            state
+                .cellular_request_rearm
+                .as_ref()
+                .filter(|(id, _)| *id == operation_id)
+                .map(|(_, effect)| Arc::clone(effect))
+        };
+
+        let Some(effect) = effect else {
+            return false;
+        };
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            effect.rearm_cellular_request()
+        }))
+        .unwrap_or(false)
     }
 
     async fn run_after_ip(self: Arc<Self>, operation_id: u64) {
@@ -639,11 +685,14 @@ impl RotationRuntimeCoordinator {
     }
 
     fn after_transition(self: &Arc<Self>, snapshot: RotationSnapshot) {
-        if snapshot.phase.terminal()
-            && let Ok(state) = self.state.lock()
-            && let Some(cancel) = state.cancel.as_ref()
-        {
-            cancel.notify_waiters();
+        if snapshot.phase.terminal() {
+            let cancel = self.state.lock().ok().and_then(|mut state| {
+                state.cellular_request_rearm = None;
+                state.cancel.as_ref().map(Arc::clone)
+            });
+            if let Some(cancel) = cancel {
+                cancel.notify_waiters();
+            }
         }
         self.publish(snapshot);
         let _ = self.schedule_for(snapshot);
