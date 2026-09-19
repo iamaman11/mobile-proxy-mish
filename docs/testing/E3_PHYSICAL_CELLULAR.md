@@ -1,5 +1,8 @@
 # E3 — physical cellular acceptance
 
+> **Historical identity note (superseded):** Any RC tag/GitHub Release identity described below is not an active project pipeline. The Android RC workflows and release-lineage helpers were removed. Current Android build/physical acceptance uses the exact Integration Android Preflight device-candidate artifact and canonical Device Cycle. If this E3/E4 capability is reactivated, its identity boundary must be migrated to that exact candidate lineage; it must not recreate an RC/prerelease authority.
+
+
 This is the versioned execution protocol for the first physical proof under Issue #10.
 
 E3 proves only the Cellular Egress boundary on a real rooted Android phone with a real carrier. It does **not** prove Cloudflare Mesh end-to-end, full native Proxy Serving, Kameleo/Camoufox, E4, final DNS anti-leak acceptance under Issue #64, or overall product readiness.
