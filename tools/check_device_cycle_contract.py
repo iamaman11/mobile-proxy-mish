@@ -306,6 +306,9 @@ def main() -> None:
         "Start-MishFastAirplaneObserver",
         "Stop-MishFastAirplaneObserver",
         "settings get global airplane_mode_on",
+        "foreach ($argument in @('shell', $shell))",
+        "observer_exit_code",
+        "stderr_empty",
         "sleep 0.05",
         "MISH_U5_FAST_AIRPLANE=",
         "STOP_TRIGGER_EXIT=",
@@ -337,7 +340,7 @@ def main() -> None:
         "'-o', 'NAME'",
         "$output = @(& $AdbPath @Arguments",
         "'shell', 'am', 'start', '-W'",
-        "$sawAirplaneOn -and $airplane -ceq",
+        "@('shell', 'sh', '-c', $shell)",
         "Invoke-MishActivityTrigger -Component $script:StopComponent -Operation 'restore_stop_trigger'",
     ):
         forbid(rotation_probe, forbidden, "U5 LAB probe must observe PRODUCT rotation, never own airplane/root/build semantics")
