@@ -80,6 +80,15 @@ impl CellularRuntimeCoordinator {
         })
     }
 
+    pub(crate) async fn observe_public_egress_ip_async(
+        &self,
+        operation_timeout: Duration,
+    ) -> Result<PublicEgressIpObservation, PublicIpProbeFailure> {
+        let tls = ProductTlsClient::new().map_err(|_| PublicIpProbeFailure::TlsHandshake)?;
+        let probe = self.prepare_public_ip_probe(operation_timeout)?;
+        execute_public_ip_probe(probe, &tls).await
+    }
+
     /// Executes one generation-bound public-IP observation entirely on the shared PRODUCT Tokio
     /// runtime. Owner-bound DNS, root-policy currentness, TCP/TLS/HTTPS and final parsing remain
     /// within Rust; Android receives only the typed terminal observation.
@@ -88,10 +97,8 @@ impl CellularRuntimeCoordinator {
         executor: &RuntimeExecutor,
         operation_timeout: Duration,
     ) -> Result<PublicEgressIpObservation, PublicIpProbeFailure> {
-        let tls = ProductTlsClient::new().map_err(|_| PublicIpProbeFailure::TlsHandshake)?;
-        let probe = self.prepare_public_ip_probe(operation_timeout)?;
         executor
-            .block_on(execute_public_ip_probe(probe, &tls))
+            .block_on(self.observe_public_egress_ip_async(operation_timeout))
             .map_err(|_| PublicIpProbeFailure::Io)?
     }
 
