@@ -8,6 +8,7 @@ import com.mobileproxymish.ffi.CellularPolicyPublicationView
 import com.mobileproxymish.ffi.NativeCellularPolicyObserver
 import com.mobileproxymish.ffi.NativeProductRuntime
 import com.mobileproxymish.ffi.PublicIpObservationView
+import com.mobileproxymish.ffi.PublicIpProbeTicket
 import com.mobileproxymish.ffi.RootPolicyFailureView
 import com.mobileproxymish.ffi.RootPolicyStateView
 import java.io.Closeable
@@ -92,6 +93,17 @@ class CellularRuntimeBridge(
     ): PublicIpObservationView {
         check(!closed.get()) { "cellular runtime is closed" }
         return productRuntime.observePublicEgressIp(timeoutMs.toULong())
+    }
+
+    /**
+     * Transitional U4 instrumentation seam. It forwards one native owner ticket without adding
+     * Kotlin currentness semantics; final U5 H may delete/restrict it after physical acceptance.
+     */
+    internal fun preparePublicIpProbeForInstrumentation(
+        timeoutMs: Long = PUBLIC_IP_OBSERVATION_TIMEOUT_MS,
+    ): PublicIpProbeTicket {
+        check(!closed.get()) { "cellular runtime is closed" }
+        return productRuntime.preparePublicIpProbe(timeoutMs.toULong())
     }
 
     fun start() {
