@@ -40,12 +40,6 @@ pub enum ProxyServingFailure {
     ShutdownFailed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
-pub struct ProxyServingSnapshotView {
-    pub state: ProxyServingState,
-    pub failure: Option<ProxyServingFailure>,
-}
-
 pub(crate) fn map_lifecycle_state(state: OwnerRuntimeLifecycleState) -> RuntimeLifecycleState {
     match state {
         OwnerRuntimeLifecycleState::Stopped => RuntimeLifecycleState::Stopped,
