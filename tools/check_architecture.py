@@ -246,6 +246,16 @@ def main() -> None:
         "mesh_stop_from_product_tokio_worker_does_not_panic_or_poison_execution_state",
         "Mesh serving must retain the Tokio-worker stop regression test",
     )
+    require(
+        mesh_serving,
+        "mesh_start_from_product_tokio_worker_does_not_starve_listener_startup",
+        "Mesh serving must retain the Tokio-worker startup regression test",
+    )
+    require_product(
+        mesh_serving,
+        "fn wait_for_mesh_startup",
+        "Mesh startup must use the bounded Tokio-aware startup barrier",
+    )
     forbid_product(
         mesh_serving,
         "let drained = handle.block_on(async",
