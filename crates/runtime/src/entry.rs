@@ -45,6 +45,9 @@ mod mesh_composition;
 pub use mesh_composition::*;
 pub use mesh_serving::*;
 
+mod rotation_runtime;
+pub use rotation_runtime::*;
+
 #[cfg(test)]
 mod mesh_serving_atomicity_test;
 
@@ -64,8 +67,5 @@ pub use product_runtime::*;
 
 mod product_diagnostics;
 pub use product_diagnostics::*;
-
-mod rotation_runtime;
-pub use rotation_runtime::*;
 
 pub use proxy_runtime::*;
