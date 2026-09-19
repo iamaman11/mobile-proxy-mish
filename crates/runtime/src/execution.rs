@@ -83,11 +83,7 @@ impl RuntimeExecutor {
 
 impl Drop for RuntimeExecutor {
     fn drop(&mut self) {
-        let runtime = self
-            .runtime
-            .get_mut()
-            .ok()
-            .and_then(Option::take);
+        let runtime = self.runtime.get_mut().ok().and_then(Option::take);
         if let Some(runtime) = runtime {
             runtime.shutdown_timeout(SHUTDOWN_TIMEOUT);
         }
@@ -104,7 +100,9 @@ mod tests {
         let first = executor.spawn(async { 11_u32 }).expect("first");
         let second = executor.spawn(async { 31_u32 }).expect("second");
         let sum = executor
-            .block_on(async { first.await.expect("first join") + second.await.expect("second join") })
+            .block_on(async {
+                first.await.expect("first join") + second.await.expect("second join")
+            })
             .expect("block_on");
         assert_eq!(sum, 42);
         assert!(executor.is_running());
