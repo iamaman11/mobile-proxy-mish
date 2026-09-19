@@ -38,22 +38,29 @@ def main() -> None:
 
     surface = generated.read_text(encoding="utf-8")
     required = (
+        "NativeProductRuntime",
+        "NativeProxyRuntimeObserver",
+        "NativeReadinessObserver",
+        "NativeCellularPolicyObserver",
+        "CellularNetworkObservationInput",
+        "RuntimeLifecycleSnapshotView",
+        "ProxyRuntimePublicationView",
+        "ReadinessDiagnosticView",
+        "MeshAdmissionView",
+    )
+    forbidden = (
         "CellularController",
         "MeshTransportController",
         "RuntimeLifecycleController",
+        "RuntimeProcessLifecycleController",
         "NativeProxyRuntime",
-        "NativeProxyRuntimeObserver",
-        "ProxyServingSnapshotView",
-        "proxyServingFailureRecoverable",
-        "proxyListenerPorts",
-    )
-    forbidden = (
+        "ProxyServingLifecycleController",
         "CellularNetworkLease",
         "admittedNetworkLease",
         "bindSocket",
         "resolveHost",
-        "RuntimeProcessLifecycleController",
-        "ProxyServingLifecycleController",
+        "proxyServingFailureRecoverable",
+        "proxyListenerPorts",
         "PrivateBridge",
     )
     for symbol in required:
