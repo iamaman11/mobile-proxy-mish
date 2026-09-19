@@ -51,6 +51,11 @@ foreach ($required in @(
     'owner_sessions_quiescent_after_normal_rotations',
     'U5_ROTATION_PHYSICAL_ACCEPTANCE_PASS',
     'PRODUCT_RESTORE_OFF_FAILED',
+    'PRODUCT_STOP_NOT_QUIESCENT',
+    'PRODUCT_RUNTIME_CREDENTIAL_NOT_CLEARED',
+    'MISH_U5_RESTORE_PHASE=RUNTIME_STOPPED_CREDENTIAL_CLEARED',
+    'runtime_stopped_observed = $runtimeStopped',
+    'runtime_credential_cleared = $runtimeCredentialCleared',
     '''shell'', ''ps'', ''-A'', ''-T'', ''-w'', ''-o'', ''PID,TID,CMD''',
     "row = [regex]::Match",
     'Groups[''pid''].Value -eq $processId',
@@ -121,7 +126,8 @@ foreach ($forbidden in @(
     "'shell', 'am', 'start', '-W'",
     "@('shell', 'sh', '-c', `$shell)",
     'foreach ($argument in @(''shell'', $shell))',
-    'Invoke-MishActivityTrigger -Component $script:StopComponent -Operation ''restore_stop_trigger'''
+    'Invoke-MishActivityTrigger -Component $script:StopComponent -Operation ''restore_stop_trigger''',
+    'Credential version changed during restore case.'
 )) {
     if ($source.Contains($forbidden)) {
         throw "U5 rotation acceptance probe contains forbidden duplicate PRODUCT/control/secret path: $forbidden"
