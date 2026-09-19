@@ -726,22 +726,37 @@ function Invoke-MishShutdownRestoreAfterOn {
     $observedOnMs = [int64]$airplaneObserverResult.first_on_sample * $script:FastAirplaneObserverPeriodMilliseconds
     Write-Host 'MISH_U5_RESTORE_PHASE=AIRPLANE_ON_OBSERVED'
     Write-Host 'MISH_U5_RESTORE_PHASE=STOP_START'
-    $postStopSnapshot = Get-MishAndroidSnapshot
-    if ([int64]$postStopSnapshot.credential.version -ne $ExpectedCredentialVersion) {
-        Stop-MishRotationAcceptance 'PRODUCT_CREDENTIAL_CHANGED' 'Credential version changed during restore case.'
-    }
     $restoreDeadline = [Environment]::TickCount64 + ([int64]$script:RestoreDeadlineSeconds * 1000)
     $offMs = $null
+    $runtimeStopped = $false
+    $runtimeCredentialCleared = $false
     while ([Environment]::TickCount64 -lt $restoreDeadline) {
-        if ((Get-MishAirplaneState) -ceq 'DISABLED') {
+        $postStopSnapshot = Get-MishAndroidSnapshot
+        $runtimeStopped = -not [bool]$postStopSnapshot.runtime.running
+        $runtimeCredentialCleared = (
+            -not [bool]$postStopSnapshot.credential.active -and
+            $null -eq (Get-MishOptionalInt64 $postStopSnapshot.credential.version)
+        )
+        if (
+            $runtimeStopped -and
+            $runtimeCredentialCleared -and
+            (Get-MishAirplaneState) -ceq 'DISABLED'
+        ) {
             $offMs = [Environment]::TickCount64 - $startTicks
             break
         }
         Start-Sleep -Milliseconds $script:PollMilliseconds
     }
+    if (-not $runtimeStopped) {
+        Stop-MishRotationAcceptance 'PRODUCT_STOP_NOT_QUIESCENT' 'Normal PRODUCT stop did not reach the stopped runtime state.'
+    }
+    if (-not $runtimeCredentialCleared) {
+        Stop-MishRotationAcceptance 'PRODUCT_RUNTIME_CREDENTIAL_NOT_CLEARED' 'Stopped runtime retained active credential material/version projection.'
+    }
     if ($null -eq $offMs) {
         Stop-MishRotationAcceptance 'PRODUCT_RESTORE_OFF_FAILED' 'Normal PRODUCT stop did not restore airplane OFF after observed ON.'
     }
+    Write-Host 'MISH_U5_RESTORE_PHASE=RUNTIME_STOPPED_CREDENTIAL_CLEARED'
     Write-Host 'MISH_U5_RESTORE_PHASE=AIRPLANE_OFF_OBSERVED'
 
     Write-Host 'MISH_U5_RESTORE_PHASE=RESTART_START'
@@ -760,6 +775,9 @@ function Invoke-MishShutdownRestoreAfterOn {
         Start-Sleep -Milliseconds 150
     }
     Assert-MishReadyBaseline -Snapshot $ready
+    if ([int64]$ready.credential.version -ne $ExpectedCredentialVersion) {
+        Stop-MishRotationAcceptance 'PRODUCT_CREDENTIAL_CHANGED' 'Credential version changed after restore restart.'
+    }
     Write-Host 'MISH_U5_RESTORE_PHASE=READY'
 
     return [pscustomobject][ordered]@{
@@ -768,6 +786,8 @@ function Invoke-MishShutdownRestoreAfterOn {
         airplane_timing_sample_estimate = $true
         request_to_airplane_on_ms = $observedOnMs
         stop_requested_after_on = $true
+        runtime_stopped_observed = $runtimeStopped
+        runtime_credential_cleared = $runtimeCredentialCleared
         restore_off_observed = $true
         on_to_restore_off_ms = $offMs - $observedOnMs
         runtime_restarted_ready = $true
