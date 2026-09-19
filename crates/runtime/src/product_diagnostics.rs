@@ -12,15 +12,11 @@ use crate::{
     RuntimeExecutionError,
 };
 use mish_cellular::CellularAdmissionSnapshot;
+use mish_rotation::RotationSnapshot;
 use mish_transport::{MeshTransportError, MeshTransportSnapshot};
 use std::sync::Arc;
 
 const DIAGNOSTIC_STABILITY_ATTEMPTS: usize = 3;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RotationDiagnosticState {
-    NotSupported,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProductGenerationDiagnosticSnapshot {
@@ -37,7 +33,7 @@ pub struct ProductGenerationDiagnosticSnapshot {
     pub mesh: Option<MeshTransportSnapshot>,
     pub mesh_failure: Option<MeshTransportError>,
     pub readiness: ReadinessDiagnosticSnapshot,
-    pub rotation: RotationDiagnosticState,
+    pub rotation: RotationSnapshot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,6 +122,7 @@ fn capture_generation(
         Err(error) => (None, Some(error)),
     };
     let readiness_snapshot = readiness.diagnostic_snapshot();
+    let rotation_snapshot = generation.rotation().snapshot();
 
     Ok(ProductGenerationDiagnosticSnapshot {
         generation: generation.generation(),
@@ -141,7 +138,7 @@ fn capture_generation(
         mesh: mesh_snapshot.0,
         mesh_failure: mesh_snapshot.1,
         readiness: readiness_snapshot,
-        rotation: RotationDiagnosticState::NotSupported,
+        rotation: rotation_snapshot,
     })
 }
 
@@ -176,10 +173,7 @@ mod tests {
 
         let first = runtime.diagnostic_snapshot().expect("first snapshot");
         assert_eq!(first.runtime.generation, first.generation.generation);
-        assert_eq!(
-            first.generation.rotation,
-            RotationDiagnosticState::NotSupported
-        );
+        assert_eq!(first.generation.rotation, RotationSnapshot::idle());
 
         let lease = runtime
             .begin_stopped_platform_mutation()
