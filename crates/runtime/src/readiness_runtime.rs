@@ -16,7 +16,8 @@ use mish_application::{
 use mish_cellular::CellularAdmissionState;
 use mish_readiness::{
     CellularOwnerGeneration, CellularReadinessFact, CredentialReadinessFact, CredentialVersion,
-    EgressProbeObservation, MeshAdmissionEpoch, MeshReadinessFact, ProbeBinding, ProbeEligibility,
+    EgressProbeObservation, FreshnessMarker, MeshAdmissionEpoch, MeshReadinessFact, ProbeBinding,
+    ProbeEligibility,
     ProductReadinessInput, ProxyReadinessFact, ProxyServingGeneration, Readiness,
     RuntimeGeneration, RuntimeReadinessFact, probe_eligibility, project,
 };
@@ -44,6 +45,9 @@ pub struct ReadinessDiagnosticSnapshot {
     pub credential_active: bool,
     pub mesh_admitted: bool,
     pub binding_eligible: bool,
+    pub binding: Option<ProbeBinding>,
+    pub expected_freshness: Option<FreshnessMarker>,
+    pub observed_freshness: Option<FreshnessMarker>,
     pub probe_in_flight: bool,
     pub refresh_pending: bool,
 }
@@ -145,27 +149,37 @@ impl ReadinessRuntimeCoordinator {
                 credential_active: false,
                 mesh_admitted: false,
                 binding_eligible: false,
+                binding: None,
+                expected_freshness: None,
+                observed_freshness: None,
                 probe_in_flight: false,
                 refresh_pending: false,
             },
-            |state| ReadinessDiagnosticSnapshot {
-                state: state.projected,
-                root_policy_verified: state
-                    .facts
-                    .cellular
-                    .is_some_and(|cellular| cellular.root_policy_verified),
-                proxy_healthy: state.facts.proxy.is_some_and(|proxy| proxy.healthy),
-                credential_active: state
-                    .facts
-                    .credential
-                    .is_some_and(|credential| credential.active),
-                mesh_admitted: state.facts.mesh.is_some_and(|mesh| mesh.admitted),
-                binding_eligible: matches!(
-                    probe_eligibility(input_for(state.facts, &state.probe, state.observation)),
-                    ProbeEligibility::Eligible(_)
-                ),
-                probe_in_flight: state.probe_in_flight,
-                refresh_pending: state.refresh_pending,
+            |state| {
+                let input = input_for(state.facts, &state.probe, state.observation);
+                let binding = match probe_eligibility(input) {
+                    ProbeEligibility::Eligible(binding) => Some(binding),
+                    ProbeEligibility::NotReady | ProbeEligibility::Unknown => None,
+                };
+                ReadinessDiagnosticSnapshot {
+                    state: state.projected,
+                    root_policy_verified: state
+                        .facts
+                        .cellular
+                        .is_some_and(|cellular| cellular.root_policy_verified),
+                    proxy_healthy: state.facts.proxy.is_some_and(|proxy| proxy.healthy),
+                    credential_active: state
+                        .facts
+                        .credential
+                        .is_some_and(|credential| credential.active),
+                    mesh_admitted: state.facts.mesh.is_some_and(|mesh| mesh.admitted),
+                    binding_eligible: binding.is_some(),
+                    binding,
+                    expected_freshness: state.probe.expected_freshness(),
+                    observed_freshness: state.observation.map(|observation| observation.freshness),
+                    probe_in_flight: state.probe_in_flight,
+                    refresh_pending: state.refresh_pending,
+                }
             },
         )
     }
