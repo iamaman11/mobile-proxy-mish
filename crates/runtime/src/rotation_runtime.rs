@@ -30,6 +30,7 @@ const SHUTDOWN_TASK_DRAIN_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RotationRuntimeStartError {
+    RuntimeNotRunning,
     AlreadyInProgress,
     NoCurrentCellular,
     RootPolicyUnavailable,
