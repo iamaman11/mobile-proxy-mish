@@ -188,7 +188,6 @@ impl RootPolicyEffectExecutor {
             Ok(())
         }
     }
-
 }
 
 impl RootPolicyIo for RootPolicyEffectExecutor {
