@@ -9,8 +9,10 @@ use crate::{
     RuntimeExecutionError, RuntimeExecutor,
 };
 use mish_cellular::RootPolicyNamespace;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::OnceCell;
 use tokio::task::spawn_blocking;
 
 const PROXY_OPERATION_TIMEOUT: Duration = Duration::from_secs(15);
@@ -23,6 +25,7 @@ pub struct ProductGeneration {
     mesh: Arc<MeshCompositionCoordinator>,
     readiness: Arc<ReadinessRuntimeCoordinator>,
     proxy: Arc<ProxyRuntimeCoordinator>,
+    shutdown_result: OnceCell<bool>,
 }
 
 impl ProductGeneration {
@@ -74,6 +77,7 @@ impl ProductGeneration {
             mesh,
             readiness,
             proxy,
+            shutdown_result: OnceCell::new(),
         }))
     }
 
@@ -105,30 +109,42 @@ impl ProductGeneration {
         Arc::clone(&self.proxy)
     }
 
-    /// Exact native generation drain. The shared process executor intentionally remains alive so a
-    /// later generation can be constructed without creating a second Tokio runtime.
+    /// Exact native generation drain. Concurrent callers share one cleanup execution and one
+    /// terminal result; the shared process executor intentionally remains alive so a later
+    /// generation can be constructed without creating a second Tokio runtime.
     pub async fn shutdown_async(&self) -> bool {
-        let proxy = Arc::clone(&self.proxy);
-        let proxy_clean = spawn_blocking(move || {
-            proxy.shutdown().failure != Some(crate::ProxyServingFailure::ShutdownFailed)
-        })
-        .await
-        .unwrap_or(false);
-
-        self.readiness.shutdown();
-
-        let mesh = Arc::clone(&self.mesh);
-        let mesh_clean = spawn_blocking(move || mesh.shutdown().is_ok())
+        run_shutdown_once(&self.shutdown_result, || async {
+            let proxy = Arc::clone(&self.proxy);
+            let proxy_clean = spawn_blocking(move || {
+                proxy.shutdown().failure != Some(crate::ProxyServingFailure::ShutdownFailed)
+            })
             .await
             .unwrap_or(false);
 
-        let policy_clean = self.policy.shutdown().await;
-        proxy_clean && mesh_clean && policy_clean
+            self.readiness.shutdown();
+
+            let mesh = Arc::clone(&self.mesh);
+            let mesh_clean = spawn_blocking(move || mesh.shutdown().is_ok())
+                .await
+                .unwrap_or(false);
+
+            let policy_clean = self.policy.shutdown().await;
+            proxy_clean && mesh_clean && policy_clean
+        })
+        .await
     }
 
     pub fn shutdown_blocking(&self) -> Result<bool, RuntimeExecutionError> {
         self.executor.block_on(self.shutdown_async())
     }
+}
+
+async fn run_shutdown_once<F, Fut>(result: &OnceCell<bool>, operation: F) -> bool
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = bool>,
+{
+    *result.get_or_init(operation).await
 }
 
 #[cfg(test)]
@@ -147,6 +163,54 @@ mod tests {
         ) -> Result<Vec<IpAddr>, ProxyOutboundConnectError> {
             Err(ProxyOutboundConnectError::Unavailable)
         }
+    }
+
+    #[test]
+    fn concurrent_generation_shutdown_callers_share_one_execution_and_result() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let executor = RuntimeExecutor::new().expect("executor");
+        let executions = Arc::new(AtomicUsize::new(0));
+        let result = Arc::new(OnceCell::new());
+
+        let first_result = Arc::clone(&result);
+        let first_executions = Arc::clone(&executions);
+        let first = executor
+            .spawn(async move {
+                run_shutdown_once(&first_result, || async move {
+                    first_executions.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    true
+                })
+                .await
+            })
+            .expect("first shutdown caller");
+
+        let second_result = Arc::clone(&result);
+        let second_executions = Arc::clone(&executions);
+        let second = executor
+            .spawn(async move {
+                run_shutdown_once(&second_result, || async move {
+                    second_executions.fetch_add(1, Ordering::SeqCst);
+                    false
+                })
+                .await
+            })
+            .expect("second shutdown caller");
+
+        let (first_value, second_value) = executor
+            .block_on(async {
+                (
+                    first.await.expect("first join"),
+                    second.await.expect("second join"),
+                )
+            })
+            .expect("await callers");
+
+        assert!(first_value);
+        assert!(second_value);
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+        executor.shutdown().expect("executor shutdown");
     }
 
     #[test]
