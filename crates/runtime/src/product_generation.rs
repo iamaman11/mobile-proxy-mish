@@ -6,7 +6,7 @@
 use crate::{
     CellularDnsResolver, CellularPolicyCoordinator, CellularRuntimeCoordinator,
     MeshCompositionCoordinator, ProxyRuntimeCoordinator, ReadinessRuntimeCoordinator,
-    RuntimeExecutionError, RuntimeExecutor,
+    RotationRuntimeCoordinator, RuntimeExecutionError, RuntimeExecutor,
 };
 use mish_cellular::RootPolicyNamespace;
 use std::future::Future;
@@ -25,6 +25,7 @@ pub struct ProductGeneration {
     mesh: Arc<MeshCompositionCoordinator>,
     readiness: Arc<ReadinessRuntimeCoordinator>,
     proxy: Arc<ProxyRuntimeCoordinator>,
+    rotation: Arc<RotationRuntimeCoordinator>,
     shutdown_result: OnceCell<bool>,
 }
 
@@ -65,6 +66,12 @@ impl ProductGeneration {
             Arc::clone(&readiness),
             PROXY_OPERATION_TIMEOUT,
         );
+        let rotation = RotationRuntimeCoordinator::new(
+            Arc::clone(&executor),
+            Arc::clone(&cellular),
+            Arc::clone(&policy),
+            Arc::clone(&proxy),
+        );
 
         Ok(Arc::new(Self {
             generation,
@@ -74,6 +81,7 @@ impl ProductGeneration {
             mesh,
             readiness,
             proxy,
+            rotation,
             shutdown_result: OnceCell::new(),
         }))
     }
@@ -106,11 +114,17 @@ impl ProductGeneration {
         Arc::clone(&self.proxy)
     }
 
+    pub fn rotation(&self) -> Arc<RotationRuntimeCoordinator> {
+        Arc::clone(&self.rotation)
+    }
+
     /// Exact native generation drain. Concurrent callers share one cleanup execution and one
     /// terminal result; the shared process executor intentionally remains alive so a later
     /// generation can be constructed without creating a second Tokio runtime.
     pub async fn shutdown_async(&self) -> bool {
         run_shutdown_once(&self.shutdown_result, || async {
+            let rotation_clean = self.rotation.shutdown().await;
+
             let proxy = Arc::clone(&self.proxy);
             let proxy_clean = spawn_blocking(move || {
                 proxy.shutdown().failure != Some(crate::ProxyServingFailure::ShutdownFailed)
@@ -126,7 +140,7 @@ impl ProductGeneration {
                 .unwrap_or(false);
 
             let policy_clean = self.policy.shutdown().await;
-            proxy_clean && mesh_clean && policy_clean
+            rotation_clean && proxy_clean && mesh_clean && policy_clean
         })
         .await
     }
