@@ -5,7 +5,7 @@ import com.mobileproxymish.ffi.externalCredentialDerivation
 import com.mobileproxymish.ffi.externalCredentialMaterialize
 import javax.crypto.SecretKey
 
-/** Derives ephemeral proxy material from the exact Credentials-owner state and Keystore root. */
+/** Recovers the stable current proxy material from exact Rust owner state plus Keystore HMAC. */
 internal class CredentialMaterializer(
     private val rootEffect: AndroidKeystoreRoot,
 ) {

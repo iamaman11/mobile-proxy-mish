@@ -14,11 +14,11 @@ class MishApplication : Application() {
     lateinit var runtimeController: MishRuntimeController
         private set
 
-    /** Current generation access is retained only for narrow physical instrumentation. */
+    /** Stable process adapter access retained only for narrow physical instrumentation. */
     val cellularRuntime: CellularRuntimeBridge
         get() = runtimeController.currentCellularRuntime
 
-    /** Current generation access is retained only for narrow physical instrumentation. */
+    /** Stable native Proxy projection retained only for narrow physical instrumentation. */
     val proxyRuntime: ProxyRuntimeSupervisor
         get() = runtimeController.currentProxyRuntime
 

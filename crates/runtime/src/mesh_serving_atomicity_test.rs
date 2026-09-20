@@ -32,7 +32,7 @@ fn failed_multi_listener_bind_never_publishes_partial_mesh_generation() {
     let blocked_port = blocked.local_addr().expect("blocked Mesh address").port();
 
     let result = execution.start(
-        &runtime,
+        runtime.handle(),
         Ipv4Addr::LOCALHOST,
         &[
             MeshPortForward::same(first_port),

@@ -125,14 +125,19 @@ internal class AndroidVpnObserver(
         return classifyMeshVpnNetworks(currentVpns)
     }
 
+    @Synchronized
+    fun stop() {
+        if (closed.get() || !registered.compareAndSet(true, false)) return
+        connectivityManager.unregisterNetworkCallback(networkCallback)
+    }
+
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
-        var clean = true
-        if (registered.compareAndSet(true, false)) {
-            clean = runCatching {
+        var clean = runCatching {
+            if (registered.compareAndSet(true, false)) {
                 connectivityManager.unregisterNetworkCallback(networkCallback)
-            }.isSuccess && clean
-        }
+            }
+        }.isSuccess
         executor.shutdownNow()
         clean = try {
             executor.awaitTermination(CLOSE_TIMEOUT_SECONDS, TimeUnit.SECONDS) && clean

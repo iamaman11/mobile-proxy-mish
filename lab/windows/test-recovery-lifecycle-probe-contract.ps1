@@ -93,6 +93,7 @@ foreach ($required in @(
     'loss_fail_closed_elapsed_ms=(?<lossFailClosed>\d+)',
     'recovery_owner_elapsed_ms=(?<recoveryOwner>\d+)',
     'recovery_functional_elapsed_ms=(?<recoveryFunctional>\d+)',
+    'native_shutdown_elapsed_ms=(?<nativeShutdown>\d+)',
     'stop_total_elapsed_ms=(?<stopTotal>\d+)',
     'start-device-app.ps1',
     'collect-device-diagnostic.ps1',
@@ -147,8 +148,8 @@ foreach ($required in @(
     'val recoveryStartedAt = SystemClock.elapsedRealtime()',
     'val recoveryOwnerElapsedMs = SystemClock.elapsedRealtime() - recoveryStartedAt',
     'val recoveryFunctionalElapsedMs = SystemClock.elapsedRealtime() - recoveryStartedAt',
-    'val proxyCloseElapsedMs = SystemClock.elapsedRealtime() - proxyCloseStartedAt',
-    'val cellularCloseElapsedMs = SystemClock.elapsedRealtime() - cellularCloseStartedAt',
+    'val nativeShutdownElapsedMs =',
+    'SystemClock.elapsedRealtime() - nativeShutdownStartedAt',
     'val cleanupVerifyElapsedMs = SystemClock.elapsedRealtime() - cleanupVerifyStartedAt',
     'val stopTotalElapsedMs = SystemClock.elapsedRealtime() - stopStartedAt',
     '"phase=latency "',
@@ -156,8 +157,7 @@ foreach ($required in @(
     '"loss_fail_closed_elapsed_ms=$lossFailClosedElapsedMs "',
     '"recovery_owner_elapsed_ms=$recoveryOwnerElapsedMs "',
     '"recovery_functional_elapsed_ms=$recoveryFunctionalElapsedMs "',
-    '"proxy_close_elapsed_ms=$proxyCloseElapsedMs "',
-    '"cellular_close_elapsed_ms=$cellularCloseElapsedMs "',
+    '"native_shutdown_elapsed_ms=$nativeShutdownElapsedMs "',
     '"cleanup_verify_elapsed_ms=$cleanupVerifyElapsedMs "',
     '"stop_total_elapsed_ms=$stopTotalElapsedMs"'
 )) {

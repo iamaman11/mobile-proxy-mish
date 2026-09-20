@@ -19,6 +19,7 @@ foreach ($required in @(
     'snapshot_v2',
     'DebugRotationActivity',
     'DebugRuntimeStopActivity',
+    'DebugRuntimeStartActivity',
     "'shell', 'cmd', 'connectivity', 'airplane-mode'",
     'SuccessfulOperations = 3',
     'request_to_airplane_on_ms',
@@ -54,6 +55,7 @@ foreach ($required in @(
     'PRODUCT_STOP_NOT_QUIESCENT',
     'PRODUCT_RUNTIME_CREDENTIAL_NOT_CLEARED',
     'MISH_U5_RESTORE_PHASE=RUNTIME_STOPPED_CREDENTIAL_CLEARED',
+    '$script:StartComponent = "$PackageName/com.mobileproxymish.app.DebugRuntimeStartActivity"',
     'runtime_stopped_observed = $runtimeStopped',
     'runtime_credential_cleared = $runtimeCredentialCleared',
     'MISH_U5_RESTORE_RESTART_STATE=',
@@ -106,6 +108,7 @@ foreach ($required in @(
 }
 
 foreach ($forbidden in @(
+    'Warning: Activity not started',
     'airplane-mode enable',
     'airplane-mode disable',
     "'shell', 'su'",

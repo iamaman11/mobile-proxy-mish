@@ -122,7 +122,7 @@ fn parse_port(raw: &str) -> Result<u16, HttpConnectError> {
         .ok_or(HttpConnectError::InvalidTarget)
 }
 
-fn expected_basic_authorization(credentials: &ProxyCredentialMaterial) -> String {
+pub(crate) fn expected_basic_authorization(credentials: &ProxyCredentialMaterial) -> String {
     let mut material =
         Vec::with_capacity(credentials.username().len() + credentials.password().len() + 1);
     material.extend_from_slice(credentials.username().as_bytes());

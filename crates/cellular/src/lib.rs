@@ -4,8 +4,11 @@
 //! binding policy, and public-egress observations. Android platform objects do not
 //! cross this boundary; the owner receives only typed ephemeral observations.
 //!
-//! This B2a slice models **network admission only**. A validated Android `Network`
-//! is not yet proof that socket binding, DNS, or public Internet egress are working.
+//! Network admission and root-policy semantics remain separate owner sub-capabilities. A validated
+//! Android `Network` is not proof that policy routing, DNS, or public Internet egress are ready.
+
+mod root_policy;
+pub use root_policy::*;
 
 /// Opaque Android network identity for the lifetime of a runtime observation.
 ///

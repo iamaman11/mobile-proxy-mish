@@ -8,11 +8,13 @@ import javax.crypto.Mac
 import javax.crypto.SecretKey
 
 /** Physical Android Keystore effect for the external-proxy credential root. */
-internal class AndroidKeystoreRoot {
-    fun exists(): Boolean = keyStore().containsAlias(ROOT_KEY_ALIAS)
+internal class AndroidKeystoreRoot(
+    private val keyAlias: String = ROOT_KEY_ALIAS,
+) {
+    fun exists(): Boolean = keyStore().containsAlias(keyAlias)
 
     fun load(): SecretKey {
-        val key = keyStore().getKey(ROOT_KEY_ALIAS, null) as? SecretKey
+        val key = keyStore().getKey(keyAlias, null) as? SecretKey
             ?: error("Android Keystore external credential root has wrong key type")
         check(key.encoded == null) {
             "Android Keystore HMAC root unexpectedly exportable"
@@ -27,7 +29,7 @@ internal class AndroidKeystoreRoot {
         )
         generator.init(
             KeyGenParameterSpec.Builder(
-                ROOT_KEY_ALIAS,
+                keyAlias,
                 KeyProperties.PURPOSE_SIGN,
             )
                 .setDigests(KeyProperties.DIGEST_SHA256)
@@ -43,7 +45,7 @@ internal class AndroidKeystoreRoot {
     }
 
     fun delete() {
-        keyStore().deleteEntry(ROOT_KEY_ALIAS)
+        keyStore().deleteEntry(keyAlias)
     }
 
     fun hmac(key: SecretKey, context: ByteArray): ByteArray = Mac

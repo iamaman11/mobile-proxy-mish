@@ -20,7 +20,7 @@ $script:RecoveryDeadlineSeconds = 45
 $script:RestoreDeadlineSeconds = 20
 $script:RotationComponent = "$PackageName/com.mobileproxymish.app.DebugRotationActivity"
 $script:StopComponent = "$PackageName/com.mobileproxymish.app.DebugRuntimeStopActivity"
-$script:MainComponent = "$PackageName/com.mobileproxymish.app.MainActivity"
+$script:StartComponent = "$PackageName/com.mobileproxymish.app.DebugRuntimeStartActivity"
 
 function Stop-MishRotationAcceptance {
     param(
@@ -82,7 +82,7 @@ function Invoke-MishActivityTrigger {
     )
     if (
         $output -match '(?im)^\s*(Error|Exception):' -or
-        $output -notmatch '(?im)^\s*(Starting: Intent|Warning: Activity not started)'
+        $output -notmatch '(?im)^\s*Starting: Intent'
     ) {
         Stop-MishRotationAcceptance 'LAB_ACTIVITY_TRIGGER_FAILED' "Android Activity trigger '$Operation' was not accepted."
     }
@@ -768,7 +768,7 @@ function Invoke-MishShutdownRestoreAfterOn {
 
     Write-Host 'MISH_U5_RESTORE_PHASE=RESTART_START'
     $restartRequestedAt = [Environment]::TickCount64
-    Invoke-MishActivityTrigger -Component $script:MainComponent -Operation 'restore_restart_trigger'
+    Invoke-MishActivityTrigger -Component $script:StartComponent -Operation 'restore_restart_trigger'
     $readyDeadline = [Environment]::TickCount64 + ([int64]$script:RecoveryDeadlineSeconds * 1000)
     $ready = $null
     while ([Environment]::TickCount64 -lt $readyDeadline) {

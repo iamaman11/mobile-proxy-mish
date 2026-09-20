@@ -1,11 +1,13 @@
 package com.mobileproxymish.app
 
 import android.content.Context
+import com.mobileproxymish.ffi.ExternalCredentialPersistenceActionView
 import com.mobileproxymish.ffi.ExternalCredentialStateView
+import com.mobileproxymish.ffi.externalCredentialResolvePersistence
 import com.mobileproxymish.ffi.externalCredentialRevoke
 import com.mobileproxymish.ffi.externalCredentialRotate
 
-/** Exact owner version plus in-memory external proxy material for one bounded provisioning read. */
+/** Exact owner version plus sensitive in-memory material for one explicit bounded read. */
 internal class ExternalProxyCredentialSnapshot(
     val version: ULong,
     val credentialId: String,
@@ -21,84 +23,136 @@ internal data class ExternalProxyCredentialReadinessSnapshot(
 )
 
 /**
- * Thin Android facade for the Rust Credentials / Secrets natural owner.
+ * Thin Android effects facade for the Rust Credentials natural owner.
  *
- * `CredentialMetadataStore` owns the canonical `state_pb_b64_v1` durable protobuf schema and
- * bounded legacy migration. `AndroidKeystoreRoot` owns the non-exportable physical secret root and
- * HMAC effect, and `CredentialMaterializer` derives bounded in-memory proxy material. This facade
- * serializes those effects with Rust owner transitions; it owns no duplicate credential lifecycle
- * state machine.
+ * SharedPreferences is opaque byte storage and Android Keystore is the non-exportable HMAC effect.
+ * Rust alone interprets persistence schemas, migration, version/status transitions and secret
+ * formatting. The same durable Keystore root plus the same version deterministically materialize
+ * the same current username/password across runtime, service, process and device restarts.
  */
-internal class ExternalProxyCredentialStore(
-    context: Context,
-) : ProxyCredentialProvider {
-    private val metadata = CredentialMetadataStore(context.applicationContext)
-    private val rootEffect = AndroidKeystoreRoot()
+internal class ExternalProxyCredentialStore private constructor(
+    private val metadata: CredentialMetadataStore,
+    private val rootEffect: AndroidKeystoreRoot,
+) {
+    constructor(context: Context) : this(
+        CredentialMetadataStore(context.applicationContext),
+        AndroidKeystoreRoot(),
+    )
+
+    internal constructor(
+        context: Context,
+        preferencesName: String,
+        keystoreAlias: String,
+    ) : this(
+        CredentialMetadataStore(context.applicationContext, preferencesName),
+        AndroidKeystoreRoot(keystoreAlias),
+    )
+
     private val materializer = CredentialMaterializer(rootEffect)
 
+    /**
+     * Runtime dependency resolution may provision the one initial current credential when none
+     * exists. It never rotates an existing credential.
+     */
     @Synchronized
-    override fun currentCredential(): ProxyRuntimeCredentialSnapshot? = runCatching {
-        val current = materializeCurrent()
+    fun currentCredentialForRuntime(): ProxyRuntimeCredentialSnapshot? = runCatching {
+        val current = materializeCurrent(loadOrInitializeState())
         ProxyRuntimeCredentialSnapshot(
             version = current.version,
             credentials = current.credentials,
         )
     }.getOrNull()
 
-    /** Read-only, exact owner-version snapshot for the ADB-only provisioning transaction. */
+    /** Explicit sensitive read. Never creates a root, advances a version or rotates credentials. */
     @Synchronized
-    fun currentProvisioningSnapshot(): ExternalProxyCredentialSnapshot? = runCatching {
-        materializeCurrent()
+    fun revealCurrentCredential(): ExternalProxyCredentialSnapshot? = runCatching {
+        val state = existingStateForObservation() ?: return@runCatching null
+        materializeCurrent(state)
     }.getOrNull()
 
+    /** Read-only exact owner-version snapshot for the DUMP-gated provisioning transaction. */
+    @Synchronized
+    fun currentProvisioningSnapshot(): ExternalProxyCredentialSnapshot? =
+        revealCurrentCredential()
+
     /**
-     * Read-only observation never initializes metadata, creates a Keystore root or performs legacy
-     * migration. It projects only already-coherent existing Credentials-owner state.
+     * Read-only observation never initializes metadata or creates a Keystore root. Legacy schema
+     * interpretation is still Rust-owned; observation does not need to persist the returned
+     * migration plan.
      */
     @Synchronized
     fun currentReadinessSnapshot(): ExternalProxyCredentialReadinessSnapshot? = runCatching {
-        val state = metadata.existingForObservation(rootEffect.exists()) ?: return@runCatching null
+        val state = existingStateForObservation() ?: return@runCatching null
         ExternalProxyCredentialReadinessSnapshot(
             version = state.version,
             active = !state.revoked,
         )
     }.getOrNull()
 
-    /** Applies the Rust natural-owner rotation transition while the runtime is exactly stopped. */
+    /** Explicit Rust-owner rotation transition, valid only under the stopped-platform lease. */
     @Synchronized
     fun rotateWhileStopped(): Boolean = runCatching {
         val current = loadOrInitializeState()
-        metadata.persist(
-            externalCredentialRotate(
-                version = current.version,
-                revoked = current.revoked,
-            ),
+        val rotated = externalCredentialRotate(
+            version = current.version,
+            revoked = current.revoked,
         )
+        metadata.persistCanonical(rotated.canonicalState)
     }.getOrDefault(false)
 
-    /** Applies the Rust natural-owner revocation transition while the runtime is exactly stopped. */
+    /** Explicit Rust-owner revocation transition, valid only under the stopped-platform lease. */
     @Synchronized
     fun revokeWhileStopped(): Boolean = runCatching {
         val current = loadOrInitializeState()
-        metadata.persist(
-            externalCredentialRevoke(
-                version = current.version,
-                revoked = current.revoked,
-            ),
+        val revoked = externalCredentialRevoke(
+            version = current.version,
+            revoked = current.revoked,
         )
+        metadata.persistCanonical(revoked.canonicalState)
     }.getOrDefault(false)
 
-    private fun materializeCurrent(): ExternalProxyCredentialSnapshot {
-        val state = loadOrInitializeState()
-        return materializer.materialize(state, rootEffect.load())
+    private fun materializeCurrent(state: ExternalCredentialStateView): ExternalProxyCredentialSnapshot =
+        materializer.materialize(state, rootEffect.load())
+
+    private fun existingStateForObservation(): ExternalCredentialStateView? {
+        val raw = metadata.readRaw()
+        val resolution = externalCredentialResolvePersistence(
+            canonicalState = raw.canonicalState,
+            legacyVersion = raw.legacyVersion,
+            legacyRevoked = raw.legacyRevoked,
+            rootExists = rootEffect.exists(),
+        )
+        return when (resolution.action) {
+            ExternalCredentialPersistenceActionView.CREATE_ROOT_AND_PERSIST_CANONICAL -> null
+            ExternalCredentialPersistenceActionView.USE_CURRENT,
+            ExternalCredentialPersistenceActionView.PERSIST_CANONICAL,
+            -> resolution.state
+        }
     }
 
-    private fun loadOrInitializeState(): ExternalCredentialStateView = metadata.loadOrInitialize(
-        rootExists = rootEffect.exists(),
-        createRoot = {
-            rootEffect.generate()
-            Unit
-        },
-        deleteRoot = rootEffect::delete,
-    )
+    private fun loadOrInitializeState(): ExternalCredentialStateView {
+        val raw = metadata.readRaw()
+        val resolution = externalCredentialResolvePersistence(
+            canonicalState = raw.canonicalState,
+            legacyVersion = raw.legacyVersion,
+            legacyRevoked = raw.legacyRevoked,
+            rootExists = rootEffect.exists(),
+        )
+        when (resolution.action) {
+            ExternalCredentialPersistenceActionView.USE_CURRENT -> Unit
+            ExternalCredentialPersistenceActionView.PERSIST_CANONICAL -> {
+                check(metadata.persistCanonical(resolution.canonicalState)) {
+                    "failed to persist canonical credential owner state"
+                }
+            }
+            ExternalCredentialPersistenceActionView.CREATE_ROOT_AND_PERSIST_CANONICAL -> {
+                rootEffect.generate()
+                if (!metadata.persistCanonical(resolution.canonicalState)) {
+                    runCatching(rootEffect::delete)
+                    error("failed to persist initial credential owner state")
+                }
+            }
+        }
+        return resolution.state
+    }
 }

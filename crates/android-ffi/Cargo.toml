@@ -23,6 +23,7 @@ mish-configuration = { path = "../configuration" }
 mish-credentials = { path = "../credentials" }
 mish-proxy = { path = "../proxy" }
 mish-readiness = { path = "../readiness" }
+mish-rotation = { path = "../rotation" }
 mish-runtime = { path = "../runtime" }
 mish-transport = { path = "../transport" }
 uniffi = { version = "=0.32.0", features = ["cli"] }

@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -21,9 +22,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        ProxyRuntimeService.requestStart(this)
         setContent {
             val state by viewModel.state.collectAsStateWithLifecycle()
+            val credentialReveal by viewModel.credentialReveal.collectAsStateWithLifecycle()
 
             MaterialTheme {
                 Scaffold { padding ->
@@ -56,9 +57,43 @@ class MainActivity : ComponentActivity() {
                                 style = MaterialTheme.typography.bodyMedium,
                             )
                         }
+                        Button(onClick = viewModel::showCurrentCredentials) {
+                            Text("Show current proxy credentials")
+                        }
+                        when (val reveal = credentialReveal) {
+                            CredentialRevealUiState.Hidden -> Unit
+                            CredentialRevealUiState.Unavailable -> {
+                                Text(
+                                    text = "Current proxy credentials are unavailable",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                            }
+                            is CredentialRevealUiState.Revealed -> {
+                                Text(
+                                    text = "Credential version: ${reveal.version}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                                Text(
+                                    text = "Username: ${reveal.username}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                                Text(
+                                    text = "Password: ${reveal.password}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                                Button(onClick = viewModel::hideCurrentCredentials) {
+                                    Text("Hide credentials")
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        ProxyRuntimeService.requestStart(this)
     }
 }

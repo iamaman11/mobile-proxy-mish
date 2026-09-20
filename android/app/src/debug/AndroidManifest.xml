@@ -5,5 +5,22 @@
             android:name=".DebugReadinessActivity"
             android:exported="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+        <!-- Debug-only, zero-input U5 acceptance trigger. It delegates exactly one request to
+             the Rust-owned PRODUCT rotation operation and owns no airplane/root/timing policy. -->
+        <activity
+            android:name=".DebugRotationActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+        <!-- Debug-only, zero-input shutdown/restore acceptance trigger. -->
+        <activity
+            android:name=".DebugRuntimeStopActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+        <!-- Debug-only, zero-input restart trigger. It exercises the production Service start
+             request seam without depending on MainActivity lifecycle delivery. -->
+        <activity
+            android:name=".DebugRuntimeStartActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
     </application>
 </manifest>

@@ -2,7 +2,7 @@
 //!
 //! This module does not create a second network owner or socket path. Preparation acquires one
 //! current owner authority, uses the shared owner-bound Android DNS seam, and returns a bounded
-//! one-shot observation ticket. Android performs only the ordinary PRODUCT-UID TLS/HTTPS effect;
+//! one-shot observation ticket. The shared PRODUCT Tokio runtime performs ordinary UID TCP/TLS/HTTPS;
 //! completion is accepted only if the original owner generation is still current.
 
 use crate::{

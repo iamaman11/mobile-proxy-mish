@@ -85,6 +85,28 @@ class CellularNetworkObserver(
             ?.let(connectivityManager::getLinkProperties)
             ?.interfaceName
 
+    /**
+     * One bounded framework effect requested by the Rust rotation owner after airplane OFF.
+     *
+     * DEVICE-1 (Samsung/API 30) can retain a pending requestNetwork registration across the
+     * airplane cycle without re-activating a general INTERNET PDP. Re-registering the exact same
+     * request repairs that platform liveness defect. This method owns no retry, timing, admission,
+     * readiness, or recovery policy.
+     */
+    @Synchronized
+    fun rearm() {
+        check(requested) { "Cellular request is not registered" }
+
+        connectivityManager.unregisterNetworkCallback(callback)
+        synchronized(eventLock) {
+            lastObserved = null
+        }
+        requested = false
+
+        connectivityManager.requestNetwork(request, callback)
+        requested = true
+    }
+
     @Synchronized
     override fun close() {
         if (!requested) {
@@ -92,6 +114,11 @@ class CellularNetworkObserver(
         }
 
         connectivityManager.unregisterNetworkCallback(callback)
+        synchronized(eventLock) {
+            // A later registration represents a fresh platform-observation session. The next
+            // identical Android snapshot must be emitted again for the current native generation.
+            lastObserved = null
+        }
         requested = false
     }
 
