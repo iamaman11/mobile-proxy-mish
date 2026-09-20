@@ -75,7 +75,7 @@ function Get-MishCycleFailureKind {
 
 function Test-MishSupportedFullProbe {
     param([Parameter(Mandatory)][string] $Probe)
-    return $Probe -in @('capacity_resources', 'recovery_lifecycle', 'dns_lifetime_live', 'u5_rotation', 'u7_runtime_restart_resources')
+    return $Probe -in @('capacity_resources', 'recovery_lifecycle', 'dns_lifetime_live', 'u5_rotation', 'u7_runtime_restart_resources', 'u7_512_lifecycle_stability')
 }
 
 $launch = Read-OptionalJson -Path $LaunchReceiptPath
@@ -193,6 +193,7 @@ $report = [ordered]@{
             elseif ($RequestedProbe -ceq 'dns_lifetime_live') { 'FULL_BASELINE_PLUS_DNS_LIFETIME_OBSERVATION' }
             elseif ($RequestedProbe -ceq 'u5_rotation') { 'FULL_BASELINE_PLUS_U5_ROTATION' }
             elseif ($RequestedProbe -ceq 'u7_runtime_restart_resources') { 'FULL_BASELINE_PLUS_U7_RUNTIME_RESTART_RESOURCES' }
+            elseif ($RequestedProbe -ceq 'u7_512_lifecycle_stability') { 'FULL_BASELINE_PLUS_U7_512_LIFECYCLE_STABILITY' }
             else { 'FULL_BASELINE' }
         }
         'install_only' { 'INSTALL_ONLY' }

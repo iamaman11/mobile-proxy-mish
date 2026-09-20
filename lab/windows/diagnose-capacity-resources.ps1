@@ -5,6 +5,7 @@ param(
     [string] $MeshCidr = '100.96.0.0/12',
     [string] $TargetHost = 'example.com',
     [int] $TargetPort = 443,
+    [ValidateRange(1, 3)][int] $Capacity512Cycles = 1,
     [string] $EvidencePath = (Join-Path $env:TEMP 'mish-capacity-resources-v1.json')
 )
 
@@ -545,6 +546,7 @@ $acceptanceResult = 'FAIL'
 $classification = 'U2_CAPACITY_RESOURCE_INCOMPLETE'
 $detail = $null
 $capacityContractPassed = $false
+$capacity512CyclesCompleted = 0
 
 try {
     [void](Invoke-MishExternalProxyCredentialProvisioning -AdbPath $AdbPath -PackageName $PackageName -StorePath $credentialStorePath)
@@ -573,7 +575,15 @@ try {
     }
 
     if ($classification -ceq 'U2_CAPACITY_RESOURCE_INCOMPLETE') {
-        foreach ($target in @(10, 32, 64, 512)) {
+        $stageTargets = [Collections.Generic.List[int]]::new()
+        foreach ($target in @(10, 32, 64, 512)) { [void]$stageTargets.Add($target) }
+        for ($repeatOrdinal = 2; $repeatOrdinal -le $Capacity512Cycles; $repeatOrdinal++) {
+            [void]$stageTargets.Add(512)
+        }
+
+        foreach ($target in @($stageTargets)) {
+            $capacity512Cycle = if ($target -eq 512) { $capacity512CyclesCompleted + 1 } else { 0 }
+            if ($target -eq 512) { $capacityContractPassed = $false }
             $stageRecord = $null
             $stageCleanupCounts = $null
             $stageCleanupResources = $null
@@ -593,7 +603,7 @@ try {
                 $initialApplicationLatency = Get-MishU7LatencyDistribution -Values @($activeSessions | ForEach-Object { $_.InitialApplicationElapsedMs })
 
                 $stageRecord = [ordered]@{
-                    name = "sessions_$target"
+                    name = if ($target -eq 512 -and $Capacity512Cycles -gt 1) { "sessions_512_cycle_$capacity512Cycle" } else { "sessions_$target" }
                     expected_sessions = $target
                     batch_model = 'independent_bounded'
                     application_liveness = $applicationLiveness
@@ -623,6 +633,7 @@ try {
                     $attempt = Test-MishOverflowRejected -ProxyHost $meshAddress -Lease $lease
                     [void]$overflowAttempts.Add([ordered]@{
                         ordinal = 513
+                        capacity_512_cycle = $capacity512Cycle
                         result = [string]$attempt.result
                         reason = [string]$attempt.reason
                         status_line = if ($attempt.Contains('status_line')) { [string]$attempt.status_line } else { $null }
@@ -649,6 +660,7 @@ try {
                         }
                         else {
                             $capacityContractPassed = $true
+                            $capacity512CyclesCompleted = $capacity512Cycle
                         }
                     }
                 }
@@ -690,9 +702,13 @@ try {
             }
 
             if ($classification -cne 'U2_CAPACITY_RESOURCE_INCOMPLETE') { break }
-            if ($target -eq 512 -and $capacityContractPassed) {
+            if (
+                $target -eq 512 -and
+                $capacityContractPassed -and
+                $capacity512CyclesCompleted -eq $Capacity512Cycles
+            ) {
                 $acceptanceResult = 'PASS'
-                $classification = 'U7_CAPACITY_512_PASS'
+                $classification = if ($Capacity512Cycles -gt 1) { 'U7_CAPACITY_512_REPEAT_PASS' } else { 'U7_CAPACITY_512_PASS' }
             }
         }
     }
@@ -794,6 +810,8 @@ $evidence = [ordered]@{
     application_live_semantics = 'fresh HTTP HEAD round-trip on the same established TLS connection'
     measurement_stage = 'U7'
     capacity_target = 512
+    capacity_512_cycles_requested = $Capacity512Cycles
+    capacity_512_cycles_completed = $capacity512CyclesCompleted
     overflow_ordinal = 513
     acceptance_profile = 'u7-capacity-512-v1'
     batch_model = 'independent_bounded'
