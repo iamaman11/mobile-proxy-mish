@@ -13,6 +13,7 @@ use crate::transport_ffi::{
     map_view as map_mesh_view,
 };
 use mish_cellular::{NetworkHandle, NetworkObservation, ObservationSequence, RootPolicyNamespace};
+use mish_proxy::{ProxyProtocol as OwnerProxyProtocol, canonical_listeners};
 use mish_rotation::{
     RotationFailure, RotationPhase, RotationRestoreResult, RotationSnapshot, RotationTerminalResult,
 };
@@ -206,6 +207,19 @@ pub struct RuntimeLifecycleSnapshotView {
     pub state: RuntimeLifecycleState,
     pub generation: u64,
     pub generation_requires_replacement: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum ProxyProtocolView {
+    Mixed,
+    Socks5,
+    HttpConnect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct ProxyListenerView {
+    pub protocol: ProxyProtocolView,
+    pub port: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
@@ -513,6 +527,20 @@ impl NativeProductRuntime {
             .current_generation()
             .map(|generation| map_proxy_publication(generation.proxy().snapshot()))
             .unwrap_or_else(|_| unavailable_proxy_publication())
+    }
+
+    pub fn proxy_listener_contract(&self) -> Vec<ProxyListenerView> {
+        canonical_listeners()
+            .iter()
+            .map(|listener| ProxyListenerView {
+                protocol: match listener.protocol {
+                    OwnerProxyProtocol::Mixed => ProxyProtocolView::Mixed,
+                    OwnerProxyProtocol::Socks5 => ProxyProtocolView::Socks5,
+                    OwnerProxyProtocol::Http => ProxyProtocolView::HttpConnect,
+                },
+                port: listener.port,
+            })
+            .collect()
     }
 
     pub fn admission_snapshot(&self) -> Result<CellularAdmissionView, CellularBridgeError> {
