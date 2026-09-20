@@ -105,6 +105,7 @@ jobs:
           .\lab\windows\test-recovery-lifecycle-probe-contract.ps1
           .\lab\windows\test-dns-lifetime-live-probe-contract.ps1
           .\lab\windows\test-u5-rotation-probe-contract.ps1
+          .\lab\windows\test-u7-runtime-restart-probe-contract.ps1
           python .\tools\check_device_cycle_contract.py
 
   rust:
