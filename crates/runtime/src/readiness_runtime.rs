@@ -260,6 +260,7 @@ impl ReadinessRuntimeCoordinator {
                 proxy.serving_generation = None;
                 proxy.credential_version = None;
             }
+            state.facts.credential = None;
             state.credentials = None;
         })
     }
@@ -296,6 +297,7 @@ impl ReadinessRuntimeCoordinator {
             state.refresh_epoch = state.refresh_epoch.wrapping_add(1);
             state.refresh_pending = false;
             state.probe_in_flight = false;
+            state.facts.credential = None;
             state.credentials = None;
             let _ = state.probe.invalidate();
             state.observation = None;
@@ -592,6 +594,37 @@ mod tests {
         assert_eq!(readiness.snapshot(), Readiness::Unknown);
         assert!(!mesh.snapshot().expect("mesh snapshot").ingress_running());
         readiness.shutdown();
+        executor.shutdown().expect("shutdown");
+    }
+
+    #[test]
+    fn proxy_stop_clears_credential_fact_and_probe_material() {
+        let executor = RuntimeExecutor::new().expect("executor");
+        let mesh = MeshCompositionCoordinator::new().expect("mesh");
+        let readiness =
+            ReadinessRuntimeCoordinator::new(executor.clone(), mesh, 1).expect("readiness");
+
+        readiness
+            .observe_proxy_started(1, 7, "proxy-user".to_owned(), "proxy-secret".to_owned())
+            .expect("proxy start");
+        assert!(readiness.diagnostic_snapshot().credential_active);
+        {
+            let state = readiness.state().expect("state");
+            assert!(state.facts.credential.is_some());
+            assert!(state.credentials.is_some());
+        }
+
+        readiness.observe_proxy_stopped().expect("proxy stop");
+
+        assert!(!readiness.diagnostic_snapshot().credential_active);
+        {
+            let state = readiness.state().expect("state");
+            assert!(state.facts.credential.is_none());
+            assert!(state.credentials.is_none());
+        }
+
+        readiness.shutdown();
+        assert!(!readiness.diagnostic_snapshot().credential_active);
         executor.shutdown().expect("shutdown");
     }
 
