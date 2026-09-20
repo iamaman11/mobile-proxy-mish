@@ -21,21 +21,18 @@ Current contract:
 
 ```text
 PR to main opened / synchronized / reopened / ready-for-review
- -> checkout exact PR head
- -> Kotlin compile + lint
- -> when PR is ready/non-draft:
-      Rust fmt
-      Rust clippy -D warnings
-      Rust workspace tests --locked
-      Android Rust/NDK setup
-      Android/Kotlin unit tests
-      assembleDebug
-      assembleDebugAndroidTest
-      exact PRODUCT candidate verification
-      publish exact-head device candidate artifact
+ -> Control Guards ----------------------┐
+ -> Device Cycle Contracts --------------┤
+                                         ├-> Rust Workspace -----------┐
+                                         └-> Android Build/Test -------┤
+                                                                      └-> Android Compose Shell
+                                                                          final aggregate gate
+                                                                          -> publish canonical exact-head candidate
 ```
 
-The candidate artifact is produced only after the complete configured gate succeeds.
+For PRODUCT/build changes, Rust Workspace and Android Build/Test run in parallel after the shared lightweight guards. They use distinct cache namespaces, so concurrent hosted work never races on one mutable cache key. Android Build/Test may publish a one-day, non-canonical staging artifact only; Device Cycle never resolves that name. The required `Android Compose Shell` context is the final aggregate gate and publishes the canonical `device-candidate-pr-<PR>-<SHA>` artifact only after both Rust and Android branches succeed.
+
+The canonical candidate artifact is therefore produced only after the complete configured gate succeeds.
 
 A successful hosted build is a prerequisite only. No successful build, merge to main, label, or completed workflow starts DEVICE-1.
 
