@@ -312,16 +312,1604 @@ function Get-MishProcessMetrics {
     $status = Invoke-MishAdbText -Operation 'observe_process_status' -Arguments @(
         'shell', 'run-as', $PackageName, 'cat', "/proc/$processId/status"
     )
-    $threadsMatch = [regex]::Match($status, '(?m)^Threads:\s+(?<count>\d+)\s*$')
-    if (-not $threadsMatch.Success) {
-        Stop-MishRotationAcceptance 'LAB_PROCESS_METRICS_UNAVAILABLE' 'PRODUCT thread count is unavailable.'
+    $threadsMatch = [regex]::Match($status, '(?m)^Threads:\s+(?<count>\d+)\s*
+    # Toybox CMD is the per-thread command name. Enumerate all visible threads and filter
+    # PRODUCT PID locally: DEVICE-1 does not reliably expose all worker rows through ps -T -p.
+    $threadText = Invoke-MishAdbText -Operation 'observe_thread_topology' -Arguments @(
+        'shell', 'ps', '-A', '-T', '-w', '-o', 'PID,TID,CMD'
+    )
+    $threadNames = @(
+        $threadText -split '\r?\n' |
+            ForEach-Object {
+                $row = [regex]::Match($_, '^\s*(?<pid>\d+)\s+(?<tid>\d+)\s+(?<name>.+?)\s*$')
+                if ($row.Success -and [int]$row.Groups['pid'].Value -eq $processId) {
+                    $row.Groups['name'].Value.Trim()
+                }
+            } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+    if ($threadNames.Count -eq 0) {
+        Stop-MishRotationAcceptance 'LAB_PROCESS_METRICS_UNAVAILABLE' 'Android ps -A -T returned no PRODUCT thread rows.'
+    }
+    # Linux/Toybox may decorate a field at its display boundary; the configured native
+    # executor namespace is unique, so observe that bounded namespace rather than one rendering.
+    $runtimeIo = @($threadNames | Where-Object { $_ -like 'mish-runtime-i*' }).Count
+    $threadNameSet = @($threadNames | Sort-Object -Unique | Select-Object -First 64)
+    $forbiddenKotlinOwners = @(
+        $threadNames | Where-Object {
+            $_ -like 'mish-runtime-lif*' -or
+            $_ -like 'mish-runtime-rec*' -or
+            $_ -like 'mish-cellular-po*' -or
+            $_ -like 'mish-root-author*' -or
+            $_ -like 'mish-readiness-*' -or
+            $_ -like 'mish-root-shell-*'
+        }
+    ).Count
+
+    Write-Host "MISH_U5_TOPOLOGY_THREAD_NAMES_OBSERVED=$($threadNames.Count)"
+    Write-Host "MISH_U5_TOPOLOGY_THREAD_NAME_SET=$($threadNameSet -join ',')"
+    Write-Host "MISH_U5_TOPOLOGY_RUNTIME_IO_THREADS=$runtimeIo"
+    Write-Host "MISH_U5_TOPOLOGY_FORBIDDEN_KOTLIN_OWNER_THREADS=$forbiddenKotlinOwners"
+
+    return [ordered]@{
+        pid = $processId
+        threads = [int]$threadsMatch.Groups['count'].Value
+        fd_count = [int]$fdCount
+        rss_kb = [int64]$rssMatch.Groups['value'].Value
+        pss_kb = [int64]$pssMatch.Groups['value'].Value
+        runtime_io_threads = $runtimeIo
+        forbidden_kotlin_owner_threads = $forbiddenKotlinOwners
+        root_session_generation = Get-MishOptionalInt64 $Snapshot.root.session_generation
+        runtime_generation = [int64]$Snapshot.runtime.generation
+        proxy_serving_generation = Get-MishOptionalInt64 $Snapshot.proxy.serving_generation
+        proxy_active_sessions = [int64]$Snapshot.proxy.active_sessions
+        mesh_serving_generation = Get-MishOptionalInt64 $Snapshot.mesh.serving_generation
+        mesh_active_sessions = Get-MishOptionalInt64 $Snapshot.mesh.active_sessions
+        rotation_active_tasks = [int64]$Snapshot.rotation.active_tasks
+        thread_name_set = @($threadNameSet)
+    }
+}
+
+function Wait-MishResourceQuiescence {
+    param(
+        [Parameter(Mandatory)] $BaselineMetrics,
+        [ValidateRange(2, 4)][int] $RequiredConsecutiveSamples = 2,
+        [ValidateRange(5, 30)][int] $DeadlineSeconds = 15
+    )
+
+    $deadline = [Environment]::TickCount64 + ([int64]$DeadlineSeconds * 1000)
+    $samples = [System.Collections.Generic.List[object]]::new()
+    $consecutive = 0
+    $lastMetrics = $null
+
+    while ([Environment]::TickCount64 -lt $deadline) {
+        $snapshot = Get-MishAndroidSnapshot
+        Assert-MishReadyBaseline -Snapshot $snapshot
+        $metrics = Get-MishProcessMetrics -Snapshot $snapshot
+        $lastMetrics = $metrics
+
+        $pidStable = [int]$metrics.pid -eq [int]$BaselineMetrics.pid
+        $forbiddenKotlinOwnersAbsent = [int]$metrics.forbidden_kotlin_owner_threads -eq 0
+        $threadsBounded = [int]$metrics.threads -le [int]$BaselineMetrics.threads
+        $fdsBounded = [int]$metrics.fd_count -le [int]$BaselineMetrics.fd_count
+        $sessionsQuiescent = (
+            [int64]$metrics.proxy_active_sessions -eq 0 -and
+            ($null -eq $metrics.mesh_active_sessions -or [int64]$metrics.mesh_active_sessions -eq 0)
+        )
+        $rotationQuiescent = [int64]$metrics.rotation_active_tasks -eq 0
+        $sampleAccepted = (
+            $pidStable -and
+            $forbiddenKotlinOwnersAbsent -and
+            $threadsBounded -and
+            $fdsBounded -and
+            $sessionsQuiescent -and
+            $rotationQuiescent
+        )
+
+        $samples.Add([pscustomobject][ordered]@{
+            elapsed_ms = [Environment]::TickCount64 - ($deadline - ([int64]$DeadlineSeconds * 1000))
+            threads = [int]$metrics.threads
+            fd_count = [int]$metrics.fd_count
+            runtime_io_threads = [int]$metrics.runtime_io_threads
+            forbidden_kotlin_owner_threads = [int]$metrics.forbidden_kotlin_owner_threads
+            proxy_active_sessions = [int64]$metrics.proxy_active_sessions
+            mesh_active_sessions = Get-MishOptionalInt64 $metrics.mesh_active_sessions
+            rotation_active_tasks = [int64]$metrics.rotation_active_tasks
+            thread_name_set = @($metrics.thread_name_set)
+            accepted = $sampleAccepted
+        })
+
+        if ($sampleAccepted) {
+            $consecutive += 1
+            if ($consecutive -ge $RequiredConsecutiveSamples) {
+                return [pscustomobject][ordered]@{
+                    accepted = $true
+                    required_consecutive_samples = $RequiredConsecutiveSamples
+                    observed_consecutive_samples = $consecutive
+                    deadline_seconds = $DeadlineSeconds
+                    samples = @($samples)
+                    metrics = $lastMetrics
+                }
+            }
+        } else {
+            $consecutive = 0
+        }
+
+        Start-Sleep -Milliseconds 500
     }
 
-    $fdText = Invoke-MishAdbText -Operation 'observe_fd_count' -Arguments @(
-        'shell', 'run-as', $PackageName, 'sh', '-c', "ls /proc/$processId/fd 2>/dev/null | wc -l"
+    return [pscustomobject][ordered]@{
+        accepted = $false
+        required_consecutive_samples = $RequiredConsecutiveSamples
+        observed_consecutive_samples = $consecutive
+        deadline_seconds = $DeadlineSeconds
+        samples = @($samples)
+        metrics = $lastMetrics
+    }
+}
+
+function New-MishCredentialLease {
+    $tempRoot = if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) { $env:RUNNER_TEMP } else { $env:TEMP }
+    $store = Join-Path $tempRoot ('mish-u5-rotation-credential-' + [Guid]::NewGuid().ToString('N') + '.dpapi')
+    Import-Module (Join-Path $PSScriptRoot 'CredentialProvisioning.psm1') -Force
+    try {
+        [void](Invoke-MishExternalProxyCredentialProvisioning -AdbPath $AdbPath -PackageName $PackageName -StorePath $store)
+        return Open-MishExternalProxyCredentialLease -StorePath $store
+    }
+    finally {
+        if (Test-Path -LiteralPath $store -PathType Leaf) {
+            Remove-Item -LiteralPath $store -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Test-MishSecureStringEqual {
+    param(
+        [Parameter(Mandatory)][Security.SecureString] $Left,
+        [Parameter(Mandatory)][Security.SecureString] $Right
     )
-    if ($fdText -notmatch '^\d+$') {
+    $leftPtr = [IntPtr]::Zero
+    $rightPtr = [IntPtr]::Zero
+    try {
+        $leftPtr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Left)
+        $rightPtr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Right)
+        $leftText = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($leftPtr)
+        $rightText = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($rightPtr)
+        return $leftText -ceq $rightText
+    }
+    finally {
+        if ($leftPtr -ne [IntPtr]::Zero) {
+            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($leftPtr)
+        }
+        if ($rightPtr -ne [IntPtr]::Zero) {
+            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($rightPtr)
+        }
+        $leftText = $null
+        $rightText = $null
+    }
+}
+
+function Add-MishTimelineSample {
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[object]] $Timeline,
+        [Parameter(Mandatory)][int64] $ElapsedMs,
+        [Parameter(Mandatory)][string] $Airplane,
+        [Parameter(Mandatory)] $Snapshot,
+        [Parameter(Mandatory)][ref] $LastKey
+    )
+
+    $owner = Get-MishOptionalInt64 $Snapshot.cellular.owner_sequence
+    $rootGeneration = Get-MishOptionalInt64 $Snapshot.root.policy_authorized_generation
+    $operationId = Get-MishOptionalInt64 $Snapshot.rotation.operation_id
+    $afterGeneration = Get-MishOptionalInt64 $Snapshot.rotation.after_generation
+    $key = @(
+        $Airplane,
+        [string]$Snapshot.rotation.state,
+        $operationId,
+        $owner,
+        [bool]$Snapshot.cellular.admitted,
+        [bool]$Snapshot.root.policy_authorized,
+        $rootGeneration,
+        [string]$Snapshot.readiness.state,
+        [bool]$Snapshot.mesh.ingress_running,
+        $afterGeneration
+    ) -join '|'
+    if ($key -ceq [string]$LastKey.Value) { return }
+    $LastKey.Value = $key
+    Write-Host ("MISH_U5_ROTATION_TIMELINE=elapsed_ms={0};airplane={1};state={2};operation_id={3};owner={4};cellular={5};root={6};readiness={7};mesh={8};after_generation={9}" -f @(
+        $ElapsedMs,
+        $Airplane,
+        [string]$Snapshot.rotation.state,
+        $operationId,
+        $owner,
+        [bool]$Snapshot.cellular.admitted,
+        [bool]$Snapshot.root.policy_authorized,
+        [string]$Snapshot.readiness.state,
+        [bool]$Snapshot.mesh.ingress_running,
+        $afterGeneration
+    ))
+    $Timeline.Add([pscustomobject][ordered]@{
+        elapsed_ms = $ElapsedMs
+        airplane = $Airplane
+        operation_id = $operationId
+        rotation_state = [string]$Snapshot.rotation.state
+        cellular_owner_generation = $owner
+        cellular_admitted = [bool]$Snapshot.cellular.admitted
+        root_policy_authorized = [bool]$Snapshot.root.policy_authorized
+        root_policy_authorized_generation = $rootGeneration
+        readiness = [string]$Snapshot.readiness.state
+        mesh_ingress_running = [bool]$Snapshot.mesh.ingress_running
+        after_generation = $afterGeneration
+    })
+}
+
+function Invoke-MishOneRotation {
+    param(
+        [Parameter(Mandatory)][int] $Ordinal,
+        [Parameter(Mandatory)][int64] $ExpectedCredentialVersion
+    )
+
+    Write-Host "MISH_U5_ROTATION_OPERATION_START=$Ordinal"
+    $before = Get-MishAndroidSnapshot
+    Assert-MishReadyBaseline -Snapshot $before
+    $generationA = Get-MishOptionalInt64 $before.cellular.owner_sequence
+    if ($null -eq $generationA) {
+        Stop-MishRotationAcceptance 'PRODUCT_CELLULAR_GENERATION_MISSING' 'Rotation baseline has no Cellular generation A.'
+    }
+    if ([int64]$before.credential.version -ne $ExpectedCredentialVersion) {
+        Stop-MishRotationAcceptance 'PRODUCT_CREDENTIAL_CHANGED' 'Credential version changed before rotation.'
+    }
+
+    $airplaneObserver = Start-MishFastAirplaneObserver -Label "rotation_$Ordinal"
+    $airplaneObserverResult = $null
+    $startTicks = [Environment]::TickCount64
+    try {
+        Write-Host "MISH_U5_ROTATION_OPERATION_PHASE=$($Ordinal):TRIGGER_START"
+        Invoke-MishActivityTrigger -Component $script:RotationComponent -Operation "rotation_$($Ordinal)_trigger"
+        Write-Host "MISH_U5_ROTATION_OPERATION_PHASE=$($Ordinal):TRIGGERED"
+
+        $deadlineTicks = $startTicks + ([int64]$OperationDeadlineSeconds * 1000)
+    $timeline = [System.Collections.Generic.List[object]]::new()
+    $lastKey = ''
+    $operationId = $null
+    $airplaneOnMs = $null
+    $cellularLossMs = $null
+    $offRequestMs = $null
+    $airplaneOffMs = $null
+    $freshOwnerMs = $null
+    $rootAuthorizedMs = $null
+    $readinessReadyMs = $null
+    $functionalPublicIpMs = $null
+    $generationB = $null
+    $failClosedViolation = $false
+    $terminalSnapshot = $null
+
+    # The independent 50 ms device-side observer owns physical airplane timing.
+    # Keep this loop single-ADB so canonical PRODUCT snapshots get the highest possible cadence
+    # and short fail-closed Cellular intervals are not hidden behind a second serial shell call.
+    while ([Environment]::TickCount64 -lt $deadlineTicks) {
+        $snapshot = Get-MishAndroidSnapshot
+        $airplane = 'FAST_OBSERVER_SEPARATE'
+        $elapsed = [Environment]::TickCount64 - $startTicks
+        Add-MishTimelineSample -Timeline $timeline -ElapsedMs $elapsed -Airplane $airplane -Snapshot $snapshot -LastKey ([ref]$lastKey)
+
+        if ([bool]$snapshot.rotation.raw_ip_persisted) {
+            Stop-MishRotationAcceptance 'PRODUCT_RAW_IP_PERSISTED' 'Raw IP persistence became true during rotation.'
+        }
+        if ([int64]$snapshot.credential.version -ne $ExpectedCredentialVersion) {
+            Stop-MishRotationAcceptance 'PRODUCT_CREDENTIAL_CHANGED' 'Credential version changed during rotation.'
+        }
+
+        $currentOperation = Get-MishOptionalInt64 $snapshot.rotation.operation_id
+        if ($null -ne $currentOperation) {
+            if ($null -eq $operationId) { $operationId = $currentOperation }
+            elseif ($currentOperation -ne $operationId) {
+                Stop-MishRotationAcceptance 'PRODUCT_OPERATION_ID_CHANGED' 'Rotation operation id changed during one bounded request.'
+            }
+        }
+
+        if (-not [bool]$snapshot.cellular.admitted) {
+            if ($null -eq $cellularLossMs) { $cellularLossMs = $elapsed }
+            if ([string]$snapshot.readiness.state -ceq 'READY' -or [bool]$snapshot.mesh.ingress_running) {
+                $failClosedViolation = $true
+            }
+        }
+
+        $rotationState = [string]$snapshot.rotation.state
+        if (
+            $null -ne $cellularLossMs -and
+            $null -eq $offRequestMs -and
+            $rotationState -in @(
+                'AIRPLANE_DISABLING',
+                'WAITING_CELLULAR_RECOVERY',
+                'WAITING_ROOT_POLICY',
+                'PROBING_PUBLIC_IP',
+                'CHANGED',
+                'UNCHANGED'
+            )
+        ) {
+            $offRequestMs = $elapsed
+        }
+        $owner = Get-MishOptionalInt64 $snapshot.cellular.owner_sequence
+        if (
+            $null -ne $owner -and
+            $owner -gt $generationA -and
+            [bool]$snapshot.cellular.admitted
+        ) {
+            if ($null -eq $generationB) { $generationB = $owner }
+            if ($owner -eq $generationB -and $null -eq $freshOwnerMs) { $freshOwnerMs = $elapsed }
+        }
+
+        $rootGeneration = Get-MishOptionalInt64 $snapshot.root.policy_authorized_generation
+        if (
+            $null -ne $generationB -and
+            [bool]$snapshot.root.policy_authorized -and
+            $rootGeneration -eq $generationB -and
+            $null -eq $rootAuthorizedMs
+        ) {
+            $rootAuthorizedMs = $elapsed
+        }
+
+        if ($rotationState -in @('CHANGED', 'UNCHANGED', 'FAILED')) {
+            $terminalSnapshot = $snapshot
+            $functionalPublicIpMs = $elapsed
+            break
+        }
+        Start-Sleep -Milliseconds $script:PollMilliseconds
+    }
+
+        $airplaneObserverResult = Stop-MishFastAirplaneObserver -Observer $airplaneObserver -WaitSeconds 2
+    }
+    finally {
+        if ($null -eq $airplaneObserverResult) {
+            [void](Stop-MishFastAirplaneObserver -Observer $airplaneObserver -WaitSeconds 0)
+        }
+    }
+
+    if ([bool]$airplaneObserverResult.observed_on) {
+        $fastOnEstimate = [int64]$airplaneObserverResult.first_on_sample * $script:FastAirplaneObserverPeriodMilliseconds
+        if ($null -eq $airplaneOnMs -or $fastOnEstimate -lt $airplaneOnMs) { $airplaneOnMs = $fastOnEstimate }
+    }
+    if ([bool]$airplaneObserverResult.observed_off_after_on) {
+        $fastOffEstimate = [int64]$airplaneObserverResult.first_off_after_on_sample * $script:FastAirplaneObserverPeriodMilliseconds
+        if ($null -eq $airplaneOffMs -or $fastOffEstimate -lt $airplaneOffMs) { $airplaneOffMs = $fastOffEstimate }
+    }
+    Write-Host ("MISH_U5_FAST_AIRPLANE=ordinal={0};on={1};first={2};last={3};count={4};off_after_on={5};exit={6};stderr_empty={7}" -f @(
+        $Ordinal,
+        [bool]$airplaneObserverResult.observed_on,
+        $airplaneObserverResult.first_on_sample,
+        $airplaneObserverResult.last_on_sample,
+        $airplaneObserverResult.on_sample_count,
+        [bool]$airplaneObserverResult.observed_off_after_on,
+        $airplaneObserverResult.observer_exit_code,
+        [bool]$airplaneObserverResult.stderr_empty
+    ))
+
+    if ($null -eq $terminalSnapshot) {
+        Stop-MishRotationAcceptance 'PRODUCT_ROTATION_DEADLINE' 'Rotation did not reach a terminal state within the bounded acceptance deadline.'
+    }
+    if ([string]$terminalSnapshot.rotation.state -eq 'FAILED') {
+        Stop-MishRotationAcceptance 'PRODUCT_ROTATION_FAILED' ("Rotation failed: " + [string]$terminalSnapshot.rotation.failure)
+    }
+    if ([string]$terminalSnapshot.rotation.terminal_result -notin @('CHANGED', 'UNCHANGED')) {
+        Stop-MishRotationAcceptance 'PRODUCT_ROTATION_TERMINAL_INVALID' 'Rotation terminal result is not CHANGED/UNCHANGED.'
+    }
+
+    $afterGeneration = Get-MishOptionalInt64 $terminalSnapshot.rotation.after_generation
+    if ($null -eq $afterGeneration -or $afterGeneration -le $generationA) {
+        Stop-MishRotationAcceptance 'PRODUCT_FRESH_GENERATION_MISSING' 'Terminal rotation has no fresh generation B > A.'
+    }
+    if ($null -eq $generationB) { $generationB = $afterGeneration }
+    if ($afterGeneration -ne $generationB) {
+        Stop-MishRotationAcceptance 'PRODUCT_GENERATION_BINDING_MISMATCH' 'After-IP terminal generation does not equal observed fresh owner B.'
+    }
+    if ($failClosedViolation) {
+        Stop-MishRotationAcceptance 'PRODUCT_FAIL_CLOSED_VIOLATION' 'Readiness or Mesh ingress remained serving after accepted Cellular loss.'
+    }
+    foreach ($required in @($airplaneOnMs, $cellularLossMs, $offRequestMs, $airplaneOffMs, $freshOwnerMs, $rootAuthorizedMs)) {
+        if ($null -eq $required) {
+            Stop-MishRotationAcceptance 'PRODUCT_ROTATION_FACT_MISSING' 'One or more required physical rotation facts were not observed.'
+        }
+    }
+
+    $recoveryDeadline = [Environment]::TickCount64 + ([int64]$script:RecoveryDeadlineSeconds * 1000)
+    $final = $terminalSnapshot
+    while ([Environment]::TickCount64 -lt $recoveryDeadline) {
+        $final = Get-MishAndroidSnapshot
+        $elapsed = [Environment]::TickCount64 - $startTicks
+        if (
+            [string]$final.readiness.state -ceq 'READY' -and
+            [bool]$final.mesh.ingress_running -and
+            [bool]$final.root.policy_authorized -and
+            (Get-MishOptionalInt64 $final.root.policy_authorized_generation) -eq $generationB -and
+            [int64]$final.rotation.active_tasks -eq 0
+        ) {
+            if ($null -eq $readinessReadyMs) { $readinessReadyMs = $elapsed }
+            break
+        }
+        Start-Sleep -Milliseconds $script:PollMilliseconds
+    }
+    if ($null -eq $readinessReadyMs) {
+        Stop-MishRotationAcceptance 'PRODUCT_RECOVERY_NOT_READY' 'Readiness/Mesh did not naturally recover after generation B.'
+    }
+    Write-Host "MISH_U5_ROTATION_OPERATION_PHASE=$($Ordinal):RECOVERED"
+    if ((Get-MishAirplaneState) -cne 'DISABLED') {
+        Stop-MishRotationAcceptance 'PRODUCT_AIRPLANE_FINAL_ON' 'Normal rotation did not finish with airplane OFF.'
+    }
+
+    return [pscustomobject][ordered]@{
+        ordinal = $Ordinal
+        operation_id = $operationId
+        generation_a = $generationA
+        generation_b = $generationB
+        terminal_result = [string]$terminalSnapshot.rotation.terminal_result
+        airplane_fast_observer = $airplaneObserverResult
+        airplane_timing_sample_estimate = $true
+        raw_ip_persisted = [bool]$terminalSnapshot.rotation.raw_ip_persisted
+        fail_closed_during_loss = -not $failClosedViolation
+        timings = [ordered]@{
+            request_to_airplane_on_ms = $airplaneOnMs
+            request_to_cellular_loss_ms = $cellularLossMs
+            loss_to_airplane_off_request_ms = $offRequestMs - $cellularLossMs
+            off_to_fresh_owner_ms = $freshOwnerMs - $airplaneOffMs
+            off_to_root_policy_authorized_ms = $rootAuthorizedMs - $airplaneOffMs
+            off_to_readiness_ready_ms = $readinessReadyMs - $airplaneOffMs
+            off_to_functional_public_ip_ms = $functionalPublicIpMs - $airplaneOffMs
+            total_rotation_ms = $functionalPublicIpMs
+        }
+        timeline = @($timeline)
+    }
+}
+
+function Invoke-MishShutdownRestoreAfterOn {
+    param(
+        [Parameter(Mandatory)][int64] $ExpectedCredentialVersion,
+        [Parameter(Mandatory)][int] $ExpectedProcessId
+    )
+
+    $before = Get-MishAndroidSnapshot
+    Assert-MishReadyBaseline -Snapshot $before
+    if ([int64]$before.credential.version -ne $ExpectedCredentialVersion) {
+        Stop-MishRotationAcceptance 'PRODUCT_CREDENTIAL_CHANGED' 'Credential version changed before restore case.'
+    }
+
+    $airplaneObserver = Start-MishFastAirplaneObserver -Label 'restore_after_on' -StopComponent $script:StopComponent
+    $airplaneObserverResult = $null
+    $startTicks = [Environment]::TickCount64
+    try {
+        Write-Host 'MISH_U5_RESTORE_PHASE=TRIGGER_START'
+        Invoke-MishActivityTrigger -Component $script:RotationComponent -Operation 'restore_rotation_trigger'
+        $airplaneObserverResult = Stop-MishFastAirplaneObserver -Observer $airplaneObserver -WaitSeconds $OperationDeadlineSeconds
+    }
+    finally {
+        if ($null -eq $airplaneObserverResult) {
+            [void](Stop-MishFastAirplaneObserver -Observer $airplaneObserver -WaitSeconds 0)
+        }
+    }
+
+    if (-not [bool]$airplaneObserverResult.observed_on) {
+        Stop-MishRotationAcceptance 'PRODUCT_AIRPLANE_ON_UNOBSERVED' 'Restore case never physically observed airplane ON.'
+    }
+    if ($null -eq $airplaneObserverResult.stop_trigger_exit -or [int]$airplaneObserverResult.stop_trigger_exit -ne 0) {
+        Stop-MishRotationAcceptance 'LAB_ACTIVITY_TRIGGER_FAILED' 'On-device observer could not deliver the normal PRODUCT stop trigger after airplane ON.'
+    }
+    $observedOnMs = [int64]$airplaneObserverResult.first_on_sample * $script:FastAirplaneObserverPeriodMilliseconds
+    Write-Host 'MISH_U5_RESTORE_PHASE=AIRPLANE_ON_OBSERVED'
+    Write-Host 'MISH_U5_RESTORE_PHASE=STOP_START'
+    $restoreDeadline = [Environment]::TickCount64 + ([int64]$script:RestoreDeadlineSeconds * 1000)
+    $offMs = $null
+    $runtimeStopped = $false
+    $runtimeCredentialCleared = $false
+    while ([Environment]::TickCount64 -lt $restoreDeadline) {
+        $postStopSnapshot = Get-MishAndroidSnapshot
+        $runtimeStopped = -not [bool]$postStopSnapshot.runtime.running
+        $runtimeCredentialCleared = (
+            -not [bool]$postStopSnapshot.credential.active -and
+            $null -eq (Get-MishOptionalInt64 $postStopSnapshot.credential.version)
+        )
+        if (
+            $runtimeStopped -and
+            $runtimeCredentialCleared -and
+            (Get-MishAirplaneState) -ceq 'DISABLED'
+        ) {
+            $offMs = [Environment]::TickCount64 - $startTicks
+            break
+        }
+        Start-Sleep -Milliseconds $script:PollMilliseconds
+    }
+    if (-not $runtimeStopped) {
+        Stop-MishRotationAcceptance 'PRODUCT_STOP_NOT_QUIESCENT' 'Normal PRODUCT stop did not reach the stopped runtime state.'
+    }
+    if ($null -eq $offMs) {
+        Stop-MishRotationAcceptance 'PRODUCT_RESTORE_OFF_FAILED' 'Normal PRODUCT stop did not restore airplane OFF after observed ON.'
+    }
+
+    $postStopEvidenceFailure = $null
+    if (-not $runtimeCredentialCleared) {
+        $postStopEvidenceFailure = [pscustomobject][ordered]@{
+            classification = 'PRODUCT_RUNTIME_CREDENTIAL_NOT_CLEARED'
+            message = 'Stopped runtime retained active credential material/version projection.'
+        }
+        Write-Host (
+            'MISH_U5_RESTORE_POST_STOP_EVIDENCE_FAILURE=' +
+            "runtime=$([bool]$postStopSnapshot.runtime.running);" +
+            "runtime_generation=$([int64]$postStopSnapshot.runtime.generation);" +
+            "proxy=$([string]$postStopSnapshot.proxy.state);" +
+            "credential_active=$([bool]$postStopSnapshot.credential.active);" +
+            "credential_version=$(Get-MishOptionalInt64 $postStopSnapshot.credential.version);" +
+            "readiness=$([string]$postStopSnapshot.readiness.state);" +
+            "rotation=$([string]$postStopSnapshot.rotation.state);" +
+            "rotation_active_tasks=$([int64]$postStopSnapshot.rotation.active_tasks)"
+        )
+    }
+    else {
+        Write-Host 'MISH_U5_RESTORE_PHASE=RUNTIME_STOPPED_CREDENTIAL_CLEARED'
+    }
+    Write-Host 'MISH_U5_RESTORE_PHASE=AIRPLANE_OFF_OBSERVED'
+
+    # A failed post-stop evidence invariant must not strand DEVICE-1 in a stopped state.
+    # Restore normal PRODUCT runtime first, then preserve and report the original failure.
+    Write-Host 'MISH_U5_RESTORE_PHASE=RESTART_START'
+    $restartRequestedAt = [Environment]::TickCount64
+    Invoke-MishActivityTrigger -Component $script:StartComponent -Operation 'restore_restart_trigger'
+    $readyDeadline = [Environment]::TickCount64 + ([int64]$script:RecoveryDeadlineSeconds * 1000)
+    $ready = $null
+    while ([Environment]::TickCount64 -lt $readyDeadline) {
+        $ready = Get-MishAndroidSnapshot
+        if (
+            [bool]$ready.runtime.running -and
+            [bool]$ready.cellular.admitted -and
+            [bool]$ready.root.policy_authorized -and
+            [string]$ready.readiness.state -ceq 'READY' -and
+            [bool]$ready.mesh.ingress_running
+        ) { break }
+        Start-Sleep -Milliseconds 150
+    }
+
+    $restartElapsedMs = [Environment]::TickCount64 - $restartRequestedAt
+    $restartPid = Get-MishOptionalInt64 $ready.pid
+    $restartOwner = Get-MishOptionalInt64 $ready.cellular.owner_sequence
+    $restartRootGeneration = Get-MishOptionalInt64 $ready.root.policy_authorized_generation
+    $restartCredentialVersion = Get-MishOptionalInt64 $ready.credential.version
+    $restartRotationOperation = Get-MishOptionalInt64 $ready.rotation.operation_id
+    $restartPidChanged = $null -ne $restartPid -and [int64]$restartPid -ne [int64]$ExpectedProcessId
+    Write-Host (
+        'MISH_U5_RESTORE_RESTART_STATE=' +
+        "elapsed_ms=$restartElapsedMs;" +
+        "pid=$restartPid;" +
+        "pid_changed=$restartPidChanged;" +
+        "runtime=$([bool]$ready.runtime.running);" +
+        "runtime_generation=$([int64]$ready.runtime.generation);" +
+        "cellular=$([bool]$ready.cellular.admitted);" +
+        "owner=$restartOwner;" +
+        "cellular_reconcile_pending=$([bool]$ready.cellular.reconcile.pending);" +
+        "cellular_reconcile_requested=$([int64]$ready.cellular.reconcile.requested);" +
+        "cellular_reconcile_executed=$([int64]$ready.cellular.reconcile.executed);" +
+        "root=$([bool]$ready.root.policy_authorized);" +
+        "root_generation=$restartRootGeneration;" +
+        "root_recovery_pending=$([bool]$ready.root.recovery.pending);" +
+        "root_recovery_attempts=$([int64]$ready.root.recovery.attempts_since_reset);" +
+        "readiness=$([string]$ready.readiness.state);" +
+        "readiness_binding=$([bool]$ready.readiness.binding_eligible);" +
+        "readiness_probe=$([string]$ready.readiness.probe_state);" +
+        "mesh_admitted=$([bool]$ready.mesh.admitted);" +
+        "mesh_ingress=$([bool]$ready.mesh.ingress_running);" +
+        "rotation=$([string]$ready.rotation.state);" +
+        "rotation_operation=$restartRotationOperation;" +
+        "rotation_active_tasks=$([int64]$ready.rotation.active_tasks);" +
+        "credential_active=$([bool]$ready.credential.active);" +
+        "credential_version=$restartCredentialVersion"
+    )
+
+    Assert-MishReadyBaseline -Snapshot $ready
+    if ([int64]$ready.credential.version -ne $ExpectedCredentialVersion) {
+        Stop-MishRotationAcceptance 'PRODUCT_CREDENTIAL_CHANGED' 'Credential version changed after restore restart.'
+    }
+    Write-Host 'MISH_U5_RESTORE_PHASE=READY'
+    if ($null -ne $postStopEvidenceFailure) {
+        Write-Host 'MISH_U5_RESTORE_PHASE=READY_AFTER_EVIDENCE_FAILURE'
+        Stop-MishRotationAcceptance `
+            ([string]$postStopEvidenceFailure.classification) `
+            ([string]$postStopEvidenceFailure.message)
+    }
+
+    return [pscustomobject][ordered]@{
+        airplane_on_observed = $true
+        airplane_fast_observer = $airplaneObserverResult
+        airplane_timing_sample_estimate = $true
+        request_to_airplane_on_ms = $observedOnMs
+        stop_requested_after_on = $true
+        runtime_stopped_observed = $runtimeStopped
+        runtime_credential_cleared = $runtimeCredentialCleared
+        restore_off_observed = $true
+        on_to_restore_off_ms = $offMs - $observedOnMs
+        restart_pid_before = $ExpectedProcessId
+        restart_pid_after = $restartPid
+        restart_process_stable = -not $restartPidChanged
+        restart_recovery_elapsed_ms = $restartElapsedMs
+        runtime_restarted_ready = $true
+    }
+}
+
+if (-not (Test-Path -LiteralPath $AdbPath -PathType Leaf)) {
+    Stop-MishRotationAcceptance 'LAB_ADB_MISSING' 'Canonical ADB executable is unavailable.'
+}
+
+$initial = Get-MishAndroidSnapshot
+Assert-MishReadyBaseline -Snapshot $initial
+if ((Get-MishAirplaneState) -cne 'DISABLED') {
+    Stop-MishRotationAcceptance 'PRODUCT_AIRPLANE_BASELINE_ON' 'Acceptance baseline requires airplane OFF.'
+}
+
+$credentialBefore = New-MishCredentialLease
+$credentialVersion = [int64]$initial.credential.version
+if ([int64]$credentialBefore.CredentialVersion -ne $credentialVersion) {
+    Stop-MishRotationAcceptance 'PRODUCT_CREDENTIAL_VERSION_MISMATCH' 'Provisioned credential version does not match native owner diagnostics.'
+}
+$metricsBefore = Get-MishProcessMetrics -Snapshot $initial
+if ($metricsBefore.forbidden_kotlin_owner_threads -ne 0) {
+    Stop-MishRotationAcceptance 'PRODUCT_EXECUTION_TOPOLOGY_INVALID' 'Removed Kotlin PRODUCT owner threads are still observable.'
+}
+
+$operations = [System.Collections.Generic.List[object]]::new()
+for ($ordinal = 1; $ordinal -le $SuccessfulOperations; $ordinal++) {
+    $operations.Add((Invoke-MishOneRotation -Ordinal $ordinal -ExpectedCredentialVersion $credentialVersion))
+}
+
+$postRotationSnapshot = Get-MishAndroidSnapshot
+Assert-MishReadyBaseline -Snapshot $postRotationSnapshot
+$metricsAfterRotations = Get-MishProcessMetrics -Snapshot $postRotationSnapshot
+$runtimeGenerationStableAcrossRotations = (
+    [int64]$metricsAfterRotations.runtime_generation -eq [int64]$metricsBefore.runtime_generation
+)
+$rootSessionStableAcrossRotations = (
+    $null -ne $metricsBefore.root_session_generation -and
+    $null -ne $metricsAfterRotations.root_session_generation -and
+    [int64]$metricsAfterRotations.root_session_generation -eq [int64]$metricsBefore.root_session_generation
+)
+$rotationTasksQuiescent = (
+    [int64]$metricsBefore.rotation_active_tasks -eq 0 -and
+    [int64]$metricsAfterRotations.rotation_active_tasks -eq 0
+)
+$runtimeIoStableAcrossRotations = (
+    [int]$metricsAfterRotations.runtime_io_threads -eq [int]$metricsBefore.runtime_io_threads
+)
+$threadsNoGrowthAcrossRotations = (
+    [int]$metricsAfterRotations.threads -le [int]$metricsBefore.threads
+)
+$fdsNoGrowthAcrossRotations = (
+    [int]$metricsAfterRotations.fd_count -le [int]$metricsBefore.fd_count
+)
+$ownerSessionsQuiescentAfterRotations = (
+    [int64]$metricsAfterRotations.proxy_active_sessions -eq 0 -and
+    ($null -eq $metricsAfterRotations.mesh_active_sessions -or [int64]$metricsAfterRotations.mesh_active_sessions -eq 0)
+)
+if (
+    -not $runtimeGenerationStableAcrossRotations -or
+    -not $rootSessionStableAcrossRotations -or
+    -not $rotationTasksQuiescent -or
+    -not $threadsNoGrowthAcrossRotations -or
+    -not $fdsNoGrowthAcrossRotations -or
+    -not $ownerSessionsQuiescentAfterRotations
+) {
+    Stop-MishRotationAcceptance 'PRODUCT_ROTATION_RESOURCE_REGRESSION' 'Repeated normal rotations changed runtime/root-session ownership or leaked tasks/resources.'
+}
+
+$restoreCase = Invoke-MishShutdownRestoreAfterOn `
+    -ExpectedCredentialVersion $credentialVersion `
+    -ExpectedProcessId ([int]$metricsAfterRotations.pid)
+$resourceQuiescence = Wait-MishResourceQuiescence -BaselineMetrics $metricsBefore
+if ($null -eq $resourceQuiescence.metrics) {
+    Stop-MishRotationAcceptance 'LAB_PROCESS_METRICS_UNAVAILABLE' 'No post-restart resource sample was collected.'
+}
+$metricsAfter = $resourceQuiescence.metrics
+$credentialAfter = New-MishCredentialLease
+
+$credentialMaterialUnchanged = (
+    [string]$credentialBefore.CredentialVersion -ceq [string]$credentialAfter.CredentialVersion -and
+    [string]$credentialBefore.CredentialId -ceq [string]$credentialAfter.CredentialId -and
+    [string]$credentialBefore.ProxyUserName -ceq [string]$credentialAfter.ProxyUserName -and
+    (Test-MishSecureStringEqual -Left $credentialBefore.ProxyPassword -Right $credentialAfter.ProxyPassword)
+)
+if (-not $credentialMaterialUnchanged) {
+    Stop-MishRotationAcceptance 'PRODUCT_CREDENTIAL_CHANGED' 'Credential version or material changed across ordinary IP rotations.'
+}
+
+$pidStable = [int]$metricsBefore.pid -eq [int]$metricsAfter.pid
+$runtimeIoStable = [int]$metricsAfter.runtime_io_threads -eq [int]$metricsBefore.runtime_io_threads
+$forbiddenKotlinOwnersAbsent = [int]$metricsAfter.forbidden_kotlin_owner_threads -eq 0
+$threadsBounded = [int]$metricsAfter.threads -le [int]$metricsBefore.threads
+$fdsBounded = [int]$metricsAfter.fd_count -le [int]$metricsBefore.fd_count
+$sessionsQuiescent = (
+    [int64]$metricsAfter.proxy_active_sessions -eq 0 -and
+    ($null -eq $metricsAfter.mesh_active_sessions -or [int64]$metricsAfter.mesh_active_sessions -eq 0)
+)
+
+$acceptance = (
+    $credentialMaterialUnchanged -and
+    $runtimeGenerationStableAcrossRotations -and
+    $rootSessionStableAcrossRotations -and
+    $rotationTasksQuiescent -and
+    $threadsNoGrowthAcrossRotations -and
+    $fdsNoGrowthAcrossRotations -and
+    $ownerSessionsQuiescentAfterRotations -and
+    $forbiddenKotlinOwnersAbsent -and
+    [bool]$resourceQuiescence.accepted -and
+    $threadsBounded -and
+    $fdsBounded -and
+    $sessionsQuiescent -and
+    (Get-MishAirplaneState) -ceq 'DISABLED'
+)
+$classification = if ($acceptance) { 'U5_ROTATION_PHYSICAL_ACCEPTANCE_PASS' } else { 'U5_ROTATION_RESOURCE_REGRESSION' }
+
+$evidence = [ordered]@{
+    schema = $script:Schema
+    collected_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
+    acceptance_result = if ($acceptance) { 'PASS' } else { 'FAIL' }
+    classification = $classification
+    successful_operations = @($operations)
+    shutdown_restore_after_on = $restoreCase
+    credential = [ordered]@{
+        version = $credentialVersion
+        version_unchanged = [string]$credentialBefore.CredentialVersion -ceq [string]$credentialAfter.CredentialVersion
+        material_unchanged = $credentialMaterialUnchanged
+        secrets_persisted_in_evidence = $false
+    }
+    raw_ip_persisted = $false
+    resources = [ordered]@{
+        before = $metricsBefore
+        after_normal_rotations = $metricsAfterRotations
+        after_restore_restart = $metricsAfter
+        restart_resource_quiescence = $resourceQuiescence
+        pid_stable = $pidStable
+        runtime_generation_stable_across_normal_rotations = $runtimeGenerationStableAcrossRotations
+        root_session_stable_across_normal_rotations = $rootSessionStableAcrossRotations
+        rotation_tasks_quiescent = $rotationTasksQuiescent
+        runtime_io_thread_name_observation_required = $false
+        runtime_io_threads_stable_across_normal_rotations = $runtimeIoStableAcrossRotations
+        total_threads_no_growth_across_normal_rotations = $threadsNoGrowthAcrossRotations
+        file_descriptors_no_growth_across_normal_rotations = $fdsNoGrowthAcrossRotations
+        owner_sessions_quiescent_after_normal_rotations = $ownerSessionsQuiescentAfterRotations
+        runtime_io_threads_stable = $runtimeIoStable
+        forbidden_kotlin_owner_threads_absent = $forbiddenKotlinOwnersAbsent
+        total_threads_no_growth = $threadsBounded
+        file_descriptors_no_growth = $fdsBounded
+        owner_sessions_quiescent = $sessionsQuiescent
+    }
+    final_airplane = Get-MishAirplaneState
+}
+
+$fullPath = [IO.Path]::GetFullPath($EvidencePath)
+$parent = Split-Path -Parent $fullPath
+if ($parent) { [IO.Directory]::CreateDirectory($parent) | Out-Null }
+[IO.File]::WriteAllText(
+    $fullPath,
+    (($evidence | ConvertTo-Json -Depth 18) + [Environment]::NewLine),
+    [Text.UTF8Encoding]::new($false)
+)
+
+Write-Host "MISH_U5_ROTATION_ACCEPTANCE=$([string]$evidence.acceptance_result)"
+Write-Host "MISH_U5_ROTATION_CLASSIFICATION=$classification"
+Write-Host "MISH_U5_ROTATION_OPERATIONS=$SuccessfulOperations"
+Write-Host "MISH_U5_ROTATION_CREDENTIAL_STABLE=$credentialMaterialUnchanged"
+Write-Host "MISH_U5_ROTATION_RAW_IP_PERSISTED=false"
+Write-Host "MISH_U5_ROTATION_FINAL_AIRPLANE=$([string]$evidence.final_airplane)"
+Write-Host "MISH_U5_ROTATION_EVIDENCE=$fullPath"
+
+if (-not $acceptance) {
+    Stop-MishRotationAcceptance $classification 'Physical U5 rotation/resource acceptance did not satisfy all invariants.'
+}
+)
+    $rssMatch = [regex]::Match($status, '(?m)^VmRSS:\s+(?<value>\d+)\s+kB\s*
+    # Toybox CMD is the per-thread command name. Enumerate all visible threads and filter
+    # PRODUCT PID locally: DEVICE-1 does not reliably expose all worker rows through ps -T -p.
+    $threadText = Invoke-MishAdbText -Operation 'observe_thread_topology' -Arguments @(
+        'shell', 'ps', '-A', '-T', '-w', '-o', 'PID,TID,CMD'
+    )
+    $threadNames = @(
+        $threadText -split '\r?\n' |
+            ForEach-Object {
+                $row = [regex]::Match($_, '^\s*(?<pid>\d+)\s+(?<tid>\d+)\s+(?<name>.+?)\s*$')
+                if ($row.Success -and [int]$row.Groups['pid'].Value -eq $processId) {
+                    $row.Groups['name'].Value.Trim()
+                }
+            } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+    if ($threadNames.Count -eq 0) {
+        Stop-MishRotationAcceptance 'LAB_PROCESS_METRICS_UNAVAILABLE' 'Android ps -A -T returned no PRODUCT thread rows.'
+    }
+    # Linux/Toybox may decorate a field at its display boundary; the configured native
+    # executor namespace is unique, so observe that bounded namespace rather than one rendering.
+    $runtimeIo = @($threadNames | Where-Object { $_ -like 'mish-runtime-i*' }).Count
+    $threadNameSet = @($threadNames | Sort-Object -Unique | Select-Object -First 64)
+    $forbiddenKotlinOwners = @(
+        $threadNames | Where-Object {
+            $_ -like 'mish-runtime-lif*' -or
+            $_ -like 'mish-runtime-rec*' -or
+            $_ -like 'mish-cellular-po*' -or
+            $_ -like 'mish-root-author*' -or
+            $_ -like 'mish-readiness-*' -or
+            $_ -like 'mish-root-shell-*'
+        }
+    ).Count
+
+    Write-Host "MISH_U5_TOPOLOGY_THREAD_NAMES_OBSERVED=$($threadNames.Count)"
+    Write-Host "MISH_U5_TOPOLOGY_THREAD_NAME_SET=$($threadNameSet -join ',')"
+    Write-Host "MISH_U5_TOPOLOGY_RUNTIME_IO_THREADS=$runtimeIo"
+    Write-Host "MISH_U5_TOPOLOGY_FORBIDDEN_KOTLIN_OWNER_THREADS=$forbiddenKotlinOwners"
+
+    return [ordered]@{
+        pid = $processId
+        threads = [int]$threadsMatch.Groups['count'].Value
+        fd_count = [int]$fdText
+        runtime_io_threads = $runtimeIo
+        forbidden_kotlin_owner_threads = $forbiddenKotlinOwners
+        root_session_generation = Get-MishOptionalInt64 $Snapshot.root.session_generation
+        runtime_generation = [int64]$Snapshot.runtime.generation
+        proxy_serving_generation = Get-MishOptionalInt64 $Snapshot.proxy.serving_generation
+        proxy_active_sessions = [int64]$Snapshot.proxy.active_sessions
+        mesh_serving_generation = Get-MishOptionalInt64 $Snapshot.mesh.serving_generation
+        mesh_active_sessions = Get-MishOptionalInt64 $Snapshot.mesh.active_sessions
+        rotation_active_tasks = [int64]$Snapshot.rotation.active_tasks
+        thread_name_set = @($threadNameSet)
+    }
+}
+
+function Wait-MishResourceQuiescence {
+    param(
+        [Parameter(Mandatory)] $BaselineMetrics,
+        [ValidateRange(2, 4)][int] $RequiredConsecutiveSamples = 2,
+        [ValidateRange(5, 30)][int] $DeadlineSeconds = 15
+    )
+
+    $deadline = [Environment]::TickCount64 + ([int64]$DeadlineSeconds * 1000)
+    $samples = [System.Collections.Generic.List[object]]::new()
+    $consecutive = 0
+    $lastMetrics = $null
+
+    while ([Environment]::TickCount64 -lt $deadline) {
+        $snapshot = Get-MishAndroidSnapshot
+        Assert-MishReadyBaseline -Snapshot $snapshot
+        $metrics = Get-MishProcessMetrics -Snapshot $snapshot
+        $lastMetrics = $metrics
+
+        $pidStable = [int]$metrics.pid -eq [int]$BaselineMetrics.pid
+        $forbiddenKotlinOwnersAbsent = [int]$metrics.forbidden_kotlin_owner_threads -eq 0
+        $threadsBounded = [int]$metrics.threads -le [int]$BaselineMetrics.threads
+        $fdsBounded = [int]$metrics.fd_count -le [int]$BaselineMetrics.fd_count
+        $sessionsQuiescent = (
+            [int64]$metrics.proxy_active_sessions -eq 0 -and
+            ($null -eq $metrics.mesh_active_sessions -or [int64]$metrics.mesh_active_sessions -eq 0)
+        )
+        $rotationQuiescent = [int64]$metrics.rotation_active_tasks -eq 0
+        $sampleAccepted = (
+            $pidStable -and
+            $forbiddenKotlinOwnersAbsent -and
+            $threadsBounded -and
+            $fdsBounded -and
+            $sessionsQuiescent -and
+            $rotationQuiescent
+        )
+
+        $samples.Add([pscustomobject][ordered]@{
+            elapsed_ms = [Environment]::TickCount64 - ($deadline - ([int64]$DeadlineSeconds * 1000))
+            threads = [int]$metrics.threads
+            fd_count = [int]$metrics.fd_count
+            runtime_io_threads = [int]$metrics.runtime_io_threads
+            forbidden_kotlin_owner_threads = [int]$metrics.forbidden_kotlin_owner_threads
+            proxy_active_sessions = [int64]$metrics.proxy_active_sessions
+            mesh_active_sessions = Get-MishOptionalInt64 $metrics.mesh_active_sessions
+            rotation_active_tasks = [int64]$metrics.rotation_active_tasks
+            thread_name_set = @($metrics.thread_name_set)
+            accepted = $sampleAccepted
+        })
+
+        if ($sampleAccepted) {
+            $consecutive += 1
+            if ($consecutive -ge $RequiredConsecutiveSamples) {
+                return [pscustomobject][ordered]@{
+                    accepted = $true
+                    required_consecutive_samples = $RequiredConsecutiveSamples
+                    observed_consecutive_samples = $consecutive
+                    deadline_seconds = $DeadlineSeconds
+                    samples = @($samples)
+                    metrics = $lastMetrics
+                }
+            }
+        } else {
+            $consecutive = 0
+        }
+
+        Start-Sleep -Milliseconds 500
+    }
+
+    return [pscustomobject][ordered]@{
+        accepted = $false
+        required_consecutive_samples = $RequiredConsecutiveSamples
+        observed_consecutive_samples = $consecutive
+        deadline_seconds = $DeadlineSeconds
+        samples = @($samples)
+        metrics = $lastMetrics
+    }
+}
+
+function New-MishCredentialLease {
+    $tempRoot = if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) { $env:RUNNER_TEMP } else { $env:TEMP }
+    $store = Join-Path $tempRoot ('mish-u5-rotation-credential-' + [Guid]::NewGuid().ToString('N') + '.dpapi')
+    Import-Module (Join-Path $PSScriptRoot 'CredentialProvisioning.psm1') -Force
+    try {
+        [void](Invoke-MishExternalProxyCredentialProvisioning -AdbPath $AdbPath -PackageName $PackageName -StorePath $store)
+        return Open-MishExternalProxyCredentialLease -StorePath $store
+    }
+    finally {
+        if (Test-Path -LiteralPath $store -PathType Leaf) {
+            Remove-Item -LiteralPath $store -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Test-MishSecureStringEqual {
+    param(
+        [Parameter(Mandatory)][Security.SecureString] $Left,
+        [Parameter(Mandatory)][Security.SecureString] $Right
+    )
+    $leftPtr = [IntPtr]::Zero
+    $rightPtr = [IntPtr]::Zero
+    try {
+        $leftPtr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Left)
+        $rightPtr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Right)
+        $leftText = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($leftPtr)
+        $rightText = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($rightPtr)
+        return $leftText -ceq $rightText
+    }
+    finally {
+        if ($leftPtr -ne [IntPtr]::Zero) {
+            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($leftPtr)
+        }
+        if ($rightPtr -ne [IntPtr]::Zero) {
+            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($rightPtr)
+        }
+        $leftText = $null
+        $rightText = $null
+    }
+}
+
+function Add-MishTimelineSample {
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[object]] $Timeline,
+        [Parameter(Mandatory)][int64] $ElapsedMs,
+        [Parameter(Mandatory)][string] $Airplane,
+        [Parameter(Mandatory)] $Snapshot,
+        [Parameter(Mandatory)][ref] $LastKey
+    )
+
+    $owner = Get-MishOptionalInt64 $Snapshot.cellular.owner_sequence
+    $rootGeneration = Get-MishOptionalInt64 $Snapshot.root.policy_authorized_generation
+    $operationId = Get-MishOptionalInt64 $Snapshot.rotation.operation_id
+    $afterGeneration = Get-MishOptionalInt64 $Snapshot.rotation.after_generation
+    $key = @(
+        $Airplane,
+        [string]$Snapshot.rotation.state,
+        $operationId,
+        $owner,
+        [bool]$Snapshot.cellular.admitted,
+        [bool]$Snapshot.root.policy_authorized,
+        $rootGeneration,
+        [string]$Snapshot.readiness.state,
+        [bool]$Snapshot.mesh.ingress_running,
+        $afterGeneration
+    ) -join '|'
+    if ($key -ceq [string]$LastKey.Value) { return }
+    $LastKey.Value = $key
+    Write-Host ("MISH_U5_ROTATION_TIMELINE=elapsed_ms={0};airplane={1};state={2};operation_id={3};owner={4};cellular={5};root={6};readiness={7};mesh={8};after_generation={9}" -f @(
+        $ElapsedMs,
+        $Airplane,
+        [string]$Snapshot.rotation.state,
+        $operationId,
+        $owner,
+        [bool]$Snapshot.cellular.admitted,
+        [bool]$Snapshot.root.policy_authorized,
+        [string]$Snapshot.readiness.state,
+        [bool]$Snapshot.mesh.ingress_running,
+        $afterGeneration
+    ))
+    $Timeline.Add([pscustomobject][ordered]@{
+        elapsed_ms = $ElapsedMs
+        airplane = $Airplane
+        operation_id = $operationId
+        rotation_state = [string]$Snapshot.rotation.state
+        cellular_owner_generation = $owner
+        cellular_admitted = [bool]$Snapshot.cellular.admitted
+        root_policy_authorized = [bool]$Snapshot.root.policy_authorized
+        root_policy_authorized_generation = $rootGeneration
+        readiness = [string]$Snapshot.readiness.state
+        mesh_ingress_running = [bool]$Snapshot.mesh.ingress_running
+        after_generation = $afterGeneration
+    })
+}
+
+function Invoke-MishOneRotation {
+    param(
+        [Parameter(Mandatory)][int] $Ordinal,
+        [Parameter(Mandatory)][int64] $ExpectedCredentialVersion
+    )
+
+    Write-Host "MISH_U5_ROTATION_OPERATION_START=$Ordinal"
+    $before = Get-MishAndroidSnapshot
+    Assert-MishReadyBaseline -Snapshot $before
+    $generationA = Get-MishOptionalInt64 $before.cellular.owner_sequence
+    if ($null -eq $generationA) {
+        Stop-MishRotationAcceptance 'PRODUCT_CELLULAR_GENERATION_MISSING' 'Rotation baseline has no Cellular generation A.'
+    }
+    if ([int64]$before.credential.version -ne $ExpectedCredentialVersion) {
+        Stop-MishRotationAcceptance 'PRODUCT_CREDENTIAL_CHANGED' 'Credential version changed before rotation.'
+    }
+
+    $airplaneObserver = Start-MishFastAirplaneObserver -Label "rotation_$Ordinal"
+    $airplaneObserverResult = $null
+    $startTicks = [Environment]::TickCount64
+    try {
+        Write-Host "MISH_U5_ROTATION_OPERATION_PHASE=$($Ordinal):TRIGGER_START"
+        Invoke-MishActivityTrigger -Component $script:RotationComponent -Operation "rotation_$($Ordinal)_trigger"
+        Write-Host "MISH_U5_ROTATION_OPERATION_PHASE=$($Ordinal):TRIGGERED"
+
+        $deadlineTicks = $startTicks + ([int64]$OperationDeadlineSeconds * 1000)
+    $timeline = [System.Collections.Generic.List[object]]::new()
+    $lastKey = ''
+    $operationId = $null
+    $airplaneOnMs = $null
+    $cellularLossMs = $null
+    $offRequestMs = $null
+    $airplaneOffMs = $null
+    $freshOwnerMs = $null
+    $rootAuthorizedMs = $null
+    $readinessReadyMs = $null
+    $functionalPublicIpMs = $null
+    $generationB = $null
+    $failClosedViolation = $false
+    $terminalSnapshot = $null
+
+    # The independent 50 ms device-side observer owns physical airplane timing.
+    # Keep this loop single-ADB so canonical PRODUCT snapshots get the highest possible cadence
+    # and short fail-closed Cellular intervals are not hidden behind a second serial shell call.
+    while ([Environment]::TickCount64 -lt $deadlineTicks) {
+        $snapshot = Get-MishAndroidSnapshot
+        $airplane = 'FAST_OBSERVER_SEPARATE'
+        $elapsed = [Environment]::TickCount64 - $startTicks
+        Add-MishTimelineSample -Timeline $timeline -ElapsedMs $elapsed -Airplane $airplane -Snapshot $snapshot -LastKey ([ref]$lastKey)
+
+        if ([bool]$snapshot.rotation.raw_ip_persisted) {
+            Stop-MishRotationAcceptance 'PRODUCT_RAW_IP_PERSISTED' 'Raw IP persistence became true during rotation.'
+        }
+        if ([int64]$snapshot.credential.version -ne $ExpectedCredentialVersion) {
+            Stop-MishRotationAcceptance 'PRODUCT_CREDENTIAL_CHANGED' 'Credential version changed during rotation.'
+        }
+
+        $currentOperation = Get-MishOptionalInt64 $snapshot.rotation.operation_id
+        if ($null -ne $currentOperation) {
+            if ($null -eq $operationId) { $operationId = $currentOperation }
+            elseif ($currentOperation -ne $operationId) {
+                Stop-MishRotationAcceptance 'PRODUCT_OPERATION_ID_CHANGED' 'Rotation operation id changed during one bounded request.'
+            }
+        }
+
+        if (-not [bool]$snapshot.cellular.admitted) {
+            if ($null -eq $cellularLossMs) { $cellularLossMs = $elapsed }
+            if ([string]$snapshot.readiness.state -ceq 'READY' -or [bool]$snapshot.mesh.ingress_running) {
+                $failClosedViolation = $true
+            }
+        }
+
+        $rotationState = [string]$snapshot.rotation.state
+        if (
+            $null -ne $cellularLossMs -and
+            $null -eq $offRequestMs -and
+            $rotationState -in @(
+                'AIRPLANE_DISABLING',
+                'WAITING_CELLULAR_RECOVERY',
+                'WAITING_ROOT_POLICY',
+                'PROBING_PUBLIC_IP',
+                'CHANGED',
+                'UNCHANGED'
+            )
+        ) {
+            $offRequestMs = $elapsed
+        }
+        $owner = Get-MishOptionalInt64 $snapshot.cellular.owner_sequence
+        if (
+            $null -ne $owner -and
+            $owner -gt $generationA -and
+            [bool]$snapshot.cellular.admitted
+        ) {
+            if ($null -eq $generationB) { $generationB = $owner }
+            if ($owner -eq $generationB -and $null -eq $freshOwnerMs) { $freshOwnerMs = $elapsed }
+        }
+
+        $rootGeneration = Get-MishOptionalInt64 $snapshot.root.policy_authorized_generation
+        if (
+            $null -ne $generationB -and
+            [bool]$snapshot.root.policy_authorized -and
+            $rootGeneration -eq $generationB -and
+            $null -eq $rootAuthorizedMs
+        ) {
+            $rootAuthorizedMs = $elapsed
+        }
+
+        if ($rotationState -in @('CHANGED', 'UNCHANGED', 'FAILED')) {
+            $terminalSnapshot = $snapshot
+            $functionalPublicIpMs = $elapsed
+            break
+        }
+        Start-Sleep -Milliseconds $script:PollMilliseconds
+    }
+
+        $airplaneObserverResult = Stop-MishFastAirplaneObserver -Observer $airplaneObserver -WaitSeconds 2
+    }
+    finally {
+        if ($null -eq $airplaneObserverResult) {
+            [void](Stop-MishFastAirplaneObserver -Observer $airplaneObserver -WaitSeconds 0)
+        }
+    }
+
+    if ([bool]$airplaneObserverResult.observed_on) {
+        $fastOnEstimate = [int64]$airplaneObserverResult.first_on_sample * $script:FastAirplaneObserverPeriodMilliseconds
+        if ($null -eq $airplaneOnMs -or $fastOnEstimate -lt $airplaneOnMs) { $airplaneOnMs = $fastOnEstimate }
+    }
+    if ([bool]$airplaneObserverResult.observed_off_after_on) {
+        $fastOffEstimate = [int64]$airplaneObserverResult.first_off_after_on_sample * $script:FastAirplaneObserverPeriodMilliseconds
+        if ($null -eq $airplaneOffMs -or $fastOffEstimate -lt $airplaneOffMs) { $airplaneOffMs = $fastOffEstimate }
+    }
+    Write-Host ("MISH_U5_FAST_AIRPLANE=ordinal={0};on={1};first={2};last={3};count={4};off_after_on={5};exit={6};stderr_empty={7}" -f @(
+        $Ordinal,
+        [bool]$airplaneObserverResult.observed_on,
+        $airplaneObserverResult.first_on_sample,
+        $airplaneObserverResult.last_on_sample,
+        $airplaneObserverResult.on_sample_count,
+        [bool]$airplaneObserverResult.observed_off_after_on,
+        $airplaneObserverResult.observer_exit_code,
+        [bool]$airplaneObserverResult.stderr_empty
+    ))
+
+    if ($null -eq $terminalSnapshot) {
+        Stop-MishRotationAcceptance 'PRODUCT_ROTATION_DEADLINE' 'Rotation did not reach a terminal state within the bounded acceptance deadline.'
+    }
+    if ([string]$terminalSnapshot.rotation.state -eq 'FAILED') {
+        Stop-MishRotationAcceptance 'PRODUCT_ROTATION_FAILED' ("Rotation failed: " + [string]$terminalSnapshot.rotation.failure)
+    }
+    if ([string]$terminalSnapshot.rotation.terminal_result -notin @('CHANGED', 'UNCHANGED')) {
+        Stop-MishRotationAcceptance 'PRODUCT_ROTATION_TERMINAL_INVALID' 'Rotation terminal result is not CHANGED/UNCHANGED.'
+    }
+
+    $afterGeneration = Get-MishOptionalInt64 $terminalSnapshot.rotation.after_generation
+    if ($null -eq $afterGeneration -or $afterGeneration -le $generationA) {
+        Stop-MishRotationAcceptance 'PRODUCT_FRESH_GENERATION_MISSING' 'Terminal rotation has no fresh generation B > A.'
+    }
+    if ($null -eq $generationB) { $generationB = $afterGeneration }
+    if ($afterGeneration -ne $generationB) {
+        Stop-MishRotationAcceptance 'PRODUCT_GENERATION_BINDING_MISMATCH' 'After-IP terminal generation does not equal observed fresh owner B.'
+    }
+    if ($failClosedViolation) {
+        Stop-MishRotationAcceptance 'PRODUCT_FAIL_CLOSED_VIOLATION' 'Readiness or Mesh ingress remained serving after accepted Cellular loss.'
+    }
+    foreach ($required in @($airplaneOnMs, $cellularLossMs, $offRequestMs, $airplaneOffMs, $freshOwnerMs, $rootAuthorizedMs)) {
+        if ($null -eq $required) {
+            Stop-MishRotationAcceptance 'PRODUCT_ROTATION_FACT_MISSING' 'One or more required physical rotation facts were not observed.'
+        }
+    }
+
+    $recoveryDeadline = [Environment]::TickCount64 + ([int64]$script:RecoveryDeadlineSeconds * 1000)
+    $final = $terminalSnapshot
+    while ([Environment]::TickCount64 -lt $recoveryDeadline) {
+        $final = Get-MishAndroidSnapshot
+        $elapsed = [Environment]::TickCount64 - $startTicks
+        if (
+            [string]$final.readiness.state -ceq 'READY' -and
+            [bool]$final.mesh.ingress_running -and
+            [bool]$final.root.policy_authorized -and
+            (Get-MishOptionalInt64 $final.root.policy_authorized_generation) -eq $generationB -and
+            [int64]$final.rotation.active_tasks -eq 0
+        ) {
+            if ($null -eq $readinessReadyMs) { $readinessReadyMs = $elapsed }
+            break
+        }
+        Start-Sleep -Milliseconds $script:PollMilliseconds
+    }
+    if ($null -eq $readinessReadyMs) {
+        Stop-MishRotationAcceptance 'PRODUCT_RECOVERY_NOT_READY' 'Readiness/Mesh did not naturally recover after generation B.'
+    }
+    Write-Host "MISH_U5_ROTATION_OPERATION_PHASE=$($Ordinal):RECOVERED"
+    if ((Get-MishAirplaneState) -cne 'DISABLED') {
+        Stop-MishRotationAcceptance 'PRODUCT_AIRPLANE_FINAL_ON' 'Normal rotation did not finish with airplane OFF.'
+    }
+
+    return [pscustomobject][ordered]@{
+        ordinal = $Ordinal
+        operation_id = $operationId
+        generation_a = $generationA
+        generation_b = $generationB
+        terminal_result = [string]$terminalSnapshot.rotation.terminal_result
+        airplane_fast_observer = $airplaneObserverResult
+        airplane_timing_sample_estimate = $true
+        raw_ip_persisted = [bool]$terminalSnapshot.rotation.raw_ip_persisted
+        fail_closed_during_loss = -not $failClosedViolation
+        timings = [ordered]@{
+            request_to_airplane_on_ms = $airplaneOnMs
+            request_to_cellular_loss_ms = $cellularLossMs
+            loss_to_airplane_off_request_ms = $offRequestMs - $cellularLossMs
+            off_to_fresh_owner_ms = $freshOwnerMs - $airplaneOffMs
+            off_to_root_policy_authorized_ms = $rootAuthorizedMs - $airplaneOffMs
+            off_to_readiness_ready_ms = $readinessReadyMs - $airplaneOffMs
+            off_to_functional_public_ip_ms = $functionalPublicIpMs - $airplaneOffMs
+            total_rotation_ms = $functionalPublicIpMs
+        }
+        timeline = @($timeline)
+    }
+}
+
+function Invoke-MishShutdownRestoreAfterOn {
+    param(
+        [Parameter(Mandatory)][int64] $ExpectedCredentialVersion,
+        [Parameter(Mandatory)][int] $ExpectedProcessId
+    )
+
+    $before = Get-MishAndroidSnapshot
+    Assert-MishReadyBaseline -Snapshot $before
+    if ([int64]$before.credential.version -ne $ExpectedCredentialVersion) {
+        Stop-MishRotationAcceptance 'PRODUCT_CREDENTIAL_CHANGED' 'Credential version changed before restore case.'
+    }
+
+    $airplaneObserver = Start-MishFastAirplaneObserver -Label 'restore_after_on' -StopComponent $script:StopComponent
+    $airplaneObserverResult = $null
+    $startTicks = [Environment]::TickCount64
+    try {
+        Write-Host 'MISH_U5_RESTORE_PHASE=TRIGGER_START'
+        Invoke-MishActivityTrigger -Component $script:RotationComponent -Operation 'restore_rotation_trigger'
+        $airplaneObserverResult = Stop-MishFastAirplaneObserver -Observer $airplaneObserver -WaitSeconds $OperationDeadlineSeconds
+    }
+    finally {
+        if ($null -eq $airplaneObserverResult) {
+            [void](Stop-MishFastAirplaneObserver -Observer $airplaneObserver -WaitSeconds 0)
+        }
+    }
+
+    if (-not [bool]$airplaneObserverResult.observed_on) {
+        Stop-MishRotationAcceptance 'PRODUCT_AIRPLANE_ON_UNOBSERVED' 'Restore case never physically observed airplane ON.'
+    }
+    if ($null -eq $airplaneObserverResult.stop_trigger_exit -or [int]$airplaneObserverResult.stop_trigger_exit -ne 0) {
+        Stop-MishRotationAcceptance 'LAB_ACTIVITY_TRIGGER_FAILED' 'On-device observer could not deliver the normal PRODUCT stop trigger after airplane ON.'
+    }
+    $observedOnMs = [int64]$airplaneObserverResult.first_on_sample * $script:FastAirplaneObserverPeriodMilliseconds
+    Write-Host 'MISH_U5_RESTORE_PHASE=AIRPLANE_ON_OBSERVED'
+    Write-Host 'MISH_U5_RESTORE_PHASE=STOP_START'
+    $restoreDeadline = [Environment]::TickCount64 + ([int64]$script:RestoreDeadlineSeconds * 1000)
+    $offMs = $null
+    $runtimeStopped = $false
+    $runtimeCredentialCleared = $false
+    while ([Environment]::TickCount64 -lt $restoreDeadline) {
+        $postStopSnapshot = Get-MishAndroidSnapshot
+        $runtimeStopped = -not [bool]$postStopSnapshot.runtime.running
+        $runtimeCredentialCleared = (
+            -not [bool]$postStopSnapshot.credential.active -and
+            $null -eq (Get-MishOptionalInt64 $postStopSnapshot.credential.version)
+        )
+        if (
+            $runtimeStopped -and
+            $runtimeCredentialCleared -and
+            (Get-MishAirplaneState) -ceq 'DISABLED'
+        ) {
+            $offMs = [Environment]::TickCount64 - $startTicks
+            break
+        }
+        Start-Sleep -Milliseconds $script:PollMilliseconds
+    }
+    if (-not $runtimeStopped) {
+        Stop-MishRotationAcceptance 'PRODUCT_STOP_NOT_QUIESCENT' 'Normal PRODUCT stop did not reach the stopped runtime state.'
+    }
+    if ($null -eq $offMs) {
+        Stop-MishRotationAcceptance 'PRODUCT_RESTORE_OFF_FAILED' 'Normal PRODUCT stop did not restore airplane OFF after observed ON.'
+    }
+
+    $postStopEvidenceFailure = $null
+    if (-not $runtimeCredentialCleared) {
+        $postStopEvidenceFailure = [pscustomobject][ordered]@{
+            classification = 'PRODUCT_RUNTIME_CREDENTIAL_NOT_CLEARED'
+            message = 'Stopped runtime retained active credential material/version projection.'
+        }
+        Write-Host (
+            'MISH_U5_RESTORE_POST_STOP_EVIDENCE_FAILURE=' +
+            "runtime=$([bool]$postStopSnapshot.runtime.running);" +
+            "runtime_generation=$([int64]$postStopSnapshot.runtime.generation);" +
+            "proxy=$([string]$postStopSnapshot.proxy.state);" +
+            "credential_active=$([bool]$postStopSnapshot.credential.active);" +
+            "credential_version=$(Get-MishOptionalInt64 $postStopSnapshot.credential.version);" +
+            "readiness=$([string]$postStopSnapshot.readiness.state);" +
+            "rotation=$([string]$postStopSnapshot.rotation.state);" +
+            "rotation_active_tasks=$([int64]$postStopSnapshot.rotation.active_tasks)"
+        )
+    }
+    else {
+        Write-Host 'MISH_U5_RESTORE_PHASE=RUNTIME_STOPPED_CREDENTIAL_CLEARED'
+    }
+    Write-Host 'MISH_U5_RESTORE_PHASE=AIRPLANE_OFF_OBSERVED'
+
+    # A failed post-stop evidence invariant must not strand DEVICE-1 in a stopped state.
+    # Restore normal PRODUCT runtime first, then preserve and report the original failure.
+    Write-Host 'MISH_U5_RESTORE_PHASE=RESTART_START'
+    $restartRequestedAt = [Environment]::TickCount64
+    Invoke-MishActivityTrigger -Component $script:StartComponent -Operation 'restore_restart_trigger'
+    $readyDeadline = [Environment]::TickCount64 + ([int64]$script:RecoveryDeadlineSeconds * 1000)
+    $ready = $null
+    while ([Environment]::TickCount64 -lt $readyDeadline) {
+        $ready = Get-MishAndroidSnapshot
+        if (
+            [bool]$ready.runtime.running -and
+            [bool]$ready.cellular.admitted -and
+            [bool]$ready.root.policy_authorized -and
+            [string]$ready.readiness.state -ceq 'READY' -and
+            [bool]$ready.mesh.ingress_running
+        ) { break }
+        Start-Sleep -Milliseconds 150
+    }
+
+    $restartElapsedMs = [Environment]::TickCount64 - $restartRequestedAt
+    $restartPid = Get-MishOptionalInt64 $ready.pid
+    $restartOwner = Get-MishOptionalInt64 $ready.cellular.owner_sequence
+    $restartRootGeneration = Get-MishOptionalInt64 $ready.root.policy_authorized_generation
+    $restartCredentialVersion = Get-MishOptionalInt64 $ready.credential.version
+    $restartRotationOperation = Get-MishOptionalInt64 $ready.rotation.operation_id
+    $restartPidChanged = $null -ne $restartPid -and [int64]$restartPid -ne [int64]$ExpectedProcessId
+    Write-Host (
+        'MISH_U5_RESTORE_RESTART_STATE=' +
+        "elapsed_ms=$restartElapsedMs;" +
+        "pid=$restartPid;" +
+        "pid_changed=$restartPidChanged;" +
+        "runtime=$([bool]$ready.runtime.running);" +
+        "runtime_generation=$([int64]$ready.runtime.generation);" +
+        "cellular=$([bool]$ready.cellular.admitted);" +
+        "owner=$restartOwner;" +
+        "cellular_reconcile_pending=$([bool]$ready.cellular.reconcile.pending);" +
+        "cellular_reconcile_requested=$([int64]$ready.cellular.reconcile.requested);" +
+        "cellular_reconcile_executed=$([int64]$ready.cellular.reconcile.executed);" +
+        "root=$([bool]$ready.root.policy_authorized);" +
+        "root_generation=$restartRootGeneration;" +
+        "root_recovery_pending=$([bool]$ready.root.recovery.pending);" +
+        "root_recovery_attempts=$([int64]$ready.root.recovery.attempts_since_reset);" +
+        "readiness=$([string]$ready.readiness.state);" +
+        "readiness_binding=$([bool]$ready.readiness.binding_eligible);" +
+        "readiness_probe=$([string]$ready.readiness.probe_state);" +
+        "mesh_admitted=$([bool]$ready.mesh.admitted);" +
+        "mesh_ingress=$([bool]$ready.mesh.ingress_running);" +
+        "rotation=$([string]$ready.rotation.state);" +
+        "rotation_operation=$restartRotationOperation;" +
+        "rotation_active_tasks=$([int64]$ready.rotation.active_tasks);" +
+        "credential_active=$([bool]$ready.credential.active);" +
+        "credential_version=$restartCredentialVersion"
+    )
+
+    Assert-MishReadyBaseline -Snapshot $ready
+    if ([int64]$ready.credential.version -ne $ExpectedCredentialVersion) {
+        Stop-MishRotationAcceptance 'PRODUCT_CREDENTIAL_CHANGED' 'Credential version changed after restore restart.'
+    }
+    Write-Host 'MISH_U5_RESTORE_PHASE=READY'
+    if ($null -ne $postStopEvidenceFailure) {
+        Write-Host 'MISH_U5_RESTORE_PHASE=READY_AFTER_EVIDENCE_FAILURE'
+        Stop-MishRotationAcceptance `
+            ([string]$postStopEvidenceFailure.classification) `
+            ([string]$postStopEvidenceFailure.message)
+    }
+
+    return [pscustomobject][ordered]@{
+        airplane_on_observed = $true
+        airplane_fast_observer = $airplaneObserverResult
+        airplane_timing_sample_estimate = $true
+        request_to_airplane_on_ms = $observedOnMs
+        stop_requested_after_on = $true
+        runtime_stopped_observed = $runtimeStopped
+        runtime_credential_cleared = $runtimeCredentialCleared
+        restore_off_observed = $true
+        on_to_restore_off_ms = $offMs - $observedOnMs
+        restart_pid_before = $ExpectedProcessId
+        restart_pid_after = $restartPid
+        restart_process_stable = -not $restartPidChanged
+        restart_recovery_elapsed_ms = $restartElapsedMs
+        runtime_restarted_ready = $true
+    }
+}
+
+if (-not (Test-Path -LiteralPath $AdbPath -PathType Leaf)) {
+    Stop-MishRotationAcceptance 'LAB_ADB_MISSING' 'Canonical ADB executable is unavailable.'
+}
+
+$initial = Get-MishAndroidSnapshot
+Assert-MishReadyBaseline -Snapshot $initial
+if ((Get-MishAirplaneState) -cne 'DISABLED') {
+    Stop-MishRotationAcceptance 'PRODUCT_AIRPLANE_BASELINE_ON' 'Acceptance baseline requires airplane OFF.'
+}
+
+$credentialBefore = New-MishCredentialLease
+$credentialVersion = [int64]$initial.credential.version
+if ([int64]$credentialBefore.CredentialVersion -ne $credentialVersion) {
+    Stop-MishRotationAcceptance 'PRODUCT_CREDENTIAL_VERSION_MISMATCH' 'Provisioned credential version does not match native owner diagnostics.'
+}
+$metricsBefore = Get-MishProcessMetrics -Snapshot $initial
+if ($metricsBefore.forbidden_kotlin_owner_threads -ne 0) {
+    Stop-MishRotationAcceptance 'PRODUCT_EXECUTION_TOPOLOGY_INVALID' 'Removed Kotlin PRODUCT owner threads are still observable.'
+}
+
+$operations = [System.Collections.Generic.List[object]]::new()
+for ($ordinal = 1; $ordinal -le $SuccessfulOperations; $ordinal++) {
+    $operations.Add((Invoke-MishOneRotation -Ordinal $ordinal -ExpectedCredentialVersion $credentialVersion))
+}
+
+$postRotationSnapshot = Get-MishAndroidSnapshot
+Assert-MishReadyBaseline -Snapshot $postRotationSnapshot
+$metricsAfterRotations = Get-MishProcessMetrics -Snapshot $postRotationSnapshot
+$runtimeGenerationStableAcrossRotations = (
+    [int64]$metricsAfterRotations.runtime_generation -eq [int64]$metricsBefore.runtime_generation
+)
+$rootSessionStableAcrossRotations = (
+    $null -ne $metricsBefore.root_session_generation -and
+    $null -ne $metricsAfterRotations.root_session_generation -and
+    [int64]$metricsAfterRotations.root_session_generation -eq [int64]$metricsBefore.root_session_generation
+)
+$rotationTasksQuiescent = (
+    [int64]$metricsBefore.rotation_active_tasks -eq 0 -and
+    [int64]$metricsAfterRotations.rotation_active_tasks -eq 0
+)
+$runtimeIoStableAcrossRotations = (
+    [int]$metricsAfterRotations.runtime_io_threads -eq [int]$metricsBefore.runtime_io_threads
+)
+$threadsNoGrowthAcrossRotations = (
+    [int]$metricsAfterRotations.threads -le [int]$metricsBefore.threads
+)
+$fdsNoGrowthAcrossRotations = (
+    [int]$metricsAfterRotations.fd_count -le [int]$metricsBefore.fd_count
+)
+$ownerSessionsQuiescentAfterRotations = (
+    [int64]$metricsAfterRotations.proxy_active_sessions -eq 0 -and
+    ($null -eq $metricsAfterRotations.mesh_active_sessions -or [int64]$metricsAfterRotations.mesh_active_sessions -eq 0)
+)
+if (
+    -not $runtimeGenerationStableAcrossRotations -or
+    -not $rootSessionStableAcrossRotations -or
+    -not $rotationTasksQuiescent -or
+    -not $threadsNoGrowthAcrossRotations -or
+    -not $fdsNoGrowthAcrossRotations -or
+    -not $ownerSessionsQuiescentAfterRotations
+) {
+    Stop-MishRotationAcceptance 'PRODUCT_ROTATION_RESOURCE_REGRESSION' 'Repeated normal rotations changed runtime/root-session ownership or leaked tasks/resources.'
+}
+
+$restoreCase = Invoke-MishShutdownRestoreAfterOn `
+    -ExpectedCredentialVersion $credentialVersion `
+    -ExpectedProcessId ([int]$metricsAfterRotations.pid)
+$resourceQuiescence = Wait-MishResourceQuiescence -BaselineMetrics $metricsBefore
+if ($null -eq $resourceQuiescence.metrics) {
+    Stop-MishRotationAcceptance 'LAB_PROCESS_METRICS_UNAVAILABLE' 'No post-restart resource sample was collected.'
+}
+$metricsAfter = $resourceQuiescence.metrics
+$credentialAfter = New-MishCredentialLease
+
+$credentialMaterialUnchanged = (
+    [string]$credentialBefore.CredentialVersion -ceq [string]$credentialAfter.CredentialVersion -and
+    [string]$credentialBefore.CredentialId -ceq [string]$credentialAfter.CredentialId -and
+    [string]$credentialBefore.ProxyUserName -ceq [string]$credentialAfter.ProxyUserName -and
+    (Test-MishSecureStringEqual -Left $credentialBefore.ProxyPassword -Right $credentialAfter.ProxyPassword)
+)
+if (-not $credentialMaterialUnchanged) {
+    Stop-MishRotationAcceptance 'PRODUCT_CREDENTIAL_CHANGED' 'Credential version or material changed across ordinary IP rotations.'
+}
+
+$pidStable = [int]$metricsBefore.pid -eq [int]$metricsAfter.pid
+$runtimeIoStable = [int]$metricsAfter.runtime_io_threads -eq [int]$metricsBefore.runtime_io_threads
+$forbiddenKotlinOwnersAbsent = [int]$metricsAfter.forbidden_kotlin_owner_threads -eq 0
+$threadsBounded = [int]$metricsAfter.threads -le [int]$metricsBefore.threads
+$fdsBounded = [int]$metricsAfter.fd_count -le [int]$metricsBefore.fd_count
+$sessionsQuiescent = (
+    [int64]$metricsAfter.proxy_active_sessions -eq 0 -and
+    ($null -eq $metricsAfter.mesh_active_sessions -or [int64]$metricsAfter.mesh_active_sessions -eq 0)
+)
+
+$acceptance = (
+    $credentialMaterialUnchanged -and
+    $runtimeGenerationStableAcrossRotations -and
+    $rootSessionStableAcrossRotations -and
+    $rotationTasksQuiescent -and
+    $threadsNoGrowthAcrossRotations -and
+    $fdsNoGrowthAcrossRotations -and
+    $ownerSessionsQuiescentAfterRotations -and
+    $forbiddenKotlinOwnersAbsent -and
+    [bool]$resourceQuiescence.accepted -and
+    $threadsBounded -and
+    $fdsBounded -and
+    $sessionsQuiescent -and
+    (Get-MishAirplaneState) -ceq 'DISABLED'
+)
+$classification = if ($acceptance) { 'U5_ROTATION_PHYSICAL_ACCEPTANCE_PASS' } else { 'U5_ROTATION_RESOURCE_REGRESSION' }
+
+$evidence = [ordered]@{
+    schema = $script:Schema
+    collected_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
+    acceptance_result = if ($acceptance) { 'PASS' } else { 'FAIL' }
+    classification = $classification
+    successful_operations = @($operations)
+    shutdown_restore_after_on = $restoreCase
+    credential = [ordered]@{
+        version = $credentialVersion
+        version_unchanged = [string]$credentialBefore.CredentialVersion -ceq [string]$credentialAfter.CredentialVersion
+        material_unchanged = $credentialMaterialUnchanged
+        secrets_persisted_in_evidence = $false
+    }
+    raw_ip_persisted = $false
+    resources = [ordered]@{
+        before = $metricsBefore
+        after_normal_rotations = $metricsAfterRotations
+        after_restore_restart = $metricsAfter
+        restart_resource_quiescence = $resourceQuiescence
+        pid_stable = $pidStable
+        runtime_generation_stable_across_normal_rotations = $runtimeGenerationStableAcrossRotations
+        root_session_stable_across_normal_rotations = $rootSessionStableAcrossRotations
+        rotation_tasks_quiescent = $rotationTasksQuiescent
+        runtime_io_thread_name_observation_required = $false
+        runtime_io_threads_stable_across_normal_rotations = $runtimeIoStableAcrossRotations
+        total_threads_no_growth_across_normal_rotations = $threadsNoGrowthAcrossRotations
+        file_descriptors_no_growth_across_normal_rotations = $fdsNoGrowthAcrossRotations
+        owner_sessions_quiescent_after_normal_rotations = $ownerSessionsQuiescentAfterRotations
+        runtime_io_threads_stable = $runtimeIoStable
+        forbidden_kotlin_owner_threads_absent = $forbiddenKotlinOwnersAbsent
+        total_threads_no_growth = $threadsBounded
+        file_descriptors_no_growth = $fdsBounded
+        owner_sessions_quiescent = $sessionsQuiescent
+    }
+    final_airplane = Get-MishAirplaneState
+}
+
+$fullPath = [IO.Path]::GetFullPath($EvidencePath)
+$parent = Split-Path -Parent $fullPath
+if ($parent) { [IO.Directory]::CreateDirectory($parent) | Out-Null }
+[IO.File]::WriteAllText(
+    $fullPath,
+    (($evidence | ConvertTo-Json -Depth 18) + [Environment]::NewLine),
+    [Text.UTF8Encoding]::new($false)
+)
+
+Write-Host "MISH_U5_ROTATION_ACCEPTANCE=$([string]$evidence.acceptance_result)"
+Write-Host "MISH_U5_ROTATION_CLASSIFICATION=$classification"
+Write-Host "MISH_U5_ROTATION_OPERATIONS=$SuccessfulOperations"
+Write-Host "MISH_U5_ROTATION_CREDENTIAL_STABLE=$credentialMaterialUnchanged"
+Write-Host "MISH_U5_ROTATION_RAW_IP_PERSISTED=false"
+Write-Host "MISH_U5_ROTATION_FINAL_AIRPLANE=$([string]$evidence.final_airplane)"
+Write-Host "MISH_U5_ROTATION_EVIDENCE=$fullPath"
+
+if (-not $acceptance) {
+    Stop-MishRotationAcceptance $classification 'Physical U5 rotation/resource acceptance did not satisfy all invariants.'
+}
+)
+    if (-not $threadsMatch.Success -or -not $rssMatch.Success) {
+        Stop-MishRotationAcceptance 'LAB_PROCESS_METRICS_UNAVAILABLE' 'PRODUCT thread count/VmRSS is unavailable.'
+    }
+
+    # Keep the U7 resource observation byte-for-byte aligned with the proven capacity probe:
+    # list app-owned /proc FDs directly and count on the host. The old sh|wc form under-counted
+    # on DEVICE-1 and is not valid U7 resource evidence.
+    $fdListing = Invoke-MishAdbText -Operation 'observe_fd_count' -Arguments @(
+        'shell', 'run-as', $PackageName, 'ls', '-1', "/proc/$processId/fd"
+    )
+    $fdCount = @($fdListing -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+    if ($fdCount -le 0) {
         Stop-MishRotationAcceptance 'LAB_PROCESS_METRICS_UNAVAILABLE' 'PRODUCT FD count is unavailable.'
+    }
+
+    $meminfo = Invoke-MishAdbText -Operation 'observe_process_pss' -Arguments @(
+        'shell', 'dumpsys', 'meminfo', '-s', [string]$processId
+    )
+    $pssMatch = [regex]::Match($meminfo, '(?m)^\s*TOTAL PSS:\s*(?<value>\d+)\b')
+    if (-not $pssMatch.Success) {
+        $pssMatch = [regex]::Match($meminfo, '(?m)^\s*TOTAL\s+(?<value>\d+)\s+')
+    }
+    if (-not $pssMatch.Success) {
+        Stop-MishRotationAcceptance 'LAB_PROCESS_METRICS_UNAVAILABLE' 'PRODUCT PSS is unavailable.'
     }
 
     # Toybox CMD is the per-thread command name. Enumerate all visible threads and filter
