@@ -116,14 +116,20 @@ Diagnostics never chooses a repair. No automatic targeted probe is allowed. Anal
 
 One explicit request produces one GitHub Actions Device Cycle run. There is no automatic start from build completion, PR merge, main merge, label or artifact publication.
 
-Device Cycle is started only with GitHub Actions `workflow_dispatch` from the current protected `main`. There is no PR trigger and no issue-comment command trigger. Every run requires explicit inputs:
+Device Cycle is started only by an explicit human/operator request against the current protected `main`. There is no PR/build/merge/artifact auto-start. Two equivalent manual entry points are supported:
 
 ```text
-pr_number  = <PR that owns the immutable candidate>
-product_sha = <exact 40-hex PRODUCT_SHA>
-mode        = full | install_only | diagnose_only | probe_only
-probe       = none | capacity_resources | recovery_lifecycle | dns_lifetime_live | u5_rotation | loopback_connect
+GitHub Actions workflow_dispatch:
+  pr_number   = <PR that owns the immutable candidate>
+  product_sha = <exact 40-hex PRODUCT_SHA>
+  mode        = full | install_only | diagnose_only | probe_only
+  probe       = none | capacity_resources | recovery_lifecycle | dns_lifetime_live | u5_rotation | loopback_connect
+
+Repository-owner operator comment:
+  /mish-cycle <PR> <PRODUCT_SHA> <mode> <probe>
 ```
+
+The comment form is accepted only from repository owner `iamaman11` and is an explicit operator command, not an automatic reaction to build or merge state. Both entry points normalize into the same resolver and exact provenance checks.
 
 `probe_only` requires `probe=loopback_connect`.
 
@@ -164,7 +170,7 @@ Normal path:
 
 ```text
 successful exact hosted artifact already exists
- -> explicit workflow_dispatch from protected main after analysis
+ -> explicit workflow_dispatch or owner /mish-cycle command from protected main after analysis
  -> verify PR/base/source identity
  -> verify accepted producer policy
  -> verify hosted run/artifact/digest provenance
