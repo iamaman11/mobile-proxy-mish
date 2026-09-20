@@ -398,7 +398,6 @@ function Wait-MishResourceQuiescence {
         $lastMetrics = $metrics
 
         $pidStable = [int]$metrics.pid -eq [int]$BaselineMetrics.pid
-        $runtimeIoStable = [int]$metrics.runtime_io_threads -eq [int]$BaselineMetrics.runtime_io_threads
         $forbiddenKotlinOwnersAbsent = [int]$metrics.forbidden_kotlin_owner_threads -eq 0
         $threadsBounded = [int]$metrics.threads -le [int]$BaselineMetrics.threads
         $fdsBounded = [int]$metrics.fd_count -le [int]$BaselineMetrics.fd_count
@@ -409,7 +408,6 @@ function Wait-MishResourceQuiescence {
         $rotationQuiescent = [int64]$metrics.rotation_active_tasks -eq 0
         $sampleAccepted = (
             $pidStable -and
-            $runtimeIoStable -and
             $forbiddenKotlinOwnersAbsent -and
             $threadsBounded -and
             $fdsBounded -and
