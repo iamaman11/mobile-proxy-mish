@@ -32,6 +32,7 @@ on:
           - recovery_lifecycle
           - dns_lifetime_live
           - u5_rotation
+          - u7_runtime_restart_resources
           - loopback_connect
   issue_comment:
     types: [created]
@@ -107,7 +108,7 @@ jobs:
               match = re.fullmatch(
                   r"/mish-cycle\s+([1-9][0-9]*)\s+([0-9a-f]{40})\s+"
                   r"(full|install_only|diagnose_only|probe_only)\s+"
-                  r"(none|capacity_resources|recovery_lifecycle|dns_lifetime_live|u5_rotation|loopback_connect)",
+                  r"(none|capacity_resources|recovery_lifecycle|dns_lifetime_live|u5_rotation|u7_runtime_restart_resources|loopback_connect)",
                   body,
               )
               if match is None:
@@ -157,8 +158,8 @@ jobs:
               if probe != 'loopback_connect':
                   raise SystemExit('probe_only supports only the current-function loopback_connect probe')
           elif mode == 'full':
-              if probe not in {'none', 'capacity_resources', 'recovery_lifecycle', 'dns_lifetime_live', 'u5_rotation'}:
-                  raise SystemExit('full accepts only none, capacity_resources, recovery_lifecycle, dns_lifetime_live, or u5_rotation')
+              if probe not in {'none', 'capacity_resources', 'recovery_lifecycle', 'dns_lifetime_live', 'u5_rotation', 'u7_runtime_restart_resources'}:
+                  raise SystemExit('full accepts only none, capacity_resources, recovery_lifecycle, dns_lifetime_live, u5_rotation, or u7_runtime_restart_resources')
           elif probe != 'none':
               raise SystemExit('install_only/diagnose_only require probe=none')
           PY
@@ -614,6 +615,18 @@ jobs:
             -AdbPath $env:ADB_EXE `
             -PackageName $env:PACKAGE_NAME `
             -SuccessfulOperations 3 `
+            -EvidencePath "$env:RUNNER_TEMP\\mish-targeted-probe-v1.json"
+
+      - name: Explicit U7 runtime restart resources - same-process STOP/START
+        if: ${{ needs.resolve.outputs.mode == 'full' && needs.resolve.outputs.probe == 'u7_runtime_restart_resources' && steps.baseline.outcome == 'success' }}
+        continue-on-error: true
+        shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\diagnose-u7-runtime-restart-resources.ps1 `
+            -AdbPath $env:ADB_EXE `
+            -PackageName $env:PACKAGE_NAME `
+            -Cycles 3 `
             -EvidencePath "$env:RUNNER_TEMP\\mish-targeted-probe-v1.json"
 
       - name: Download exact candidate harness for recovery lifecycle
