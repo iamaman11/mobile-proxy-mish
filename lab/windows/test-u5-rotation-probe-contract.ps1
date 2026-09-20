@@ -47,6 +47,12 @@ foreach ($required in @(
     'rotation_tasks_quiescent',
     'runtime_io_thread_name_observation_required = $false',
     'runtime_io_threads_stable_across_normal_rotations',
+    'restart_resource_quiescence',
+    'Wait-MishResourceQuiescence',
+    'RequiredConsecutiveSamples = 2',
+    'DeadlineSeconds = 15',
+    'thread_name_set = @($threadNameSet)',
+    '[bool]$resourceQuiescence.accepted',
     'forbidden_kotlin_owner_threads_absent',
     'file_descriptors_no_growth_across_normal_rotations',
     'owner_sessions_quiescent_after_normal_rotations',
@@ -143,7 +149,9 @@ foreach ($forbidden in @(
     'foreach ($argument in @(''shell'', $shell))',
     'Invoke-MishActivityTrigger -Component $script:StopComponent -Operation ''restore_stop_trigger''',
     'Credential version changed during restore case.',
-    '$airplane = Get-MishAirplaneState'
+    '$airplane = Get-MishAirplaneState',
+    '$metricsAfter.threads -le ([int]$metricsBefore.threads +',
+    '$threadsBounded = $true'
 )) {
     if ($source.Contains($forbidden)) {
         throw "U5 rotation acceptance probe contains forbidden duplicate PRODUCT/control/secret path: $forbidden"
