@@ -9,6 +9,8 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.unit.Density
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 
@@ -18,6 +20,7 @@ class MainScreenInstrumentedTest {
 
     @Test
     fun readyDashboardShowsStatusHealthProxyAndEnabledAction() {
+        var changeRequests = 0
         compose.setContent {
             MishTheme(darkTheme = false) {
                 MainScreen(
@@ -25,7 +28,7 @@ class MainScreenInstrumentedTest {
                     credentialReveal = CredentialRevealUiState.Hidden,
                     diagnosticsExpanded = false,
                     onDiagnosticsExpandedChange = {},
-                    onChangeIp = {},
+                    onChangeIp = { changeRequests += 1 },
                     onShowCredentials = {},
                     onHideCredentials = {},
                 )
@@ -41,6 +44,8 @@ class MainScreenInstrumentedTest {
         compose.onNodeWithText("Change IP")
             .assertHasClickAction()
             .assertIsEnabled()
+            .performClick()
+        assertEquals(1, changeRequests)
     }
 
     @Test
@@ -193,7 +198,27 @@ class MainScreenInstrumentedTest {
     }
 
     @Test
+    fun unavailableCredentialStateIsExplicitAndContainsNoMaterial() {
+        compose.setContent {
+            MishTheme {
+                MainScreen(
+                    state = readyState(),
+                    credentialReveal = CredentialRevealUiState.Unavailable,
+                    diagnosticsExpanded = false,
+                    onDiagnosticsExpandedChange = {},
+                    onChangeIp = {},
+                    onShowCredentials = {},
+                    onHideCredentials = {},
+                )
+            }
+        }
+        compose.onNodeWithText("Current proxy credentials are unavailable.").assertExists()
+        compose.onNodeWithText("proxy-secret").assertDoesNotExist()
+    }
+
+    @Test
     fun explicitCredentialDialogCanRevealAndHideMaterial() {
+        var hideRequested = false
         compose.setContent {
             MishTheme {
                 MainScreen(
@@ -207,13 +232,14 @@ class MainScreenInstrumentedTest {
                     onDiagnosticsExpandedChange = {},
                     onChangeIp = {},
                     onShowCredentials = {},
-                    onHideCredentials = {},
+                    onHideCredentials = { hideRequested = true },
                 )
             }
         }
         compose.onNodeWithText("proxy-user").assertExists()
         compose.onNodeWithText("proxy-secret").assertExists()
-        compose.onNodeWithText("Hide").assertHasClickAction()
+        compose.onNodeWithText("Hide").assertHasClickAction().performClick()
+        assertTrue(hideRequested)
     }
 
     private fun readyState(): ProductUiState = ProductUiState(
