@@ -7,7 +7,10 @@ import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.unit.Density
 import org.junit.Rule
 import org.junit.Test
 
@@ -36,9 +39,38 @@ class MainScreenInstrumentedTest {
         compose.onNodeWithText("198.51.100.10").assertExists()
         compose.onNodeWithText("Root policy").assertExists()
         compose.onNodeWithText("HTTP CONNECT — 100.96.2.4:3128").assertExists()
+        compose.onNodeWithText("IP changed").assertExists()
         compose.onNodeWithText("Change IP")
             .assertHasClickAction()
             .assertIsEnabled()
+    }
+
+    @Test
+    fun largeFontScalePreservesReadableStatusAndPrimaryActionSemantics() {
+        compose.setContent {
+            val baseDensity = LocalDensity.current
+            CompositionLocalProvider(
+                LocalDensity provides Density(
+                    density = baseDensity.density,
+                    fontScale = 2.0f,
+                ),
+            ) {
+                MishTheme(darkTheme = false) {
+                    MainScreen(
+                        state = readyState(),
+                        credentialReveal = CredentialRevealUiState.Hidden,
+                        diagnosticsExpanded = false,
+                        onDiagnosticsExpandedChange = {},
+                        onChangeIp = {},
+                        onShowCredentials = {},
+                        onHideCredentials = {},
+                    )
+                }
+            }
+        }
+
+        compose.onNodeWithText("READY").assertExists()
+        compose.onNodeWithText("Product connectivity is ready.").assertExists()
     }
 
     @Test
