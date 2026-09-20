@@ -456,7 +456,7 @@ mod tests {
         assert_eq!(sessions.capacity_rejects(), 0);
         assert!(
             sessions.try_admit().is_none(),
-            "session above external budget must be rejected"
+            "65th session must be rejected"
         );
         assert_eq!(sessions.capacity_rejects(), 1);
         assert!(sessions.try_admit().is_none());
