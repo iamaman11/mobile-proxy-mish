@@ -123,14 +123,22 @@ def main() -> None:
         "cargo fmt --all --check",
         "cargo clippy --workspace --all-targets --locked -- -D warnings",
         "cargo test --workspace --locked",
-        "name: Android Compose Shell",
-        "needs: [control, device-contracts, rust]",
-        "Require control and Rust gates",
+        "name: Android Build/Test",
+        "needs: [control, device-contracts]",
+        "Require control gates",
         "Fast Kotlin compile and lint",
         "Unit test and assemble exact-head candidate",
         "Verify exact PRODUCT candidate contract",
         "python3 tools/verify_android_candidate.py",
         "mish-device-candidate-v1",
+        "device-candidate-staging-pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}",
+        "retention-days: 1",
+        "name: Android Compose Shell",
+        "needs: [control, device-contracts, rust, android-build]",
+        "Require complete PRODUCT gates",
+        "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+        "Re-verify staged candidate identity",
+        "Publish canonical exact-head device candidate",
         "device-candidate-pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}",
         "retention-days: 7",
         "Local build required: **NO**",
@@ -144,6 +152,21 @@ def main() -> None:
     forbid(producer, "sing-box", "native candidate producer must not know the deleted external proxy runtime")
     forbid(producer, "Generate and verify native UniFFI contract", "UniFFI surface verification must have one authority in verify_android_candidate.py")
     forbid(producer, "cargo build -p mish-android-ffi --locked", "Rust required-check must not duplicate the Android candidate native build")
+    require_regex(
+        producer,
+        r"(?s)android-build:\n.*?name: Android Build/Test\n\s+needs: \[control, device-contracts\]",
+        "Android Build/Test must run in parallel with Rust after shared lightweight gates",
+    )
+    require_regex(
+        producer,
+        r"(?s)android:\n.*?name: Android Compose Shell\n\s+needs: \[control, device-contracts, rust, android-build\]",
+        "required Android Compose Shell context must be the final Rust+Android aggregate candidate gate",
+    )
+    forbid_regex(
+        producer,
+        r"(?s)android-build:\n.*?needs: \[[^\]]*rust",
+        "heavy Android build/test must not wait for Rust Workspace",
+    )
 
     product_verifier = "tools/verify_android_candidate.py"
     for required in ("libmish_android_ffi.so", "libsingbox.so"):
