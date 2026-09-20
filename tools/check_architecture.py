@@ -2147,11 +2147,16 @@ def main() -> None:
             "U6 UI facts must be typed read-only projections of existing Rust owners",
         )
 
-    require_product(
-        "crates/android-ffi/src/transport_ffi.rs",
-        "endpoint: admission.admitted_endpoint().map",
-        "U6 proxy endpoint presentation must project the existing Mesh endpoint owner fact",
-    )
+    for required in (
+        "endpoint: admission",
+        ".admitted_endpoint()",
+        ".map(|address| address.to_string())",
+    ):
+        require_product(
+            "crates/android-ffi/src/transport_ffi.rs",
+            required,
+            "U6 proxy endpoint presentation must project the existing Mesh endpoint owner fact",
+        )
     require(
         controller,
         "productRuntime.observeRotation(",
