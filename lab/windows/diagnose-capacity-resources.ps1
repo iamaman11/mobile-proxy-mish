@@ -792,8 +792,15 @@ $evidence = [ordered]@{
     target = "${TargetHost}:$TargetPort"
     held_session_protocol = 'TLS+HTTP'
     application_live_semantics = 'fresh HTTP HEAD round-trip on the same established TLS connection'
-    acceptance_profile = 'fast-linear-v1'
-    batch_model = 'single_monotonic'
+    measurement_stage = 'U7'
+    acceptance_profile = 'u7-baseline-v1'
+    batch_model = 'independent_bounded'
+    measurement_limitations = [ordered]@{
+        process_wakeups = 'UNSUPPORTED_NO_RELIABLE_PROCESS_COUNTER'
+        target_outbound_connect_latency = 'UNSUPPORTED_WITHOUT_PRODUCT_INSTRUMENTATION'
+        dns_latency_distribution = 'UNSUPPORTED_OWNER_EXPOSES_BOUNDED_MAX_ONLY'
+        relay_throughput = 'UNSUPPORTED_BY_BOUNDED_HEAD_LIVENESS_PROFILE'
+    }
     stages = @($stages)
     pre_overflow_application_liveness = $preOverflowLiveness
     pre_overflow_owner_counts = $preOverflowOwnerCounts
