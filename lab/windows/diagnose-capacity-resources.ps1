@@ -440,6 +440,63 @@ function Get-MishProcessResources {
     }
 }
 
+function Get-MishSafeOwnerDiagnostics {
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    $snapshot = Get-MishAndroidSnapshot
+    $watch.Stop()
+    return [ordered]@{
+        capture_elapsed_ms = [int64]$watch.ElapsedMilliseconds
+        consistent = [bool]$snapshot.consistent
+        runtime_generation = [int64]$snapshot.runtime.generation
+        dns = [ordered]@{
+            started = [int64]$snapshot.cellular.dns.started
+            completed = [int64]$snapshot.cellular.dns.completed
+            active = [int64]$snapshot.cellular.dns.active
+            peak_active = [int64]$snapshot.cellular.dns.peak_active
+            slow_completions = [int64]$snapshot.cellular.dns.slow_completions
+            resolver_failed = [int64]$snapshot.cellular.dns.resolver_failed
+            discarded_after_deadline = [int64]$snapshot.cellular.dns.discarded_after_deadline
+            completed_after_owner_change = [int64]$snapshot.cellular.dns.completed_after_owner_change
+            discarded_stale = [int64]$snapshot.cellular.dns.discarded_stale
+            authority_validation_failed = [int64]$snapshot.cellular.dns.authority_validation_failed
+            unusable_result = [int64]$snapshot.cellular.dns.unusable_result
+            accepted_current = [int64]$snapshot.cellular.dns.accepted_current
+            max_native_elapsed_ms = [int64]$snapshot.cellular.dns.max_native_elapsed_ms
+            latency_distribution_supported = $false
+            latency_distribution_reason = 'OWNER_EXPOSES_BOUNDED_MAX_NOT_HISTOGRAM'
+        }
+        root = [ordered]@{
+            session_generation = if ($null -ne $snapshot.root.session_generation) { [int64]$snapshot.root.session_generation } else { $null }
+            policy_authorized = [bool]$snapshot.root.policy_authorized
+            reconcile_attempts = [int64]$snapshot.root.reconcile.attempts
+            total_executor_commands = [int64]$snapshot.root.reconcile.total_executor_commands
+            total_observation_commands = [int64]$snapshot.root.reconcile.total_observation_commands
+            total_mutation_commands = [int64]$snapshot.root.reconcile.total_mutation_commands
+            last_reconcile_elapsed_ms = [int64]$snapshot.root.reconcile.last_reconcile_elapsed_ms
+            max_reconcile_elapsed_ms = [int64]$snapshot.root.reconcile.max_reconcile_elapsed_ms
+            last_policy_effect_elapsed_ms = [int64]$snapshot.root.reconcile.last_policy_effect_elapsed_ms
+            max_policy_effect_elapsed_ms = [int64]$snapshot.root.reconcile.max_policy_effect_elapsed_ms
+        }
+        proxy_active_sessions = [int64]$snapshot.proxy.active_sessions
+        mesh_active_sessions = [int64]$snapshot.mesh.active_sessions
+        rotation_active_tasks = [int64]$snapshot.rotation.active_tasks
+        readiness_state = [string]$snapshot.readiness.state
+    }
+}
+
+function Get-MishResourceDelta {
+    param(
+        [Parameter(Mandatory)] $Current,
+        [Parameter(Mandatory)] $Baseline
+    )
+    return [ordered]@{
+        threads = [int]$Current.threads - [int]$Baseline.threads
+        fd_count = [int]$Current.fd_count - [int]$Baseline.fd_count
+        rss_kb = [int64]$Current.rss_kb - [int64]$Baseline.rss_kb
+        pss_kb = [int64]$Current.pss_kb - [int64]$Baseline.pss_kb
+    }
+}
+
 if (-not (Test-Path -LiteralPath $AdbPath -PathType Leaf)) {
     Stop-MishCapacityProbe 'ADB_MISSING' 'Canonical ADB executable is missing.'
 }
