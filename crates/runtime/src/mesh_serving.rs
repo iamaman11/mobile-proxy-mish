@@ -467,8 +467,7 @@ mod tests {
     }
 
     #[test]
-    fn session_above_transport_budget_is_rejected_before_backend_without_evicting_existing_sessions()
-    {
+    fn session_above_transport_budget_is_rejected_before_backend() {
         let runtime = test_runtime();
         let execution = MeshExecutionOwner::new();
         let sessions = MeshSessionOwner::product_generation();
