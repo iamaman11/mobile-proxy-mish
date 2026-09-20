@@ -7,8 +7,8 @@
 use crate::{
     CellularDnsResolver, CellularPolicyObserver, MeshRuntimeObserver, ProductGeneration,
     ProxyRuntimeObserver, ReadinessObserver, RotationObserver, RuntimeExecutionError,
-    RuntimeExecutor, RuntimeLifecycle,
-    RuntimeLifecycleState, RuntimeStartAction, RuntimeStopAction,
+    RuntimeExecutor, RuntimeLifecycle, RuntimeLifecycleState, RuntimeStartAction,
+    RuntimeStopAction,
 };
 use mish_cellular::{
     CellularAdmissionSnapshot, NetworkHandle, NetworkObservation, RootPolicyNamespace,

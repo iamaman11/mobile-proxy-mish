@@ -19,13 +19,13 @@ use mish_rotation::{
 };
 use mish_runtime::{
     CellularPolicyObserver, CellularPolicyPublication, CellularReconcileDiagnostic,
-    CellularRequestRearmEffect, ProductDiagnosticSnapshot, ProductRuntimeCoordinator,
-    ProductRuntimeSnapshot, ProxyRuntimeObserver, ProxyRuntimePublication,
-    ProxyServingState as OwnerProxyServingState, ReadinessDiagnosticSnapshot, ReadinessObserver,
+    CellularRequestRearmEffect, MeshRuntimeObserver, ProductDiagnosticSnapshot,
+    ProductRuntimeCoordinator, ProductRuntimeSnapshot, ProxyRuntimeObserver,
+    ProxyRuntimePublication, ProxyServingState as OwnerProxyServingState,
+    ReadinessDiagnosticSnapshot, ReadinessObserver,
     RootAuthorityStatus as OwnerRootAuthorityStatus, RootPolicyFailure as OwnerRootPolicyFailure,
     RootPolicyReconcileDiagnostic, RootPolicyResult as OwnerRootPolicyResult,
-    RootRecoveryDiagnostic, MeshRuntimeObserver, RotationObserver, RotationRuntimeStartError,
-    RuntimeExecutionError,
+    RootRecoveryDiagnostic, RotationObserver, RotationRuntimeStartError, RuntimeExecutionError,
 };
 use mish_transport::MeshVpnObservation;
 use std::fmt;
