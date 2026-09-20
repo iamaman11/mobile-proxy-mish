@@ -952,8 +952,27 @@ if ($metricsBefore.forbidden_kotlin_owner_threads -ne 0) {
 }
 
 $operations = [System.Collections.Generic.List[object]]::new()
+$rotationResourceSamples = [System.Collections.Generic.List[object]]::new()
 for ($ordinal = 1; $ordinal -le $SuccessfulOperations; $ordinal++) {
-    $operations.Add((Invoke-MishOneRotation -Ordinal $ordinal -ExpectedCredentialVersion $credentialVersion))
+    $operation = Invoke-MishOneRotation -Ordinal $ordinal -ExpectedCredentialVersion $credentialVersion
+    $operations.Add($operation)
+
+    # U7 observation only: after each fully recovered normal rotation, capture the same
+    # owner/resource snapshot. Do not add a new owner or memory acceptance threshold.
+    $sampleSnapshot = Get-MishAndroidSnapshot
+    Assert-MishReadyBaseline -Snapshot $sampleSnapshot
+    $sampleMetrics = Get-MishProcessMetrics -Snapshot $sampleSnapshot
+    $rotationResourceSamples.Add([ordered]@{
+        ordinal = $ordinal
+        operation_id = [int64]$operation.operation_id
+        metrics = $sampleMetrics
+        delta_from_before = [ordered]@{
+            threads = [int]$sampleMetrics.threads - [int]$metricsBefore.threads
+            fd_count = [int]$sampleMetrics.fd_count - [int]$metricsBefore.fd_count
+            rss_kb = [int64]$sampleMetrics.rss_kb - [int64]$metricsBefore.rss_kb
+            pss_kb = [int64]$sampleMetrics.pss_kb - [int64]$metricsBefore.pss_kb
+        }
+    })
 }
 
 $postRotationSnapshot = Get-MishAndroidSnapshot
@@ -1058,6 +1077,7 @@ $evidence = [ordered]@{
     raw_ip_persisted = $false
     resources = [ordered]@{
         before = $metricsBefore
+        per_normal_rotation = @($rotationResourceSamples)
         after_normal_rotations = $metricsAfterRotations
         after_restore_restart = $metricsAfter
         restart_resource_quiescence = $resourceQuiescence
