@@ -342,7 +342,10 @@ function Get-MishProcessMetrics {
     if ($threadNames.Count -eq 0) {
         Stop-MishRotationAcceptance 'LAB_PROCESS_METRICS_UNAVAILABLE' 'Android ps -A -T returned no PRODUCT thread rows.'
     }
-    $runtimeIo = @($threadNames | Where-Object { $_ -ceq 'mish-runtime-io' }).Count
+    # Linux/Toybox may decorate a field at its display boundary; the configured native
+    # executor namespace is unique, so observe that bounded namespace rather than one rendering.
+    $runtimeIo = @($threadNames | Where-Object { $_ -like 'mish-runtime-i*' }).Count
+    $threadNameSet = @($threadNames | Sort-Object -Unique | Select-Object -First 64)
     $forbiddenKotlinOwners = @(
         $threadNames | Where-Object {
             $_ -like 'mish-runtime-lif*' -or
@@ -355,6 +358,7 @@ function Get-MishProcessMetrics {
     ).Count
 
     Write-Host "MISH_U5_TOPOLOGY_THREAD_NAMES_OBSERVED=$($threadNames.Count)"
+    Write-Host "MISH_U5_TOPOLOGY_THREAD_NAME_SET=$($threadNameSet -join ',')"
     Write-Host "MISH_U5_TOPOLOGY_RUNTIME_IO_THREADS=$runtimeIo"
     Write-Host "MISH_U5_TOPOLOGY_FORBIDDEN_KOTLIN_OWNER_THREADS=$forbiddenKotlinOwners"
 
