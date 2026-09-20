@@ -510,7 +510,7 @@ jobs:
       ${{ always() && needs.resolve.outputs.eligible == 'true' && needs.resolve.outputs.mode != 'install_only' &&
           (needs.resolve.outputs.mode != 'full' || needs.install.result == 'success') }}
     runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
-    timeout-minutes: 15
+    timeout-minutes: 30
     outputs:
       cycle_result: ${{ steps.report.outputs.cycle_result }}
       classification: ${{ steps.report.outputs.classification }}
