@@ -51,7 +51,7 @@ class CellularRuntimeBridge(
     context: Context,
     private val productRuntime: NativeProductRuntime,
 ) : CellularObservationSink, Closeable {
-    private val observer = CellularNetworkObserver(context.applicationContext, this)
+    private val observer = CellularNetworkObserver(context, this)
     private val started = AtomicBoolean(false)
     private val closed = AtomicBoolean(false)
     private val mutableSnapshot = MutableStateFlow(initialSnapshot())
