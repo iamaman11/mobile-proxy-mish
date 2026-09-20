@@ -119,14 +119,1068 @@ function Get-MishU7PlatformObservation {
         [Parameter(Mandatory)][string] $PackageName,
         [Parameter(Mandatory)][string] $PidText
     )
-    $threadText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'run-as', $PackageName, 'sh', '-c', "cat /proc/$PidText/task/*/comm")
+    # Use the same Toybox thread topology path already proven by the canonical U5 rotation
+    # probe. DEVICE-1 did not reliably expand app-owned /proc task globs through run-as.
+    $threadText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'ps', '-A', '-T', '-w', '-o', 'PID,TID,CMD')
     $threadObservation = [ordered]@{ supported = $false; reason = 'THREAD_NAMES_UNAVAILABLE' }
     if (-not [string]::IsNullOrWhiteSpace($threadText)) {
-        $names = @($threadText -split '\r?\n' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-        $threadObservation = [ordered]@{
-            supported = $true
-            observed_threads = $names.Count
-            product_tokio_named_threads = @($names | Where-Object { $_ -ceq 'mish-runtime-io' }).Count
+        $names = @(
+            $threadText -split '\r?\n' |
+                ForEach-Object {
+                    $row = [regex]::Match($_, '^\s*(?<pid>\d+)\s+(?<tid>\d+)\s+(?<name>.+?)\s*
+    $batteryText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'dumpsys', 'battery')
+    $battery = [ordered]@{ supported = $false; reason = 'BATTERY_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($batteryText)) {
+        $level = [regex]::Match($batteryText, '(?m)^\s*level:\s*(?<value>\d+)\s*$')
+        $scale = [regex]::Match($batteryText, '(?m)^\s*scale:\s*(?<value>\d+)\s*$')
+        $temperature = [regex]::Match($batteryText, '(?m)^\s*temperature:\s*(?<value>-?\d+)\s*$')
+        $plugged = [regex]::Match($batteryText, '(?m)^\s*plugged:\s*(?<value>\d+)\s*    }
+
+    $thermalText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'dumpsys', 'thermalservice')
+    $thermal = [ordered]@{ supported = $false; reason = 'THERMAL_STATUS_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($thermalText)) {
+        $thermalMatch = [regex]::Match($thermalText, '(?im)^\s*(?:current\s+)?thermal\s+status:\s*(?<value>\d+)\s*$')
+        if ($thermalMatch.Success) { $thermal = [ordered]@{ supported = $true; status = [int]$thermalMatch.Groups['value'].Value } }
+    }
+
+    $psText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'ps', '-A', '-o', 'PID,PPID,NAME')
+    $rootProcesses = [ordered]@{ supported = $false; reason = 'PROCESS_TREE_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($psText)) {
+        $rows = [Collections.Generic.List[object]]::new()
+        foreach ($line in ($psText -split '\r?\n')) {
+            $match = [regex]::Match($line, '^\s*(?<pid>\d+)\s+(?<ppid>\d+)\s+(?<name>\S+)\s*$')
+            if ($match.Success) {
+                [void]$rows.Add([pscustomobject]@{ pid = [int]$match.Groups['pid'].Value; ppid = [int]$match.Groups['ppid'].Value; name = [string]$match.Groups['name'].Value })
+            }
+        }
+        if ($rows.Count -gt 0) {
+            $descendantIds = [Collections.Generic.HashSet[int]]::new()
+            [void]$descendantIds.Add([int]$PidText)
+            $changed = $true
+            while ($changed) {
+                $changed = $false
+                foreach ($row in $rows) {
+                    if ($descendantIds.Contains([int]$row.ppid) -and -not $descendantIds.Contains([int]$row.pid)) {
+                        [void]$descendantIds.Add([int]$row.pid)
+                        $changed = $true
+                    }
+                }
+            }
+            $descendants = @($rows | Where-Object { [int]$_.pid -ne [int]$PidText -and $descendantIds.Contains([int]$_.pid) })
+            $rootProcesses = [ordered]@{
+                supported = $true
+                product_descendant_processes = $descendants.Count
+                product_su_like_descendants = @($descendants | Where-Object { [string]$_.name -in @('su', 'magisk') }).Count
+            }
+        }
+    }
+
+    return [ordered]@{
+        threads = $threadObservation
+        battery = $battery
+        thermal = $thermal
+        root_processes = $rootProcesses
+    }
+}
+
+function Measure-MishU7SupplementalObservation {
+    param(
+        [Parameter(Mandatory)][string] $AdbPath,
+        [Parameter(Mandatory)][string] $PackageName,
+        [Parameter(Mandatory)][string] $PidText
+    )
+    return [ordered]@{
+        cpu = Get-MishU7CpuObservation -AdbPath $AdbPath -PackageName $PackageName -PidText $PidText
+        platform = Get-MishU7PlatformObservation -AdbPath $AdbPath -PackageName $PackageName -PidText $PidText
+    }
+}
+
+Export-ModuleMember -Function Get-MishU7LatencyDistribution, Measure-MishU7SupplementalObservation
+)
+                    if ($row.Success -and [int]$row.Groups['pid'].Value -eq [int]$PidText) {
+                        $row.Groups['name'].Value.Trim()
+                    }
+                } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+        if ($names.Count -gt 0) {
+            $threadObservation = [ordered]@{
+                supported = $true
+                observed_threads = $names.Count
+                product_tokio_named_threads = @($names | Where-Object { $_ -like 'mish-runtime-i*' }).Count
+            }
+        }
+    }
+
+    $batteryText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'dumpsys', 'battery')
+    $battery = [ordered]@{ supported = $false; reason = 'BATTERY_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($batteryText)) {
+        $level = [regex]::Match($batteryText, '(?m)^\s*level:\s*(?<value>\d+)\s*$')
+        $scale = [regex]::Match($batteryText, '(?m)^\s*scale:\s*(?<value>\d+)\s*$')
+        $temperature = [regex]::Match($batteryText, '(?m)^\s*temperature:\s*(?<value>-?\d+)\s*$')
+        $plugged = [regex]::Match($batteryText, '(?m)^\s*plugged:\s*(?<value>\d+)\s*$')
+        $status = [regex]::Match($batteryText, '(?m)^\s*status:\s*(?<value>\d+)\s*$')
+        if ($level.Success -and $scale.Success) {
+            $battery = [ordered]@{
+                supported = $true
+                level = [int]$level.Groups['value'].Value
+                scale = [int]$scale.Groups['value'].Value
+                temperature_deci_c = if ($temperature.Success) { [int]$temperature.Groups['value'].Value } else { $null }
+                plugged = if ($plugged.Success) { [int]$plugged.Groups['value'].Value } else { $null }
+                status = if ($status.Success) { [int]$status.Groups['value'].Value } else { $null }
+            }
+        }
+    }
+
+    $thermalText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'dumpsys', 'thermalservice')
+    $thermal = [ordered]@{ supported = $false; reason = 'THERMAL_STATUS_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($thermalText)) {
+        $thermalMatch = [regex]::Match($thermalText, '(?im)^\s*(?:current\s+)?thermal\s+status:\s*(?<value>\d+)\s*$')
+        if ($thermalMatch.Success) { $thermal = [ordered]@{ supported = $true; status = [int]$thermalMatch.Groups['value'].Value } }
+    }
+
+    $psText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'ps', '-A', '-o', 'PID,PPID,NAME')
+    $rootProcesses = [ordered]@{ supported = $false; reason = 'PROCESS_TREE_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($psText)) {
+        $rows = [Collections.Generic.List[object]]::new()
+        foreach ($line in ($psText -split '\r?\n')) {
+            $match = [regex]::Match($line, '^\s*(?<pid>\d+)\s+(?<ppid>\d+)\s+(?<name>\S+)\s*$')
+            if ($match.Success) {
+                [void]$rows.Add([pscustomobject]@{ pid = [int]$match.Groups['pid'].Value; ppid = [int]$match.Groups['ppid'].Value; name = [string]$match.Groups['name'].Value })
+            }
+        }
+        if ($rows.Count -gt 0) {
+            $descendantIds = [Collections.Generic.HashSet[int]]::new()
+            [void]$descendantIds.Add([int]$PidText)
+            $changed = $true
+            while ($changed) {
+                $changed = $false
+                foreach ($row in $rows) {
+                    if ($descendantIds.Contains([int]$row.ppid) -and -not $descendantIds.Contains([int]$row.pid)) {
+                        [void]$descendantIds.Add([int]$row.pid)
+                        $changed = $true
+                    }
+                }
+            }
+            $descendants = @($rows | Where-Object { [int]$_.pid -ne [int]$PidText -and $descendantIds.Contains([int]$_.pid) })
+            $rootProcesses = [ordered]@{
+                supported = $true
+                product_descendant_processes = $descendants.Count
+                product_su_like_descendants = @($descendants | Where-Object { [string]$_.name -in @('su', 'magisk') }).Count
+            }
+        }
+    }
+
+    return [ordered]@{
+        threads = $threadObservation
+        battery = $battery
+        thermal = $thermal
+        root_processes = $rootProcesses
+    }
+}
+
+function Measure-MishU7SupplementalObservation {
+    param(
+        [Parameter(Mandatory)][string] $AdbPath,
+        [Parameter(Mandatory)][string] $PackageName,
+        [Parameter(Mandatory)][string] $PidText
+    )
+    return [ordered]@{
+        cpu = Get-MishU7CpuObservation -AdbPath $AdbPath -PackageName $PackageName -PidText $PidText
+        platform = Get-MishU7PlatformObservation -AdbPath $AdbPath -PackageName $PackageName -PidText $PidText
+    }
+}
+
+Export-ModuleMember -Function Get-MishU7LatencyDistribution, Measure-MishU7SupplementalObservation
+)
+        $status = [regex]::Match($batteryText, '(?m)^\s*status:\s*(?<value>\d+)\s*    }
+
+    $thermalText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'dumpsys', 'thermalservice')
+    $thermal = [ordered]@{ supported = $false; reason = 'THERMAL_STATUS_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($thermalText)) {
+        $thermalMatch = [regex]::Match($thermalText, '(?im)^\s*(?:current\s+)?thermal\s+status:\s*(?<value>\d+)\s*$')
+        if ($thermalMatch.Success) { $thermal = [ordered]@{ supported = $true; status = [int]$thermalMatch.Groups['value'].Value } }
+    }
+
+    $psText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'ps', '-A', '-o', 'PID,PPID,NAME')
+    $rootProcesses = [ordered]@{ supported = $false; reason = 'PROCESS_TREE_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($psText)) {
+        $rows = [Collections.Generic.List[object]]::new()
+        foreach ($line in ($psText -split '\r?\n')) {
+            $match = [regex]::Match($line, '^\s*(?<pid>\d+)\s+(?<ppid>\d+)\s+(?<name>\S+)\s*$')
+            if ($match.Success) {
+                [void]$rows.Add([pscustomobject]@{ pid = [int]$match.Groups['pid'].Value; ppid = [int]$match.Groups['ppid'].Value; name = [string]$match.Groups['name'].Value })
+            }
+        }
+        if ($rows.Count -gt 0) {
+            $descendantIds = [Collections.Generic.HashSet[int]]::new()
+            [void]$descendantIds.Add([int]$PidText)
+            $changed = $true
+            while ($changed) {
+                $changed = $false
+                foreach ($row in $rows) {
+                    if ($descendantIds.Contains([int]$row.ppid) -and -not $descendantIds.Contains([int]$row.pid)) {
+                        [void]$descendantIds.Add([int]$row.pid)
+                        $changed = $true
+                    }
+                }
+            }
+            $descendants = @($rows | Where-Object { [int]$_.pid -ne [int]$PidText -and $descendantIds.Contains([int]$_.pid) })
+            $rootProcesses = [ordered]@{
+                supported = $true
+                product_descendant_processes = $descendants.Count
+                product_su_like_descendants = @($descendants | Where-Object { [string]$_.name -in @('su', 'magisk') }).Count
+            }
+        }
+    }
+
+    return [ordered]@{
+        threads = $threadObservation
+        battery = $battery
+        thermal = $thermal
+        root_processes = $rootProcesses
+    }
+}
+
+function Measure-MishU7SupplementalObservation {
+    param(
+        [Parameter(Mandatory)][string] $AdbPath,
+        [Parameter(Mandatory)][string] $PackageName,
+        [Parameter(Mandatory)][string] $PidText
+    )
+    return [ordered]@{
+        cpu = Get-MishU7CpuObservation -AdbPath $AdbPath -PackageName $PackageName -PidText $PidText
+        platform = Get-MishU7PlatformObservation -AdbPath $AdbPath -PackageName $PackageName -PidText $PidText
+    }
+}
+
+Export-ModuleMember -Function Get-MishU7LatencyDistribution, Measure-MishU7SupplementalObservation
+)
+                    if ($row.Success -and [int]$row.Groups['pid'].Value -eq [int]$PidText) {
+                        $row.Groups['name'].Value.Trim()
+                    }
+                } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+        if ($names.Count -gt 0) {
+            $threadObservation = [ordered]@{
+                supported = $true
+                observed_threads = $names.Count
+                product_tokio_named_threads = @($names | Where-Object { $_ -like 'mish-runtime-i*' }).Count
+            }
+        }
+    }
+
+    $batteryText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'dumpsys', 'battery')
+    $battery = [ordered]@{ supported = $false; reason = 'BATTERY_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($batteryText)) {
+        $level = [regex]::Match($batteryText, '(?m)^\s*level:\s*(?<value>\d+)\s*$')
+        $scale = [regex]::Match($batteryText, '(?m)^\s*scale:\s*(?<value>\d+)\s*$')
+        $temperature = [regex]::Match($batteryText, '(?m)^\s*temperature:\s*(?<value>-?\d+)\s*$')
+        $plugged = [regex]::Match($batteryText, '(?m)^\s*plugged:\s*(?<value>\d+)\s*$')
+        $status = [regex]::Match($batteryText, '(?m)^\s*status:\s*(?<value>\d+)\s*$')
+        if ($level.Success -and $scale.Success) {
+            $battery = [ordered]@{
+                supported = $true
+                level = [int]$level.Groups['value'].Value
+                scale = [int]$scale.Groups['value'].Value
+                temperature_deci_c = if ($temperature.Success) { [int]$temperature.Groups['value'].Value } else { $null }
+                plugged = if ($plugged.Success) { [int]$plugged.Groups['value'].Value } else { $null }
+                status = if ($status.Success) { [int]$status.Groups['value'].Value } else { $null }
+            }
+        }
+    }
+
+    $thermalText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'dumpsys', 'thermalservice')
+    $thermal = [ordered]@{ supported = $false; reason = 'THERMAL_STATUS_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($thermalText)) {
+        $thermalMatch = [regex]::Match($thermalText, '(?im)^\s*(?:current\s+)?thermal\s+status:\s*(?<value>\d+)\s*$')
+        if ($thermalMatch.Success) { $thermal = [ordered]@{ supported = $true; status = [int]$thermalMatch.Groups['value'].Value } }
+    }
+
+    $psText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'ps', '-A', '-o', 'PID,PPID,NAME')
+    $rootProcesses = [ordered]@{ supported = $false; reason = 'PROCESS_TREE_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($psText)) {
+        $rows = [Collections.Generic.List[object]]::new()
+        foreach ($line in ($psText -split '\r?\n')) {
+            $match = [regex]::Match($line, '^\s*(?<pid>\d+)\s+(?<ppid>\d+)\s+(?<name>\S+)\s*$')
+            if ($match.Success) {
+                [void]$rows.Add([pscustomobject]@{ pid = [int]$match.Groups['pid'].Value; ppid = [int]$match.Groups['ppid'].Value; name = [string]$match.Groups['name'].Value })
+            }
+        }
+        if ($rows.Count -gt 0) {
+            $descendantIds = [Collections.Generic.HashSet[int]]::new()
+            [void]$descendantIds.Add([int]$PidText)
+            $changed = $true
+            while ($changed) {
+                $changed = $false
+                foreach ($row in $rows) {
+                    if ($descendantIds.Contains([int]$row.ppid) -and -not $descendantIds.Contains([int]$row.pid)) {
+                        [void]$descendantIds.Add([int]$row.pid)
+                        $changed = $true
+                    }
+                }
+            }
+            $descendants = @($rows | Where-Object { [int]$_.pid -ne [int]$PidText -and $descendantIds.Contains([int]$_.pid) })
+            $rootProcesses = [ordered]@{
+                supported = $true
+                product_descendant_processes = $descendants.Count
+                product_su_like_descendants = @($descendants | Where-Object { [string]$_.name -in @('su', 'magisk') }).Count
+            }
+        }
+    }
+
+    return [ordered]@{
+        threads = $threadObservation
+        battery = $battery
+        thermal = $thermal
+        root_processes = $rootProcesses
+    }
+}
+
+function Measure-MishU7SupplementalObservation {
+    param(
+        [Parameter(Mandatory)][string] $AdbPath,
+        [Parameter(Mandatory)][string] $PackageName,
+        [Parameter(Mandatory)][string] $PidText
+    )
+    return [ordered]@{
+        cpu = Get-MishU7CpuObservation -AdbPath $AdbPath -PackageName $PackageName -PidText $PidText
+        platform = Get-MishU7PlatformObservation -AdbPath $AdbPath -PackageName $PackageName -PidText $PidText
+    }
+}
+
+Export-ModuleMember -Function Get-MishU7LatencyDistribution, Measure-MishU7SupplementalObservation
+)
+        $acPowered = [regex]::Match($batteryText, '(?im)^\s*AC powered:\s*(?<value>true|false)\s*    }
+
+    $thermalText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'dumpsys', 'thermalservice')
+    $thermal = [ordered]@{ supported = $false; reason = 'THERMAL_STATUS_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($thermalText)) {
+        $thermalMatch = [regex]::Match($thermalText, '(?im)^\s*(?:current\s+)?thermal\s+status:\s*(?<value>\d+)\s*$')
+        if ($thermalMatch.Success) { $thermal = [ordered]@{ supported = $true; status = [int]$thermalMatch.Groups['value'].Value } }
+    }
+
+    $psText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'ps', '-A', '-o', 'PID,PPID,NAME')
+    $rootProcesses = [ordered]@{ supported = $false; reason = 'PROCESS_TREE_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($psText)) {
+        $rows = [Collections.Generic.List[object]]::new()
+        foreach ($line in ($psText -split '\r?\n')) {
+            $match = [regex]::Match($line, '^\s*(?<pid>\d+)\s+(?<ppid>\d+)\s+(?<name>\S+)\s*$')
+            if ($match.Success) {
+                [void]$rows.Add([pscustomobject]@{ pid = [int]$match.Groups['pid'].Value; ppid = [int]$match.Groups['ppid'].Value; name = [string]$match.Groups['name'].Value })
+            }
+        }
+        if ($rows.Count -gt 0) {
+            $descendantIds = [Collections.Generic.HashSet[int]]::new()
+            [void]$descendantIds.Add([int]$PidText)
+            $changed = $true
+            while ($changed) {
+                $changed = $false
+                foreach ($row in $rows) {
+                    if ($descendantIds.Contains([int]$row.ppid) -and -not $descendantIds.Contains([int]$row.pid)) {
+                        [void]$descendantIds.Add([int]$row.pid)
+                        $changed = $true
+                    }
+                }
+            }
+            $descendants = @($rows | Where-Object { [int]$_.pid -ne [int]$PidText -and $descendantIds.Contains([int]$_.pid) })
+            $rootProcesses = [ordered]@{
+                supported = $true
+                product_descendant_processes = $descendants.Count
+                product_su_like_descendants = @($descendants | Where-Object { [string]$_.name -in @('su', 'magisk') }).Count
+            }
+        }
+    }
+
+    return [ordered]@{
+        threads = $threadObservation
+        battery = $battery
+        thermal = $thermal
+        root_processes = $rootProcesses
+    }
+}
+
+function Measure-MishU7SupplementalObservation {
+    param(
+        [Parameter(Mandatory)][string] $AdbPath,
+        [Parameter(Mandatory)][string] $PackageName,
+        [Parameter(Mandatory)][string] $PidText
+    )
+    return [ordered]@{
+        cpu = Get-MishU7CpuObservation -AdbPath $AdbPath -PackageName $PackageName -PidText $PidText
+        platform = Get-MishU7PlatformObservation -AdbPath $AdbPath -PackageName $PackageName -PidText $PidText
+    }
+}
+
+Export-ModuleMember -Function Get-MishU7LatencyDistribution, Measure-MishU7SupplementalObservation
+)
+                    if ($row.Success -and [int]$row.Groups['pid'].Value -eq [int]$PidText) {
+                        $row.Groups['name'].Value.Trim()
+                    }
+                } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+        if ($names.Count -gt 0) {
+            $threadObservation = [ordered]@{
+                supported = $true
+                observed_threads = $names.Count
+                product_tokio_named_threads = @($names | Where-Object { $_ -like 'mish-runtime-i*' }).Count
+            }
+        }
+    }
+
+    $batteryText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'dumpsys', 'battery')
+    $battery = [ordered]@{ supported = $false; reason = 'BATTERY_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($batteryText)) {
+        $level = [regex]::Match($batteryText, '(?m)^\s*level:\s*(?<value>\d+)\s*$')
+        $scale = [regex]::Match($batteryText, '(?m)^\s*scale:\s*(?<value>\d+)\s*$')
+        $temperature = [regex]::Match($batteryText, '(?m)^\s*temperature:\s*(?<value>-?\d+)\s*$')
+        $plugged = [regex]::Match($batteryText, '(?m)^\s*plugged:\s*(?<value>\d+)\s*$')
+        $status = [regex]::Match($batteryText, '(?m)^\s*status:\s*(?<value>\d+)\s*$')
+        if ($level.Success -and $scale.Success) {
+            $battery = [ordered]@{
+                supported = $true
+                level = [int]$level.Groups['value'].Value
+                scale = [int]$scale.Groups['value'].Value
+                temperature_deci_c = if ($temperature.Success) { [int]$temperature.Groups['value'].Value } else { $null }
+                plugged = if ($plugged.Success) { [int]$plugged.Groups['value'].Value } else { $null }
+                status = if ($status.Success) { [int]$status.Groups['value'].Value } else { $null }
+            }
+        }
+    }
+
+    $thermalText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'dumpsys', 'thermalservice')
+    $thermal = [ordered]@{ supported = $false; reason = 'THERMAL_STATUS_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($thermalText)) {
+        $thermalMatch = [regex]::Match($thermalText, '(?im)^\s*(?:current\s+)?thermal\s+status:\s*(?<value>\d+)\s*$')
+        if ($thermalMatch.Success) { $thermal = [ordered]@{ supported = $true; status = [int]$thermalMatch.Groups['value'].Value } }
+    }
+
+    $psText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'ps', '-A', '-o', 'PID,PPID,NAME')
+    $rootProcesses = [ordered]@{ supported = $false; reason = 'PROCESS_TREE_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($psText)) {
+        $rows = [Collections.Generic.List[object]]::new()
+        foreach ($line in ($psText -split '\r?\n')) {
+            $match = [regex]::Match($line, '^\s*(?<pid>\d+)\s+(?<ppid>\d+)\s+(?<name>\S+)\s*$')
+            if ($match.Success) {
+                [void]$rows.Add([pscustomobject]@{ pid = [int]$match.Groups['pid'].Value; ppid = [int]$match.Groups['ppid'].Value; name = [string]$match.Groups['name'].Value })
+            }
+        }
+        if ($rows.Count -gt 0) {
+            $descendantIds = [Collections.Generic.HashSet[int]]::new()
+            [void]$descendantIds.Add([int]$PidText)
+            $changed = $true
+            while ($changed) {
+                $changed = $false
+                foreach ($row in $rows) {
+                    if ($descendantIds.Contains([int]$row.ppid) -and -not $descendantIds.Contains([int]$row.pid)) {
+                        [void]$descendantIds.Add([int]$row.pid)
+                        $changed = $true
+                    }
+                }
+            }
+            $descendants = @($rows | Where-Object { [int]$_.pid -ne [int]$PidText -and $descendantIds.Contains([int]$_.pid) })
+            $rootProcesses = [ordered]@{
+                supported = $true
+                product_descendant_processes = $descendants.Count
+                product_su_like_descendants = @($descendants | Where-Object { [string]$_.name -in @('su', 'magisk') }).Count
+            }
+        }
+    }
+
+    return [ordered]@{
+        threads = $threadObservation
+        battery = $battery
+        thermal = $thermal
+        root_processes = $rootProcesses
+    }
+}
+
+function Measure-MishU7SupplementalObservation {
+    param(
+        [Parameter(Mandatory)][string] $AdbPath,
+        [Parameter(Mandatory)][string] $PackageName,
+        [Parameter(Mandatory)][string] $PidText
+    )
+    return [ordered]@{
+        cpu = Get-MishU7CpuObservation -AdbPath $AdbPath -PackageName $PackageName -PidText $PidText
+        platform = Get-MishU7PlatformObservation -AdbPath $AdbPath -PackageName $PackageName -PidText $PidText
+    }
+}
+
+Export-ModuleMember -Function Get-MishU7LatencyDistribution, Measure-MishU7SupplementalObservation
+)
+        $usbPowered = [regex]::Match($batteryText, '(?im)^\s*USB powered:\s*(?<value>true|false)\s*    }
+
+    $thermalText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'dumpsys', 'thermalservice')
+    $thermal = [ordered]@{ supported = $false; reason = 'THERMAL_STATUS_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($thermalText)) {
+        $thermalMatch = [regex]::Match($thermalText, '(?im)^\s*(?:current\s+)?thermal\s+status:\s*(?<value>\d+)\s*$')
+        if ($thermalMatch.Success) { $thermal = [ordered]@{ supported = $true; status = [int]$thermalMatch.Groups['value'].Value } }
+    }
+
+    $psText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'ps', '-A', '-o', 'PID,PPID,NAME')
+    $rootProcesses = [ordered]@{ supported = $false; reason = 'PROCESS_TREE_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($psText)) {
+        $rows = [Collections.Generic.List[object]]::new()
+        foreach ($line in ($psText -split '\r?\n')) {
+            $match = [regex]::Match($line, '^\s*(?<pid>\d+)\s+(?<ppid>\d+)\s+(?<name>\S+)\s*$')
+            if ($match.Success) {
+                [void]$rows.Add([pscustomobject]@{ pid = [int]$match.Groups['pid'].Value; ppid = [int]$match.Groups['ppid'].Value; name = [string]$match.Groups['name'].Value })
+            }
+        }
+        if ($rows.Count -gt 0) {
+            $descendantIds = [Collections.Generic.HashSet[int]]::new()
+            [void]$descendantIds.Add([int]$PidText)
+            $changed = $true
+            while ($changed) {
+                $changed = $false
+                foreach ($row in $rows) {
+                    if ($descendantIds.Contains([int]$row.ppid) -and -not $descendantIds.Contains([int]$row.pid)) {
+                        [void]$descendantIds.Add([int]$row.pid)
+                        $changed = $true
+                    }
+                }
+            }
+            $descendants = @($rows | Where-Object { [int]$_.pid -ne [int]$PidText -and $descendantIds.Contains([int]$_.pid) })
+            $rootProcesses = [ordered]@{
+                supported = $true
+                product_descendant_processes = $descendants.Count
+                product_su_like_descendants = @($descendants | Where-Object { [string]$_.name -in @('su', 'magisk') }).Count
+            }
+        }
+    }
+
+    return [ordered]@{
+        threads = $threadObservation
+        battery = $battery
+        thermal = $thermal
+        root_processes = $rootProcesses
+    }
+}
+
+function Measure-MishU7SupplementalObservation {
+    param(
+        [Parameter(Mandatory)][string] $AdbPath,
+        [Parameter(Mandatory)][string] $PackageName,
+        [Parameter(Mandatory)][string] $PidText
+    )
+    return [ordered]@{
+        cpu = Get-MishU7CpuObservation -AdbPath $AdbPath -PackageName $PackageName -PidText $PidText
+        platform = Get-MishU7PlatformObservation -AdbPath $AdbPath -PackageName $PackageName -PidText $PidText
+    }
+}
+
+Export-ModuleMember -Function Get-MishU7LatencyDistribution, Measure-MishU7SupplementalObservation
+)
+                    if ($row.Success -and [int]$row.Groups['pid'].Value -eq [int]$PidText) {
+                        $row.Groups['name'].Value.Trim()
+                    }
+                } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+        if ($names.Count -gt 0) {
+            $threadObservation = [ordered]@{
+                supported = $true
+                observed_threads = $names.Count
+                product_tokio_named_threads = @($names | Where-Object { $_ -like 'mish-runtime-i*' }).Count
+            }
+        }
+    }
+
+    $batteryText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'dumpsys', 'battery')
+    $battery = [ordered]@{ supported = $false; reason = 'BATTERY_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($batteryText)) {
+        $level = [regex]::Match($batteryText, '(?m)^\s*level:\s*(?<value>\d+)\s*$')
+        $scale = [regex]::Match($batteryText, '(?m)^\s*scale:\s*(?<value>\d+)\s*$')
+        $temperature = [regex]::Match($batteryText, '(?m)^\s*temperature:\s*(?<value>-?\d+)\s*$')
+        $plugged = [regex]::Match($batteryText, '(?m)^\s*plugged:\s*(?<value>\d+)\s*$')
+        $status = [regex]::Match($batteryText, '(?m)^\s*status:\s*(?<value>\d+)\s*$')
+        if ($level.Success -and $scale.Success) {
+            $battery = [ordered]@{
+                supported = $true
+                level = [int]$level.Groups['value'].Value
+                scale = [int]$scale.Groups['value'].Value
+                temperature_deci_c = if ($temperature.Success) { [int]$temperature.Groups['value'].Value } else { $null }
+                plugged = if ($plugged.Success) { [int]$plugged.Groups['value'].Value } else { $null }
+                status = if ($status.Success) { [int]$status.Groups['value'].Value } else { $null }
+            }
+        }
+    }
+
+    $thermalText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'dumpsys', 'thermalservice')
+    $thermal = [ordered]@{ supported = $false; reason = 'THERMAL_STATUS_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($thermalText)) {
+        $thermalMatch = [regex]::Match($thermalText, '(?im)^\s*(?:current\s+)?thermal\s+status:\s*(?<value>\d+)\s*$')
+        if ($thermalMatch.Success) { $thermal = [ordered]@{ supported = $true; status = [int]$thermalMatch.Groups['value'].Value } }
+    }
+
+    $psText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'ps', '-A', '-o', 'PID,PPID,NAME')
+    $rootProcesses = [ordered]@{ supported = $false; reason = 'PROCESS_TREE_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($psText)) {
+        $rows = [Collections.Generic.List[object]]::new()
+        foreach ($line in ($psText -split '\r?\n')) {
+            $match = [regex]::Match($line, '^\s*(?<pid>\d+)\s+(?<ppid>\d+)\s+(?<name>\S+)\s*$')
+            if ($match.Success) {
+                [void]$rows.Add([pscustomobject]@{ pid = [int]$match.Groups['pid'].Value; ppid = [int]$match.Groups['ppid'].Value; name = [string]$match.Groups['name'].Value })
+            }
+        }
+        if ($rows.Count -gt 0) {
+            $descendantIds = [Collections.Generic.HashSet[int]]::new()
+            [void]$descendantIds.Add([int]$PidText)
+            $changed = $true
+            while ($changed) {
+                $changed = $false
+                foreach ($row in $rows) {
+                    if ($descendantIds.Contains([int]$row.ppid) -and -not $descendantIds.Contains([int]$row.pid)) {
+                        [void]$descendantIds.Add([int]$row.pid)
+                        $changed = $true
+                    }
+                }
+            }
+            $descendants = @($rows | Where-Object { [int]$_.pid -ne [int]$PidText -and $descendantIds.Contains([int]$_.pid) })
+            $rootProcesses = [ordered]@{
+                supported = $true
+                product_descendant_processes = $descendants.Count
+                product_su_like_descendants = @($descendants | Where-Object { [string]$_.name -in @('su', 'magisk') }).Count
+            }
+        }
+    }
+
+    return [ordered]@{
+        threads = $threadObservation
+        battery = $battery
+        thermal = $thermal
+        root_processes = $rootProcesses
+    }
+}
+
+function Measure-MishU7SupplementalObservation {
+    param(
+        [Parameter(Mandatory)][string] $AdbPath,
+        [Parameter(Mandatory)][string] $PackageName,
+        [Parameter(Mandatory)][string] $PidText
+    )
+    return [ordered]@{
+        cpu = Get-MishU7CpuObservation -AdbPath $AdbPath -PackageName $PackageName -PidText $PidText
+        platform = Get-MishU7PlatformObservation -AdbPath $AdbPath -PackageName $PackageName -PidText $PidText
+    }
+}
+
+Export-ModuleMember -Function Get-MishU7LatencyDistribution, Measure-MishU7SupplementalObservation
+)
+        $wirelessPowered = [regex]::Match($batteryText, '(?im)^\s*Wireless powered:\s*(?<value>true|false)\s*    }
+
+    $thermalText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'dumpsys', 'thermalservice')
+    $thermal = [ordered]@{ supported = $false; reason = 'THERMAL_STATUS_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($thermalText)) {
+        $thermalMatch = [regex]::Match($thermalText, '(?im)^\s*(?:current\s+)?thermal\s+status:\s*(?<value>\d+)\s*$')
+        if ($thermalMatch.Success) { $thermal = [ordered]@{ supported = $true; status = [int]$thermalMatch.Groups['value'].Value } }
+    }
+
+    $psText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'ps', '-A', '-o', 'PID,PPID,NAME')
+    $rootProcesses = [ordered]@{ supported = $false; reason = 'PROCESS_TREE_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($psText)) {
+        $rows = [Collections.Generic.List[object]]::new()
+        foreach ($line in ($psText -split '\r?\n')) {
+            $match = [regex]::Match($line, '^\s*(?<pid>\d+)\s+(?<ppid>\d+)\s+(?<name>\S+)\s*$')
+            if ($match.Success) {
+                [void]$rows.Add([pscustomobject]@{ pid = [int]$match.Groups['pid'].Value; ppid = [int]$match.Groups['ppid'].Value; name = [string]$match.Groups['name'].Value })
+            }
+        }
+        if ($rows.Count -gt 0) {
+            $descendantIds = [Collections.Generic.HashSet[int]]::new()
+            [void]$descendantIds.Add([int]$PidText)
+            $changed = $true
+            while ($changed) {
+                $changed = $false
+                foreach ($row in $rows) {
+                    if ($descendantIds.Contains([int]$row.ppid) -and -not $descendantIds.Contains([int]$row.pid)) {
+                        [void]$descendantIds.Add([int]$row.pid)
+                        $changed = $true
+                    }
+                }
+            }
+            $descendants = @($rows | Where-Object { [int]$_.pid -ne [int]$PidText -and $descendantIds.Contains([int]$_.pid) })
+            $rootProcesses = [ordered]@{
+                supported = $true
+                product_descendant_processes = $descendants.Count
+                product_su_like_descendants = @($descendants | Where-Object { [string]$_.name -in @('su', 'magisk') }).Count
+            }
+        }
+    }
+
+    return [ordered]@{
+        threads = $threadObservation
+        battery = $battery
+        thermal = $thermal
+        root_processes = $rootProcesses
+    }
+}
+
+function Measure-MishU7SupplementalObservation {
+    param(
+        [Parameter(Mandatory)][string] $AdbPath,
+        [Parameter(Mandatory)][string] $PackageName,
+        [Parameter(Mandatory)][string] $PidText
+    )
+    return [ordered]@{
+        cpu = Get-MishU7CpuObservation -AdbPath $AdbPath -PackageName $PackageName -PidText $PidText
+        platform = Get-MishU7PlatformObservation -AdbPath $AdbPath -PackageName $PackageName -PidText $PidText
+    }
+}
+
+Export-ModuleMember -Function Get-MishU7LatencyDistribution, Measure-MishU7SupplementalObservation
+)
+                    if ($row.Success -and [int]$row.Groups['pid'].Value -eq [int]$PidText) {
+                        $row.Groups['name'].Value.Trim()
+                    }
+                } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+        if ($names.Count -gt 0) {
+            $threadObservation = [ordered]@{
+                supported = $true
+                observed_threads = $names.Count
+                product_tokio_named_threads = @($names | Where-Object { $_ -like 'mish-runtime-i*' }).Count
+            }
+        }
+    }
+
+    $batteryText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'dumpsys', 'battery')
+    $battery = [ordered]@{ supported = $false; reason = 'BATTERY_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($batteryText)) {
+        $level = [regex]::Match($batteryText, '(?m)^\s*level:\s*(?<value>\d+)\s*$')
+        $scale = [regex]::Match($batteryText, '(?m)^\s*scale:\s*(?<value>\d+)\s*$')
+        $temperature = [regex]::Match($batteryText, '(?m)^\s*temperature:\s*(?<value>-?\d+)\s*$')
+        $plugged = [regex]::Match($batteryText, '(?m)^\s*plugged:\s*(?<value>\d+)\s*$')
+        $status = [regex]::Match($batteryText, '(?m)^\s*status:\s*(?<value>\d+)\s*$')
+        if ($level.Success -and $scale.Success) {
+            $battery = [ordered]@{
+                supported = $true
+                level = [int]$level.Groups['value'].Value
+                scale = [int]$scale.Groups['value'].Value
+                temperature_deci_c = if ($temperature.Success) { [int]$temperature.Groups['value'].Value } else { $null }
+                plugged = if ($plugged.Success) { [int]$plugged.Groups['value'].Value } else { $null }
+                status = if ($status.Success) { [int]$status.Groups['value'].Value } else { $null }
+            }
+        }
+    }
+
+    $thermalText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'dumpsys', 'thermalservice')
+    $thermal = [ordered]@{ supported = $false; reason = 'THERMAL_STATUS_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($thermalText)) {
+        $thermalMatch = [regex]::Match($thermalText, '(?im)^\s*(?:current\s+)?thermal\s+status:\s*(?<value>\d+)\s*$')
+        if ($thermalMatch.Success) { $thermal = [ordered]@{ supported = $true; status = [int]$thermalMatch.Groups['value'].Value } }
+    }
+
+    $psText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'ps', '-A', '-o', 'PID,PPID,NAME')
+    $rootProcesses = [ordered]@{ supported = $false; reason = 'PROCESS_TREE_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($psText)) {
+        $rows = [Collections.Generic.List[object]]::new()
+        foreach ($line in ($psText -split '\r?\n')) {
+            $match = [regex]::Match($line, '^\s*(?<pid>\d+)\s+(?<ppid>\d+)\s+(?<name>\S+)\s*$')
+            if ($match.Success) {
+                [void]$rows.Add([pscustomobject]@{ pid = [int]$match.Groups['pid'].Value; ppid = [int]$match.Groups['ppid'].Value; name = [string]$match.Groups['name'].Value })
+            }
+        }
+        if ($rows.Count -gt 0) {
+            $descendantIds = [Collections.Generic.HashSet[int]]::new()
+            [void]$descendantIds.Add([int]$PidText)
+            $changed = $true
+            while ($changed) {
+                $changed = $false
+                foreach ($row in $rows) {
+                    if ($descendantIds.Contains([int]$row.ppid) -and -not $descendantIds.Contains([int]$row.pid)) {
+                        [void]$descendantIds.Add([int]$row.pid)
+                        $changed = $true
+                    }
+                }
+            }
+            $descendants = @($rows | Where-Object { [int]$_.pid -ne [int]$PidText -and $descendantIds.Contains([int]$_.pid) })
+            $rootProcesses = [ordered]@{
+                supported = $true
+                product_descendant_processes = $descendants.Count
+                product_su_like_descendants = @($descendants | Where-Object { [string]$_.name -in @('su', 'magisk') }).Count
+            }
+        }
+    }
+
+    return [ordered]@{
+        threads = $threadObservation
+        battery = $battery
+        thermal = $thermal
+        root_processes = $rootProcesses
+    }
+}
+
+function Measure-MishU7SupplementalObservation {
+    param(
+        [Parameter(Mandatory)][string] $AdbPath,
+        [Parameter(Mandatory)][string] $PackageName,
+        [Parameter(Mandatory)][string] $PidText
+    )
+    return [ordered]@{
+        cpu = Get-MishU7CpuObservation -AdbPath $AdbPath -PackageName $PackageName -PidText $PidText
+        platform = Get-MishU7PlatformObservation -AdbPath $AdbPath -PackageName $PackageName -PidText $PidText
+    }
+}
+
+Export-ModuleMember -Function Get-MishU7LatencyDistribution, Measure-MishU7SupplementalObservation
+)
+        $dockPowered = [regex]::Match($batteryText, '(?im)^\s*Dock powered:\s*(?<value>true|false)\s*    }
+
+    $thermalText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'dumpsys', 'thermalservice')
+    $thermal = [ordered]@{ supported = $false; reason = 'THERMAL_STATUS_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($thermalText)) {
+        $thermalMatch = [regex]::Match($thermalText, '(?im)^\s*(?:current\s+)?thermal\s+status:\s*(?<value>\d+)\s*$')
+        if ($thermalMatch.Success) { $thermal = [ordered]@{ supported = $true; status = [int]$thermalMatch.Groups['value'].Value } }
+    }
+
+    $psText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'ps', '-A', '-o', 'PID,PPID,NAME')
+    $rootProcesses = [ordered]@{ supported = $false; reason = 'PROCESS_TREE_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($psText)) {
+        $rows = [Collections.Generic.List[object]]::new()
+        foreach ($line in ($psText -split '\r?\n')) {
+            $match = [regex]::Match($line, '^\s*(?<pid>\d+)\s+(?<ppid>\d+)\s+(?<name>\S+)\s*$')
+            if ($match.Success) {
+                [void]$rows.Add([pscustomobject]@{ pid = [int]$match.Groups['pid'].Value; ppid = [int]$match.Groups['ppid'].Value; name = [string]$match.Groups['name'].Value })
+            }
+        }
+        if ($rows.Count -gt 0) {
+            $descendantIds = [Collections.Generic.HashSet[int]]::new()
+            [void]$descendantIds.Add([int]$PidText)
+            $changed = $true
+            while ($changed) {
+                $changed = $false
+                foreach ($row in $rows) {
+                    if ($descendantIds.Contains([int]$row.ppid) -and -not $descendantIds.Contains([int]$row.pid)) {
+                        [void]$descendantIds.Add([int]$row.pid)
+                        $changed = $true
+                    }
+                }
+            }
+            $descendants = @($rows | Where-Object { [int]$_.pid -ne [int]$PidText -and $descendantIds.Contains([int]$_.pid) })
+            $rootProcesses = [ordered]@{
+                supported = $true
+                product_descendant_processes = $descendants.Count
+                product_su_like_descendants = @($descendants | Where-Object { [string]$_.name -in @('su', 'magisk') }).Count
+            }
+        }
+    }
+
+    return [ordered]@{
+        threads = $threadObservation
+        battery = $battery
+        thermal = $thermal
+        root_processes = $rootProcesses
+    }
+}
+
+function Measure-MishU7SupplementalObservation {
+    param(
+        [Parameter(Mandatory)][string] $AdbPath,
+        [Parameter(Mandatory)][string] $PackageName,
+        [Parameter(Mandatory)][string] $PidText
+    )
+    return [ordered]@{
+        cpu = Get-MishU7CpuObservation -AdbPath $AdbPath -PackageName $PackageName -PidText $PidText
+        platform = Get-MishU7PlatformObservation -AdbPath $AdbPath -PackageName $PackageName -PidText $PidText
+    }
+}
+
+Export-ModuleMember -Function Get-MishU7LatencyDistribution, Measure-MishU7SupplementalObservation
+)
+                    if ($row.Success -and [int]$row.Groups['pid'].Value -eq [int]$PidText) {
+                        $row.Groups['name'].Value.Trim()
+                    }
+                } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+        if ($names.Count -gt 0) {
+            $threadObservation = [ordered]@{
+                supported = $true
+                observed_threads = $names.Count
+                product_tokio_named_threads = @($names | Where-Object { $_ -like 'mish-runtime-i*' }).Count
+            }
+        }
+    }
+
+    $batteryText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'dumpsys', 'battery')
+    $battery = [ordered]@{ supported = $false; reason = 'BATTERY_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($batteryText)) {
+        $level = [regex]::Match($batteryText, '(?m)^\s*level:\s*(?<value>\d+)\s*$')
+        $scale = [regex]::Match($batteryText, '(?m)^\s*scale:\s*(?<value>\d+)\s*$')
+        $temperature = [regex]::Match($batteryText, '(?m)^\s*temperature:\s*(?<value>-?\d+)\s*$')
+        $plugged = [regex]::Match($batteryText, '(?m)^\s*plugged:\s*(?<value>\d+)\s*$')
+        $status = [regex]::Match($batteryText, '(?m)^\s*status:\s*(?<value>\d+)\s*$')
+        if ($level.Success -and $scale.Success) {
+            $battery = [ordered]@{
+                supported = $true
+                level = [int]$level.Groups['value'].Value
+                scale = [int]$scale.Groups['value'].Value
+                temperature_deci_c = if ($temperature.Success) { [int]$temperature.Groups['value'].Value } else { $null }
+                plugged = if ($plugged.Success) { [int]$plugged.Groups['value'].Value } else { $null }
+                status = if ($status.Success) { [int]$status.Groups['value'].Value } else { $null }
+            }
+        }
+    }
+
+    $thermalText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'dumpsys', 'thermalservice')
+    $thermal = [ordered]@{ supported = $false; reason = 'THERMAL_STATUS_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($thermalText)) {
+        $thermalMatch = [regex]::Match($thermalText, '(?im)^\s*(?:current\s+)?thermal\s+status:\s*(?<value>\d+)\s*$')
+        if ($thermalMatch.Success) { $thermal = [ordered]@{ supported = $true; status = [int]$thermalMatch.Groups['value'].Value } }
+    }
+
+    $psText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'ps', '-A', '-o', 'PID,PPID,NAME')
+    $rootProcesses = [ordered]@{ supported = $false; reason = 'PROCESS_TREE_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($psText)) {
+        $rows = [Collections.Generic.List[object]]::new()
+        foreach ($line in ($psText -split '\r?\n')) {
+            $match = [regex]::Match($line, '^\s*(?<pid>\d+)\s+(?<ppid>\d+)\s+(?<name>\S+)\s*$')
+            if ($match.Success) {
+                [void]$rows.Add([pscustomobject]@{ pid = [int]$match.Groups['pid'].Value; ppid = [int]$match.Groups['ppid'].Value; name = [string]$match.Groups['name'].Value })
+            }
+        }
+        if ($rows.Count -gt 0) {
+            $descendantIds = [Collections.Generic.HashSet[int]]::new()
+            [void]$descendantIds.Add([int]$PidText)
+            $changed = $true
+            while ($changed) {
+                $changed = $false
+                foreach ($row in $rows) {
+                    if ($descendantIds.Contains([int]$row.ppid) -and -not $descendantIds.Contains([int]$row.pid)) {
+                        [void]$descendantIds.Add([int]$row.pid)
+                        $changed = $true
+                    }
+                }
+            }
+            $descendants = @($rows | Where-Object { [int]$_.pid -ne [int]$PidText -and $descendantIds.Contains([int]$_.pid) })
+            $rootProcesses = [ordered]@{
+                supported = $true
+                product_descendant_processes = $descendants.Count
+                product_su_like_descendants = @($descendants | Where-Object { [string]$_.name -in @('su', 'magisk') }).Count
+            }
+        }
+    }
+
+    return [ordered]@{
+        threads = $threadObservation
+        battery = $battery
+        thermal = $thermal
+        root_processes = $rootProcesses
+    }
+}
+
+function Measure-MishU7SupplementalObservation {
+    param(
+        [Parameter(Mandatory)][string] $AdbPath,
+        [Parameter(Mandatory)][string] $PackageName,
+        [Parameter(Mandatory)][string] $PidText
+    )
+    return [ordered]@{
+        cpu = Get-MishU7CpuObservation -AdbPath $AdbPath -PackageName $PackageName -PidText $PidText
+        platform = Get-MishU7PlatformObservation -AdbPath $AdbPath -PackageName $PackageName -PidText $PidText
+    }
+}
+
+Export-ModuleMember -Function Get-MishU7LatencyDistribution, Measure-MishU7SupplementalObservation
+)
+        if ($level.Success -and $scale.Success) {
+            $powerFlags = @($acPowered, $usbPowered, $wirelessPowered, $dockPowered)
+            $knownPowerFlags = @($powerFlags | Where-Object { $_.Success })
+            $externalPower = if ($knownPowerFlags.Count -gt 0) {
+                @($knownPowerFlags | Where-Object { $_.Groups['value'].Value -ieq 'true' }).Count -gt 0
+            } else {
+                $null
+            }
+            $battery = [ordered]@{
+                supported = $true
+                level = [int]$level.Groups['value'].Value
+                scale = [int]$scale.Groups['value'].Value
+                temperature_deci_c = if ($temperature.Success) { [int]$temperature.Groups['value'].Value } else { $null }
+                plugged = if ($plugged.Success) { [int]$plugged.Groups['value'].Value } else { $null }
+                external_powered = $externalPower
+                status = if ($status.Success) { [int]$status.Groups['value'].Value } else { $null }
+            }
+        }
+    }
+
+    $thermalText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'dumpsys', 'thermalservice')
+    $thermal = [ordered]@{ supported = $false; reason = 'THERMAL_STATUS_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($thermalText)) {
+        $thermalMatch = [regex]::Match($thermalText, '(?im)^\s*(?:current\s+)?thermal\s+status:\s*(?<value>\d+)\s*$')
+        if ($thermalMatch.Success) { $thermal = [ordered]@{ supported = $true; status = [int]$thermalMatch.Groups['value'].Value } }
+    }
+
+    $psText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'ps', '-A', '-o', 'PID,PPID,NAME')
+    $rootProcesses = [ordered]@{ supported = $false; reason = 'PROCESS_TREE_UNAVAILABLE' }
+    if (-not [string]::IsNullOrWhiteSpace($psText)) {
+        $rows = [Collections.Generic.List[object]]::new()
+        foreach ($line in ($psText -split '\r?\n')) {
+            $match = [regex]::Match($line, '^\s*(?<pid>\d+)\s+(?<ppid>\d+)\s+(?<name>\S+)\s*$')
+            if ($match.Success) {
+                [void]$rows.Add([pscustomobject]@{ pid = [int]$match.Groups['pid'].Value; ppid = [int]$match.Groups['ppid'].Value; name = [string]$match.Groups['name'].Value })
+            }
+        }
+        if ($rows.Count -gt 0) {
+            $descendantIds = [Collections.Generic.HashSet[int]]::new()
+            [void]$descendantIds.Add([int]$PidText)
+            $changed = $true
+            while ($changed) {
+                $changed = $false
+                foreach ($row in $rows) {
+                    if ($descendantIds.Contains([int]$row.ppid) -and -not $descendantIds.Contains([int]$row.pid)) {
+                        [void]$descendantIds.Add([int]$row.pid)
+                        $changed = $true
+                    }
+                }
+            }
+            $descendants = @($rows | Where-Object { [int]$_.pid -ne [int]$PidText -and $descendantIds.Contains([int]$_.pid) })
+            $rootProcesses = [ordered]@{
+                supported = $true
+                product_descendant_processes = $descendants.Count
+                product_su_like_descendants = @($descendants | Where-Object { [string]$_.name -in @('su', 'magisk') }).Count
+            }
+        }
+    }
+
+    return [ordered]@{
+        threads = $threadObservation
+        battery = $battery
+        thermal = $thermal
+        root_processes = $rootProcesses
+    }
+}
+
+function Measure-MishU7SupplementalObservation {
+    param(
+        [Parameter(Mandatory)][string] $AdbPath,
+        [Parameter(Mandatory)][string] $PackageName,
+        [Parameter(Mandatory)][string] $PidText
+    )
+    return [ordered]@{
+        cpu = Get-MishU7CpuObservation -AdbPath $AdbPath -PackageName $PackageName -PidText $PidText
+        platform = Get-MishU7PlatformObservation -AdbPath $AdbPath -PackageName $PackageName -PidText $PidText
+    }
+}
+
+Export-ModuleMember -Function Get-MishU7LatencyDistribution, Measure-MishU7SupplementalObservation
+)
+                    if ($row.Success -and [int]$row.Groups['pid'].Value -eq [int]$PidText) {
+                        $row.Groups['name'].Value.Trim()
+                    }
+                } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+        if ($names.Count -gt 0) {
+            $threadObservation = [ordered]@{
+                supported = $true
+                observed_threads = $names.Count
+                product_tokio_named_threads = @($names | Where-Object { $_ -like 'mish-runtime-i*' }).Count
+            }
         }
     }
 
