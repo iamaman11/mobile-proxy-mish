@@ -829,15 +829,35 @@ function Invoke-MishShutdownRestoreAfterOn {
     if (-not $runtimeStopped) {
         Stop-MishRotationAcceptance 'PRODUCT_STOP_NOT_QUIESCENT' 'Normal PRODUCT stop did not reach the stopped runtime state.'
     }
-    if (-not $runtimeCredentialCleared) {
-        Stop-MishRotationAcceptance 'PRODUCT_RUNTIME_CREDENTIAL_NOT_CLEARED' 'Stopped runtime retained active credential material/version projection.'
-    }
     if ($null -eq $offMs) {
         Stop-MishRotationAcceptance 'PRODUCT_RESTORE_OFF_FAILED' 'Normal PRODUCT stop did not restore airplane OFF after observed ON.'
     }
-    Write-Host 'MISH_U5_RESTORE_PHASE=RUNTIME_STOPPED_CREDENTIAL_CLEARED'
+
+    $postStopEvidenceFailure = $null
+    if (-not $runtimeCredentialCleared) {
+        $postStopEvidenceFailure = [pscustomobject][ordered]@{
+            classification = 'PRODUCT_RUNTIME_CREDENTIAL_NOT_CLEARED'
+            message = 'Stopped runtime retained active credential material/version projection.'
+        }
+        Write-Host (
+            'MISH_U5_RESTORE_POST_STOP_EVIDENCE_FAILURE=' +
+            "runtime=$([bool]$postStopSnapshot.runtime.running);" +
+            "runtime_generation=$([int64]$postStopSnapshot.runtime.generation);" +
+            "proxy=$([string]$postStopSnapshot.proxy.state);" +
+            "credential_active=$([bool]$postStopSnapshot.credential.active);" +
+            "credential_version=$(Get-MishOptionalInt64 $postStopSnapshot.credential.version);" +
+            "readiness=$([string]$postStopSnapshot.readiness.state);" +
+            "rotation=$([string]$postStopSnapshot.rotation.state);" +
+            "rotation_active_tasks=$([int64]$postStopSnapshot.rotation.active_tasks)"
+        )
+    }
+    else {
+        Write-Host 'MISH_U5_RESTORE_PHASE=RUNTIME_STOPPED_CREDENTIAL_CLEARED'
+    }
     Write-Host 'MISH_U5_RESTORE_PHASE=AIRPLANE_OFF_OBSERVED'
 
+    # A failed post-stop evidence invariant must not strand DEVICE-1 in a stopped state.
+    # Restore the normal PRODUCT runtime first, then preserve and report the original failure.
     Write-Host 'MISH_U5_RESTORE_PHASE=RESTART_START'
     $restartRequestedAt = [Environment]::TickCount64
     Invoke-MishActivityTrigger -Component $script:StartComponent -Operation 'restore_restart_trigger'
@@ -895,6 +915,12 @@ function Invoke-MishShutdownRestoreAfterOn {
         Stop-MishRotationAcceptance 'PRODUCT_CREDENTIAL_CHANGED' 'Credential version changed after restore restart.'
     }
     Write-Host 'MISH_U5_RESTORE_PHASE=READY'
+    if ($null -ne $postStopEvidenceFailure) {
+        Write-Host 'MISH_U5_RESTORE_PHASE=READY_AFTER_EVIDENCE_FAILURE'
+        Stop-MishRotationAcceptance `
+            ([string]$postStopEvidenceFailure.classification) `
+            ([string]$postStopEvidenceFailure.message)
+    }
 
     return [pscustomobject][ordered]@{
         airplane_on_observed = $true
