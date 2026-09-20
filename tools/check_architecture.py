@@ -80,7 +80,7 @@ def main() -> None:
         "private var runtimeControllerRef: MishRuntimeController? = null",
         "override fun attachBaseContext(base: Context)",
         "super.attachBaseContext(base)",
-        "runtimeControllerRef = MishRuntimeController(this)",
+        "runtimeControllerRef = MishRuntimeController(base)",
         "get() = checkNotNull(runtimeControllerRef)",
     ):
         require(
@@ -106,7 +106,7 @@ def main() -> None:
     controller_construction_sites = []
     for kotlin_file in sorted((ROOT / "android/app/src/main/java").rglob("*.kt")):
         kotlin_text = kotlin_file.read_text(encoding="utf-8")
-        if "MishRuntimeController(this)" in kotlin_text:
+        if "MishRuntimeController(" in kotlin_text and "class MishRuntimeController" not in kotlin_text:
             controller_construction_sites.append(kotlin_file.relative_to(ROOT).as_posix())
     if controller_construction_sites != [application_root]:
         raise SystemExit(
@@ -117,7 +117,7 @@ def main() -> None:
     attach_index = application_text.find("override fun attachBaseContext(base: Context)")
     attach_super_index = application_text.find("super.attachBaseContext(base)", attach_index)
     controller_create_index = application_text.find(
-        "runtimeControllerRef = MishRuntimeController(this)",
+        "runtimeControllerRef = MishRuntimeController(base)",
         attach_index,
     )
     on_create_index = application_text.find("override fun onCreate()", attach_index)
@@ -130,6 +130,18 @@ def main() -> None:
         raise SystemExit(
             "architecture guard: Application process bootstrap order must be "
             "attachBaseContext -> super.attachBaseContext -> one controller construction -> onCreate"
+        )
+    for process_context_owner in (
+        "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/ExternalProxyCredentialStore.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/CredentialMetadataStore.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/AndroidVpnObserver.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRuntimeBridge.kt",
+    ):
+        forbid(
+            process_context_owner,
+            "applicationContext",
+            "process bootstrap descendants must use the already-attached process Context supplied by MishApplication",
         )
     forbid(
         runtime_controller,
