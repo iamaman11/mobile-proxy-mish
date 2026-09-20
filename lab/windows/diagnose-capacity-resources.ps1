@@ -544,6 +544,7 @@ $postCleanupResources = $null
 $acceptanceResult = 'FAIL'
 $classification = 'U2_CAPACITY_RESOURCE_INCOMPLETE'
 $detail = $null
+$capacityContractPassed = $false
 
 try {
     [void](Invoke-MishExternalProxyCredentialProvisioning -AdbPath $AdbPath -PackageName $PackageName -StorePath $credentialStorePath)
@@ -552,13 +553,19 @@ try {
 
     $idleCounts = Wait-MishOwnerCounts -ExpectedMesh 0 -ExpectedProxy 0
     $idleResources = Get-MishProcessResources -PidText $pidBefore
+    $idleSupplemental = Measure-MishU7SupplementalObservation -AdbPath $AdbPath -PackageName $PackageName -PidText $pidBefore
+    $idleOwnerDiagnostics = Get-MishSafeOwnerDiagnostics
     [void]$stages.Add([ordered]@{
         name = 'idle'
         expected_sessions = 0
-        batch_model = 'single_monotonic'
+        batch_model = 'independent_bounded'
         application_liveness = [ordered]@{ result = 'PASS'; expected = 0; application_live = 0; failures = @() }
+        mesh_connect_latency = [ordered]@{ supported = $false; reason = 'NO_SESSIONS' }
+        session_setup_latency = [ordered]@{ supported = $false; reason = 'NO_SESSIONS' }
         owner_counts = $idleCounts
         resources = $idleResources
+        supplemental = $idleSupplemental
+        owner_diagnostics = $idleOwnerDiagnostics
     })
     if ([string]$idleCounts.result -cne 'PASS') {
         $classification = 'LAB_CAPACITY_PRECONDITION_BUSY'
@@ -567,74 +574,123 @@ try {
 
     if ($classification -ceq 'U2_CAPACITY_RESOURCE_INCOMPLETE') {
         foreach ($target in @(10, 32, 64)) {
+            $stageRecord = $null
+            $stageCleanupCounts = $null
+            $stageCleanupResources = $null
+            $stageCleanupSupplemental = $null
+            $stageCleanupOwnerDiagnostics = $null
+            $stageCleanupElapsedMs = $null
             try {
                 Add-MishApplicationSessionsUntil -ProxyHost $meshAddress -Lease $lease -Sessions $activeSessions -ExpectedSessions $target
+
+                $resources = Get-MishProcessResources -PidText $pidBefore
+                $supplemental = Measure-MishU7SupplementalObservation -AdbPath $AdbPath -PackageName $PackageName -PidText $pidBefore
+                $applicationLiveness = Test-MishApplicationLiveSet -Sessions @($activeSessions) -ExpectedSessions $target
+                $ownerCounts = Wait-MishOwnerCounts -ExpectedMesh $target -ExpectedProxy $target
+                $ownerDiagnostics = Get-MishSafeOwnerDiagnostics
+                $meshConnectLatency = Get-MishU7LatencyDistribution -Values @($activeSessions | ForEach-Object { $_.MeshConnectElapsedMs })
+                $sessionSetupLatency = Get-MishU7LatencyDistribution -Values @($activeSessions | ForEach-Object { $_.SetupElapsedMs })
+                $initialApplicationLatency = Get-MishU7LatencyDistribution -Values @($activeSessions | ForEach-Object { $_.InitialApplicationElapsedMs })
+
+                $stageRecord = [ordered]@{
+                    name = "sessions_$target"
+                    expected_sessions = $target
+                    batch_model = 'independent_bounded'
+                    application_liveness = $applicationLiveness
+                    mesh_connect_latency = $meshConnectLatency
+                    session_setup_latency = $sessionSetupLatency
+                    initial_application_round_trip_latency = $initialApplicationLatency
+                    target_outbound_connect_latency = [ordered]@{ supported = $false; reason = 'CURRENT_CONTROL_PATH_CANNOT_SEPARATE_PRODUCT_OUTBOUND_CONNECT_FROM_PROXY_SETUP' }
+                    relay_throughput = [ordered]@{ supported = $false; reason = 'BOUNDED_HEAD_LIVENESS_PROBE_IS_NOT_A_STABLE_THROUGHPUT_LOAD' }
+                    owner_counts = $ownerCounts
+                    resources = $resources
+                    supplemental = $supplemental
+                    owner_diagnostics = $ownerDiagnostics
+                }
+
+                if ([string]$applicationLiveness.result -cne 'PASS') {
+                    $classification = 'LAB_APPLICATION_LIVE_PRECONDITION_FAILED'
+                    $detail = "The $target-session milestone was not fully application-live."
+                }
+                elseif ([string]$ownerCounts.result -cne 'PASS') {
+                    $classification = 'U2_CAPACITY_OWNER_COUNT_MISMATCH'
+                    $detail = "Client proved $target application-live sessions while owner counters diverged."
+                }
+
+                if ($target -eq 64 -and $classification -ceq 'U2_CAPACITY_RESOURCE_INCOMPLETE') {
+                    $preOverflowLiveness = $applicationLiveness
+                    $preOverflowOwnerCounts = $ownerCounts
+                    $attempt = Test-MishOverflowRejected -ProxyHost $meshAddress -Lease $lease
+                    [void]$overflowAttempts.Add([ordered]@{
+                        ordinal = 65
+                        result = [string]$attempt.result
+                        reason = [string]$attempt.reason
+                        status_line = if ($attempt.Contains('status_line')) { [string]$attempt.status_line } else { $null }
+                    })
+                    if ([string]$attempt.result -ceq 'FAIL') {
+                        $classification = 'U2_CAPACITY_65TH_NOT_REJECTED'
+                        $detail = 'Overflow attempt 65 reached Proxy Serving.'
+                    }
+                    elseif ([string]$attempt.result -ceq 'INCONCLUSIVE') {
+                        $classification = 'LAB_OVERFLOW_OBSERVATION_INCONCLUSIVE'
+                        $detail = "Overflow attempt 65 was inconclusive: $([string]$attempt.reason)."
+                    }
+
+                    $postOverflowLiveness = Test-MishApplicationLiveSet -Sessions @($activeSessions) -ExpectedSessions 64
+                    $overflowOwnerCounts = Wait-MishOwnerCounts -ExpectedMesh 64 -ExpectedProxy 64
+                    if ($classification -ceq 'U2_CAPACITY_RESOURCE_INCOMPLETE') {
+                        if ([string]$postOverflowLiveness.result -cne 'PASS') {
+                            $classification = 'LAB_APPLICATION_LIVE_POST_OVERFLOW_FAILED'
+                            $detail = 'The original 64 lost application liveness after the overflow attempt.'
+                        }
+                        elseif ([string]$overflowOwnerCounts.result -cne 'PASS') {
+                            $classification = 'U2_CAPACITY_OWNER_COUNT_MISMATCH'
+                            $detail = 'The original 64 remained application-live after overflow while owner counters diverged.'
+                        }
+                        else {
+                            $capacityContractPassed = $true
+                        }
+                    }
+                }
             }
             catch {
-                $classification = 'LAB_APPLICATION_LIVE_PRECONDITION_FAILED'
-                $detail = $_.Exception.Message
-                break
+                if ($classification -ceq 'U2_CAPACITY_RESOURCE_INCOMPLETE') {
+                    $classification = 'LAB_APPLICATION_LIVE_PRECONDITION_FAILED'
+                    $detail = $_.Exception.Message
+                }
+            }
+            finally {
+                $cleanupWatch = [Diagnostics.Stopwatch]::StartNew()
+                Close-MishApplicationSet -Sessions @($activeSessions)
+                $activeSessions.Clear()
+                try { $stageCleanupCounts = Wait-MishOwnerCounts -ExpectedMesh 0 -ExpectedProxy 0 } catch {}
+                $cleanupWatch.Stop()
+                $stageCleanupElapsedMs = [int64]$cleanupWatch.ElapsedMilliseconds
+                try { $stageCleanupResources = Get-MishProcessResources -PidText $pidBefore } catch {}
+                try { $stageCleanupSupplemental = Measure-MishU7SupplementalObservation -AdbPath $AdbPath -PackageName $PackageName -PidText $pidBefore } catch {}
+                try { $stageCleanupOwnerDiagnostics = Get-MishSafeOwnerDiagnostics } catch {}
+                $cleanupCounts = $stageCleanupCounts
+
+                if ($null -ne $stageRecord) {
+                    $stageRecord['cleanup'] = [ordered]@{
+                        elapsed_ms = $stageCleanupElapsedMs
+                        owner_counts = $stageCleanupCounts
+                        resources = $stageCleanupResources
+                        resource_delta_from_idle = if ($null -ne $stageCleanupResources) { Get-MishResourceDelta -Current $stageCleanupResources -Baseline $idleResources } else { $null }
+                        supplemental = $stageCleanupSupplemental
+                        owner_diagnostics = $stageCleanupOwnerDiagnostics
+                    }
+                    [void]$stages.Add($stageRecord)
+                }
+
+                if (($null -eq $stageCleanupCounts -or [string]$stageCleanupCounts.result -cne 'PASS') -and $classification -ceq 'U2_CAPACITY_RESOURCE_INCOMPLETE') {
+                    $classification = 'U2_CAPACITY_CLEANUP_NOT_DRAINED'
+                    $detail = "The $target-session phase did not return owner counts to 0/0."
+                }
             }
 
-            $resources = Get-MishProcessResources -PidText $pidBefore
-            $applicationLiveness = Test-MishApplicationLiveSet -Sessions @($activeSessions) -ExpectedSessions $target
-            $ownerCounts = Wait-MishOwnerCounts -ExpectedMesh $target -ExpectedProxy $target
-            [void]$stages.Add([ordered]@{
-                name = "sessions_$target"
-                expected_sessions = $target
-                batch_model = 'single_monotonic'
-                application_liveness = $applicationLiveness
-                owner_counts = $ownerCounts
-                resources = $resources
-            })
-
-            if ([string]$applicationLiveness.result -cne 'PASS') {
-                $classification = 'LAB_APPLICATION_LIVE_PRECONDITION_FAILED'
-                $detail = "The $target-session milestone was not fully application-live."
-                break
-            }
-            if ([string]$ownerCounts.result -cne 'PASS') {
-                $classification = 'U2_CAPACITY_OWNER_COUNT_MISMATCH'
-                $detail = "Client proved $target application-live sessions while owner counters diverged."
-                break
-            }
-
-            if ($target -eq 64) {
-                $preOverflowLiveness = $applicationLiveness
-                $preOverflowOwnerCounts = $ownerCounts
-            }
-        }
-    }
-
-    if ($classification -ceq 'U2_CAPACITY_RESOURCE_INCOMPLETE' -and $activeSessions.Count -eq 64) {
-        $attempt = Test-MishOverflowRejected -ProxyHost $meshAddress -Lease $lease
-        [void]$overflowAttempts.Add([ordered]@{
-            ordinal = 65
-            result = [string]$attempt.result
-            reason = [string]$attempt.reason
-            status_line = if ($attempt.Contains('status_line')) { [string]$attempt.status_line } else { $null }
-        })
-        if ([string]$attempt.result -ceq 'FAIL') {
-            $classification = 'U2_CAPACITY_65TH_NOT_REJECTED'
-            $detail = 'Overflow attempt 65 reached Proxy Serving.'
-        }
-        elseif ([string]$attempt.result -ceq 'INCONCLUSIVE') {
-            $classification = 'LAB_OVERFLOW_OBSERVATION_INCONCLUSIVE'
-            $detail = "Overflow attempt 65 was inconclusive: $([string]$attempt.reason)."
-        }
-
-        $postOverflowLiveness = Test-MishApplicationLiveSet -Sessions @($activeSessions) -ExpectedSessions 64
-        $overflowOwnerCounts = Wait-MishOwnerCounts -ExpectedMesh 64 -ExpectedProxy 64
-        if ($classification -ceq 'U2_CAPACITY_RESOURCE_INCOMPLETE') {
-            if ([string]$postOverflowLiveness.result -cne 'PASS') {
-                $classification = 'LAB_APPLICATION_LIVE_POST_OVERFLOW_FAILED'
-                $detail = 'The original 64 lost application liveness after the overflow attempt.'
-            }
-            elseif ([string]$overflowOwnerCounts.result -cne 'PASS') {
-                $classification = 'U2_CAPACITY_OWNER_COUNT_MISMATCH'
-                $detail = 'The original 64 remained application-live after overflow while owner counters diverged.'
-            }
-            else {
+            if ($classification -cne 'U2_CAPACITY_RESOURCE_INCOMPLETE') { break }
+            if ($target -eq 64 -and $capacityContractPassed) {
                 $acceptanceResult = 'PASS'
                 $classification = 'U2_CAPACITY_AND_RESOURCE_MEASUREMENTS_PASS'
             }
@@ -644,7 +700,9 @@ try {
 finally {
     Close-MishApplicationSet -Sessions @($activeSessions)
     $activeSessions.Clear()
-    try { $cleanupCounts = Wait-MishOwnerCounts -ExpectedMesh 0 -ExpectedProxy 0 } catch {}
+    if ($null -eq $cleanupCounts -or [string]$cleanupCounts.result -cne 'PASS') {
+        try { $cleanupCounts = Wait-MishOwnerCounts -ExpectedMesh 0 -ExpectedProxy 0 } catch {}
+    }
 
     if ($null -ne $lease -and $null -ne $cleanupCounts -and [string]$cleanupCounts.result -ceq 'PASS') {
         $postCleanupSession = $null
