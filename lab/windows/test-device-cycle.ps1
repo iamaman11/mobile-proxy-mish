@@ -441,6 +441,37 @@ try {
         throw 'LAB U7 runtime restart collection failure must not reject the PRODUCT candidate.'
     }
 
+    $stabilityPassPath = Join-Path $root 'u7-512-lifecycle-stability-pass.json'
+    [ordered]@{
+        schema = 'mish.lab.u7-512-lifecycle-stability/v1'
+        acceptance_result = 'PASS'
+        classification = 'U7_512_LIFECYCLE_STABILITY_PASS'
+    } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 -LiteralPath $stabilityPassPath
+    $stabilityPass = & $reportScript -Mode full -PrNumber 309 -SourceSha ('e' * 40) -ControlSha $controlSha -DiagnosticEvidencePath $passDiagnostic -RequestedProbe u7_512_lifecycle_stability -TargetedEvidencePath $stabilityPassPath -OutputPath (Join-Path $root 'u7-512-lifecycle-stability-pass-report.json') | Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$stabilityPass.cycle_result -cne 'PASS' -or
+        [string]$stabilityPass.classification -cne 'U7_512_LIFECYCLE_STABILITY_PASS' -or
+        [string]$stabilityPass.acceptance_scope -cne 'FULL_BASELINE_PLUS_U7_512_LIFECYCLE_STABILITY' -or
+        [string]$stabilityPass.exact_candidate_acceptance -cne 'PASS'
+    ) {
+        throw 'U7 repeated-512 lifecycle stability PASS must accept the exact candidate only with baseline + targeted evidence.'
+    }
+
+    $stabilityProductPath = Join-Path $root 'u7-512-lifecycle-stability-product-fail.json'
+    [ordered]@{
+        schema = 'mish.lab.u7-512-lifecycle-stability/v1'
+        acceptance_result = 'FAIL'
+        classification = 'PRODUCT_STOP_ON_RESTART_DID_NOT_REACH_PRODUCT'
+    } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 -LiteralPath $stabilityProductPath
+    $stabilityProduct = & $reportScript -Mode full -PrNumber 309 -SourceSha ('f' * 40) -ControlSha $controlSha -DiagnosticEvidencePath $passDiagnostic -RequestedProbe u7_512_lifecycle_stability -TargetedEvidencePath $stabilityProductPath -OutputPath (Join-Path $root 'u7-512-lifecycle-stability-product-report.json') | Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$stabilityProduct.cycle_result -cne 'PRODUCT_FAIL' -or
+        [string]$stabilityProduct.classification -cne 'PRODUCT_STOP_ON_RESTART_DID_NOT_REACH_PRODUCT' -or
+        [string]$stabilityProduct.exact_candidate_acceptance -cne 'FAIL'
+    ) {
+        throw 'Observed stop-during-ON restart PRODUCT failure must reject the exact candidate.'
+    }
+
     Write-Host 'DEVICE_CYCLE_CONTRACT=PASS'
 }
 finally {
