@@ -94,7 +94,7 @@ def main() -> None:
         "Collect one canonical current-L8 diagnostic snapshot",
         "mish-device-diagnostic-v2.json",
         "Explicit current-function probe only - loopback CONNECT",
-        "Explicit U2 capacity/resources - external Mesh",
+        "Explicit U7 capacity/resources - external Mesh",
         "diagnose-capacity-resources.ps1",
         "steps.baseline.outcome == 'success'",
         "Automatic cycle start: **NO**",
@@ -412,9 +412,9 @@ def main() -> None:
         "[bool]$last.consistent",
         "Find-NetRoute -RemoteIPAddress $meshAddress",
         "ConnectAsync($ProxyHost, 3128)",
-        "foreach ($target in @(10, 32, 64))",
+        "foreach ($target in @(10, 32, 64, 512))",
         "Test-MishOverflowRejected",
-        "Wait-MishOwnerCounts -ExpectedMesh 64 -ExpectedProxy 64",
+        "Wait-MishOwnerCounts -ExpectedMesh 512 -ExpectedProxy 512",
         "Wait-MishOwnerCounts -ExpectedMesh 0 -ExpectedProxy 0",
         "U7Measurement.psm1",
         "u7-baseline-v1",
@@ -427,7 +427,7 @@ def main() -> None:
         "'shell', 'dumpsys', 'meminfo', '-s'",
         "mish.lab.capacity-resources/v1",
         "acceptance_result = $acceptanceResult",
-        "U2_CAPACITY_AND_RESOURCE_MEASUREMENTS_PASS",
+        "U7_CAPACITY_512_PASS",
         "post_cleanup_delta_from_idle",
     ):
         require(capacity_probe, required, "U7 external-Mesh baseline evidence drifted")
@@ -560,7 +560,7 @@ def main() -> None:
         "LAB U7 runtime restart collection failure must not reject the PRODUCT candidate",
         "Baseline PRODUCT failure must outrank absent capacity evidence",
         "diagnose-capacity-resources.ps1",
-        "U2_CAPACITY_AND_RESOURCE_MEASUREMENTS_PASS",
+        "U7_CAPACITY_512_PASS",
         "test-diagnostic-connect-probe.ps1",
     ):
         require(test, required, "current L8 executable regression coverage drifted")
