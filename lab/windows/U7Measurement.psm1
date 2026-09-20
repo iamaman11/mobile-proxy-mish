@@ -23,9 +23,9 @@ function Get-MishU7LatencyDistribution {
     if ($samples.Count -eq 0) {
         return [ordered]@{ supported = $false; reason = 'NO_SAMPLES' }
     }
-    $p50 = [Math]::Max(0, [Math]::Ceiling($samples.Count * 0.50) - 1)
-    $p95 = [Math]::Max(0, [Math]::Ceiling($samples.Count * 0.95) - 1)
-    $p99 = [Math]::Max(0, [Math]::Ceiling($samples.Count * 0.99) - 1)
+    $p50 = [int][Math]::Max(0, [Math]::Ceiling($samples.Count * 0.50) - 1)
+    $p95 = [int][Math]::Max(0, [Math]::Ceiling($samples.Count * 0.95) - 1)
+    $p99 = [int][Math]::Max(0, [Math]::Ceiling($samples.Count * 0.99) - 1)
     return [ordered]@{
         supported = $true
         count = $samples.Count
