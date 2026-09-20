@@ -22,6 +22,7 @@ pub enum MeshAdmissionReason {
 pub struct MeshAdmissionView {
     pub state: MeshAdmissionState,
     pub reason: Option<MeshAdmissionReason>,
+    pub endpoint: Option<String>,
     pub admission_epoch: Option<u64>,
     pub last_sequence: Option<u64>,
     pub ingress_running: bool,
@@ -75,6 +76,9 @@ pub(crate) fn map_view(snapshot: OwnerTransportSnapshot) -> MeshAdmissionView {
                 MeshAdmissionReason::MultipleAcceptedAddresses
             }
         }),
+        endpoint: admission
+            .admitted_endpoint()
+            .map(|address| address.to_string()),
         admission_epoch: admission.admission_epoch(),
         last_sequence: admission.last_sequence(),
         ingress_running: snapshot.ingress_running(),

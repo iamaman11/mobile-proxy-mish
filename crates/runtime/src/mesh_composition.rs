@@ -11,12 +11,16 @@ use mish_transport::{
     MeshIngressExecutor, MeshPortForward, MeshTransportCoordinator, MeshTransportError,
     MeshTransportSnapshot, MeshVpnObservation,
 };
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex, MutexGuard};
+
+pub type MeshRuntimeObserver = Arc<dyn Fn(MeshTransportSnapshot) + Send + Sync>;
 
 struct MeshCompositionState {
     proxy: Option<Arc<ProxyServingRuntime>>,
     readiness_ready: bool,
     last_failure: Option<MeshTransportError>,
+    observer: Option<MeshRuntimeObserver>,
 }
 
 /// One process-generation Mesh composition owner.
@@ -37,12 +41,24 @@ impl MeshCompositionCoordinator {
                 proxy: None,
                 readiness_ready: false,
                 last_failure: None,
+                observer: None,
             }),
         }))
     }
 
     pub fn snapshot(&self) -> Result<MeshTransportSnapshot, MeshTransportError> {
         self.transport.snapshot()
+    }
+
+    pub fn set_observer(&self, observer: MeshRuntimeObserver) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        state.observer = Some(Arc::clone(&observer));
+        drop(state);
+        if let Ok(snapshot) = self.transport.snapshot() {
+            notify_mesh(Some((observer, snapshot)));
+        }
     }
 
     pub fn observe_vpn(
@@ -97,7 +113,9 @@ impl MeshCompositionCoordinator {
             state.proxy = None;
             state.readiness_ready = false;
         }
-        self.transport.stop_ingress()
+        let result = self.transport.stop_ingress();
+        self.notify_current();
+        result
     }
 
     fn reconcile(&self) -> Result<MeshTransportSnapshot, MeshTransportError> {
@@ -130,7 +148,7 @@ impl MeshCompositionCoordinator {
             self.transport.stop_ingress()
         };
 
-        match result {
+        let outcome = match result {
             Ok(()) => {
                 if let Ok(mut state) = self.state() {
                     state.last_failure = None;
@@ -143,6 +161,20 @@ impl MeshCompositionCoordinator {
                 }
                 Err(error)
             }
+        };
+        self.notify_current();
+        outcome
+    }
+
+    fn notify_current(&self) {
+        let observer = self
+            .state
+            .lock()
+            .ok()
+            .and_then(|state| state.observer.clone());
+        let snapshot = self.transport.snapshot().ok();
+        if let (Some(observer), Some(snapshot)) = (observer, snapshot) {
+            notify_mesh(Some((observer, snapshot)));
         }
     }
 
@@ -150,6 +182,12 @@ impl MeshCompositionCoordinator {
         self.state
             .lock()
             .map_err(|_| MeshTransportError::StateUnavailable)
+    }
+}
+
+fn notify_mesh(notification: Option<(MeshRuntimeObserver, MeshTransportSnapshot)>) {
+    if let Some((observer, snapshot)) = notification {
+        let _ = catch_unwind(AssertUnwindSafe(|| observer(snapshot)));
     }
 }
 
@@ -189,5 +227,25 @@ mod tests {
             .expect("readiness update");
         assert!(!snapshot.ingress_running());
         assert!(coordinator.last_failure().is_none());
+    }
+
+    #[test]
+    fn readiness_reconcile_publishes_owner_snapshot_without_new_vpn_observation() {
+        let coordinator = MeshCompositionCoordinator::new().expect("coordinator");
+        let publications = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = Arc::clone(&publications);
+        coordinator.set_observer(Arc::new(move |_| {
+            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+        let baseline = publications.load(std::sync::atomic::Ordering::SeqCst);
+
+        coordinator
+            .set_readiness_ready(true)
+            .expect("readiness reconcile");
+
+        assert_eq!(
+            publications.load(std::sync::atomic::Ordering::SeqCst),
+            baseline + 1,
+        );
     }
 }

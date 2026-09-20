@@ -6,10 +6,14 @@ import com.mobileproxymish.app.cellular.CellularRuntimeBridge
 import com.mobileproxymish.app.cellular.CellularRuntimeSnapshot
 import com.mobileproxymish.ffi.MeshAdmissionView
 import com.mobileproxymish.ffi.NativeCellularRequestRearmEffect
+import com.mobileproxymish.ffi.NativeMeshRuntimeObserver
 import com.mobileproxymish.ffi.NativeProductRuntime
 import com.mobileproxymish.ffi.ProductDiagnosticSnapshotView
 import com.mobileproxymish.ffi.NativeReadinessObserver
+import com.mobileproxymish.ffi.NativeRotationObserver
 import com.mobileproxymish.ffi.ProductReadinessState
+import com.mobileproxymish.ffi.ProxyListenerView
+import com.mobileproxymish.ffi.RotationSnapshotView
 import com.mobileproxymish.ffi.RuntimeLifecycleState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -39,12 +43,30 @@ class MishRuntimeController internal constructor(
     private val proxyRuntime = ProxyRuntimeSupervisor(productRuntime)
     private val meshRuntime = MeshIngressRuntimeBridge(appContext, productRuntime)
     private val mutableReadiness = MutableStateFlow(productRuntime.readinessSnapshot())
+    private val mutableMesh = MutableStateFlow(
+        runCatching { productRuntime.meshAdmissionSnapshot() }.getOrNull(),
+    )
+    private val mutableRotation = MutableStateFlow(productRuntime.rotationSnapshot())
 
     init {
         productRuntime.observeReadiness(
             object : NativeReadinessObserver {
                 override fun onReadiness(readiness: ProductReadinessState) {
                     mutableReadiness.value = readiness
+                }
+            },
+        )
+        productRuntime.observeMeshRuntime(
+            object : NativeMeshRuntimeObserver {
+                override fun onMeshRuntime(snapshot: MeshAdmissionView) {
+                    mutableMesh.value = snapshot
+                }
+            },
+        )
+        productRuntime.observeRotation(
+            object : NativeRotationObserver {
+                override fun onRotation(snapshot: RotationSnapshotView) {
+                    mutableRotation.value = snapshot
                 }
             },
         )
@@ -59,9 +81,12 @@ class MishRuntimeController internal constructor(
     val readinessSnapshot: StateFlow<ProductReadinessState>
         get() = mutableReadiness.asStateFlow()
 
-    /** Read-only Transport Reachability projection for UI and retained device diagnostics. */
+    val rotationSnapshot: StateFlow<RotationSnapshotView>
+        get() = mutableRotation.asStateFlow()
+
+    /** Read-only current Rust Mesh composition projection for PRODUCT UI. */
     val meshSnapshot: StateFlow<MeshAdmissionView?>
-        get() = meshRuntime.snapshot
+        get() = mutableMesh.asStateFlow()
 
     internal val currentCellularRuntime: CellularRuntimeBridge
         get() = cellularRuntime
@@ -83,6 +108,9 @@ class MishRuntimeController internal constructor(
     /** One immutable Rust-composed PRODUCT diagnostic snapshot. */
     internal fun diagnosticSnapshot(): ProductDiagnosticSnapshotView =
         productRuntime.diagnosticSnapshot()
+
+    internal fun proxyListenerContract(): List<ProxyListenerView> =
+        productRuntime.proxyListenerContract()
 
     /** Thin PRODUCT command seam. Rust owns the operation, sequencing, effects and result. */
     internal fun startPublicIpRotation(): ULong =
