@@ -68,12 +68,12 @@ try {
         "`$snapshot.proxy.active_sessions",
         'Find-NetRoute -RemoteIPAddress $meshAddress',
         'ConnectAsync($ProxyHost, 3128)',
-        'foreach ($target in @(10, 32, 64))',
+        'foreach ($target in @(10, 32, 64, 512))',
         'Test-MishOverflowRejected',
-        'Wait-MishOwnerCounts -ExpectedMesh 64 -ExpectedProxy 64',
+        'Wait-MishOwnerCounts -ExpectedMesh 512 -ExpectedProxy 512',
         'Wait-MishOwnerCounts -ExpectedMesh 0 -ExpectedProxy 0',
         "Import-Module (Join-Path `$PSScriptRoot 'U7Measurement.psm1') -Force",
-        "acceptance_profile = 'u7-baseline-v1'",
+        "acceptance_profile = 'u7-capacity-512-v1'",
         "batch_model = 'independent_bounded'",
         'Get-MishSafeOwnerDiagnostics',
         'Measure-MishU7SupplementalObservation',
@@ -83,7 +83,7 @@ try {
         "'shell', 'dumpsys', 'meminfo', '-s'",
         "schema = 'mish.lab.capacity-resources/v1'",
         "acceptance_result = `$acceptanceResult",
-        'U2_CAPACITY_AND_RESOURCE_MEASUREMENTS_PASS',
+        'U7_CAPACITY_512_PASS',
         'post_cleanup_delta_from_idle'
     )) {
         if (-not $capacitySource.Contains($required)) {
@@ -320,16 +320,16 @@ try {
     }
 
     $capacityPassPath = Join-Path $root 'capacity-pass.json'
-    [ordered]@{ schema = 'mish.lab.capacity-resources/v1'; acceptance_result = 'PASS'; classification = 'U2_CAPACITY_AND_RESOURCE_MEASUREMENTS_PASS' } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $capacityPassPath
+    [ordered]@{ schema = 'mish.lab.capacity-resources/v1'; acceptance_result = 'PASS'; classification = 'U7_CAPACITY_512_PASS' } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $capacityPassPath
     $capacityPass = & $reportScript -Mode full -PrNumber 208 -SourceSha ('1' * 40) -ControlSha $controlSha -DiagnosticEvidencePath $passDiagnostic -RequestedProbe capacity_resources -TargetedEvidencePath $capacityPassPath -OutputPath (Join-Path $root 'capacity-pass-report.json') | Select-Object -Last 1 | ConvertFrom-Json
     if ([string]$capacityPass.cycle_result -cne 'PASS' -or [string]$capacityPass.acceptance_scope -cne 'FULL_BASELINE_PLUS_CAPACITY_RESOURCES' -or [string]$capacityPass.exact_candidate_acceptance -cne 'PASS' -or [string]$capacityPass.targeted_probe.acceptance_result -cne 'PASS') {
         throw 'Full capacity PASS must require baseline + targeted acceptance and accept the exact candidate.'
     }
 
     $capacityFailPath = Join-Path $root 'capacity-fail.json'
-    [ordered]@{ schema = 'mish.lab.capacity-resources/v1'; acceptance_result = 'FAIL'; classification = 'U2_CAPACITY_65TH_NOT_REJECTED' } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $capacityFailPath
+    [ordered]@{ schema = 'mish.lab.capacity-resources/v1'; acceptance_result = 'FAIL'; classification = 'U7_CAPACITY_513TH_NOT_REJECTED' } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $capacityFailPath
     $capacityFail = & $reportScript -Mode full -PrNumber 208 -SourceSha ('2' * 40) -ControlSha $controlSha -DiagnosticEvidencePath $passDiagnostic -RequestedProbe capacity_resources -TargetedEvidencePath $capacityFailPath -OutputPath (Join-Path $root 'capacity-fail-report.json') | Select-Object -Last 1 | ConvertFrom-Json
-    if ([string]$capacityFail.cycle_result -cne 'PRODUCT_FAIL' -or [string]$capacityFail.classification -cne 'U2_CAPACITY_65TH_NOT_REJECTED' -or [string]$capacityFail.exact_candidate_acceptance -cne 'FAIL') {
+    if ([string]$capacityFail.cycle_result -cne 'PRODUCT_FAIL' -or [string]$capacityFail.classification -cne 'U7_CAPACITY_513TH_NOT_REJECTED' -or [string]$capacityFail.exact_candidate_acceptance -cne 'FAIL') {
         throw 'A real capacity failure must reject the exact PRODUCT candidate.'
     }
 
