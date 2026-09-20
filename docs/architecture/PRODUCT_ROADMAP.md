@@ -357,7 +357,7 @@ Therefore the physically accepted candidate tree and accepted protected-main tre
 
 U4 introduces no second Cellular owner, networking stack, Tokio runtime/executor, readiness/lifecycle owner, Android per-socket network binding, fallback public-egress path, rotation owner or UI state owner.
 
-Next stage: **U5 — First-class IP Rotation**.
+U5 is **CLOSED / PASS**. Next stage: **U6 — Backend-driven Product UI**.
 
 ---
 
@@ -392,6 +392,37 @@ Requirements:
 - one bounded cycle per user request by default; no infinite retry-until-changed policy.
 
 Physical capability proof on the supported rooted device is mandatory before PRODUCT acceptance.
+
+## U5 final acceptance — CLOSED / PASS
+
+Accepted PRODUCT source and protected-main identity:
+
+```text
+source_head = 429ba59d01d9db2e1fc84ed64cd5daf5e54198d8
+accepted_product_main = a08214b3eb61403b92bc236d47d0abdd24533c4b
+accepted_product_tree = b47832714ed5debddcdb776b8460c5183a250849
+```
+
+Hosted acceptance:
+
+- PR Validation + PRODUCT Candidate #840 / run `35478614702`: PASS;
+- LAB Host Static #567 / run `35478614707`: PASS;
+- canonical candidate artifact id `10595362726`;
+- candidate digest `sha256:29fcb915a0ec9b7b808c19827aae2345acd3e4c37efc6ff097a051b8b6b5df6e`.
+
+Canonical physical acceptance:
+
+```text
+Device Cycle #596
+run_id = 35479143756
+source_sha = 429ba59d01d9db2e1fc84ed64cd5daf5e54198d8
+classification = U5_ROTATION_PHYSICAL_ACCEPTANCE_PASS
+exact_candidate_acceptance = PASS
+```
+
+The run physically proved three successful PRODUCT-owned rotations, real airplane ON/OFF observation, fail-closed readiness/Mesh during accepted Cellular loss, fresh owner generations, exact root re-authorization, readiness/Mesh recovery, unchanged credential material/version, no raw-IP persistence, bounded resources/session quiescence, and the stop-during-observed-ON restore case. The previously failing restart path now returns to READY through the explicit debug-only normal Service-start seam without introducing Kotlin recovery/timing ownership.
+
+U5 is closed. Do not reopen Rust/Tokio/rotation ownership while implementing U6 unless new contradictory physical evidence appears.
 
 ---
 
