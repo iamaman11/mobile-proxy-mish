@@ -229,12 +229,19 @@ def main() -> None:
     consumer = ".github/workflows/device-cycle.yml"
     for required in (
         "workflow_dispatch:",
+        "issue_comment:",
+        "types: [created]",
         "pr_number:",
         "product_sha:",
-        "PR_NUMBER: ${{ inputs.pr_number }}",
-        "EXPECTED_SHA: ${{ inputs.product_sha }}",
-        "MODE: ${{ inputs.mode }}",
-        "PROBE: ${{ inputs.probe }}",
+        "github.actor == 'iamaman11'",
+        "startsWith(github.event.comment.body, '/mish-cycle ')",
+        "Normalize explicit manual request",
+        "/mish-cycle <PR> <PRODUCT_SHA> <mode> <probe>",
+        '"trigger": "operator_comment"',
+        "PR_NUMBER: ${{ steps.request.outputs.pr_number }}",
+        "EXPECTED_SHA: ${{ steps.request.outputs.product_sha }}",
+        "MODE: ${{ steps.request.outputs.mode }}",
+        "PROBE: ${{ steps.request.outputs.probe }}",
         "device cycle control must be dispatched from current protected main",
         "device-cycle requires an explicit exact 40-hex PRODUCT SHA",
         "installing a device candidate requires a ready PR",
@@ -245,13 +252,12 @@ def main() -> None:
         "DEVICE_CANDIDATE_STORE_ROOT: C:\\\\mish-lab\\\\runner\\\\.state\\\\device-candidate\\\\versions",
         "Install exact signed candidate without rebuilding",
         "Verify installed APK bytes and signing identity",
-        "manual workflow_dispatch from protected main",
+        "steps.request.outputs.trigger",
         "Automatic start after build/main: **NO**",
     ):
         require(consumer, required, "explicit manual DEVICE-1 consumer contract drifted")
     for forbidden in (
         "pull_request:",
-        "issue_comment:",
         "workflow_run:",
         "device-candidate-physical.yml/dispatches",
         "gradle --no-daemon",
