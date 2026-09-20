@@ -40,7 +40,7 @@ class MishApplication : Application() {
         check(runtimeControllerRef == null) {
             "MishRuntimeController process composition was initialized more than once"
         }
-        runtimeControllerRef = MishRuntimeController(this)
+        runtimeControllerRef = MishRuntimeController(base)
     }
 
     override fun onCreate() {
