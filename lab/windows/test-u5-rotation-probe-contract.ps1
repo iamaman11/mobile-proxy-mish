@@ -52,7 +52,7 @@ foreach ($required in @(
     'RequiredConsecutiveSamples = 2',
     'DeadlineSeconds = 15',
     'thread_name_set = @($threadNameSet)',
-    "'shell', 'run-as', $PackageName, 'ls', '-1', "/proc/$processId/fd"",
+    '''shell'', ''run-as'', $PackageName, ''ls'', ''-1'', "/proc/$processId/fd"',
     "'shell', 'dumpsys', 'meminfo', '-s', [string]$processId",
     'rss_kb = [int64]$rssMatch.Groups[''value''].Value',
     'pss_kb = [int64]$pssMatch.Groups[''value''].Value',
