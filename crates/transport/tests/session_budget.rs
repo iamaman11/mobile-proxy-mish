@@ -1,9 +1,9 @@
 use mish_transport::{MAX_MESH_SESSIONS, MeshSessionOwner};
 
 #[test]
-fn five_hundred_thirteenth_mesh_session_is_rejected_by_transport_owner() {
+fn sixty_fifth_mesh_session_is_rejected_by_transport_owner() {
     assert_eq!(
-        MAX_MESH_SESSIONS, 512,
+        MAX_MESH_SESSIONS, 64,
         "PRODUCT external Mesh capacity changed unexpectedly"
     );
 
@@ -16,7 +16,7 @@ fn five_hundred_thirteenth_mesh_session_is_rejected_by_transport_owner() {
     assert_eq!(owner.active_sessions(), MAX_MESH_SESSIONS);
     assert!(
         owner.try_admit().is_none(),
-        "513th session must be rejected before runtime/backend execution"
+        "65th session must be rejected before runtime/backend execution"
     );
     assert_eq!(owner.active_sessions(), MAX_MESH_SESSIONS);
 
