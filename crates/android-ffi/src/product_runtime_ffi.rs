@@ -908,7 +908,9 @@ fn map_rotation_failure(failure: RotationFailure) -> RotationFailureView {
         RotationFailure::RootPolicyUnavailable => RotationFailureView::RootPolicyUnavailable,
         RotationFailure::BeforeIpFailed => RotationFailureView::BeforeIpFailed,
         RotationFailure::AirplaneEnableFailed => RotationFailureView::AirplaneEnableFailed,
-        RotationFailure::AirplaneObservationFailed => RotationFailureView::AirplaneObservationFailed,
+        RotationFailure::AirplaneObservationFailed => {
+            RotationFailureView::AirplaneObservationFailed
+        }
         RotationFailure::AirplaneDisableFailed => RotationFailureView::AirplaneDisableFailed,
         RotationFailure::FreshCellularUnavailable => RotationFailureView::FreshCellularUnavailable,
         RotationFailure::RootPolicyRecoveryFailed => RotationFailureView::RootPolicyRecoveryFailed,

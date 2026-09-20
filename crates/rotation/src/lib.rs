@@ -640,12 +640,17 @@ mod tests {
             .airplane_disable_effect_completed(id, RotationMutationOutcome::Applied)
             .expect("disable");
         machine.observe_airplane(id, false).expect("airplane off");
-        machine.observe_cellular(id, 12, true).expect("fresh cellular");
+        machine
+            .observe_cellular(id, 12, true)
+            .expect("fresh cellular");
         machine.observe_root_policy(id, 12, true).expect("root");
         let terminal = machine.record_after_ip(id, 12, after).expect("after");
         assert_eq!(terminal.before_ip, Some(before));
         assert_eq!(terminal.after_ip, Some(after));
-        assert_eq!(terminal.terminal_result, Some(RotationTerminalResult::Changed));
+        assert_eq!(
+            terminal.terminal_result,
+            Some(RotationTerminalResult::Changed)
+        );
 
         let next = machine.start(13).expect("next operation");
         assert!(next > id);

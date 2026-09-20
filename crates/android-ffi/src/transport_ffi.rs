@@ -76,7 +76,9 @@ pub(crate) fn map_view(snapshot: OwnerTransportSnapshot) -> MeshAdmissionView {
                 MeshAdmissionReason::MultipleAcceptedAddresses
             }
         }),
-        endpoint: admission.admitted_endpoint().map(|address| address.to_string()),
+        endpoint: admission
+            .admitted_endpoint()
+            .map(|address| address.to_string()),
         admission_epoch: admission.admission_epoch(),
         last_sequence: admission.last_sequence(),
         ingress_running: snapshot.ingress_running(),
