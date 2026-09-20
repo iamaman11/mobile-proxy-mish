@@ -313,15 +313,30 @@ function Get-MishProcessMetrics {
         'shell', 'run-as', $PackageName, 'cat', "/proc/$processId/status"
     )
     $threadsMatch = [regex]::Match($status, '(?m)^Threads:\s+(?<count>\d+)\s*$')
-    if (-not $threadsMatch.Success) {
-        Stop-MishRotationAcceptance 'LAB_PROCESS_METRICS_UNAVAILABLE' 'PRODUCT thread count is unavailable.'
+    $rssMatch = [regex]::Match($status, '(?m)^VmRSS:\s+(?<value>\d+)\s+kB\s*$')
+    if (-not $threadsMatch.Success -or -not $rssMatch.Success) {
+        Stop-MishRotationAcceptance 'LAB_PROCESS_METRICS_UNAVAILABLE' 'PRODUCT thread count/VmRSS is unavailable.'
     }
 
-    $fdText = Invoke-MishAdbText -Operation 'observe_fd_count' -Arguments @(
-        'shell', 'run-as', $PackageName, 'sh', '-c', "ls /proc/$processId/fd 2>/dev/null | wc -l"
+    # Align U7 resource observation with the physically proven capacity probe:
+    # list app-owned /proc FDs directly and count on the host.
+    $fdListing = Invoke-MishAdbText -Operation 'observe_fd_count' -Arguments @(
+        'shell', 'run-as', $PackageName, 'ls', '-1', "/proc/$processId/fd"
     )
-    if ($fdText -notmatch '^\d+$') {
+    $fdCount = @($fdListing -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+    if ($fdCount -le 0) {
         Stop-MishRotationAcceptance 'LAB_PROCESS_METRICS_UNAVAILABLE' 'PRODUCT FD count is unavailable.'
+    }
+
+    $meminfo = Invoke-MishAdbText -Operation 'observe_process_pss' -Arguments @(
+        'shell', 'dumpsys', 'meminfo', '-s', [string]$processId
+    )
+    $pssMatch = [regex]::Match($meminfo, '(?m)^\s*TOTAL PSS:\s*(?<value>\d+)\b')
+    if (-not $pssMatch.Success) {
+        $pssMatch = [regex]::Match($meminfo, '(?m)^\s*TOTAL\s+(?<value>\d+)\s+')
+    }
+    if (-not $pssMatch.Success) {
+        Stop-MishRotationAcceptance 'LAB_PROCESS_METRICS_UNAVAILABLE' 'PRODUCT PSS is unavailable.'
     }
 
     # Toybox CMD is the per-thread command name. Enumerate all visible threads and filter
@@ -365,7 +380,9 @@ function Get-MishProcessMetrics {
     return [ordered]@{
         pid = $processId
         threads = [int]$threadsMatch.Groups['count'].Value
-        fd_count = [int]$fdText
+        fd_count = [int]$fdCount
+        rss_kb = [int64]$rssMatch.Groups['value'].Value
+        pss_kb = [int64]$pssMatch.Groups['value'].Value
         runtime_io_threads = $runtimeIo
         forbidden_kotlin_owner_threads = $forbiddenKotlinOwners
         root_session_generation = Get-MishOptionalInt64 $Snapshot.root.session_generation
@@ -961,8 +978,27 @@ if ($metricsBefore.forbidden_kotlin_owner_threads -ne 0) {
 }
 
 $operations = [System.Collections.Generic.List[object]]::new()
+$rotationResourceSamples = [System.Collections.Generic.List[object]]::new()
 for ($ordinal = 1; $ordinal -le $SuccessfulOperations; $ordinal++) {
-    $operations.Add((Invoke-MishOneRotation -Ordinal $ordinal -ExpectedCredentialVersion $credentialVersion))
+    $operation = Invoke-MishOneRotation -Ordinal $ordinal -ExpectedCredentialVersion $credentialVersion
+    [void]$operations.Add($operation)
+
+    # U7 observation only: capture the same read-only owner/resource sample after each
+    # fully recovered rotation. Do not invent a memory acceptance threshold here.
+    $sampleSnapshot = Get-MishAndroidSnapshot
+    Assert-MishReadyBaseline -Snapshot $sampleSnapshot
+    $sampleMetrics = Get-MishProcessMetrics -Snapshot $sampleSnapshot
+    [void]$rotationResourceSamples.Add([ordered]@{
+        ordinal = $ordinal
+        operation_id = [int64]$operation.operation_id
+        metrics = $sampleMetrics
+        delta_from_before = [ordered]@{
+            threads = [int]$sampleMetrics.threads - [int]$metricsBefore.threads
+            fd_count = [int]$sampleMetrics.fd_count - [int]$metricsBefore.fd_count
+            rss_kb = [int64]$sampleMetrics.rss_kb - [int64]$metricsBefore.rss_kb
+            pss_kb = [int64]$sampleMetrics.pss_kb - [int64]$metricsBefore.pss_kb
+        }
+    })
 }
 
 $postRotationSnapshot = Get-MishAndroidSnapshot
@@ -1067,6 +1103,7 @@ $evidence = [ordered]@{
     raw_ip_persisted = $false
     resources = [ordered]@{
         before = $metricsBefore
+        per_normal_rotation = @($rotationResourceSamples)
         after_normal_rotations = $metricsAfterRotations
         after_restore_restart = $metricsAfter
         restart_resource_quiescence = $resourceQuiescence
