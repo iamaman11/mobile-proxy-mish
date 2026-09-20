@@ -2009,6 +2009,11 @@ def main() -> None:
         "explicit user credential access must remain visible and opt-in",
     )
     require(
+        main_screen,
+        "SecureFlagPolicy.SecureOn",
+        "explicit credential reveal must be protected from platform screenshots",
+    )
+    require(
         main_activity,
         """override fun onStart() {
         super.onStart()
