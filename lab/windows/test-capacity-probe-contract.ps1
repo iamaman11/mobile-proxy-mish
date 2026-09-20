@@ -20,7 +20,7 @@ foreach ($path in @($sourcePath, $measurementPath)) {
 
 $source = Get-Content -Raw -LiteralPath $sourcePath
 foreach ($required in @(
-    "Import-Module (Join-Path $PSScriptRoot 'U7Measurement.psm1') -Force",
+    'Import-Module (Join-Path $PSScriptRoot ''U7Measurement.psm1'') -Force',
     'function Open-MishApplicationSession',
     'function Invoke-MishApplicationRoundTrip',
     'function Test-MishApplicationLiveSet',
