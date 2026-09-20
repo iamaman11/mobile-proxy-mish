@@ -34,10 +34,14 @@ foreach ($required in @(
     'MeshConnectElapsedMs = $meshConnectElapsedMs',
     'SetupElapsedMs = [int64]$setupWatch.ElapsedMilliseconds',
     'application_round_trip_latency = Get-MishU7LatencyDistribution',
-    "acceptance_profile = 'u7-baseline-v1'",
+    "acceptance_profile = 'u7-capacity-512-v1'",
     "batch_model = 'independent_bounded'",
     "measurement_stage = 'U7'",
-    'foreach ($target in @(10, 32, 64))',
+    'capacity_target = 512',
+    'overflow_ordinal = 513',
+    "'U7_CAPACITY_513TH_NOT_REJECTED'",
+    "'U7_CAPACITY_512_PASS'",
+    'foreach ($target in @(10, 32, 64, 512))',
     'Add-MishApplicationSessionsUntil -ProxyHost $meshAddress -Lease $lease -Sessions $activeSessions -ExpectedSessions $target',
     '$applicationLiveness = Test-MishApplicationLiveSet -Sessions @($activeSessions) -ExpectedSessions $target',
     '$ownerCounts = Wait-MishOwnerCounts -ExpectedMesh $target -ExpectedProxy $target',
@@ -46,9 +50,9 @@ foreach ($required in @(
     '$stageRecord[''cleanup''] = [ordered]@{',
     'resource_delta_from_idle = if ($null -ne $stageCleanupResources)',
     '$attempt = Test-MishOverflowRejected -ProxyHost $meshAddress -Lease $lease',
-    'ordinal = 65',
-    '$postOverflowLiveness = Test-MishApplicationLiveSet -Sessions @($activeSessions) -ExpectedSessions 64',
-    '$overflowOwnerCounts = Wait-MishOwnerCounts -ExpectedMesh 64 -ExpectedProxy 64',
+    'ordinal = 513',
+    '$postOverflowLiveness = Test-MishApplicationLiveSet -Sessions @($activeSessions) -ExpectedSessions 512',
+    '$overflowOwnerCounts = Wait-MishOwnerCounts -ExpectedMesh 512 -ExpectedProxy 512',
     "'LAB_APPLICATION_LIVE_PRECONDITION_FAILED'",
     "'LAB_APPLICATION_LIVE_POST_OVERFLOW_FAILED'",
     "'LAB_OVERFLOW_OBSERVATION_INCONCLUSIVE'",
@@ -129,10 +133,10 @@ if ($stageOpen -lt 0 -or $stageLive -lt 0 -or $ownerSample -lt 0 -or $stageOpen 
 }
 
 $overflowAttempt = $source.LastIndexOf('$attempt = Test-MishOverflowRejected -ProxyHost $meshAddress -Lease $lease', [StringComparison]::Ordinal)
-$postOverflowLive = $source.LastIndexOf('$postOverflowLiveness = Test-MishApplicationLiveSet -Sessions @($activeSessions) -ExpectedSessions 64', [StringComparison]::Ordinal)
-$postOverflowOwners = $source.LastIndexOf('$overflowOwnerCounts = Wait-MishOwnerCounts -ExpectedMesh 64 -ExpectedProxy 64', [StringComparison]::Ordinal)
+$postOverflowLive = $source.LastIndexOf('$postOverflowLiveness = Test-MishApplicationLiveSet -Sessions @($activeSessions) -ExpectedSessions 512', [StringComparison]::Ordinal)
+$postOverflowOwners = $source.LastIndexOf('$overflowOwnerCounts = Wait-MishOwnerCounts -ExpectedMesh 512 -ExpectedProxy 512', [StringComparison]::Ordinal)
 if ($overflowAttempt -lt 0 -or $postOverflowLive -lt 0 -or $postOverflowOwners -lt 0 -or $overflowAttempt -gt $postOverflowLive -or $postOverflowLive -gt $postOverflowOwners) {
-    throw 'The single 65th overflow attempt must be followed by application-liveness re-proof of the original 64 and owner counts.'
+    throw 'The single 513th overflow attempt must be followed by application-liveness re-proof of the original 512 and owner counts.'
 }
 
 Write-Host 'CAPACITY_PROBE_CONTRACT=PASS'
