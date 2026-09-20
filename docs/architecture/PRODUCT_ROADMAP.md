@@ -444,6 +444,62 @@ Production dashboard:
 
 Pure projection tests and Compose tests cover readiness states, IP known/unknown, first-use previous unknown, duplicate rotation prevention, changed/unchanged/failed rotation, root unavailable, cellular recovery, long text/accessibility and secret absence.
 
+## U6 final acceptance — CLOSED / PASS
+
+Accepted exact PRODUCT source:
+
+```text
+source_head = a8710e001569d67939bca0c3dac75c834ffef107
+accepted_product_main = 03c20e98405f9afd43241448fc88a19f02eec7d1
+accepted_product_tree = 089ac8c69b12bcd76d6e1555e98cfaf41feb2e16
+```
+
+The exact candidate source head and squash-merged protected main are byte-identical at the Git tree boundary.
+
+Hosted acceptance:
+
+- PR Validation + PRODUCT Candidate #871 / run `35486746100`: PASS;
+- candidate artifact id `10598110709`;
+- candidate digest `sha256:d67ec87537b9ef1b973b478404ed07c5118708c53644efb2bedb2ad3a047d2cb`.
+
+Canonical physical acceptance:
+
+```text
+Device Cycle #604
+run_id = 35486973765
+source_sha = a8710e001569d67939bca0c3dac75c834ffef107
+control_sha = 5deda831d89f0d34c671e14e363bbb721bfb4754
+probe = u5_rotation
+cycle_result = PASS
+classification = U5_ROTATION_PHYSICAL_ACCEPTANCE_PASS
+exact_candidate_acceptance = PASS
+```
+
+Physical evidence artifact:
+
+- artifact id `10598041688`;
+- digest `sha256:3f68b47277fde2527b49e12eae48c859ff8968b8030a6e3e00b10444baa7f285`.
+
+The final physical run was clean: no external DEVICE interaction occurred during the run. It proved exact installed-candidate identity, stable startup diagnostics, three PRODUCT-owned rotations with fail-closed Cellular/Readiness/Mesh behavior during loss, fresh owner/root generations, stable credential material/version, no raw-IP persistence, stop during observed airplane ON, runtime-active credential projection cleared before restart, airplane restored OFF, same-process restart to runtime generation 2 and READY, and bounded thread/FD/session/task quiescence with zero forbidden Kotlin owner threads.
+
+The startup-order follow-up keeps the ownership boundary explicit:
+
+```text
+Application.attachBaseContext(base)
+ -> one process-local MishRuntimeController
+ -> NativeProductRuntime / Rust PRODUCT process handle
+
+Application.onCreate()
+ -> normal ProxyRuntimeService start request
+
+MishDiagnosticsProvider
+ -> read-only access to the already-created controller
+```
+
+The attached base Context is the process composition context. PRODUCT descendants do not re-resolve `applicationContext` during pre-`onCreate()` bootstrap. Diagnostics cannot construct PRODUCT state. Rust/Tokio remains the sole owner of lifecycle, generation, recovery, readiness and rotation semantics; Kotlin retains Android process/service/platform-effect/presentation boundaries only.
+
+U6 is closed. Advance to U7 only from this accepted PRODUCT identity.
+
 ---
 
 # U7 — Efficiency and long-run hardening
