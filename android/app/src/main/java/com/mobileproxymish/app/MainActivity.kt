@@ -1,99 +1,33 @@
 package com.mobileproxymish.app
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.viewModels
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 
 class MainActivity : ComponentActivity() {
-    private val viewModel: MainViewModel by viewModels()
+    override fun onStart() {
+        super.onStart()
+        startService(Intent(this, ProxyRuntimeService::class.java))
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            val state by viewModel.state.collectAsStateWithLifecycle()
-            val credentialReveal by viewModel.credentialReveal.collectAsStateWithLifecycle()
+            val model: MainViewModel = viewModel()
+            val state by model.state.collectAsStateWithLifecycle()
+            val credentialReveal by model.credentialReveal.collectAsStateWithLifecycle()
 
-            MaterialTheme {
-                Scaffold { padding ->
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(padding),
-                        verticalArrangement = Arrangement.Center,
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        Text(text = state.title, style = MaterialTheme.typography.headlineMedium)
-                        Text(text = state.overallStatus, style = MaterialTheme.typography.bodyMedium)
-                        Text(
-                            text = "Cellular admission: ${state.cellularState}",
-                            style = MaterialTheme.typography.bodyLarge,
-                        )
-                        state.cellularReasonCode?.let { reason ->
-                            Text(
-                                text = "Cellular reason: $reason",
-                                style = MaterialTheme.typography.bodyMedium,
-                            )
-                        }
-                        Text(
-                            text = "Proxy runtime: ${state.proxyState}",
-                            style = MaterialTheme.typography.bodyLarge,
-                        )
-                        state.proxyReasonCode?.let { reason ->
-                            Text(
-                                text = "Proxy reason: $reason",
-                                style = MaterialTheme.typography.bodyMedium,
-                            )
-                        }
-                        Button(onClick = viewModel::showCurrentCredentials) {
-                            Text("Show current proxy credentials")
-                        }
-                        when (val reveal = credentialReveal) {
-                            CredentialRevealUiState.Hidden -> Unit
-                            CredentialRevealUiState.Unavailable -> {
-                                Text(
-                                    text = "Current proxy credentials are unavailable",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                )
-                            }
-                            is CredentialRevealUiState.Revealed -> {
-                                Text(
-                                    text = "Credential version: ${reveal.version}",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                )
-                                Text(
-                                    text = "Username: ${reveal.username}",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                )
-                                Text(
-                                    text = "Password: ${reveal.password}",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                )
-                                Button(onClick = viewModel::hideCurrentCredentials) {
-                                    Text("Hide credentials")
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            MishApp(
+                state = state,
+                credentialReveal = credentialReveal,
+                onChangeIp = model::changePublicIp,
+                onShowCredentials = model::showCurrentCredentials,
+                onHideCredentials = model::hideCurrentCredentials,
+            )
         }
-    }
-
-    override fun onStart() {
-        super.onStart()
-        ProxyRuntimeService.requestStart(this)
     }
 }
