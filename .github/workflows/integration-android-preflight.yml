@@ -137,10 +137,10 @@ jobs:
             ~/.cargo/git/db
             ~/.cargo/bin/cargo-ndk
             target
-          key: pr-validation-${{ runner.os }}-${{ env.CACHE_MODE }}-rust-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/**/Cargo.toml', 'crates/**/*.rs') }}
+          key: pr-validation-${{ runner.os }}-${{ env.CACHE_MODE }}-host-rust-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/**/Cargo.toml', 'crates/**/*.rs') }}
           restore-keys: |
-            pr-validation-${{ runner.os }}-full-rust-${{ env.RUST_TOOLCHAIN }}-
-            pr-validation-${{ runner.os }}-static-rust-${{ env.RUST_TOOLCHAIN }}-
+            pr-validation-${{ runner.os }}-full-host-rust-${{ env.RUST_TOOLCHAIN }}-
+            pr-validation-${{ runner.os }}-static-host-rust-${{ env.RUST_TOOLCHAIN }}-
 
       - name: Install pinned Rust toolchain
         if: ${{ needs.control.result == 'success' && needs.control.outputs.product_changed == 'true' }}
@@ -167,42 +167,42 @@ jobs:
             echo '- Reason: no PRODUCT/build change, or draft without [full-hosted].'
           } >> "$GITHUB_STEP_SUMMARY"
 
-  android:
-    name: Android Compose Shell
-    needs: [control, device-contracts, rust]
+  android-build:
+    name: Android Build/Test
+    needs: [control, device-contracts]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Require control and Rust gates
-        if: ${{ needs.control.result != 'success' || needs.device-contracts.result != 'success' || needs.rust.result != 'success' }}
+      - name: Require control gates
+        if: ${{ needs.control.result != 'success' || needs.device-contracts.result != 'success' }}
         shell: bash
         run: |
-          echo 'Control Guards, Device Cycle Contracts, or Rust Workspace did not pass; refusing Android required-check success.' >&2
+          echo 'Control Guards or Device Cycle Contracts did not pass; refusing Android build/test execution.' >&2
           exit 1
 
       - name: Checkout exact PR head
-        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.control.outputs.product_changed == 'true' }}
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.control.outputs.product_changed == 'true' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
       - name: Set up JDK 17
-        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.control.outputs.product_changed == 'true' }}
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.control.outputs.product_changed == 'true' }}
         uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
         with:
           distribution: temurin
           java-version: '17'
 
       - name: Set up pinned Gradle
-        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.control.outputs.product_changed == 'true' }}
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.control.outputs.product_changed == 'true' }}
         uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
         with:
           gradle-version: ${{ env.GRADLE_VERSION }}
 
       - name: Restore Android/Rust build cache
-        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.control.outputs.product_changed == 'true' }}
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.control.outputs.product_changed == 'true' }}
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
@@ -211,13 +211,13 @@ jobs:
             ~/.cargo/git/db
             ~/.cargo/bin/cargo-ndk
             target
-          key: pr-validation-${{ runner.os }}-${{ env.CACHE_MODE }}-rust-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/**/Cargo.toml', 'crates/**/*.rs') }}
+          key: pr-validation-${{ runner.os }}-${{ env.CACHE_MODE }}-android-${{ env.ANDROID_NDK_VERSION }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/**/Cargo.toml', 'crates/**/*.rs', 'android/gradle.properties', 'android/**/*.gradle.kts') }}
           restore-keys: |
-            pr-validation-${{ runner.os }}-full-rust-${{ env.RUST_TOOLCHAIN }}-
-            pr-validation-${{ runner.os }}-static-rust-${{ env.RUST_TOOLCHAIN }}-
+            pr-validation-${{ runner.os }}-full-android-${{ env.ANDROID_NDK_VERSION }}-${{ env.RUST_TOOLCHAIN }}-
+            pr-validation-${{ runner.os }}-static-android-${{ env.ANDROID_NDK_VERSION }}-${{ env.RUST_TOOLCHAIN }}-
 
       - name: Set up host Rust toolchain
-        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.control.outputs.product_changed == 'true' }}
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.control.outputs.product_changed == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -225,14 +225,14 @@ jobs:
           rustup override set "$RUST_TOOLCHAIN"
 
       - name: Fast Kotlin compile and lint
-        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.control.outputs.product_changed == 'true' }}
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.control.outputs.product_changed == 'true' }}
         run: >-
           gradle --no-daemon -p android
           :app:compileDebugKotlin
           :app:lintDebug
 
       - name: Set up Android Rust toolchain
-        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.control.outputs.product_changed == 'true' && (github.event.pull_request.draft == false || contains(github.event.pull_request.body, '[full-hosted]')) }}
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.control.outputs.product_changed == 'true' && (github.event.pull_request.draft == false || contains(github.event.pull_request.body, '[full-hosted]')) }}
         shell: bash
         run: |
           set -euo pipefail
@@ -249,7 +249,7 @@ jobs:
           echo "MISH_TARGET_ABI=$TARGET_ABI" >> "$GITHUB_ENV"
 
       - name: Set up pinned Android NDK
-        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.control.outputs.product_changed == 'true' && (github.event.pull_request.draft == false || contains(github.event.pull_request.body, '[full-hosted]')) }}
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.control.outputs.product_changed == 'true' && (github.event.pull_request.draft == false || contains(github.event.pull_request.body, '[full-hosted]')) }}
         shell: bash
         run: |
           set -euo pipefail
@@ -266,7 +266,7 @@ jobs:
           echo "ANDROID_NDK=$NDK_PATH" >> "$GITHUB_ENV"
 
       - name: Unit test and assemble exact-head candidate
-        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.control.outputs.product_changed == 'true' && (github.event.pull_request.draft == false || contains(github.event.pull_request.body, '[full-hosted]')) }}
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.control.outputs.product_changed == 'true' && (github.event.pull_request.draft == false || contains(github.event.pull_request.body, '[full-hosted]')) }}
         run: >-
           gradle --no-daemon -p android
           :app:testDebugUnitTest
@@ -274,11 +274,11 @@ jobs:
           :app:assembleDebugAndroidTest
 
       - name: Verify exact PRODUCT candidate contract
-        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.control.outputs.product_changed == 'true' && (github.event.pull_request.draft == false || contains(github.event.pull_request.body, '[full-hosted]')) }}
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.control.outputs.product_changed == 'true' && (github.event.pull_request.draft == false || contains(github.event.pull_request.body, '[full-hosted]')) }}
         run: python3 tools/verify_android_candidate.py
 
       - name: Stage exact-head device candidate
-        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.control.outputs.product_changed == 'true' && github.event.pull_request.draft == false }}
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.control.outputs.product_changed == 'true' && github.event.pull_request.draft == false }}
         shell: bash
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -321,8 +321,92 @@ jobs:
               handle.write("\n")
           PY
 
-      - name: Upload exact-head device candidate
-        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.control.outputs.product_changed == 'true' && github.event.pull_request.draft == false }}
+      - name: Upload internal exact-head candidate staging
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.control.outputs.product_changed == 'true' && github.event.pull_request.draft == false }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: device-candidate-staging-pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/device-candidate
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Publish Android build/test summary
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.control.outputs.product_changed == 'true' && github.event.pull_request.draft == false }}
+        shell: bash
+        run: |
+          {
+            echo '### Android build/test'
+            echo '- Source SHA: `${{ github.event.pull_request.head.sha }}`'
+            echo '- Native + Android candidate verification: **PASS**'
+            echo '- Canonical device candidate published here: **NO**'
+            echo '- Final publication waits for Rust Workspace: **YES**'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish static-only Android summary
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.control.outputs.product_changed != 'true' }}
+        shell: bash
+        run: |
+          {
+            echo '### Android build/test'
+            echo '- PRODUCT/build changed: **NO**'
+            echo '- Heavy Android build executed: **NO**'
+            echo '- Device candidate staged: **NO**'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  android:
+    name: Android Compose Shell
+    needs: [control, device-contracts, rust, android-build]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Require complete PRODUCT gates
+        if: ${{ needs.control.result != 'success' || needs.device-contracts.result != 'success' || needs.rust.result != 'success' || needs.android-build.result != 'success' }}
+        shell: bash
+        run: |
+          echo 'Control Guards, Device Cycle Contracts, Rust Workspace, or Android Build/Test did not pass; refusing final candidate gate success.' >&2
+          exit 1
+
+      - name: Download verified exact-head candidate staging
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.android-build.result == 'success' && needs.control.outputs.product_changed == 'true' && github.event.pull_request.draft == false }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: device-candidate-staging-pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/device-candidate
+
+      - name: Re-verify staged candidate identity
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.android-build.result == 'success' && needs.control.outputs.product_changed == 'true' && github.event.pull_request.draft == false }}
+        shell: bash
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/device-candidate"
+          python3 - "$ROOT" "$PR_NUMBER" "$SOURCE_SHA" <<'PY'
+          import hashlib
+          import json
+          import pathlib
+          import sys
+
+          root = pathlib.Path(sys.argv[1])
+          expected_pr = int(sys.argv[2])
+          expected_source = sys.argv[3]
+          candidate = json.loads((root / "candidate.json").read_text(encoding="utf-8"))
+          if candidate.get("schema") != "mish-device-candidate-v1":
+              raise SystemExit("staged candidate schema mismatch")
+          if candidate.get("pr_number") != expected_pr or candidate.get("source_sha") != expected_source:
+              raise SystemExit("staged candidate identity mismatch")
+          for key in ("product_apk", "android_test_apk"):
+              item = candidate[key]
+              path = root / item["name"]
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              if digest != item["sha256"]:
+                  raise SystemExit(f"staged candidate digest mismatch: {key}")
+          PY
+
+      - name: Publish canonical exact-head device candidate
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.android-build.result == 'success' && needs.control.outputs.product_changed == 'true' && github.event.pull_request.draft == false }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: device-candidate-pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
@@ -330,26 +414,28 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Publish device candidate summary
-        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.control.outputs.product_changed == 'true' && github.event.pull_request.draft == false }}
+      - name: Publish final candidate summary
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.android-build.result == 'success' && needs.control.outputs.product_changed == 'true' && github.event.pull_request.draft == false }}
         shell: bash
         run: |
           {
             echo '### Exact-head Android PRODUCT candidate'
             echo '- Source PR: #${{ github.event.pull_request.number }}'
             echo '- Source SHA: `${{ github.event.pull_request.head.sha }}`'
+            echo '- Rust Workspace: **PASS**'
+            echo '- Android Build/Test: **PASS**'
             echo '- Artifact: `device-candidate-pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}`'
             echo '- Local build required: **NO**'
             echo '- Physical Device Cycle auto-start: **NO**'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Publish static-only Android summary
-        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.control.outputs.product_changed != 'true' }}
+      - name: Publish no-candidate summary
+        if: ${{ needs.control.result == 'success' && needs.device-contracts.result == 'success' && needs.rust.result == 'success' && needs.android-build.result == 'success' && (needs.control.outputs.product_changed != 'true' || github.event.pull_request.draft == true) }}
         shell: bash
         run: |
           {
-            echo '### Android required check'
-            echo '- PRODUCT/build changed: **NO**'
-            echo '- Heavy Android build executed: **NO**'
-            echo '- Device candidate staged: **NO**'
+            echo '### Final required candidate gate'
+            echo '- PRODUCT/build changed: **${{ needs.control.outputs.product_changed }}**'
+            echo '- Canonical candidate published: **NO**'
+            echo '- Reason: CONTROL-only PR, or draft PR.'
           } >> "$GITHUB_STEP_SUMMARY"
