@@ -120,7 +120,6 @@ def main() -> None:
         ".\\lab\\windows\\test-recovery-lifecycle-probe-contract.ps1",
         ".\\lab\\windows\\test-dns-lifetime-live-probe-contract.ps1",
         ".\\lab\\windows\\test-u5-rotation-probe-contract.ps1",
-        ".\\lab\\windows\\test-u7-runtime-restart-probe-contract.ps1",
         "python .\\tools\\check_device_cycle_contract.py",
     ):
         require(validation_workflow, required, "Device Cycle contract verification must remain in protected-main PR validation")
@@ -544,6 +543,7 @@ def main() -> None:
     test = "lab/windows/test-device-cycle.ps1"
     for required in (
         "DEVICE_CYCLE_CONTRACT=PASS",
+        "test-u7-runtime-restart-probe-contract.ps1",
         "PRODUCT_PROXY_MIXED_LISTENER_UNAVAILABLE",
         "Healthy current L8 fact set did not classify PASS",
         "Full PASS report must accept the exact current candidate and contain no automatic probe decision",
