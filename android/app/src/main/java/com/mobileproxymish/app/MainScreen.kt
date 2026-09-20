@@ -31,6 +31,8 @@ import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.SecureFlagPolicy
 
 @Composable
 fun MishTheme(
@@ -315,6 +317,7 @@ private fun CredentialRevealDialog(
         )
         is CredentialRevealUiState.Revealed -> AlertDialog(
             onDismissRequest = onHide,
+            properties = DialogProperties(securePolicy = SecureFlagPolicy.SecureOn),
             title = { Text("Proxy credentials") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
