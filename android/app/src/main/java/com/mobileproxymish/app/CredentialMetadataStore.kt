@@ -20,7 +20,7 @@ internal class CredentialMetadataStore(
     context: Context,
     preferencesName: String = PREFERENCES_NAME,
 ) {
-    private val preferences = context.applicationContext.getSharedPreferences(
+    private val preferences = context.getSharedPreferences(
         preferencesName,
         Context.MODE_PRIVATE,
     )
