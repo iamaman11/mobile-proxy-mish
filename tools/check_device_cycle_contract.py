@@ -413,6 +413,13 @@ def main() -> None:
         "Test-MishOverflowRejected",
         "Wait-MishOwnerCounts -ExpectedMesh 64 -ExpectedProxy 64",
         "Wait-MishOwnerCounts -ExpectedMesh 0 -ExpectedProxy 0",
+        "U7Measurement.psm1",
+        "u7-baseline-v1",
+        "independent_bounded",
+        "Get-MishSafeOwnerDiagnostics",
+        "Measure-MishU7SupplementalObservation",
+        "$stageRecord['cleanup']",
+        "resource_delta_from_idle",
         "'shell', 'run-as', $PackageName, 'cat'",
         "'shell', 'dumpsys', 'meminfo', '-s'",
         "mish.lab.capacity-resources/v1",
@@ -420,7 +427,7 @@ def main() -> None:
         "U2_CAPACITY_AND_RESOURCE_MEASUREMENTS_PASS",
         "post_cleanup_delta_from_idle",
     ):
-        require(capacity_probe, required, "U2 external-Mesh capacity/resource evidence drifted")
+        require(capacity_probe, required, "U7 external-Mesh baseline evidence drifted")
     for forbidden in (
         "'forward'",
         "'shell', 'su'",
@@ -431,6 +438,23 @@ def main() -> None:
         "sing-box",
     ):
         forbid(capacity_probe, forbidden, "capacity/resource probe must remain external-Mesh, read-only and non-root")
+
+    u7_measurement = "lab/windows/U7Measurement.psm1"
+    for required in (
+        "Get-MishU7CpuObservation",
+        "process_cpu_percent_total_capacity",
+        "process_cpu_percent_one_core_equivalent",
+        "voluntary_context_switches_delta",
+        "wakeups_supported = $false",
+        "'dumpsys', 'battery'",
+        "'dumpsys', 'thermalservice'",
+        "'ps', '-A', '-o', 'PID,PPID,NAME'",
+        "mish-runtime-io",
+        "product_su_like_descendants",
+    ):
+        require(u7_measurement, required, "U7 host observation coverage drifted")
+    for forbidden in ("'shell', 'su'", "'shell', 'kill'", "'shell', 'pkill'", "settings put", "airplane-mode"):
+        forbid(u7_measurement, forbidden, "U7 measurement helper must remain read-only and non-root")
 
     probe_module = "lab/windows/DiagnosticConnectProbe.psm1"
     for required in (

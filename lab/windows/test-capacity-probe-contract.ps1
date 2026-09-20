@@ -2,20 +2,25 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $sourcePath = Join-Path $PSScriptRoot 'diagnose-capacity-resources.ps1'
-$tokens = $null
-$errors = $null
-[void][System.Management.Automation.Language.Parser]::ParseFile(
-    $sourcePath,
-    [ref]$tokens,
-    [ref]$errors
-)
-if ($errors.Count -ne 0) {
-    $errors | ForEach-Object { Write-Error $_.Message }
-    throw 'Capacity/resource probe PowerShell parse failed.'
+$measurementPath = Join-Path $PSScriptRoot 'U7Measurement.psm1'
+
+foreach ($path in @($sourcePath, $measurementPath)) {
+    $tokens = $null
+    $errors = $null
+    [void][System.Management.Automation.Language.Parser]::ParseFile(
+        $path,
+        [ref]$tokens,
+        [ref]$errors
+    )
+    if ($errors.Count -ne 0) {
+        $errors | ForEach-Object { Write-Error $_.Message }
+        throw "U7 capacity/resource PowerShell parse failed: $path"
+    }
 }
 
 $source = Get-Content -Raw -LiteralPath $sourcePath
 foreach ($required in @(
+    'Import-Module (Join-Path $PSScriptRoot ''U7Measurement.psm1'') -Force',
     'function Open-MishApplicationSession',
     'function Invoke-MishApplicationRoundTrip',
     'function Test-MishApplicationLiveSet',
@@ -26,12 +31,20 @@ foreach ($required in @(
     'HEAD / HTTP/1.1',
     'Connection: keep-alive',
     "HeldProtocol = 'TLS+HTTP'",
-    "acceptance_profile = 'fast-linear-v1'",
-    "batch_model = 'single_monotonic'",
+    'MeshConnectElapsedMs = $meshConnectElapsedMs',
+    'SetupElapsedMs = [int64]$setupWatch.ElapsedMilliseconds',
+    'application_round_trip_latency = Get-MishU7LatencyDistribution',
+    "acceptance_profile = 'u7-baseline-v1'",
+    "batch_model = 'independent_bounded'",
+    "measurement_stage = 'U7'",
     'foreach ($target in @(10, 32, 64))',
     'Add-MishApplicationSessionsUntil -ProxyHost $meshAddress -Lease $lease -Sessions $activeSessions -ExpectedSessions $target',
     '$applicationLiveness = Test-MishApplicationLiveSet -Sessions @($activeSessions) -ExpectedSessions $target',
     '$ownerCounts = Wait-MishOwnerCounts -ExpectedMesh $target -ExpectedProxy $target',
+    'Measure-MishU7SupplementalObservation -AdbPath $AdbPath -PackageName $PackageName -PidText $pidBefore',
+    'Get-MishSafeOwnerDiagnostics',
+    '$stageRecord[''cleanup''] = [ordered]@{',
+    'resource_delta_from_idle = if ($null -ne $stageCleanupResources)',
     '$attempt = Test-MishOverflowRejected -ProxyHost $meshAddress -Lease $lease',
     'ordinal = 65',
     '$postOverflowLiveness = Test-MishApplicationLiveSet -Sessions @($activeSessions) -ExpectedSessions 64',
@@ -46,7 +59,7 @@ foreach ($required in @(
     'post_cleanup_mesh_e2e = $postCleanupMeshE2e'
 )) {
     if (-not $source.Contains($required)) {
-        throw "Capacity/resource probe lost fast application-live U2 semantics: $required"
+        throw "Capacity/resource probe lost U7 bounded baseline semantics: $required"
     }
 }
 
@@ -64,6 +77,39 @@ foreach ($forbidden in @(
 )) {
     if ($source.Contains($forbidden)) {
         throw "Capacity/resource probe regressed to redundant/stale capacity semantics: $forbidden"
+    }
+}
+
+$measurement = Get-Content -Raw -LiteralPath $measurementPath
+foreach ($required in @(
+    'function Get-MishU7CpuObservation',
+    'process_cpu_percent_total_capacity',
+    'process_cpu_percent_one_core_equivalent',
+    'voluntary_context_switches_delta',
+    'wakeups_supported = $false',
+    "'dumpsys', 'battery'",
+    "'dumpsys', 'thermalservice'",
+    "'ps', '-A', '-o', 'PID,PPID,NAME'",
+    "'mish-runtime-io'",
+    'product_su_like_descendants',
+    'Export-ModuleMember -Function Get-MishU7LatencyDistribution, Measure-MishU7SupplementalObservation'
+)) {
+    if (-not $measurement.Contains($required)) {
+        throw "U7 measurement helper lost bounded observation semantics: $required"
+    }
+}
+
+foreach ($forbidden in @(
+    "'shell', 'su'",
+    "'shell', 'kill'",
+    "'shell', 'pkill'",
+    'settings put',
+    'airplane-mode',
+    'ProcessBuilder',
+    'tokio::runtime'
+)) {
+    if ($measurement.Contains($forbidden)) {
+        throw "U7 measurement helper became a mutation/PRODUCT execution path: $forbidden"
     }
 }
 
