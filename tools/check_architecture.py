@@ -315,13 +315,12 @@ def main() -> None:
     for required in (
         "AndroidVpnObserver(",
         "productRuntime.observeMeshVpn",
-        "productRuntime.meshAdmissionSnapshot()",
         "productRuntime.invalidateMeshPlatformFact()",
     ):
         require(
             mesh_android,
             required,
-            "Android Mesh adapter must remain raw VPN/readiness projection only",
+            "Android Mesh adapter must remain raw VPN platform observation only",
         )
 
     # U5 execution law: exactly one process-level Tokio owner exists. Native PRODUCT generations
