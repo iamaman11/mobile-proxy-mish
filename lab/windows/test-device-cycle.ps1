@@ -392,6 +392,54 @@ try {
         throw 'LAB U5 rotation collection failure must not reject the PRODUCT candidate.'
     }
 
+    $restartPassPath = Join-Path $root 'u7-runtime-restart-pass.json'
+    [ordered]@{
+        schema = 'mish.lab.u7-runtime-restart-resources/v1'
+        acceptance_result = 'PASS'
+        classification = 'U7_RUNTIME_RESTART_RESOURCES_PASS'
+        cycles_requested = 3
+        cycles_completed = 3
+    } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 -LiteralPath $restartPassPath
+    $restartPass = & $reportScript -Mode full -PrNumber 301 -SourceSha ('b' * 40) -ControlSha $controlSha -DiagnosticEvidencePath $passDiagnostic -RequestedProbe u7_runtime_restart_resources -TargetedEvidencePath $restartPassPath -OutputPath (Join-Path $root 'u7-runtime-restart-pass-report.json') | Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$restartPass.cycle_result -cne 'PASS' -or
+        [string]$restartPass.classification -cne 'U7_RUNTIME_RESTART_RESOURCES_PASS' -or
+        [string]$restartPass.acceptance_scope -cne 'FULL_BASELINE_PLUS_U7_RUNTIME_RESTART_RESOURCES' -or
+        [string]$restartPass.exact_candidate_acceptance -cne 'PASS'
+    ) {
+        throw 'U7 runtime restart resource PASS must accept the exact candidate only with baseline + targeted evidence.'
+    }
+
+    $restartProductPath = Join-Path $root 'u7-runtime-restart-product-fail.json'
+    [ordered]@{
+        schema = 'mish.lab.u7-runtime-restart-resources/v1'
+        acceptance_result = 'FAIL'
+        classification = 'PRODUCT_RESTART_RESOURCE_NOT_QUIESCENT'
+    } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 -LiteralPath $restartProductPath
+    $restartProduct = & $reportScript -Mode full -PrNumber 301 -SourceSha ('c' * 40) -ControlSha $controlSha -DiagnosticEvidencePath $passDiagnostic -RequestedProbe u7_runtime_restart_resources -TargetedEvidencePath $restartProductPath -OutputPath (Join-Path $root 'u7-runtime-restart-product-report.json') | Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$restartProduct.cycle_result -cne 'PRODUCT_FAIL' -or
+        [string]$restartProduct.classification -cne 'PRODUCT_RESTART_RESOURCE_NOT_QUIESCENT' -or
+        [string]$restartProduct.exact_candidate_acceptance -cne 'FAIL'
+    ) {
+        throw 'Observed U7 runtime restart resource PRODUCT failure must reject the exact candidate.'
+    }
+
+    $restartLabPath = Join-Path $root 'u7-runtime-restart-lab-fail.json'
+    [ordered]@{
+        schema = 'mish.lab.u7-runtime-restart-resources/v1'
+        acceptance_result = 'FAIL'
+        classification = 'LAB_ADB_FAILED'
+    } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 -LiteralPath $restartLabPath
+    $restartLab = & $reportScript -Mode full -PrNumber 301 -SourceSha ('d' * 40) -ControlSha $controlSha -DiagnosticEvidencePath $passDiagnostic -RequestedProbe u7_runtime_restart_resources -TargetedEvidencePath $restartLabPath -OutputPath (Join-Path $root 'u7-runtime-restart-lab-report.json') | Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$restartLab.cycle_result -cne 'LAB_FAIL' -or
+        [string]$restartLab.classification -cne 'LAB_ADB_FAILED' -or
+        [string]$restartLab.exact_candidate_acceptance -cne 'NOT_EVALUATED'
+    ) {
+        throw 'LAB U7 runtime restart collection failure must not reject the PRODUCT candidate.'
+    }
+
     Write-Host 'DEVICE_CYCLE_CONTRACT=PASS'
 }
 finally {
