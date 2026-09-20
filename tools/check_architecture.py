@@ -2002,9 +2002,10 @@ def main() -> None:
         "PRODUCT must keep one explicit sensitive current-credential access operation",
     )
     main_activity = "android/app/src/main/java/com/mobileproxymish/app/MainActivity.kt"
+    main_screen = "android/app/src/main/java/com/mobileproxymish/app/MainScreen.kt"
     require(
-        main_activity,
-        "Show current proxy credentials",
+        main_screen,
+        '"Proxy credentials"',
         "explicit user credential access must remain visible and opt-in",
     )
     require(
@@ -2038,6 +2039,129 @@ def main() -> None:
     manifest = read("android/app/src/main/AndroidManifest.xml")
     if "VpnService" in manifest or "android.net.VpnService" in manifest:
         raise SystemExit("architecture guard: PRODUCT manifest must not declare a second Android VPN service")
+
+    # U6 Backend-driven Product UI: Kotlin projects typed owner facts and forwards one explicit
+    # user command. It must not regain PRODUCT state/effect ownership.
+    u6_ui_paths = (
+        "android/app/src/main/java/com/mobileproxymish/app/MainActivity.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/MainViewModel.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/MainScreen.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/ProductUiState.kt",
+    )
+    for kotlin_path in u6_ui_paths:
+        for forbidden in (
+            "ConnectivityManager",
+            "cmd connectivity airplane-mode",
+            "setAirplaneMode",
+            "rearmNetworkRequest",
+            "RuntimeExecutor",
+            "NativeProductRuntime(",
+            "Thread.sleep",
+            "SystemClock.sleep",
+            "kotlinx.coroutines.delay",
+            "WorkManager",
+        ):
+            forbid(
+                kotlin_path,
+                forbidden,
+                "U6 UI/ViewModel must remain presentation-only over Rust/Tokio PRODUCT owners",
+            )
+
+    for kotlin_path in (
+        "android/app/src/main/java/com/mobileproxymish/app/MainViewModel.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/ProductUiState.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/MainScreen.kt",
+    ):
+        for forbidden in (
+            "SharedPreferences",
+            "DataStore",
+            "SQLite",
+            "RoomDatabase",
+            "java.io.File",
+        ):
+            forbid(
+                kotlin_path,
+                forbidden,
+                "U6 live PRODUCT/public-IP state must not gain Android persistence",
+            )
+
+    product_ui = "android/app/src/main/java/com/mobileproxymish/app/ProductUiState.kt"
+    for forbidden in ("val username", "val password", "CredentialRevealUiState"):
+        forbid(
+            product_ui,
+            forbidden,
+            "normal ProductUiState must never carry proxy credential material",
+        )
+
+    main_view_model = "android/app/src/main/java/com/mobileproxymish/app/MainViewModel.kt"
+    require(
+        main_view_model,
+        "runCatching(runtimeController::startPublicIpRotation)",
+        "Change IP must forward through the single accepted MishRuntimeController command seam",
+    )
+    for forbidden in (
+        "MutableStateFlow<Boolean>",
+        "rotationLock",
+        "rotationTimer",
+        "retry(",
+        "retryWhen",
+    ):
+        forbid(
+            main_view_model,
+            forbidden,
+            "MainViewModel must not become a second rotation/retry/concurrency owner",
+        )
+
+    for required in (
+        'Text("Public IP"',
+        '"Advanced diagnostics"',
+        '"Proxy credentials"',
+        'Text(if (state.inProgress) "Changing…" else "Change IP")',
+        "LinearProgressIndicator(",
+    ):
+        require(
+            main_screen,
+            required,
+            "U6 production dashboard must retain its explicit accessible presentation seams",
+        )
+    for forbidden in ("delay(", "Thread.sleep", "SystemClock.sleep"):
+        forbid(
+            main_screen,
+            forbidden,
+            "U6 dashboard must not synthesize progress/timing",
+        )
+
+    for required in (
+        "pub enum RotationPhaseView",
+        "pub enum RotationTerminalResultView",
+        "pub enum RotationFailureView",
+        "pub trait NativeRotationObserver",
+        "pub fn observe_rotation(",
+        "before_ip: snapshot.before_ip.map",
+        "after_ip: snapshot.after_ip.map",
+        "pub fn proxy_listener_contract(",
+    ):
+        require_product(
+            product_ffi,
+            required,
+            "U6 UI facts must be typed read-only projections of existing Rust owners",
+        )
+
+    require_product(
+        "crates/android-ffi/src/transport_ffi.rs",
+        "endpoint: admission.admitted_endpoint().map",
+        "U6 proxy endpoint presentation must project the existing Mesh endpoint owner fact",
+    )
+    require(
+        controller,
+        "productRuntime.observeRotation(",
+        "Android must observe rotation from the existing native owner instead of polling",
+    )
+    require(
+        controller,
+        "productRuntime.proxyListenerContract()",
+        "proxy protocol/port information must come from the canonical Rust proxy contract",
+    )
 
     print("ARCHITECTURE_GUARDS=PASS")
 
