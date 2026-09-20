@@ -90,7 +90,9 @@ foreach ($required in @(
     "'dumpsys', 'battery'",
     "'dumpsys', 'thermalservice'",
     "'ps', '-A', '-o', 'PID,PPID,NAME'",
-    "'mish-runtime-io'",
+    "'ps', '-A', '-T', '-w', '-o', 'PID,TID,CMD'",
+    "'mish-runtime-i*'",
+    'external_powered = $externalPower',
     'product_su_like_descendants',
     'Export-ModuleMember -Function Get-MishU7LatencyDistribution, Measure-MishU7SupplementalObservation'
 )) {
