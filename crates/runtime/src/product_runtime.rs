@@ -5,8 +5,9 @@
 //! it never constructs, numbers or replaces PRODUCT generations.
 
 use crate::{
-    CellularDnsResolver, CellularPolicyObserver, ProductGeneration, ProxyRuntimeObserver,
-    ReadinessObserver, RotationObserver, RuntimeExecutionError, RuntimeExecutor, RuntimeLifecycle,
+    CellularDnsResolver, CellularPolicyObserver, MeshRuntimeObserver, ProductGeneration,
+    ProxyRuntimeObserver, ReadinessObserver, RotationObserver, RuntimeExecutionError,
+    RuntimeExecutor, RuntimeLifecycle,
     RuntimeLifecycleState, RuntimeStartAction, RuntimeStopAction,
 };
 use mish_cellular::{
@@ -37,6 +38,7 @@ struct ProductObservers {
     cellular: Option<CellularPolicyObserver>,
     readiness: Option<ReadinessObserver>,
     proxy: Option<ProxyRuntimeObserver>,
+    mesh: Option<MeshRuntimeObserver>,
     rotation: Option<RotationObserver>,
 }
 
@@ -373,6 +375,17 @@ impl ProductRuntimeCoordinator {
             Arc::clone(&state.generation)
         };
         bind_proxy_observer(&generation, observer, Arc::clone(&self.observer_generation));
+    }
+
+    pub fn set_mesh_observer(&self, observer: MeshRuntimeObserver) {
+        let generation = {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            state.observers.mesh = Some(Arc::clone(&observer));
+            Arc::clone(&state.generation)
+        };
+        bind_mesh_observer(&generation, observer, Arc::clone(&self.observer_generation));
     }
 
     pub fn set_rotation_observer(&self, observer: RotationObserver) {
@@ -862,6 +875,9 @@ fn bind_observers(
     if let Some(observer) = observers.proxy {
         bind_proxy_observer(generation, observer, Arc::clone(&observer_generation));
     }
+    if let Some(observer) = observers.mesh {
+        bind_mesh_observer(generation, observer, Arc::clone(&observer_generation));
+    }
     if let Some(observer) = observers.rotation {
         bind_rotation_observer(generation, observer, observer_generation);
     }
@@ -910,6 +926,19 @@ fn bind_proxy_observer(
                 observer(publication);
             }
         }));
+}
+
+fn bind_mesh_observer(
+    generation: &ProductGeneration,
+    observer: MeshRuntimeObserver,
+    observer_generation: Arc<AtomicU64>,
+) {
+    let expected_generation = generation.generation();
+    generation.mesh().set_observer(Arc::new(move |snapshot| {
+        if observer_generation.load(Ordering::Acquire) == expected_generation {
+            observer(snapshot);
+        }
+    }));
 }
 
 fn bind_rotation_observer(
@@ -1204,6 +1233,39 @@ mod tests {
         let _ = old_generation.proxy().start(None, None, None);
 
         assert_eq!(publications.load(Ordering::SeqCst), baseline);
+        runtime.executor.shutdown().expect("executor shutdown");
+    }
+
+    #[test]
+    fn mesh_publication_is_owner_driven_and_generation_fenced() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let runtime = ProductRuntimeCoordinator::new(
+            Arc::new(EmptyResolver),
+            10_123,
+            RootPolicyNamespace::Debug,
+        )
+        .expect("runtime");
+        let publications = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&publications);
+        runtime.set_mesh_observer(Arc::new(move |_| {
+            observed.fetch_add(1, Ordering::SeqCst);
+        }));
+        let baseline = publications.load(Ordering::SeqCst);
+        let generation = runtime.current_generation().expect("generation");
+
+        generation
+            .mesh()
+            .set_readiness_ready(true)
+            .expect("readiness reconcile");
+        assert_eq!(publications.load(Ordering::SeqCst), baseline + 1);
+
+        runtime.observer_generation.store(2, Ordering::Release);
+        generation
+            .mesh()
+            .set_readiness_ready(false)
+            .expect("stale readiness reconcile");
+        assert_eq!(publications.load(Ordering::SeqCst), baseline + 1);
         runtime.executor.shutdown().expect("executor shutdown");
     }
 

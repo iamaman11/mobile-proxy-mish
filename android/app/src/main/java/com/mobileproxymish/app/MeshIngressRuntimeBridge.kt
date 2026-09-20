@@ -1,27 +1,22 @@
 package com.mobileproxymish.app
 
 import android.content.Context
-import com.mobileproxymish.ffi.MeshAdmissionView
 import com.mobileproxymish.ffi.MeshTransportBoundaryException
 import com.mobileproxymish.ffi.NativeProductRuntime
 import java.io.Closeable
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Android observation/projection adapter for Rust-owned Mesh composition.
  *
- * Android owns only complete current-VPN observation and a presentation projection of the native
- * Mesh snapshot. Rust owns admission/epoch/capacity and combines Proxy + Readiness + Mesh owner
+ * Android owns only complete current-VPN observation. Rust owns admission/epoch/capacity and
+ * the current presentation projection, and combines Proxy + Readiness + Mesh owner
  * facts into ingress start/stop. No readiness or serving decision is relayed through Kotlin.
  */
 internal class MeshIngressRuntimeBridge(
     context: Context,
     private val productRuntime: NativeProductRuntime,
 ) : Closeable {
-    private val mutableSnapshot = MutableStateFlow(ownerSnapshotOrNull())
     private val started = AtomicBoolean(false)
     private val closed = AtomicBoolean(false)
     private val vpnObserver = AndroidVpnObserver(
@@ -30,9 +25,6 @@ internal class MeshIngressRuntimeBridge(
         onObservationUnavailable = ::onVpnObservationUnavailable,
     )
     private var sequence = 0L
-
-    val snapshot: StateFlow<MeshAdmissionView?>
-        get() = mutableSnapshot.asStateFlow()
 
     fun start() {
         check(!closed.get()) { "Mesh ingress runtime is closed" }
@@ -65,7 +57,7 @@ internal class MeshIngressRuntimeBridge(
         sequence += 1
 
         try {
-            mutableSnapshot.value = when (observation) {
+            when (observation) {
                 AndroidMeshVpnObservation.Absent ->
                     productRuntime.observeMeshVpnAbsent(sequence.toULong())
 
@@ -96,16 +88,8 @@ internal class MeshIngressRuntimeBridge(
         if (closed.get() || !started.get() || sequence == Long.MAX_VALUE) return
         sequence += 1
         runCatching {
-            mutableSnapshot.value = productRuntime.observeMeshVpnAmbiguous(sequence.toULong())
+            productRuntime.observeMeshVpnAmbiguous(sequence.toULong())
         }
-    }
-
-    private fun ownerSnapshotOrNull(): MeshAdmissionView? = try {
-        productRuntime.meshAdmissionSnapshot()
-    } catch (_: LinkageError) {
-        null
-    } catch (_: Exception) {
-        null
     }
 
     override fun close() {

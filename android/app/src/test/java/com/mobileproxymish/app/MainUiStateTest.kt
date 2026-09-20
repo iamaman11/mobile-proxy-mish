@@ -62,6 +62,7 @@ class MainUiStateTest {
     fun terminalRotationProjectsCurrentAndPreviousIpEphemerally() {
         val state = projectProductUi(
             input(
+                cellular = cellular(sequence = 8uL),
                 rotation = rotation(
                     phase = RotationPhaseView.CHANGED,
                     terminal = RotationTerminalResultView.CHANGED,
@@ -73,6 +74,23 @@ class MainUiStateTest {
         assertEquals("198.51.100.11", state.publicIp.current)
         assertEquals("198.51.100.10", state.publicIp.previous)
         assertEquals(RotationResultUi.CHANGED, state.rotation.result)
+    }
+
+    @Test
+    fun terminalIpBecomesUnknownWhenCellularOwnerGenerationAdvances() {
+        val state = projectProductUi(
+            input(
+                cellular = cellular(sequence = 9uL),
+                rotation = rotation(
+                    phase = RotationPhaseView.CHANGED,
+                    terminal = RotationTerminalResultView.CHANGED,
+                    beforeIp = "198.51.100.10",
+                    afterIp = "198.51.100.11",
+                ),
+            ),
+        )
+        assertNull(state.publicIp.current)
+        assertEquals("198.51.100.10", state.publicIp.previous)
     }
 
     @Test
@@ -101,6 +119,7 @@ class MainUiStateTest {
     fun unchangedIsAValidTerminalResultNotFailure() {
         val state = projectProductUi(
             input(
+                cellular = cellular(sequence = 8uL),
                 rotation = rotation(
                     phase = RotationPhaseView.UNCHANGED,
                     terminal = RotationTerminalResultView.UNCHANGED,
@@ -274,12 +293,13 @@ class MainUiStateTest {
     private fun cellular(
         state: CellularAdmissionState = CellularAdmissionState.ADMITTED,
         reason: CellularAdmissionReason? = null,
+        sequence: ULong = 7uL,
     ): CellularRuntimeSnapshot = CellularRuntimeSnapshot.OwnerSnapshot(
         CellularAdmissionView(
             state = state,
             reason = reason,
             admittedNetworkHandle = if (state == CellularAdmissionState.ADMITTED) 42uL else null,
-            lastSequence = 7uL,
+            lastSequence = sequence,
         ),
     )
 

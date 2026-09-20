@@ -6,6 +6,7 @@ import com.mobileproxymish.app.cellular.CellularRuntimeBridge
 import com.mobileproxymish.app.cellular.CellularRuntimeSnapshot
 import com.mobileproxymish.ffi.MeshAdmissionView
 import com.mobileproxymish.ffi.NativeCellularRequestRearmEffect
+import com.mobileproxymish.ffi.NativeMeshRuntimeObserver
 import com.mobileproxymish.ffi.NativeProductRuntime
 import com.mobileproxymish.ffi.ProductDiagnosticSnapshotView
 import com.mobileproxymish.ffi.NativeReadinessObserver
@@ -42,6 +43,9 @@ class MishRuntimeController internal constructor(
     private val proxyRuntime = ProxyRuntimeSupervisor(productRuntime)
     private val meshRuntime = MeshIngressRuntimeBridge(appContext, productRuntime)
     private val mutableReadiness = MutableStateFlow(productRuntime.readinessSnapshot())
+    private val mutableMesh = MutableStateFlow(
+        runCatching { productRuntime.meshAdmissionSnapshot() }.getOrNull(),
+    )
     private val mutableRotation = MutableStateFlow(productRuntime.rotationSnapshot())
 
     init {
@@ -49,6 +53,13 @@ class MishRuntimeController internal constructor(
             object : NativeReadinessObserver {
                 override fun onReadiness(readiness: ProductReadinessState) {
                     mutableReadiness.value = readiness
+                }
+            },
+        )
+        productRuntime.observeMeshRuntime(
+            object : NativeMeshRuntimeObserver {
+                override fun onMeshRuntime(snapshot: MeshAdmissionView) {
+                    mutableMesh.value = snapshot
                 }
             },
         )
@@ -73,9 +84,9 @@ class MishRuntimeController internal constructor(
     val rotationSnapshot: StateFlow<RotationSnapshotView>
         get() = mutableRotation.asStateFlow()
 
-    /** Read-only Transport Reachability projection for UI and retained device diagnostics. */
+    /** Read-only current Rust Mesh composition projection for PRODUCT UI. */
     val meshSnapshot: StateFlow<MeshAdmissionView?>
-        get() = meshRuntime.snapshot
+        get() = mutableMesh.asStateFlow()
 
     internal val currentCellularRuntime: CellularRuntimeBridge
         get() = cellularRuntime

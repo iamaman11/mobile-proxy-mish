@@ -132,6 +132,7 @@ internal data class ProductPresentationInput(
 internal fun projectProductUi(input: ProductPresentationInput): ProductUiState {
     val overall = input.readiness.toUi()
     val rotation = input.rotation.toUi()
+    val currentCellularGeneration = currentCellularGeneration(input.cellular)
     val health = projectHealth(input.cellular, input.proxy, input.mesh, rotation.inProgress)
     return ProductUiState(
         overall = overall,
@@ -143,7 +144,11 @@ internal fun projectProductUi(input: ProductPresentationInput): ProductUiState {
             rotationInProgress = rotation.inProgress,
         ),
         publicIp = PublicIpUiState(
-            current = if (rotation.inProgress) null else input.rotation.afterIp,
+            current = input.rotation.afterIp?.takeIf {
+                !rotation.inProgress &&
+                    input.rotation.afterGeneration != null &&
+                    input.rotation.afterGeneration == currentCellularGeneration
+            },
             previous = input.rotation.beforeIp,
         ),
         rotation = rotation,
@@ -167,6 +172,12 @@ internal fun projectProductUi(input: ProductPresentationInput): ProductUiState {
         ),
     )
 }
+
+private fun currentCellularGeneration(cellular: CellularRuntimeSnapshot): ULong? =
+    (cellular as? CellularRuntimeSnapshot.OwnerSnapshot)
+        ?.admission
+        ?.takeIf { it.state == CellularAdmissionState.ADMITTED }
+        ?.lastSequence
 
 private fun ProductReadinessState.toUi(): ProductOverallUiState = when (this) {
     ProductReadinessState.READY -> ProductOverallUiState.READY

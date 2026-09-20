@@ -24,7 +24,8 @@ use mish_runtime::{
     ProxyServingState as OwnerProxyServingState, ReadinessDiagnosticSnapshot, ReadinessObserver,
     RootAuthorityStatus as OwnerRootAuthorityStatus, RootPolicyFailure as OwnerRootPolicyFailure,
     RootPolicyReconcileDiagnostic, RootPolicyResult as OwnerRootPolicyResult,
-    RootRecoveryDiagnostic, RotationObserver, RotationRuntimeStartError, RuntimeExecutionError,
+    RootRecoveryDiagnostic, MeshRuntimeObserver, RotationObserver, RotationRuntimeStartError,
+    RuntimeExecutionError,
 };
 use mish_transport::MeshVpnObservation;
 use std::fmt;
@@ -375,6 +376,11 @@ pub trait NativeRotationObserver: Send + Sync {
 }
 
 #[uniffi::export(foreign)]
+pub trait NativeMeshRuntimeObserver: Send + Sync {
+    fn on_mesh_runtime(&self, snapshot: MeshAdmissionView);
+}
+
+#[uniffi::export(foreign)]
 pub trait NativeCellularPolicyObserver: Send + Sync {
     fn on_cellular_policy_publication(&self, publication: CellularPolicyPublicationView);
 }
@@ -621,6 +627,13 @@ impl NativeProductRuntime {
         self.runtime
             .invalidate_mesh_platform_fact()
             .map_err(Into::into)
+    }
+
+    pub fn observe_mesh_runtime(&self, observer: Arc<dyn NativeMeshRuntimeObserver>) {
+        let callback: MeshRuntimeObserver = Arc::new(move |snapshot| {
+            observer.on_mesh_runtime(map_mesh_view(snapshot));
+        });
+        self.runtime.set_mesh_observer(callback);
     }
 
     pub fn mesh_admission_snapshot(&self) -> Result<MeshAdmissionView, MeshTransportBoundaryError> {

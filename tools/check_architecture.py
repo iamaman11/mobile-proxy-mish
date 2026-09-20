@@ -2142,6 +2142,8 @@ def main() -> None:
         "pub enum RotationFailureView",
         "pub trait NativeRotationObserver",
         "pub fn observe_rotation(",
+        "pub trait NativeMeshRuntimeObserver",
+        "pub fn observe_mesh_runtime(",
         "before_ip: snapshot.before_ip.map",
         "after_ip: snapshot.after_ip.map",
         "pub fn proxy_listener_contract(",
@@ -2169,9 +2171,30 @@ def main() -> None:
     )
     require(
         controller,
+        "productRuntime.observeMeshRuntime(",
+        "Android must observe Mesh composition from the existing native owner instead of stale platform callbacks",
+    )
+    require(
+        controller,
         "productRuntime.proxyListenerContract()",
         "proxy protocol/port information must come from the canonical Rust proxy contract",
     )
+    mesh_bridge = "android/app/src/main/java/com/mobileproxymish/app/MeshIngressRuntimeBridge.kt"
+    for forbidden in ("MutableStateFlow", "val snapshot: StateFlow"):
+        forbid(
+            mesh_bridge,
+            forbidden,
+            "Android Mesh bridge must remain platform observation-only; current Mesh UI state comes from Rust owner publications",
+        )
+    for required in (
+        "private fun currentCellularGeneration(",
+        "input.rotation.afterGeneration == currentCellularGeneration",
+    ):
+        require(
+            product_ui,
+            required,
+            "Current IP must be shown only for the currently admitted Cellular owner generation",
+        )
 
     print("ARCHITECTURE_GUARDS=PASS")
 
