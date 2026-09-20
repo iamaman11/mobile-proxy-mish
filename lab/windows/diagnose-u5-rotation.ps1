@@ -954,6 +954,28 @@ function Invoke-MishShutdownRestoreAfterOn {
         restart_process_stable = -not $restartPidChanged
         restart_recovery_elapsed_ms = $restartElapsedMs
         runtime_restarted_ready = $true
+        restart_state = [ordered]@{
+            runtime_running = [bool]$ready.runtime.running
+            runtime_generation = [int64]$ready.runtime.generation
+            cellular_admitted = [bool]$ready.cellular.admitted
+            cellular_owner_sequence = $restartOwner
+            cellular_reconcile_pending = [bool]$ready.cellular.reconcile.pending
+            cellular_reconcile_requested = [int64]$ready.cellular.reconcile.requested
+            cellular_reconcile_executed = [int64]$ready.cellular.reconcile.executed
+            root_policy_authorized = [bool]$ready.root.policy_authorized
+            root_policy_authorized_generation = $restartRootGeneration
+            root_recovery_pending = [bool]$ready.root.recovery.pending
+            readiness_state = [string]$ready.readiness.state
+            readiness_binding_eligible = [bool]$ready.readiness.binding_eligible
+            readiness_probe_state = [string]$ready.readiness.probe_state
+            mesh_admitted = [bool]$ready.mesh.admitted
+            mesh_ingress_running = [bool]$ready.mesh.ingress_running
+            rotation_state = [string]$ready.rotation.state
+            rotation_operation_id = $restartRotationOperation
+            rotation_active_tasks = [int64]$ready.rotation.active_tasks
+            credential_active = [bool]$ready.credential.active
+            credential_version = $restartCredentialVersion
+        }
     }
 }
 

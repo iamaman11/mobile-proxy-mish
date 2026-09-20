@@ -33,6 +33,7 @@ on:
           - dns_lifetime_live
           - u5_rotation
           - u7_runtime_restart_resources
+          - u7_512_lifecycle_stability
           - loopback_connect
   issue_comment:
     types: [created]
@@ -108,7 +109,7 @@ jobs:
               match = re.fullmatch(
                   r"/mish-cycle\s+([1-9][0-9]*)\s+([0-9a-f]{40})\s+"
                   r"(full|install_only|diagnose_only|probe_only)\s+"
-                  r"(none|capacity_resources|recovery_lifecycle|dns_lifetime_live|u5_rotation|u7_runtime_restart_resources|loopback_connect)",
+                  r"(none|capacity_resources|recovery_lifecycle|dns_lifetime_live|u5_rotation|u7_runtime_restart_resources|u7_512_lifecycle_stability|loopback_connect)",
                   body,
               )
               if match is None:
@@ -158,8 +159,8 @@ jobs:
               if probe != 'loopback_connect':
                   raise SystemExit('probe_only supports only the current-function loopback_connect probe')
           elif mode == 'full':
-              if probe not in {'none', 'capacity_resources', 'recovery_lifecycle', 'dns_lifetime_live', 'u5_rotation', 'u7_runtime_restart_resources'}:
-                  raise SystemExit('full accepts only none, capacity_resources, recovery_lifecycle, dns_lifetime_live, u5_rotation, or u7_runtime_restart_resources')
+              if probe not in {'none', 'capacity_resources', 'recovery_lifecycle', 'dns_lifetime_live', 'u5_rotation', 'u7_runtime_restart_resources', 'u7_512_lifecycle_stability'}:
+                  raise SystemExit('full accepts only none, capacity_resources, recovery_lifecycle, dns_lifetime_live, u5_rotation, u7_runtime_restart_resources, or u7_512_lifecycle_stability')
           elif probe != 'none':
               raise SystemExit('install_only/diagnose_only require probe=none')
           PY
@@ -509,7 +510,7 @@ jobs:
       ${{ always() && needs.resolve.outputs.eligible == 'true' && needs.resolve.outputs.mode != 'install_only' &&
           (needs.resolve.outputs.mode != 'full' || needs.install.result == 'success') }}
     runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
-    timeout-minutes: 15
+    timeout-minutes: 30
     outputs:
       cycle_result: ${{ steps.report.outputs.cycle_result }}
       classification: ${{ steps.report.outputs.classification }}
@@ -627,6 +628,17 @@ jobs:
             -AdbPath $env:ADB_EXE `
             -PackageName $env:PACKAGE_NAME `
             -Cycles 3 `
+            -EvidencePath "$env:RUNNER_TEMP\\mish-targeted-probe-v1.json"
+
+      - name: Explicit U7 repeated 512 + rotation + stop-during-ON restart stability
+        if: ${{ needs.resolve.outputs.mode == 'full' && needs.resolve.outputs.probe == 'u7_512_lifecycle_stability' && steps.baseline.outcome == 'success' }}
+        continue-on-error: true
+        shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\diagnose-u7-512-lifecycle-stability.ps1 `
+            -AdbPath $env:ADB_EXE `
+            -PackageName $env:PACKAGE_NAME `
             -EvidencePath "$env:RUNNER_TEMP\\mish-targeted-probe-v1.json"
 
       - name: Download exact candidate harness for recovery lifecycle
