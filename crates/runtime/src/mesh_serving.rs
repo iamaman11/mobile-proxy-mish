@@ -467,8 +467,8 @@ mod tests {
     }
 
     #[test]
-    fn sixty_fifth_session_is_rejected_before_backend_without_evicting_existing_sessions() {
-        assert_eq!(MAX_MESH_SESSIONS, 64);
+    fn session_above_transport_budget_is_rejected_before_backend_without_evicting_existing_sessions()
+    {
         let runtime = test_runtime();
         let execution = MeshExecutionOwner::new();
         let sessions = MeshSessionOwner::product_generation();
@@ -557,7 +557,10 @@ mod tests {
             Ok(_) => false,
             Err(error) => panic!("overflow session did not fail closed: {error}"),
         };
-        assert!(closed, "65th Mesh session remained usable");
+        assert!(
+            closed,
+            "Mesh session above the Transport-owned budget remained usable"
+        );
         assert_eq!(sessions.active_sessions(), MAX_MESH_SESSIONS);
 
         verify_tx.send(()).expect("verify overflow");
