@@ -75,7 +75,7 @@ function Get-MishCycleFailureKind {
 
 function Test-MishSupportedFullProbe {
     param([Parameter(Mandatory)][string] $Probe)
-    return $Probe -in @('capacity_resources', 'recovery_lifecycle', 'dns_lifetime_live', 'u5_rotation', 'u7_runtime_restart_resources')
+    return $Probe -in @('capacity_resources', 'recovery_lifecycle', 'dns_lifetime_live', 'u5_rotation', 'u7_runtime_restart_resources', 'u7_512_lifecycle_stability')
 }
 
 $launch = Read-OptionalJson -Path $LaunchReceiptPath
