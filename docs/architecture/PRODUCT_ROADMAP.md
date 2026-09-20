@@ -48,7 +48,7 @@ The following foundation is already accepted and is not reopened without contrar
 2. Exact-head hosted candidate production and Windows LAB as artifact consumer by default.
 3. Persistent process-wide Magisk shell semantics; terminal grant/denial is not repeatedly polled within one app process. Magisk + one persistent `su` shell remains the minimal platform privilege boundary unless physical evidence proves a simpler supported mechanism; do not replace it with a root daemon/helper or run the whole application as root merely to remove `su`.
 4. Exact stale MISH-owned root-policy identity may self-heal only when the complete known PRODUCT contract is proven; foreign/malformed state stays fail-closed.
-5. Canonical external capacity is 64 accepted sessions with deterministic overload rejection; this external admission policy belongs to `mish-transport`, not to Tokio/runtime execution.
+5. Canonical external capacity is 512 accepted sessions with deterministic 513th-session edge rejection; this external admission policy belongs to `mish-transport`, not to Tokio/runtime execution. U7 physical evidence #615 and #617 established the 512 bound, repeated cleanup, and lifecycle stability.
 6. Rust Proxy Serving L1-L7: HTTP CONNECT, SOCKS5, mixed ingress, authentication, unresolved-target preservation, relay, bounded capacity and atomic Android cutover to in-process native listeners.
 
 Historical evidence remains evidence, not a reason to retain mechanisms that no longer exist.
@@ -502,7 +502,18 @@ U6 is closed. Advance to U7 only from this accepted PRODUCT identity.
 
 ---
 
-# U7 — Efficiency and long-run hardening
+# U7 — Efficiency and long-run hardening — COMPLETED
+
+Accepted U7 PRODUCT capacity closure:
+
+- physical PRODUCT head `b865ba7581ad6962cc6b1c5b4d8e89807fd54524` passed bounded 512/513 acceptance in Device Cycle #615 and repeated 512/lifecycle stability in Device Cycle #617;
+- strict-up-to-date PR head `2323d6fad678213805d0dc589c150a835016573f` preserved the same five PRODUCT blobs while merging current CONTROL main, and exact-head hosted gate #893 passed;
+- accepted protected-main merge `801774794b11cd4544229cfe91927194a963fbeb` / tree `1801251cb7924c7fdca54bd2f8537ed74fc649a2`;
+- canonical external capacity is now 512 concurrent external sessions; 513th rejection remains fail-closed at the Mesh edge;
+- three same-process 512 high-water cycles returned Mesh/Proxy owners to 0/0, FD to 124 and threads to 24 each time; cleanup memory moved only about +1.1 MiB from first to third cleanup and is retained as observational allocator/high-water evidence rather than a leak claim;
+- three normal rotations plus stop-during-airplane-ON -> STOP -> restore -> START passed in the same PID; restart reached PRODUCT with `cellular.reconcile.requested=3`, executed=3, pending=false, root authorized, READY and Mesh running;
+- no second runtime, scheduler, connection manager, autoscaler, semaphore authority or Kotlin PRODUCT owner was introduced;
+- 1024 is not a current target and requires a future demonstrated requirement rather than automatic scaling.
 
 Measure the **current** direct native Tokio architecture, not deleted topology.
 
