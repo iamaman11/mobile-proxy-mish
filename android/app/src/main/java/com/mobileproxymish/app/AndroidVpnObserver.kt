@@ -44,7 +44,7 @@ internal class AndroidVpnObserver(
     private val onObservation: (AndroidMeshVpnObservation) -> Unit,
     private val onObservationUnavailable: () -> Unit,
 ) : Closeable {
-    private val connectivityManager = context.applicationContext
+    private val connectivityManager = context
         .getSystemService(ConnectivityManager::class.java)
         ?: throw IllegalStateException("ConnectivityManager is unavailable")
     private val closed = AtomicBoolean(false)
