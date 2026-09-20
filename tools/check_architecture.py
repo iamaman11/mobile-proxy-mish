@@ -74,16 +74,45 @@ def main() -> None:
     )
     runtime_controller = "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt"
     application_root = "android/app/src/main/java/com/mobileproxymish/app/MishApplication.kt"
-    require(
-        application_root,
-        "by lazy(LazyThreadSafetyMode.SYNCHRONIZED)",
-        "process-local runtime controller must be safe when a ContentProvider call races Application.onCreate",
-    )
-    forbid(
-        application_root,
+    diagnostics_provider = "android/app/src/main/java/com/mobileproxymish/app/MishDiagnosticsProvider.kt"
+    for required in (
+        "@Volatile",
+        "private var runtimeControllerRef: MishRuntimeController? = null",
+        "override fun attachBaseContext(base: Context)",
+        "super.attachBaseContext(base)",
+        "runtimeControllerRef = MishRuntimeController(this)",
+        "get() = checkNotNull(runtimeControllerRef)",
+    ):
+        require(
+            application_root,
+            required,
+            "Android process bootstrap must create exactly one controller before ContentProviders without read-triggered initialization",
+        )
+    for forbidden in (
         "lateinit var runtimeController",
-        "diagnostics provider may be called before Application.onCreate, so the process controller cannot be lateinit",
+        "by lazy(",
+        "LazyThreadSafetyMode",
+    ):
+        forbid(
+            application_root,
+            forbidden,
+            "runtime controller bootstrap must be explicit in Application.attachBaseContext, never deferred to a reader",
+        )
+    forbid(
+        diagnostics_provider,
+        "MishRuntimeController(",
+        "read-only diagnostics must never construct PRODUCT runtime state",
     )
+    controller_construction_sites = []
+    for kotlin_file in sorted((ROOT / "android/app/src/main/java").rglob("*.kt")):
+        kotlin_text = kotlin_file.read_text(encoding="utf-8")
+        if "MishRuntimeController(this)" in kotlin_text:
+            controller_construction_sites.append(kotlin_file.relative_to(ROOT).as_posix())
+    if controller_construction_sites != [application_root]:
+        raise SystemExit(
+            "architecture guard: process-local MishRuntimeController must have exactly one production "
+            f"construction site in Application.attachBaseContext; observed={controller_construction_sites}"
+        )
     forbid(
         runtime_controller,
         "enum class LifecycleState",
