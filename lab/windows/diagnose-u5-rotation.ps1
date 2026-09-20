@@ -375,6 +375,85 @@ function Get-MishProcessMetrics {
         mesh_serving_generation = Get-MishOptionalInt64 $Snapshot.mesh.serving_generation
         mesh_active_sessions = Get-MishOptionalInt64 $Snapshot.mesh.active_sessions
         rotation_active_tasks = [int64]$Snapshot.rotation.active_tasks
+        thread_name_set = @($threadNameSet)
+    }
+}
+
+function Wait-MishResourceQuiescence {
+    param(
+        [Parameter(Mandatory)] $BaselineMetrics,
+        [ValidateRange(2, 4)][int] $RequiredConsecutiveSamples = 2,
+        [ValidateRange(5, 30)][int] $DeadlineSeconds = 15
+    )
+
+    $deadline = [Environment]::TickCount64 + ([int64]$DeadlineSeconds * 1000)
+    $samples = [System.Collections.Generic.List[object]]::new()
+    $consecutive = 0
+    $lastMetrics = $null
+
+    while ([Environment]::TickCount64 -lt $deadline) {
+        $snapshot = Get-MishAndroidSnapshot
+        Assert-MishReadyBaseline -Snapshot $snapshot
+        $metrics = Get-MishProcessMetrics -Snapshot $snapshot
+        $lastMetrics = $metrics
+
+        $pidStable = [int]$metrics.pid -eq [int]$BaselineMetrics.pid
+        $forbiddenKotlinOwnersAbsent = [int]$metrics.forbidden_kotlin_owner_threads -eq 0
+        $threadsBounded = [int]$metrics.threads -le [int]$BaselineMetrics.threads
+        $fdsBounded = [int]$metrics.fd_count -le [int]$BaselineMetrics.fd_count
+        $sessionsQuiescent = (
+            [int64]$metrics.proxy_active_sessions -eq 0 -and
+            ($null -eq $metrics.mesh_active_sessions -or [int64]$metrics.mesh_active_sessions -eq 0)
+        )
+        $rotationQuiescent = [int64]$metrics.rotation_active_tasks -eq 0
+        $sampleAccepted = (
+            $pidStable -and
+            $forbiddenKotlinOwnersAbsent -and
+            $threadsBounded -and
+            $fdsBounded -and
+            $sessionsQuiescent -and
+            $rotationQuiescent
+        )
+
+        $samples.Add([pscustomobject][ordered]@{
+            elapsed_ms = [Environment]::TickCount64 - ($deadline - ([int64]$DeadlineSeconds * 1000))
+            threads = [int]$metrics.threads
+            fd_count = [int]$metrics.fd_count
+            runtime_io_threads = [int]$metrics.runtime_io_threads
+            forbidden_kotlin_owner_threads = [int]$metrics.forbidden_kotlin_owner_threads
+            proxy_active_sessions = [int64]$metrics.proxy_active_sessions
+            mesh_active_sessions = Get-MishOptionalInt64 $metrics.mesh_active_sessions
+            rotation_active_tasks = [int64]$metrics.rotation_active_tasks
+            thread_name_set = @($metrics.thread_name_set)
+            accepted = $sampleAccepted
+        })
+
+        if ($sampleAccepted) {
+            $consecutive += 1
+            if ($consecutive -ge $RequiredConsecutiveSamples) {
+                return [pscustomobject][ordered]@{
+                    accepted = $true
+                    required_consecutive_samples = $RequiredConsecutiveSamples
+                    observed_consecutive_samples = $consecutive
+                    deadline_seconds = $DeadlineSeconds
+                    samples = @($samples)
+                    metrics = $lastMetrics
+                }
+            }
+        } else {
+            $consecutive = 0
+        }
+
+        Start-Sleep -Milliseconds 500
+    }
+
+    return [pscustomobject][ordered]@{
+        accepted = $false
+        required_consecutive_samples = $RequiredConsecutiveSamples
+        observed_consecutive_samples = $consecutive
+        deadline_seconds = $DeadlineSeconds
+        samples = @($samples)
+        metrics = $lastMetrics
     }
 }
 
@@ -512,12 +591,14 @@ function Invoke-MishOneRotation {
     $functionalPublicIpMs = $null
     $generationB = $null
     $failClosedViolation = $false
-    $sawAirplaneOn = $false
     $terminalSnapshot = $null
 
+    # The independent 50 ms device-side observer owns physical airplane timing.
+    # Keep this loop single-ADB so canonical PRODUCT snapshots get the highest possible cadence
+    # and short fail-closed Cellular intervals are not hidden behind a second serial shell call.
     while ([Environment]::TickCount64 -lt $deadlineTicks) {
         $snapshot = Get-MishAndroidSnapshot
-        $airplane = Get-MishAirplaneState
+        $airplane = 'FAST_OBSERVER_SEPARATE'
         $elapsed = [Environment]::TickCount64 - $startTicks
         Add-MishTimelineSample -Timeline $timeline -ElapsedMs $elapsed -Airplane $airplane -Snapshot $snapshot -LastKey ([ref]$lastKey)
 
@@ -534,14 +615,6 @@ function Invoke-MishOneRotation {
             elseif ($currentOperation -ne $operationId) {
                 Stop-MishRotationAcceptance 'PRODUCT_OPERATION_ID_CHANGED' 'Rotation operation id changed during one bounded request.'
             }
-        }
-
-        if ($airplane -ceq 'ENABLED') {
-            $sawAirplaneOn = $true
-            if ($null -eq $airplaneOnMs) { $airplaneOnMs = $elapsed }
-        }
-        if ($sawAirplaneOn -and $airplane -ceq 'DISABLED' -and $null -eq $airplaneOffMs) {
-            $airplaneOffMs = $elapsed
         }
 
         if (-not [bool]$snapshot.cellular.admitted) {
@@ -603,7 +676,6 @@ function Invoke-MishOneRotation {
     }
 
     if ([bool]$airplaneObserverResult.observed_on) {
-        $sawAirplaneOn = $true
         $fastOnEstimate = [int64]$airplaneObserverResult.first_on_sample * $script:FastAirplaneObserverPeriodMilliseconds
         if ($null -eq $airplaneOnMs -or $fastOnEstimate -lt $airplaneOnMs) { $airplaneOnMs = $fastOnEstimate }
     }
@@ -909,9 +981,11 @@ if (
 $restoreCase = Invoke-MishShutdownRestoreAfterOn `
     -ExpectedCredentialVersion $credentialVersion `
     -ExpectedProcessId ([int]$metricsAfterRotations.pid)
-$final = Get-MishAndroidSnapshot
-Assert-MishReadyBaseline -Snapshot $final
-$metricsAfter = Get-MishProcessMetrics -Snapshot $final
+$resourceQuiescence = Wait-MishResourceQuiescence -BaselineMetrics $metricsBefore
+if ($null -eq $resourceQuiescence.metrics) {
+    Stop-MishRotationAcceptance 'LAB_PROCESS_METRICS_UNAVAILABLE' 'No post-restart resource sample was collected.'
+}
+$metricsAfter = $resourceQuiescence.metrics
 $credentialAfter = New-MishCredentialLease
 
 $credentialMaterialUnchanged = (
@@ -943,6 +1017,7 @@ $acceptance = (
     $fdsNoGrowthAcrossRotations -and
     $ownerSessionsQuiescentAfterRotations -and
     $forbiddenKotlinOwnersAbsent -and
+    [bool]$resourceQuiescence.accepted -and
     $threadsBounded -and
     $fdsBounded -and
     $sessionsQuiescent -and
@@ -968,6 +1043,7 @@ $evidence = [ordered]@{
         before = $metricsBefore
         after_normal_rotations = $metricsAfterRotations
         after_restore_restart = $metricsAfter
+        restart_resource_quiescence = $resourceQuiescence
         pid_stable = $pidStable
         runtime_generation_stable_across_normal_rotations = $runtimeGenerationStableAcrossRotations
         root_session_stable_across_normal_rotations = $rootSessionStableAcrossRotations

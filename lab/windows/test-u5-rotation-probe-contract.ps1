@@ -47,6 +47,12 @@ foreach ($required in @(
     'rotation_tasks_quiescent',
     'runtime_io_thread_name_observation_required = $false',
     'runtime_io_threads_stable_across_normal_rotations',
+    'restart_resource_quiescence',
+    'Wait-MishResourceQuiescence',
+    'RequiredConsecutiveSamples = 2',
+    'DeadlineSeconds = 15',
+    'thread_name_set = @($threadNameSet)',
+    '[bool]$resourceQuiescence.accepted',
     'forbidden_kotlin_owner_threads_absent',
     'file_descriptors_no_growth_across_normal_rotations',
     'owner_sessions_quiescent_after_normal_rotations',
@@ -94,6 +100,8 @@ foreach ($required in @(
     'stderr_empty',
     'sleep 0.05',
     'MISH_U5_FAST_AIRPLANE=',
+    "'FAST_OBSERVER_SEPARATE'",
+    'Keep this loop single-ADB',
     'STOP_TRIGGER_EXIT=',
     '$restoreTemplate.Replace(''__MAX__'', [string]$maxSamples).Replace(''__STOP__'', $StopComponent)',
     'airplane_fast_observer',
@@ -140,7 +148,10 @@ foreach ($forbidden in @(
     "@('shell', 'sh', '-c', `$shell)",
     'foreach ($argument in @(''shell'', $shell))',
     'Invoke-MishActivityTrigger -Component $script:StopComponent -Operation ''restore_stop_trigger''',
-    'Credential version changed during restore case.'
+    'Credential version changed during restore case.',
+    '$airplane = Get-MishAirplaneState',
+    '$metricsAfter.threads -le ([int]$metricsBefore.threads +',
+    '$threadsBounded = $true'
 )) {
     if ($source.Contains($forbidden)) {
         throw "U5 rotation acceptance probe contains forbidden duplicate PRODUCT/control/secret path: $forbidden"
