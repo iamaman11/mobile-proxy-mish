@@ -444,6 +444,68 @@ Production dashboard:
 
 Pure projection tests and Compose tests cover readiness states, IP known/unknown, first-use previous unknown, duplicate rotation prevention, changed/unchanged/failed rotation, root unavailable, cellular recovery, long text/accessibility and secret absence.
 
+## U6 final acceptance — CLOSED / PASS
+
+Accepted PRODUCT source:
+
+```text
+source_head = 888ac52efb1a973a1ee6e135431564db92505a1f
+source_tree = f195c430f9d5b8c88fae1cf470992e081d90decd
+accepted_product_main = 6b764579d33465d9171d60a7e26481bcda53d2c7
+protected_main_tree = c9c22fc782316743da790d1ca6d41dc85b964761
+```
+
+The full Git trees differ because protected main also contains the accepted CONTROL-only Device Cycle collection fixes from PRs #296 and #297. PRODUCT inputs are nevertheless exactly identical between the physically accepted source and protected main:
+
+- `android` tree = `9d2ff2476e1e24b0c000f2bb25afc2b307ab825a`;
+- `crates` tree = `b2d772c3c5f026650815232057a9999b0d3c06f7`;
+- `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `config` and `contracts` are blob/tree-identical.
+
+Hosted exact-source acceptance:
+
+- PR Validation + PRODUCT Candidate #859 / run `35485154090`: PASS;
+- canonical candidate artifact id `10596234530`;
+- candidate digest `sha256:5189a674efce55a66a93688e024de46e7f29150070e02b06f794fcc04fcb514d`.
+
+Canonical physical acceptance:
+
+```text
+Device Cycle #602
+run_id = 35485382809
+source_sha = 888ac52efb1a973a1ee6e135431564db92505a1f
+control_sha = 4ca1a990218e7de0eb20fe13d1e1277f1e76fd6e
+classification = U5_ROTATION_PHYSICAL_ACCEPTANCE_PASS
+exact_candidate_acceptance = PASS
+```
+
+Physical evidence artifact:
+
+- artifact id `10597144242`;
+- digest `sha256:f411d9aae24158d1742cb6bf929bfb5f5601eb89f8474fcfe759b5bb55bc441f`.
+
+The final run proved three consecutive PRODUCT-owned rotations with directly observed Cellular loss, fail-closed Readiness/Mesh, fresh owner generations `4 / 7 / 10`, fresh root authorization, terminal `CHANGED`, READY/Mesh recovery, unchanged credential material/version and no raw-IP persistence.
+
+The deliberate stop/restart case additionally proved:
+
+- runtime stop clears the native Readiness credential fact and probe material;
+- `runtime_stopped_observed=true`;
+- `runtime_credential_cleared=true`;
+- airplane OFF restoration;
+- same process PID and fresh runtime generation `2`;
+- restart returns to READY with current Cellular/root/Proxy/Mesh state;
+- bounded post-restart resource quiescence: transient `26` threads returned to the pre-rotation bound `24` for two consecutive samples within the 15-second window;
+- FD count remained `7`, owner sessions remained `0`, rotation tasks remained `0`, and forbidden Kotlin owner threads remained absent.
+
+U6 also closes three owner-truth defects found during final audit/acceptance:
+
+1. Mesh presentation is now fed by a generation-fenced native Rust Mesh composition observer, so Readiness/Proxy-driven ingress transitions no longer depend on a new Android VPN callback.
+2. `Current IP` is shown only when the accepted terminal public-IP observation is bound to the current admitted Cellular owner generation; otherwise it is `Unknown`.
+3. Proxy STOP/shutdown clears the Readiness credential fact as well as secret probe material, preventing stale `credential.active=true` diagnostics.
+
+The protection-sync merge head `e74f5e982dfe9db4ac0edb3bc3fa5241823a3bdc` retained byte-identical PRODUCT inputs and passed PR Validation + PRODUCT Candidate #861 / run `35485624840` before #294 merged. No second PRODUCT owner, retry loop, UI polling path, Android network policy owner or automatic physical trigger was introduced.
+
+U6 is closed. Next stage: **U7 — Efficiency and long-run hardening**.
+
 ---
 
 # U7 — Efficiency and long-run hardening
