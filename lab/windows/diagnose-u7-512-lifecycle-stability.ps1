@@ -172,6 +172,13 @@ $restartReachedProduct = (
     [bool]$restartState.mesh_admitted -and
     [bool]$restartState.mesh_ingress_running
 )
+$postFailureState = Get-MishRestartSnapshotSummary -Snapshot $postFailureSnapshot
+$restartRequestDidNotReachProduct = (
+    $null -ne $postFailureState -and
+    -not [bool]$postFailureState.runtime_running -and
+    [int64]$postFailureState.cellular_reconcile_requested -eq 0
+)
+
 $stopOnRestorePass = (
     $null -ne $restore -and
     [bool]$restore.airplane_on_observed -and
@@ -207,6 +214,9 @@ $classification = if ($acceptance) {
 elseif (-not $capacityPass) {
     if ($null -ne $capacityError) { Get-MishFailureClassification -Exception $capacityError -Fallback 'PRODUCT_REPEATED_512_FAILED' }
     else { 'PRODUCT_REPEATED_512_FAILED' }
+}
+elseif ($restartRequestDidNotReachProduct) {
+    'PRODUCT_STOP_ON_RESTART_DID_NOT_REACH_PRODUCT'
 }
 elseif (-not $rotationPass) {
     if ($null -ne $rotationError) { Get-MishFailureClassification -Exception $rotationError -Fallback 'PRODUCT_ROTATION_OR_RESTART_FAILED' }
@@ -252,7 +262,8 @@ $evidence = [ordered]@{
         normal_rotations_completed = if ($null -ne $rotation) { [int]$rotation.successful_operations.Count } else { 0 }
         stop_during_airplane_on = $restore
         restart_reached_product = $restartReachedProduct
-        post_failure_snapshot = Get-MishRestartSnapshotSummary -Snapshot $postFailureSnapshot
+        restart_request_did_not_reach_product = $restartRequestDidNotReachProduct
+        post_failure_snapshot = $postFailureState
         evidence = $rotation
     }
 }
