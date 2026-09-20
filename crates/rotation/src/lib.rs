@@ -88,6 +88,8 @@ pub struct RotationSnapshot {
     pub phase: RotationPhase,
     pub before_generation: Option<u64>,
     pub after_generation: Option<u64>,
+    pub before_ip: Option<IpAddr>,
+    pub after_ip: Option<IpAddr>,
     pub restore_required: bool,
     pub terminal_result: Option<RotationTerminalResult>,
     pub failure: Option<RotationFailure>,
@@ -101,6 +103,8 @@ impl RotationSnapshot {
             phase: RotationPhase::Idle,
             before_generation: None,
             after_generation: None,
+            before_ip: None,
+            after_ip: None,
             restore_required: false,
             terminal_result: None,
             failure: None,
@@ -116,6 +120,7 @@ struct RotationOperation {
     before_generation: u64,
     after_generation: Option<u64>,
     before_ip: Option<IpAddr>,
+    after_ip: Option<IpAddr>,
     airplane_on_observed: bool,
     airplane_off_observed: bool,
     cellular_loss_observed: bool,
@@ -135,6 +140,8 @@ impl RotationOperation {
             phase: self.phase,
             before_generation: Some(self.before_generation),
             after_generation: self.after_generation,
+            before_ip: self.before_ip,
+            after_ip: self.after_ip,
             restore_required: self.restore_required,
             terminal_result: self.terminal_result,
             failure: self.failure,
@@ -262,6 +269,7 @@ impl RotationStateMachine {
             before_generation,
             after_generation: None,
             before_ip: None,
+            after_ip: None,
             airplane_on_observed: false,
             airplane_off_observed: false,
             cellular_loss_observed: false,
@@ -496,6 +504,7 @@ impl RotationStateMachine {
         let before = operation
             .before_ip
             .ok_or(RotationTransitionError::StateUnavailable)?;
+        operation.after_ip = Some(address);
         if before == address {
             operation.phase = RotationPhase::Unchanged;
             operation.terminal_result = Some(RotationTerminalResult::Unchanged);
@@ -607,6 +616,41 @@ mod tests {
             .expect("fail");
         let second = machine.start(11).expect("second");
         assert!(second > first);
+    }
+
+    #[test]
+    fn raw_ip_facts_are_bounded_to_the_current_in_memory_rotation_snapshot() {
+        let mut machine = RotationStateMachine::new();
+        let id = machine.start(10).expect("start");
+        assert_eq!(machine.snapshot().before_ip, None);
+        assert_eq!(machine.snapshot().after_ip, None);
+
+        let before = ip("198.51.100.10");
+        let after = ip("198.51.100.11");
+        let snapshot = machine.record_before_ip(id, 10, before).expect("before");
+        assert_eq!(snapshot.before_ip, Some(before));
+        assert_eq!(snapshot.after_ip, None);
+
+        machine
+            .airplane_enable_effect_completed(id, RotationMutationOutcome::Applied)
+            .expect("enable");
+        machine.observe_airplane(id, true).expect("airplane on");
+        machine.observe_cellular(id, 11, false).expect("loss");
+        machine
+            .airplane_disable_effect_completed(id, RotationMutationOutcome::Applied)
+            .expect("disable");
+        machine.observe_airplane(id, false).expect("airplane off");
+        machine.observe_cellular(id, 12, true).expect("fresh cellular");
+        machine.observe_root_policy(id, 12, true).expect("root");
+        let terminal = machine.record_after_ip(id, 12, after).expect("after");
+        assert_eq!(terminal.before_ip, Some(before));
+        assert_eq!(terminal.after_ip, Some(after));
+        assert_eq!(terminal.terminal_result, Some(RotationTerminalResult::Changed));
+
+        let next = machine.start(13).expect("next operation");
+        assert!(next > id);
+        assert_eq!(machine.snapshot().before_ip, None);
+        assert_eq!(machine.snapshot().after_ip, None);
     }
 
     #[test]

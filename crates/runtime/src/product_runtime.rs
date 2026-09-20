@@ -6,7 +6,7 @@
 
 use crate::{
     CellularDnsResolver, CellularPolicyObserver, ProductGeneration, ProxyRuntimeObserver,
-    ReadinessObserver, RuntimeExecutionError, RuntimeExecutor, RuntimeLifecycle,
+    ReadinessObserver, RotationObserver, RuntimeExecutionError, RuntimeExecutor, RuntimeLifecycle,
     RuntimeLifecycleState, RuntimeStartAction, RuntimeStopAction,
 };
 use mish_cellular::{
@@ -37,6 +37,7 @@ struct ProductObservers {
     cellular: Option<CellularPolicyObserver>,
     readiness: Option<ReadinessObserver>,
     proxy: Option<ProxyRuntimeObserver>,
+    rotation: Option<RotationObserver>,
 }
 
 type ObserverRebind = (Arc<ProductGeneration>, ProductObservers);
@@ -372,6 +373,17 @@ impl ProductRuntimeCoordinator {
             Arc::clone(&state.generation)
         };
         bind_proxy_observer(&generation, observer, Arc::clone(&self.observer_generation));
+    }
+
+    pub fn set_rotation_observer(&self, observer: RotationObserver) {
+        let generation = {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            state.observers.rotation = Some(Arc::clone(&observer));
+            Arc::clone(&state.generation)
+        };
+        bind_rotation_observer(&generation, observer, Arc::clone(&self.observer_generation));
     }
 
     pub fn request_start(
@@ -848,7 +860,10 @@ fn bind_observers(
         bind_readiness_observer(generation, observer, Arc::clone(&observer_generation));
     }
     if let Some(observer) = observers.proxy {
-        bind_proxy_observer(generation, observer, observer_generation);
+        bind_proxy_observer(generation, observer, Arc::clone(&observer_generation));
+    }
+    if let Some(observer) = observers.rotation {
+        bind_rotation_observer(generation, observer, observer_generation);
     }
 }
 
@@ -893,6 +908,21 @@ fn bind_proxy_observer(
         .set_observer(Arc::new(move |publication| {
             if observer_generation.load(Ordering::Acquire) == expected_generation {
                 observer(publication);
+            }
+        }));
+}
+
+fn bind_rotation_observer(
+    generation: &ProductGeneration,
+    observer: RotationObserver,
+    observer_generation: Arc<AtomicU64>,
+) {
+    let expected_generation = generation.generation();
+    generation
+        .rotation()
+        .set_observer(Arc::new(move |snapshot| {
+            if observer_generation.load(Ordering::Acquire) == expected_generation {
+                observer(snapshot);
             }
         }));
 }

@@ -23,7 +23,7 @@ use mish_runtime::{
     ProxyServingState as OwnerProxyServingState, ReadinessDiagnosticSnapshot, ReadinessObserver,
     RootAuthorityStatus as OwnerRootAuthorityStatus, RootPolicyFailure as OwnerRootPolicyFailure,
     RootPolicyReconcileDiagnostic, RootPolicyResult as OwnerRootPolicyResult,
-    RootRecoveryDiagnostic, RotationRuntimeStartError, RuntimeExecutionError,
+    RootRecoveryDiagnostic, RotationObserver, RotationRuntimeStartError, RuntimeExecutionError,
 };
 use mish_transport::MeshVpnObservation;
 use std::fmt;
@@ -220,16 +220,66 @@ pub struct ProxyRuntimePublicationView {
     pub recovery_next_delay_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum RotationPhaseView {
+    Idle,
+    Preparing,
+    AirplaneEnabling,
+    WaitingRadioDown,
+    AirplaneDisabling,
+    WaitingCellularRecovery,
+    WaitingRootPolicy,
+    ProbingPublicIp,
+    Changed,
+    Unchanged,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum RotationTerminalResultView {
+    Changed,
+    Unchanged,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum RotationFailureView {
+    RuntimeNotRunning,
+    NoCurrentCellular,
+    RootPolicyUnavailable,
+    BeforeIpFailed,
+    AirplaneEnableFailed,
+    AirplaneObservationFailed,
+    AirplaneDisableFailed,
+    FreshCellularUnavailable,
+    RootPolicyRecoveryFailed,
+    AfterIpFailed,
+    CredentialChanged,
+    DeadlineExceeded,
+    StateUnavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum RotationRestoreResultView {
+    NotRequired,
+    AlreadyOff,
+    RestoredOff,
+    Failed,
+    Uncertain,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct RotationSnapshotView {
     pub operation_id: Option<u64>,
-    pub phase: String,
+    pub phase: RotationPhaseView,
     pub before_generation: Option<u64>,
     pub after_generation: Option<u64>,
+    pub before_ip: Option<String>,
+    pub after_ip: Option<String>,
     pub restore_required: bool,
-    pub terminal_result: Option<String>,
-    pub failure: Option<String>,
-    pub restore_result: Option<String>,
+    pub terminal_result: Option<RotationTerminalResultView>,
+    pub failure: Option<RotationFailureView>,
+    pub restore_result: Option<RotationRestoreResultView>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
@@ -303,6 +353,11 @@ pub trait NativeProxyRuntimeObserver: Send + Sync {
 #[uniffi::export(foreign)]
 pub trait NativeReadinessObserver: Send + Sync {
     fn on_readiness(&self, readiness: ProductReadinessState);
+}
+
+#[uniffi::export(foreign)]
+pub trait NativeRotationObserver: Send + Sync {
+    fn on_rotation(&self, snapshot: RotationSnapshotView);
 }
 
 #[uniffi::export(foreign)]
@@ -398,6 +453,13 @@ impl NativeProductRuntime {
 
     pub fn rotation_snapshot(&self) -> RotationSnapshotView {
         map_rotation_snapshot(self.runtime.rotation_snapshot())
+    }
+
+    pub fn observe_rotation(&self, observer: Arc<dyn NativeRotationObserver>) {
+        let callback: RotationObserver = Arc::new(move |snapshot| {
+            observer.on_rotation(map_rotation_snapshot(snapshot));
+        });
+        self.runtime.set_rotation_observer(callback);
     }
 
     pub fn begin_stopped_platform_mutation(
@@ -698,7 +760,7 @@ fn map_product_diagnostic_snapshot(
         .observed_freshness
         .map(|freshness| freshness.raw());
 
-    let rotation = map_rotation_snapshot(generation.rotation);
+    let rotation = generation.rotation;
 
     ProductDiagnosticSnapshotView {
         consistent: snapshot.consistent,
@@ -751,14 +813,23 @@ fn map_product_diagnostic_snapshot(
         readiness_probe_in_flight: readiness.probe_in_flight,
         readiness_refresh_pending: readiness.refresh_pending,
         readiness_probe_state,
-        rotation_state: rotation.phase.clone(),
+        rotation_state: rotation_phase_code(rotation.phase).to_owned(),
         rotation_operation_id: rotation.operation_id,
         rotation_before_generation: rotation.before_generation,
         rotation_after_generation: rotation.after_generation,
         rotation_restore_required: rotation.restore_required,
-        rotation_terminal_result: rotation.terminal_result,
-        rotation_failure: rotation.failure,
-        rotation_restore_result: rotation.restore_result,
+        rotation_terminal_result: rotation
+            .terminal_result
+            .map(rotation_terminal_code)
+            .map(str::to_owned),
+        rotation_failure: rotation
+            .failure
+            .map(rotation_failure_code)
+            .map(str::to_owned),
+        rotation_restore_result: rotation
+            .restore_result
+            .map(rotation_restore_code)
+            .map(str::to_owned),
         rotation_active_tasks: u64::from(generation.rotation_active_tasks),
     }
 }
@@ -766,22 +837,67 @@ fn map_product_diagnostic_snapshot(
 fn map_rotation_snapshot(snapshot: RotationSnapshot) -> RotationSnapshotView {
     RotationSnapshotView {
         operation_id: snapshot.operation_id,
-        phase: rotation_phase_code(snapshot.phase).to_owned(),
+        phase: map_rotation_phase(snapshot.phase),
         before_generation: snapshot.before_generation,
         after_generation: snapshot.after_generation,
+        before_ip: snapshot.before_ip.map(|address| address.to_string()),
+        after_ip: snapshot.after_ip.map(|address| address.to_string()),
         restore_required: snapshot.restore_required,
-        terminal_result: snapshot
-            .terminal_result
-            .map(rotation_terminal_code)
-            .map(str::to_owned),
-        failure: snapshot
-            .failure
-            .map(rotation_failure_code)
-            .map(str::to_owned),
-        restore_result: snapshot
-            .restore_result
-            .map(rotation_restore_code)
-            .map(str::to_owned),
+        terminal_result: snapshot.terminal_result.map(map_rotation_terminal),
+        failure: snapshot.failure.map(map_rotation_failure),
+        restore_result: snapshot.restore_result.map(map_rotation_restore),
+    }
+}
+
+fn map_rotation_phase(phase: RotationPhase) -> RotationPhaseView {
+    match phase {
+        RotationPhase::Idle => RotationPhaseView::Idle,
+        RotationPhase::Preparing => RotationPhaseView::Preparing,
+        RotationPhase::AirplaneEnabling => RotationPhaseView::AirplaneEnabling,
+        RotationPhase::WaitingRadioDown => RotationPhaseView::WaitingRadioDown,
+        RotationPhase::AirplaneDisabling => RotationPhaseView::AirplaneDisabling,
+        RotationPhase::WaitingCellularRecovery => RotationPhaseView::WaitingCellularRecovery,
+        RotationPhase::WaitingRootPolicy => RotationPhaseView::WaitingRootPolicy,
+        RotationPhase::ProbingPublicIp => RotationPhaseView::ProbingPublicIp,
+        RotationPhase::Changed => RotationPhaseView::Changed,
+        RotationPhase::Unchanged => RotationPhaseView::Unchanged,
+        RotationPhase::Failed => RotationPhaseView::Failed,
+    }
+}
+
+fn map_rotation_terminal(result: RotationTerminalResult) -> RotationTerminalResultView {
+    match result {
+        RotationTerminalResult::Changed => RotationTerminalResultView::Changed,
+        RotationTerminalResult::Unchanged => RotationTerminalResultView::Unchanged,
+        RotationTerminalResult::Failed => RotationTerminalResultView::Failed,
+    }
+}
+
+fn map_rotation_failure(failure: RotationFailure) -> RotationFailureView {
+    match failure {
+        RotationFailure::RuntimeNotRunning => RotationFailureView::RuntimeNotRunning,
+        RotationFailure::NoCurrentCellular => RotationFailureView::NoCurrentCellular,
+        RotationFailure::RootPolicyUnavailable => RotationFailureView::RootPolicyUnavailable,
+        RotationFailure::BeforeIpFailed => RotationFailureView::BeforeIpFailed,
+        RotationFailure::AirplaneEnableFailed => RotationFailureView::AirplaneEnableFailed,
+        RotationFailure::AirplaneObservationFailed => RotationFailureView::AirplaneObservationFailed,
+        RotationFailure::AirplaneDisableFailed => RotationFailureView::AirplaneDisableFailed,
+        RotationFailure::FreshCellularUnavailable => RotationFailureView::FreshCellularUnavailable,
+        RotationFailure::RootPolicyRecoveryFailed => RotationFailureView::RootPolicyRecoveryFailed,
+        RotationFailure::AfterIpFailed => RotationFailureView::AfterIpFailed,
+        RotationFailure::CredentialChanged => RotationFailureView::CredentialChanged,
+        RotationFailure::DeadlineExceeded => RotationFailureView::DeadlineExceeded,
+        RotationFailure::StateUnavailable => RotationFailureView::StateUnavailable,
+    }
+}
+
+fn map_rotation_restore(result: RotationRestoreResult) -> RotationRestoreResultView {
+    match result {
+        RotationRestoreResult::NotRequired => RotationRestoreResultView::NotRequired,
+        RotationRestoreResult::AlreadyOff => RotationRestoreResultView::AlreadyOff,
+        RotationRestoreResult::RestoredOff => RotationRestoreResultView::RestoredOff,
+        RotationRestoreResult::Failed => RotationRestoreResultView::Failed,
+        RotationRestoreResult::Uncertain => RotationRestoreResultView::Uncertain,
     }
 }
 
