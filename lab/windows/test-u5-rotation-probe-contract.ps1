@@ -94,6 +94,8 @@ foreach ($required in @(
     'stderr_empty',
     'sleep 0.05',
     'MISH_U5_FAST_AIRPLANE=',
+    "'FAST_OBSERVER_SEPARATE'",
+    'Keep this loop single-ADB',
     'STOP_TRIGGER_EXIT=',
     '$restoreTemplate.Replace(''__MAX__'', [string]$maxSamples).Replace(''__STOP__'', $StopComponent)',
     'airplane_fast_observer',
@@ -140,7 +142,8 @@ foreach ($forbidden in @(
     "@('shell', 'sh', '-c', `$shell)",
     'foreach ($argument in @(''shell'', $shell))',
     'Invoke-MishActivityTrigger -Component $script:StopComponent -Operation ''restore_stop_trigger''',
-    'Credential version changed during restore case.'
+    'Credential version changed during restore case.',
+    '$airplane = Get-MishAirplaneState'
 )) {
     if ($source.Contains($forbidden)) {
         throw "U5 rotation acceptance probe contains forbidden duplicate PRODUCT/control/secret path: $forbidden"

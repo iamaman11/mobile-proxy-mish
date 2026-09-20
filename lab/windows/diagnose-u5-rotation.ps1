@@ -512,12 +512,14 @@ function Invoke-MishOneRotation {
     $functionalPublicIpMs = $null
     $generationB = $null
     $failClosedViolation = $false
-    $sawAirplaneOn = $false
     $terminalSnapshot = $null
 
+    # The independent 50 ms device-side observer owns physical airplane timing.
+    # Keep this loop single-ADB so canonical PRODUCT snapshots get the highest possible cadence
+    # and short fail-closed Cellular intervals are not hidden behind a second serial shell call.
     while ([Environment]::TickCount64 -lt $deadlineTicks) {
         $snapshot = Get-MishAndroidSnapshot
-        $airplane = Get-MishAirplaneState
+        $airplane = 'FAST_OBSERVER_SEPARATE'
         $elapsed = [Environment]::TickCount64 - $startTicks
         Add-MishTimelineSample -Timeline $timeline -ElapsedMs $elapsed -Airplane $airplane -Snapshot $snapshot -LastKey ([ref]$lastKey)
 
@@ -534,14 +536,6 @@ function Invoke-MishOneRotation {
             elseif ($currentOperation -ne $operationId) {
                 Stop-MishRotationAcceptance 'PRODUCT_OPERATION_ID_CHANGED' 'Rotation operation id changed during one bounded request.'
             }
-        }
-
-        if ($airplane -ceq 'ENABLED') {
-            $sawAirplaneOn = $true
-            if ($null -eq $airplaneOnMs) { $airplaneOnMs = $elapsed }
-        }
-        if ($sawAirplaneOn -and $airplane -ceq 'DISABLED' -and $null -eq $airplaneOffMs) {
-            $airplaneOffMs = $elapsed
         }
 
         if (-not [bool]$snapshot.cellular.admitted) {
@@ -603,7 +597,6 @@ function Invoke-MishOneRotation {
     }
 
     if ([bool]$airplaneObserverResult.observed_on) {
-        $sawAirplaneOn = $true
         $fastOnEstimate = [int64]$airplaneObserverResult.first_on_sample * $script:FastAirplaneObserverPeriodMilliseconds
         if ($null -eq $airplaneOnMs -or $fastOnEstimate -lt $airplaneOnMs) { $airplaneOnMs = $fastOnEstimate }
     }
