@@ -37,6 +37,8 @@ foreach ($required in @(
     'cellular_reconcile_requested -gt 0',
     'cellular_reconcile_executed -eq [int64]$restartState.cellular_reconcile_requested',
     'restart_reached_product',
+    'restart_request_did_not_reach_product',
+    'cellular_reconcile_requested -eq 0',
     'PRODUCT_STOP_ON_RESTART_DID_NOT_REACH_PRODUCT',
     'product_pid',
     'stable = $pidStable',
