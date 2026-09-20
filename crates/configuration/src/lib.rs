@@ -9,17 +9,16 @@ use std::net::{IpAddr, Ipv4Addr};
 const MIN_MESH_ACCEPTED_PREFIX: u8 = 8;
 const READINESS_PROBE_PORT: u16 = 443;
 
-/// M1's bounded, fail-closed concurrent TCP budget for one external proxy runtime generation.
+/// Bounded, fail-closed concurrent TCP budget for one external proxy runtime generation.
 ///
-/// The Android bridge is deliberately blocking/thread-per-session today. Keeping one shared
-/// admission budget prevents an unbounded burst at the Mesh edge from creating more relay
-/// workers than the private Cellular Egress bridge can serve. Connections above this budget are
-/// rejected; they are never rerouted through a default/VPN path. Raising this value requires a
-/// measured Android/LAB capacity change, not merely a timeout increase.
+/// Transport owns this one external admission fact while admitted Mesh/Proxy work executes on the
+/// single process-wide Tokio runtime owned by `mish-runtime`. Connections above the budget are
+/// rejected at the Mesh edge; they are never rerouted through a default/VPN path. Raising this
+/// value requires measured Android/LAB capacity evidence, not an executor or timeout workaround.
 ///
-/// DEVICE-1 capacity candidate: 64 sessions. This remains one shared, fail-closed bound for
-/// the public Mesh ingress and private bridge; it is not an unbounded concurrency setting.
-pub const EXTERNAL_TCP_SESSION_BUDGET: usize = 64;
+/// U7 DEVICE-1 capacity candidate: 512 sessions. This remains one shared, fail-closed bound, not
+/// an autoscaling target or a second execution/admission authority.
+pub const EXTERNAL_TCP_SESSION_BUDGET: usize = 512;
 const DEPLOYMENT_MESH_ACCEPTED_CIDR_RAW: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../config/deployment/mesh-device-cidr.txt"
