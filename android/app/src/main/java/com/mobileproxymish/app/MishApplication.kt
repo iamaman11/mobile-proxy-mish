@@ -1,18 +1,31 @@
 package com.mobileproxymish.app
 
 import android.app.Application
+import android.content.Context
 import com.mobileproxymish.app.cellular.CellularRuntimeBridge
 
 /**
- * Android composition root.
+ * Android process composition root.
  *
- * The foreground service owns runtime lifetime. This Application only owns the restartable
- * process-local controller and never relies on Application.onTerminate(), which production
- * Android does not call when a process is killed.
+ * Android attaches the Application before installing this process' ContentProviders. The one
+ * process-local controller is therefore created exactly once during attachBaseContext(), before
+ * any diagnostics provider can observe it. The foreground service still owns requested runtime
+ * lifetime; this Application owns only process composition.
  */
 class MishApplication : Application() {
-    lateinit var runtimeController: MishRuntimeController
-        private set
+    @Volatile
+    private var runtimeControllerRef: MishRuntimeController? = null
+
+    /**
+     * Read-only access to the already-created process controller.
+     *
+     * This getter deliberately never creates PRODUCT state. A caller outside Android's normal
+     * Application attach ordering fails closed instead of becoming an alternate runtime bootstrap.
+     */
+    val runtimeController: MishRuntimeController
+        get() = checkNotNull(runtimeControllerRef) {
+            "MishRuntimeController is unavailable before Application attach"
+        }
 
     /** Stable process adapter access retained only for narrow physical instrumentation. */
     val cellularRuntime: CellularRuntimeBridge
@@ -22,9 +35,16 @@ class MishApplication : Application() {
     val proxyRuntime: ProxyRuntimeSupervisor
         get() = runtimeController.currentProxyRuntime
 
+    override fun attachBaseContext(base: Context) {
+        super.attachBaseContext(base)
+        check(runtimeControllerRef == null) {
+            "MishRuntimeController process composition was initialized more than once"
+        }
+        runtimeControllerRef = MishRuntimeController(base)
+    }
+
     override fun onCreate() {
         super.onCreate()
-        runtimeController = MishRuntimeController(this)
 
         // Preserve the existing product expectation that an explicitly launched application
         // requests proxy availability. Modern Android may reject a background FGS start; that

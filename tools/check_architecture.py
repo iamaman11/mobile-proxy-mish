@@ -73,6 +73,76 @@ def main() -> None:
         "Android DNS mechanics belong at the platform/FFI boundary",
     )
     runtime_controller = "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt"
+    application_root = "android/app/src/main/java/com/mobileproxymish/app/MishApplication.kt"
+    diagnostics_provider = "android/app/src/main/java/com/mobileproxymish/app/MishDiagnosticsProvider.kt"
+    for required in (
+        "@Volatile",
+        "private var runtimeControllerRef: MishRuntimeController? = null",
+        "override fun attachBaseContext(base: Context)",
+        "super.attachBaseContext(base)",
+        "runtimeControllerRef = MishRuntimeController(base)",
+        "get() = checkNotNull(runtimeControllerRef)",
+    ):
+        require(
+            application_root,
+            required,
+            "Android process bootstrap must create exactly one controller before ContentProviders without read-triggered initialization",
+        )
+    for forbidden in (
+        "lateinit var runtimeController",
+        "by lazy(",
+        "LazyThreadSafetyMode",
+    ):
+        forbid(
+            application_root,
+            forbidden,
+            "runtime controller bootstrap must be explicit in Application.attachBaseContext, never deferred to a reader",
+        )
+    forbid(
+        diagnostics_provider,
+        "MishRuntimeController(",
+        "read-only diagnostics must never construct PRODUCT runtime state",
+    )
+    controller_construction_sites = []
+    for kotlin_file in sorted((ROOT / "android/app/src/main/java").rglob("*.kt")):
+        kotlin_text = kotlin_file.read_text(encoding="utf-8")
+        if "MishRuntimeController(" in kotlin_text and "class MishRuntimeController" not in kotlin_text:
+            controller_construction_sites.append(kotlin_file.relative_to(ROOT).as_posix())
+    if controller_construction_sites != [application_root]:
+        raise SystemExit(
+            "architecture guard: process-local MishRuntimeController must have exactly one production "
+            f"construction site in Application.attachBaseContext; observed={controller_construction_sites}"
+        )
+    application_text = read(application_root)
+    attach_index = application_text.find("override fun attachBaseContext(base: Context)")
+    attach_super_index = application_text.find("super.attachBaseContext(base)", attach_index)
+    controller_create_index = application_text.find(
+        "runtimeControllerRef = MishRuntimeController(base)",
+        attach_index,
+    )
+    on_create_index = application_text.find("override fun onCreate()", attach_index)
+    if not (
+        0 <= attach_index
+        < attach_super_index
+        < controller_create_index
+        < on_create_index
+    ):
+        raise SystemExit(
+            "architecture guard: Application process bootstrap order must be "
+            "attachBaseContext -> super.attachBaseContext -> one controller construction -> onCreate"
+        )
+    for process_context_owner in (
+        "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/ExternalProxyCredentialStore.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/CredentialMetadataStore.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/AndroidVpnObserver.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRuntimeBridge.kt",
+    ):
+        forbid(
+            process_context_owner,
+            "applicationContext",
+            "process bootstrap descendants must use the already-attached process Context supplied by MishApplication",
+        )
     forbid(
         runtime_controller,
         "enum class LifecycleState",

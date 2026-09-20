@@ -29,7 +29,7 @@ import kotlinx.coroutines.flow.asStateFlow
 class MishRuntimeController internal constructor(
     context: Context,
 ) {
-    private val appContext = context.applicationContext
+    private val appContext = context
     private val externalCredentialStore = ExternalProxyCredentialStore(appContext)
     private val platformEffectsLock = Any()
     private val debugIsolation = appContext.packageName.endsWith(".debug") &&

@@ -35,7 +35,7 @@ internal class ExternalProxyCredentialStore private constructor(
     private val rootEffect: AndroidKeystoreRoot,
 ) {
     constructor(context: Context) : this(
-        CredentialMetadataStore(context.applicationContext),
+        CredentialMetadataStore(context),
         AndroidKeystoreRoot(),
     )
 
@@ -44,7 +44,7 @@ internal class ExternalProxyCredentialStore private constructor(
         preferencesName: String,
         keystoreAlias: String,
     ) : this(
-        CredentialMetadataStore(context.applicationContext, preferencesName),
+        CredentialMetadataStore(context, preferencesName),
         AndroidKeystoreRoot(keystoreAlias),
     )
 
