@@ -449,7 +449,9 @@ def main() -> None:
         "'dumpsys', 'battery'",
         "'dumpsys', 'thermalservice'",
         "'ps', '-A', '-o', 'PID,PPID,NAME'",
-        "mish-runtime-io",
+        "'ps', '-A', '-T', '-w', '-o', 'PID,TID,CMD'",
+        "'mish-runtime-i*'",
+        "external_powered = $externalPower",
         "product_su_like_descendants",
     ):
         require(u7_measurement, required, "U7 host observation coverage drifted")

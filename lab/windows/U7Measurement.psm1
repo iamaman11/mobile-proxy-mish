@@ -119,14 +119,27 @@ function Get-MishU7PlatformObservation {
         [Parameter(Mandatory)][string] $PackageName,
         [Parameter(Mandatory)][string] $PidText
     )
-    $threadText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'run-as', $PackageName, 'sh', '-c', "cat /proc/$PidText/task/*/comm")
+    # Use the same Toybox thread topology path already proven by the canonical U5 rotation
+    # probe. DEVICE-1 did not reliably expand app-owned /proc task globs through run-as.
+    $threadText = Invoke-MishU7AdbOptionalText -AdbPath $AdbPath -Arguments @('shell', 'ps', '-A', '-T', '-w', '-o', 'PID,TID,CMD')
     $threadObservation = [ordered]@{ supported = $false; reason = 'THREAD_NAMES_UNAVAILABLE' }
     if (-not [string]::IsNullOrWhiteSpace($threadText)) {
-        $names = @($threadText -split '\r?\n' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-        $threadObservation = [ordered]@{
-            supported = $true
-            observed_threads = $names.Count
-            product_tokio_named_threads = @($names | Where-Object { $_ -ceq 'mish-runtime-io' }).Count
+        $names = @(
+            $threadText -split '\r?\n' |
+                ForEach-Object {
+                    $row = [regex]::Match($_, '^\s*(?<pid>\d+)\s+(?<tid>\d+)\s+(?<name>.+?)\s*$')
+                    if ($row.Success -and [int]$row.Groups['pid'].Value -eq [int]$PidText) {
+                        $row.Groups['name'].Value.Trim()
+                    }
+                } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+        if ($names.Count -gt 0) {
+            $threadObservation = [ordered]@{
+                supported = $true
+                observed_threads = $names.Count
+                product_tokio_named_threads = @($names | Where-Object { $_ -like 'mish-runtime-i*' }).Count
+            }
         }
     }
 
@@ -138,13 +151,25 @@ function Get-MishU7PlatformObservation {
         $temperature = [regex]::Match($batteryText, '(?m)^\s*temperature:\s*(?<value>-?\d+)\s*$')
         $plugged = [regex]::Match($batteryText, '(?m)^\s*plugged:\s*(?<value>\d+)\s*$')
         $status = [regex]::Match($batteryText, '(?m)^\s*status:\s*(?<value>\d+)\s*$')
+        $acPowered = [regex]::Match($batteryText, '(?im)^\s*AC powered:\s*(?<value>true|false)\s*$')
+        $usbPowered = [regex]::Match($batteryText, '(?im)^\s*USB powered:\s*(?<value>true|false)\s*$')
+        $wirelessPowered = [regex]::Match($batteryText, '(?im)^\s*Wireless powered:\s*(?<value>true|false)\s*$')
+        $dockPowered = [regex]::Match($batteryText, '(?im)^\s*Dock powered:\s*(?<value>true|false)\s*$')
         if ($level.Success -and $scale.Success) {
+            $powerFlags = @($acPowered, $usbPowered, $wirelessPowered, $dockPowered)
+            $knownPowerFlags = @($powerFlags | Where-Object { $_.Success })
+            $externalPower = if ($knownPowerFlags.Count -gt 0) {
+                @($knownPowerFlags | Where-Object { $_.Groups['value'].Value -ieq 'true' }).Count -gt 0
+            } else {
+                $null
+            }
             $battery = [ordered]@{
                 supported = $true
                 level = [int]$level.Groups['value'].Value
                 scale = [int]$scale.Groups['value'].Value
                 temperature_deci_c = if ($temperature.Success) { [int]$temperature.Groups['value'].Value } else { $null }
                 plugged = if ($plugged.Success) { [int]$plugged.Groups['value'].Value } else { $null }
+                external_powered = $externalPower
                 status = if ($status.Success) { [int]$status.Groups['value'].Value } else { $null }
             }
         }
