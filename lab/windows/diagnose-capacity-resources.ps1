@@ -573,7 +573,7 @@ try {
     }
 
     if ($classification -ceq 'U2_CAPACITY_RESOURCE_INCOMPLETE') {
-        foreach ($target in @(10, 32, 64)) {
+        foreach ($target in @(10, 32, 64, 512)) {
             $stageRecord = $null
             $stageCleanupCounts = $null
             $stageCleanupResources = $null
@@ -617,35 +617,35 @@ try {
                     $detail = "Client proved $target application-live sessions while owner counters diverged."
                 }
 
-                if ($target -eq 64 -and $classification -ceq 'U2_CAPACITY_RESOURCE_INCOMPLETE') {
+                if ($target -eq 512 -and $classification -ceq 'U2_CAPACITY_RESOURCE_INCOMPLETE') {
                     $preOverflowLiveness = $applicationLiveness
                     $preOverflowOwnerCounts = $ownerCounts
                     $attempt = Test-MishOverflowRejected -ProxyHost $meshAddress -Lease $lease
                     [void]$overflowAttempts.Add([ordered]@{
-                        ordinal = 65
+                        ordinal = 513
                         result = [string]$attempt.result
                         reason = [string]$attempt.reason
                         status_line = if ($attempt.Contains('status_line')) { [string]$attempt.status_line } else { $null }
                     })
                     if ([string]$attempt.result -ceq 'FAIL') {
-                        $classification = 'U2_CAPACITY_65TH_NOT_REJECTED'
-                        $detail = 'Overflow attempt 65 reached Proxy Serving.'
+                        $classification = 'U7_CAPACITY_513TH_NOT_REJECTED'
+                        $detail = 'Overflow attempt 513 reached Proxy Serving.'
                     }
                     elseif ([string]$attempt.result -ceq 'INCONCLUSIVE') {
                         $classification = 'LAB_OVERFLOW_OBSERVATION_INCONCLUSIVE'
-                        $detail = "Overflow attempt 65 was inconclusive: $([string]$attempt.reason)."
+                        $detail = "Overflow attempt 513 was inconclusive: $([string]$attempt.reason)."
                     }
 
-                    $postOverflowLiveness = Test-MishApplicationLiveSet -Sessions @($activeSessions) -ExpectedSessions 64
-                    $overflowOwnerCounts = Wait-MishOwnerCounts -ExpectedMesh 64 -ExpectedProxy 64
+                    $postOverflowLiveness = Test-MishApplicationLiveSet -Sessions @($activeSessions) -ExpectedSessions 512
+                    $overflowOwnerCounts = Wait-MishOwnerCounts -ExpectedMesh 512 -ExpectedProxy 512
                     if ($classification -ceq 'U2_CAPACITY_RESOURCE_INCOMPLETE') {
                         if ([string]$postOverflowLiveness.result -cne 'PASS') {
                             $classification = 'LAB_APPLICATION_LIVE_POST_OVERFLOW_FAILED'
-                            $detail = 'The original 64 lost application liveness after the overflow attempt.'
+                            $detail = 'The original 512 lost application liveness after the overflow attempt.'
                         }
                         elseif ([string]$overflowOwnerCounts.result -cne 'PASS') {
                             $classification = 'U2_CAPACITY_OWNER_COUNT_MISMATCH'
-                            $detail = 'The original 64 remained application-live after overflow while owner counters diverged.'
+                            $detail = 'The original 512 remained application-live after overflow while owner counters diverged.'
                         }
                         else {
                             $capacityContractPassed = $true
@@ -690,9 +690,9 @@ try {
             }
 
             if ($classification -cne 'U2_CAPACITY_RESOURCE_INCOMPLETE') { break }
-            if ($target -eq 64 -and $capacityContractPassed) {
+            if ($target -eq 512 -and $capacityContractPassed) {
                 $acceptanceResult = 'PASS'
-                $classification = 'U2_CAPACITY_AND_RESOURCE_MEASUREMENTS_PASS'
+                $classification = 'U7_CAPACITY_512_PASS'
             }
         }
     }
@@ -737,7 +737,7 @@ if (-not $pidStable) {
 elseif ($classification -like 'LAB_*') {
     $acceptanceResult = 'FAIL'
 }
-elseif ($classification -in @('U2_CAPACITY_OWNER_COUNT_MISMATCH', 'U2_CAPACITY_65TH_NOT_REJECTED', 'U2_CAPACITY_CLEANUP_NOT_DRAINED')) {
+elseif ($classification -in @('U2_CAPACITY_OWNER_COUNT_MISMATCH', 'U7_CAPACITY_513TH_NOT_REJECTED', 'U2_CAPACITY_CLEANUP_NOT_DRAINED')) {
     $acceptanceResult = 'FAIL'
 }
 elseif ($null -eq $cleanupCounts -or [string]$cleanupCounts.result -cne 'PASS') {
@@ -793,7 +793,9 @@ $evidence = [ordered]@{
     held_session_protocol = 'TLS+HTTP'
     application_live_semantics = 'fresh HTTP HEAD round-trip on the same established TLS connection'
     measurement_stage = 'U7'
-    acceptance_profile = 'u7-baseline-v1'
+    capacity_target = 512
+    overflow_ordinal = 513
+    acceptance_profile = 'u7-capacity-512-v1'
     batch_model = 'independent_bounded'
     measurement_limitations = [ordered]@{
         process_wakeups = 'UNSUPPORTED_NO_RELIABLE_PROCESS_COUNTER'

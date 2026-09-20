@@ -583,7 +583,7 @@ jobs:
             -PackageName $env:PACKAGE_NAME `
             -EvidencePath "$env:RUNNER_TEMP\\mish-targeted-probe-v1.json"
 
-      - name: Explicit U2 capacity/resources - external Mesh
+      - name: Explicit U7 capacity/resources - external Mesh
         if: ${{ needs.resolve.outputs.mode == 'full' && needs.resolve.outputs.probe == 'capacity_resources' && steps.baseline.outcome == 'success' }}
         continue-on-error: true
         shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
