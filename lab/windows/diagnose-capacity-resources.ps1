@@ -170,6 +170,7 @@ function Read-MishConnectHeaders {
 function Invoke-MishApplicationRoundTrip {
     param([Parameter(Mandatory)] $Session)
     $requestBytes = $null
+    $watch = [Diagnostics.Stopwatch]::StartNew()
     try {
         $request = "HEAD / HTTP/1.1`r`nHost: $TargetHost`r`nConnection: keep-alive`r`nUser-Agent: mish-capacity-probe/1`r`n`r`n"
         $requestBytes = [Text.Encoding]::ASCII.GetBytes($request)
@@ -177,21 +178,22 @@ function Invoke-MishApplicationRoundTrip {
         $Session.Stream.Flush()
         $status = Read-MishStatusLine -Stream $Session.Stream
         if ($null -eq $status) {
-            return [ordered]@{ result = 'FAIL'; reason = 'APPLICATION_EOF'; status_line = $null }
+            return [ordered]@{ result = 'FAIL'; reason = 'APPLICATION_EOF'; status_line = $null; elapsed_ms = [int64]$watch.ElapsedMilliseconds }
         }
         if ($status -notmatch '^HTTP/1\.[01]\s+[1-5]\d\d(?:\s|$)') {
-            return [ordered]@{ result = 'FAIL'; reason = 'APPLICATION_STATUS_INVALID'; status_line = $status }
+            return [ordered]@{ result = 'FAIL'; reason = 'APPLICATION_STATUS_INVALID'; status_line = $status; elapsed_ms = [int64]$watch.ElapsedMilliseconds }
         }
         $headers = Read-MishHeaders -Stream $Session.Stream -Context 'Target HTTP'
         if ([bool]$headers.connection_close) {
-            return [ordered]@{ result = 'FAIL'; reason = 'TARGET_CONNECTION_CLOSE'; status_line = $status }
+            return [ordered]@{ result = 'FAIL'; reason = 'TARGET_CONNECTION_CLOSE'; status_line = $status; elapsed_ms = [int64]$watch.ElapsedMilliseconds }
         }
-        return [ordered]@{ result = 'PASS'; reason = 'NONE'; status_line = $status }
+        return [ordered]@{ result = 'PASS'; reason = 'NONE'; status_line = $status; elapsed_ms = [int64]$watch.ElapsedMilliseconds }
     }
     catch {
-        return [ordered]@{ result = 'FAIL'; reason = 'APPLICATION_IO_FAILED'; error = $_.Exception.GetType().FullName }
+        return [ordered]@{ result = 'FAIL'; reason = 'APPLICATION_IO_FAILED'; error = $_.Exception.GetType().FullName; elapsed_ms = [int64]$watch.ElapsedMilliseconds }
     }
     finally {
+        $watch.Stop()
         if ($null -ne $requestBytes) { [Array]::Clear($requestBytes, 0, $requestBytes.Length) }
     }
 }
@@ -206,11 +208,16 @@ function Open-MishApplicationSession {
     $stream = $null
     $tlsStream = $null
     $plainPassword = $null
+    $setupWatch = [Diagnostics.Stopwatch]::StartNew()
+    $meshConnectElapsedMs = $null
     try {
+        $meshConnectWatch = [Diagnostics.Stopwatch]::StartNew()
         $connectTask = $client.ConnectAsync($ProxyHost, 3128)
         if (-not $connectTask.Wait($script:ConnectTimeoutMs) -or -not $client.Connected) {
             throw 'Mesh listener connection failed.'
         }
+        $meshConnectWatch.Stop()
+        $meshConnectElapsedMs = [int64]$meshConnectWatch.ElapsedMilliseconds
         $stream = $client.GetStream()
         $stream.ReadTimeout = $script:ConnectTimeoutMs
         $stream.WriteTimeout = $script:ConnectTimeoutMs
@@ -240,19 +247,21 @@ function Open-MishApplicationSession {
         $tlsStream.ReadTimeout = $script:ConnectTimeoutMs
         $tlsStream.WriteTimeout = $script:ConnectTimeoutMs
         $tlsStream.AuthenticateAsClient($TargetHost)
-
         $session = [pscustomobject]@{
             Ordinal = $Ordinal
             Client = $client
             Stream = $tlsStream
             ConnectStatusLine = $status
             HeldProtocol = 'TLS+HTTP'
+            MeshConnectElapsedMs = $meshConnectElapsedMs
+            SetupElapsedMs = [int64]$setupWatch.ElapsedMilliseconds
         }
         $initial = Invoke-MishApplicationRoundTrip -Session $session
         if ([string]$initial.result -cne 'PASS') {
             throw "Initial target application round-trip failed: $([string]$initial.reason)"
         }
         $session | Add-Member -NotePropertyName InitialApplicationStatusLine -NotePropertyValue ([string]$initial.status_line)
+        $session | Add-Member -NotePropertyName InitialApplicationElapsedMs -NotePropertyValue ([int64]$initial.elapsed_ms)
         return $session
     }
     catch {
@@ -262,6 +271,7 @@ function Open-MishApplicationSession {
         throw
     }
     finally {
+        $setupWatch.Stop()
         $plainPassword = $null
     }
 }
@@ -272,14 +282,19 @@ function Test-MishApplicationLiveSet {
         [Parameter(Mandatory)][int] $ExpectedSessions
     )
     $results = [Collections.Generic.List[object]]::new()
+    $latencies = [Collections.Generic.List[int64]]::new()
     $live = 0
     foreach ($session in $Sessions) {
         $roundTrip = Invoke-MishApplicationRoundTrip -Session $session
-        if ([string]$roundTrip.result -ceq 'PASS') { $live++ }
+        if ([string]$roundTrip.result -ceq 'PASS') {
+            $live++
+            [void]$latencies.Add([int64]$roundTrip.elapsed_ms)
+        }
         [void]$results.Add([ordered]@{
             ordinal = [int]$session.Ordinal
             result = [string]$roundTrip.result
             reason = [string]$roundTrip.reason
+            elapsed_ms = [int64]$roundTrip.elapsed_ms
             status_line = if ($roundTrip.Contains('status_line')) { [string]$roundTrip.status_line } else { $null }
         })
     }
@@ -288,6 +303,7 @@ function Test-MishApplicationLiveSet {
         expected = $ExpectedSessions
         observed_sessions = $Sessions.Count
         application_live = $live
+        application_round_trip_latency = Get-MishU7LatencyDistribution -Values @($latencies)
         failures = @($results | Where-Object { [string]$_.result -cne 'PASS' })
     }
 }
@@ -428,6 +444,7 @@ if (-not (Test-Path -LiteralPath $AdbPath -PathType Leaf)) {
     Stop-MishCapacityProbe 'ADB_MISSING' 'Canonical ADB executable is missing.'
 }
 Import-Module (Join-Path $PSScriptRoot 'CredentialProvisioning.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'U7Measurement.psm1') -Force
 
 $pidBefore = Invoke-MishAdbText -Arguments @('shell', 'pidof', $PackageName)
 if ([string]::IsNullOrWhiteSpace($pidBefore) -or $pidBefore -match '\s') {
