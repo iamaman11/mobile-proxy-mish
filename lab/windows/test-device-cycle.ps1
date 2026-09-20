@@ -71,6 +71,13 @@ try {
         'Test-MishOverflowRejected',
         'Wait-MishOwnerCounts -ExpectedMesh 64 -ExpectedProxy 64',
         'Wait-MishOwnerCounts -ExpectedMesh 0 -ExpectedProxy 0',
+        "Import-Module (Join-Path `$PSScriptRoot 'U7Measurement.psm1') -Force",
+        "acceptance_profile = 'u7-baseline-v1'",
+        "batch_model = 'independent_bounded'",
+        'Get-MishSafeOwnerDiagnostics',
+        'Measure-MishU7SupplementalObservation',
+        "`$stageRecord['cleanup'] = [ordered]@{",
+        'resource_delta_from_idle',
         "'shell', 'run-as', `$PackageName, 'cat'",
         "'shell', 'dumpsys', 'meminfo', '-s'",
         "schema = 'mish.lab.capacity-resources/v1'",
@@ -80,6 +87,32 @@ try {
     )) {
         if (-not $capacitySource.Contains($required)) {
             throw "Capacity/resource probe lost real-path owner evidence: $required"
+        }
+    }
+    $u7MeasurementSource = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'U7Measurement.psm1')
+    foreach ($required in @(
+        'Get-MishU7CpuObservation',
+        'process_cpu_percent_total_capacity',
+        'process_cpu_percent_one_core_equivalent',
+        "'dumpsys', 'battery'",
+        "'dumpsys', 'thermalservice'",
+        "'ps', '-A', '-o', 'PID,PPID,NAME'",
+        "'mish-runtime-io'",
+        'product_su_like_descendants'
+    )) {
+        if (-not $u7MeasurementSource.Contains($required)) {
+            throw "U7 measurement helper lost bounded host evidence: $required"
+        }
+    }
+    foreach ($forbidden in @(
+        "'shell', 'su'",
+        "'shell', 'kill'",
+        "'shell', 'pkill'",
+        'settings put',
+        'airplane-mode'
+    )) {
+        if ($u7MeasurementSource.Contains($forbidden)) {
+            throw "U7 measurement helper became a mutation path: $forbidden"
         }
     }
     foreach ($forbidden in @(
