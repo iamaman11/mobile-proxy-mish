@@ -113,6 +113,24 @@ def main() -> None:
             "architecture guard: process-local MishRuntimeController must have exactly one production "
             f"construction site in Application.attachBaseContext; observed={controller_construction_sites}"
         )
+    application_text = read(application_root)
+    attach_index = application_text.find("override fun attachBaseContext(base: Context)")
+    attach_super_index = application_text.find("super.attachBaseContext(base)", attach_index)
+    controller_create_index = application_text.find(
+        "runtimeControllerRef = MishRuntimeController(this)",
+        attach_index,
+    )
+    on_create_index = application_text.find("override fun onCreate()", attach_index)
+    if not (
+        0 <= attach_index
+        < attach_super_index
+        < controller_create_index
+        < on_create_index
+    ):
+        raise SystemExit(
+            "architecture guard: Application process bootstrap order must be "
+            "attachBaseContext -> super.attachBaseContext -> one controller construction -> onCreate"
+        )
     forbid(
         runtime_controller,
         "enum class LifecycleState",
