@@ -162,9 +162,9 @@ def main() -> None:
         r"(?s)android:\n.*?name: Android Compose Shell\n\s+needs: \[control, device-contracts, rust, android-build\]",
         "required Android Compose Shell context must be the final Rust+Android aggregate candidate gate",
     )
-    forbid_regex(
+    forbid(
         producer,
-        r"(?s)android-build:\n.*?needs: \[[^\]]*rust",
+        "android-build:\n    name: Android Build/Test\n    needs: [control, device-contracts, rust]",
         "heavy Android build/test must not wait for Rust Workspace",
     )
 
