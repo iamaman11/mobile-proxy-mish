@@ -10,7 +10,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 
-internal sealed interface CredentialRevealUiState {
+sealed interface CredentialRevealUiState {
     data object Hidden : CredentialRevealUiState
     data object Unavailable : CredentialRevealUiState
 
