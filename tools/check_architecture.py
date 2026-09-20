@@ -73,6 +73,17 @@ def main() -> None:
         "Android DNS mechanics belong at the platform/FFI boundary",
     )
     runtime_controller = "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt"
+    application_root = "android/app/src/main/java/com/mobileproxymish/app/MishApplication.kt"
+    require(
+        application_root,
+        "by lazy(LazyThreadSafetyMode.SYNCHRONIZED)",
+        "process-local runtime controller must be safe when a ContentProvider call races Application.onCreate",
+    )
+    forbid(
+        application_root,
+        "lateinit var runtimeController",
+        "diagnostics provider may be called before Application.onCreate, so the process controller cannot be lateinit",
+    )
     forbid(
         runtime_controller,
         "enum class LifecycleState",
