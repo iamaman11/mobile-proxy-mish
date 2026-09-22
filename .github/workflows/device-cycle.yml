@@ -36,6 +36,7 @@ on:
           - u7_512_lifecycle_stability
           - u8_reboot_install_durability
           - u8_public_egress_rotation
+          - u8_remote_control
           - loopback_connect
   issue_comment:
     types: [created]
@@ -111,7 +112,7 @@ jobs:
               match = re.fullmatch(
                   r"/mish-cycle\s+([1-9][0-9]*)\s+([0-9a-f]{40})\s+"
                   r"(full|install_only|diagnose_only|probe_only)\s+"
-                  r"(none|capacity_resources|recovery_lifecycle|dns_lifetime_live|u5_rotation|u7_runtime_restart_resources|u7_512_lifecycle_stability|u8_reboot_install_durability|u8_public_egress_rotation|loopback_connect)",
+                  r"(none|capacity_resources|recovery_lifecycle|dns_lifetime_live|u5_rotation|u7_runtime_restart_resources|u7_512_lifecycle_stability|u8_reboot_install_durability|u8_public_egress_rotation|u8_remote_control|loopback_connect)",
                   body,
               )
               if match is None:
@@ -161,8 +162,8 @@ jobs:
               if probe != 'loopback_connect':
                   raise SystemExit('probe_only supports only the current-function loopback_connect probe')
           elif mode == 'full':
-              if probe not in {'none', 'capacity_resources', 'recovery_lifecycle', 'dns_lifetime_live', 'u5_rotation', 'u7_runtime_restart_resources', 'u7_512_lifecycle_stability', 'u8_reboot_install_durability', 'u8_public_egress_rotation'}:
-                  raise SystemExit('full accepts only none, capacity_resources, recovery_lifecycle, dns_lifetime_live, u5_rotation, u7_runtime_restart_resources, u7_512_lifecycle_stability, u8_reboot_install_durability, or u8_public_egress_rotation')
+              if probe not in {'none', 'capacity_resources', 'recovery_lifecycle', 'dns_lifetime_live', 'u5_rotation', 'u7_runtime_restart_resources', 'u7_512_lifecycle_stability', 'u8_reboot_install_durability', 'u8_public_egress_rotation', 'u8_remote_control'}:
+                  raise SystemExit('full accepts only none, capacity_resources, recovery_lifecycle, dns_lifetime_live, u5_rotation, u7_runtime_restart_resources, u7_512_lifecycle_stability, u8_reboot_install_durability, u8_public_egress_rotation, or u8_remote_control')
           elif probe != 'none':
               raise SystemExit('install_only/diagnose_only require probe=none')
           PY
@@ -506,6 +507,380 @@ jobs:
             ${{ steps.candidate_store.outputs.receipts_directory }}\\installed-verification-v2.json
           if-no-files-found: warn
           retention-days: 7
+
+  remote_control:
+    name: U8-E authenticated remote rotation
+    needs: [resolve, install]
+    if: >-
+      ${{ always() && needs.resolve.outputs.eligible == 'true' &&
+          needs.resolve.outputs.mode == 'full' &&
+          needs.resolve.outputs.probe == 'u8_remote_control' &&
+          needs.install.result == 'success' }}
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 15
+    environment: cloudflare-control
+    steps:
+      - name: Checkout exact control implementation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.control_sha }}
+          persist-credentials: false
+          clean: true
+
+      - name: Verify pinned PowerShell 7 runtime
+        shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''''{0}'''')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($PSVersionTable.PSEdition -cne 'Core' -or $PSVersionTable.PSVersion.ToString() -cne $env:DEVICE_CYCLE_PWSH_VERSION) {
+            throw "MISH_DEVICE_CYCLE_FAILURE|POWERSHELL_RUNTIME_MISMATCH|Expected PowerShell $env:DEVICE_CYCLE_PWSH_VERSION; observed $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)"
+          }
+
+      - name: Verify physical DEVICE-1 prerequisites
+        shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''''{0}'''')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path -LiteralPath $env:ADB_EXE -PathType Leaf)) { throw 'MISH_DEVICE_CYCLE_FAILURE|ADB_MISSING|Canonical ADB is unavailable.' }
+          $devices = @(& $env:ADB_EXE devices | Where-Object { $_ -match '^\S+\s+device\s*    needs: [resolve, install]
+    if: >-
+      ${{ always() && needs.resolve.outputs.eligible == 'true' && needs.resolve.outputs.mode != 'install_only' &&
+          needs.resolve.outputs.probe != 'u8_remote_control' &&
+          (needs.resolve.outputs.mode != 'full' || needs.install.result == 'success') }}
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 30
+    outputs:
+      cycle_result: ${{ steps.report.outputs.cycle_result }}
+      classification: ${{ steps.report.outputs.classification }}
+      exact_candidate_acceptance: ${{ steps.report.outputs.exact_candidate_acceptance }}
+    steps:
+      - name: Checkout exact control implementation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.control_sha }}
+          persist-credentials: false
+          clean: true
+
+      - name: Verify pinned PowerShell 7 runtime
+        shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($PSVersionTable.PSEdition -cne 'Core' -or $PSVersionTable.PSVersion.ToString() -cne $env:DEVICE_CYCLE_PWSH_VERSION) {
+            throw "MISH_DEVICE_CYCLE_FAILURE|POWERSHELL_RUNTIME_MISMATCH|Expected PowerShell $env:DEVICE_CYCLE_PWSH_VERSION; observed $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)"
+          }
+          Write-Host "DEVICE_CYCLE_PWSH=$($PSVersionTable.PSVersion)"
+
+      - name: Verify physical DEVICE-1 prerequisites
+        shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path -LiteralPath $env:ADB_EXE -PathType Leaf)) {
+            throw 'MISH_DEVICE_CYCLE_FAILURE|ADB_MISSING|Canonical ADB is unavailable.'
+          }
+          $devices = @(& $env:ADB_EXE devices | Where-Object { $_ -match '^\S+\s+device\s*$' })
+          if ($LASTEXITCODE -ne 0 -or $devices.Count -ne 1) {
+            throw 'MISH_DEVICE_CYCLE_FAILURE|DEVICE_UNAVAILABLE|Exactly one authorized DEVICE-1 is required.'
+          }
+          $api = (& $env:ADB_EXE shell getprop ro.build.version.sdk).Trim()
+          $abi = (& $env:ADB_EXE shell getprop ro.product.cpu.abi).Trim()
+          if ($api -ne '30' -or $abi -ne 'armeabi-v7a') {
+            throw "MISH_DEVICE_CYCLE_FAILURE|DEVICE_IDENTITY_MISMATCH|Observed API=$api ABI=$abi"
+          }
+          Write-Host 'DEVICE_CYCLE_PREREQUISITES=PASS'
+
+      - name: Explicitly restart app and wait for bounded stable state
+        if: ${{ needs.resolve.outputs.mode != 'probe_only' }}
+        shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\\lab\\windows\\start-device-app.ps1 `
+            -AdbPath $env:ADB_EXE `
+            -PackageName $env:PACKAGE_NAME `
+            -ComponentName "$env:PACKAGE_NAME/com.mobileproxymish.app.MainActivity" `
+            -ReceiptPath "$env:RUNNER_TEMP\\mish-device-start-v1.json"
+
+      - name: Collect one canonical current-L8 diagnostic snapshot
+        id: baseline
+        if: ${{ needs.resolve.outputs.mode != 'probe_only' }}
+        continue-on-error: true
+        shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\\lab\\windows\\collect-device-diagnostic.ps1 `
+            -AdbPath $env:ADB_EXE `
+            -PackageName $env:PACKAGE_NAME `
+            -EvidencePath "$env:RUNNER_TEMP\\mish-device-diagnostic-v2.json"
+
+      - name: Explicit current-function probe only - loopback CONNECT
+        if: ${{ needs.resolve.outputs.mode == 'probe_only' && needs.resolve.outputs.probe == 'loopback_connect' }}
+        continue-on-error: true
+        shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\\lab\\windows\\diagnose-loopback-connect.ps1 `
+            -AdbPath $env:ADB_EXE `
+            -PackageName $env:PACKAGE_NAME `
+            -EvidencePath "$env:RUNNER_TEMP\\mish-targeted-probe-v1.json"
+
+      - name: Explicit U7 capacity/resources - external Mesh
+        if: ${{ needs.resolve.outputs.mode == 'full' && needs.resolve.outputs.probe == 'capacity_resources' && steps.baseline.outcome == 'success' }}
+        continue-on-error: true
+        shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\\lab\\windows\\diagnose-capacity-resources.ps1 `
+            -AdbPath $env:ADB_EXE `
+            -PackageName $env:PACKAGE_NAME `
+            -EvidencePath "$env:RUNNER_TEMP\\mish-targeted-probe-v1.json"
+
+      - name: Explicit U3 DNS lifetime - live same-process observation
+        if: ${{ needs.resolve.outputs.mode == 'full' && needs.resolve.outputs.probe == 'dns_lifetime_live' && steps.baseline.outcome == 'success' }}
+        continue-on-error: true
+        shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\diagnose-dns-lifetime-live.ps1 `
+            -AdbPath $env:ADB_EXE `
+            -PackageName $env:PACKAGE_NAME `
+            -EvidencePath "$env:RUNNER_TEMP\\mish-targeted-probe-v1.json"
+
+      - name: Explicit U5 rotation - PRODUCT-owned airplane cycle acceptance
+        if: ${{ needs.resolve.outputs.mode == 'full' && needs.resolve.outputs.probe == 'u5_rotation' && steps.baseline.outcome == 'success' }}
+        continue-on-error: true
+        shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\diagnose-u5-rotation.ps1 `
+            -AdbPath $env:ADB_EXE `
+            -PackageName $env:PACKAGE_NAME `
+            -SuccessfulOperations 3 `
+            -EvidencePath "$env:RUNNER_TEMP\\mish-targeted-probe-v1.json"
+
+      - name: Explicit U8 public Cellular egress rotation proof
+        if: ${{ needs.resolve.outputs.mode == 'full' && needs.resolve.outputs.probe == 'u8_public_egress_rotation' && steps.baseline.outcome == 'success' }}
+        continue-on-error: true
+        shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\\lab\\windows\\diagnose-u8-public-egress-rotation.ps1 `
+            -AdbPath $env:ADB_EXE `
+            -PackageName $env:PACKAGE_NAME `
+            -EvidencePath "$env:RUNNER_TEMP\\mish-targeted-probe-v1.json"
+
+      - name: Explicit U7 runtime restart resources - same-process STOP/START
+        if: ${{ needs.resolve.outputs.mode == 'full' && needs.resolve.outputs.probe == 'u7_runtime_restart_resources' && steps.baseline.outcome == 'success' }}
+        continue-on-error: true
+        shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\diagnose-u7-runtime-restart-resources.ps1 `
+            -AdbPath $env:ADB_EXE `
+            -PackageName $env:PACKAGE_NAME `
+            -Cycles 3 `
+            -EvidencePath "$env:RUNNER_TEMP\\mish-targeted-probe-v1.json"
+
+      - name: Explicit U7 repeated 512 + rotation + stop-during-ON restart stability
+        if: ${{ needs.resolve.outputs.mode == 'full' && needs.resolve.outputs.probe == 'u7_512_lifecycle_stability' && steps.baseline.outcome == 'success' }}
+        continue-on-error: true
+        shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\diagnose-u7-512-lifecycle-stability.ps1 `
+            -AdbPath $env:ADB_EXE `
+            -PackageName $env:PACKAGE_NAME `
+            -EvidencePath "$env:RUNNER_TEMP\\mish-targeted-probe-v1.json"
+
+      - name: Explicit U8 reboot + replacement-install durability
+        if: ${{ needs.resolve.outputs.mode == 'full' && needs.resolve.outputs.probe == 'u8_reboot_install_durability' && steps.baseline.outcome == 'success' }}
+        continue-on-error: true
+        shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\\lab\\windows\\diagnose-u8-reboot-install-durability.ps1 `
+            -ExpectedPrNumber ([int]'${{ needs.resolve.outputs.pr_number }}') `
+            -ExpectedSourceSha '${{ needs.resolve.outputs.source_sha }}' `
+            -SignedProductApkPath (Join-Path '${{ needs.install.outputs.signed_directory }}' 'mobile-proxy-mish-debug-lab-signed.apk') `
+            -InstallReceiptPath (Join-Path '${{ needs.install.outputs.receipts_directory }}' 'install-v2.json') `
+            -AdbPath $env:ADB_EXE `
+            -AndroidSdkRoot $env:ANDROID_SDK_ROOT `
+            -PackageName $env:PACKAGE_NAME `
+            -EvidencePath "$env:RUNNER_TEMP\\mish-targeted-probe-v1.json"
+
+      - name: Download exact candidate harness for recovery lifecycle
+        if: ${{ needs.resolve.outputs.mode == 'full' && needs.resolve.outputs.probe == 'recovery_lifecycle' && steps.baseline.outcome == 'success' }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.resolve.outputs.artifact_id }}
+          path: ${{ runner.temp }}\\mish-recovery-candidate
+          github-token: ${{ github.token }}
+          repository: iamaman11/mobile-proxy-mish
+          run-id: ${{ needs.resolve.outputs.hosted_run_id }}
+          merge-multiple: false
+
+      - name: Explicit U2 recovery/lifecycle - Mesh loss + exact Cellular E3 + restart
+        if: ${{ needs.resolve.outputs.mode == 'full' && needs.resolve.outputs.probe == 'recovery_lifecycle' && steps.baseline.outcome == 'success' }}
+        continue-on-error: true
+        shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $candidateDirectory = Join-Path "$env:RUNNER_TEMP\\mish-recovery-candidate" '${{ needs.resolve.outputs.artifact_name }}'
+          .\\lab\\windows\\diagnose-recovery-lifecycle.ps1 `
+            -CandidateDirectory $candidateDirectory `
+            -ExpectedSourceSha '${{ needs.resolve.outputs.source_sha }}' `
+            -AdbPath $env:ADB_EXE `
+            -PackageName $env:PACKAGE_NAME `
+            -ComponentName "$env:PACKAGE_NAME/com.mobileproxymish.app.MainActivity" `
+            -InitialLaunchReceiptPath "$env:RUNNER_TEMP\\mish-device-start-v1.json" `
+            -PostRestartReceiptPath "$env:RUNNER_TEMP\\mish-device-post-recovery-start-v1.json" `
+            -PostRestartDiagnosticPath "$env:RUNNER_TEMP\\mish-device-post-recovery-diagnostic-v2.json" `
+            -EvidencePath "$env:RUNNER_TEMP\\mish-targeted-probe-v1.json"
+
+      - name: Build observational cycle report
+        id: report
+        if: ${{ always() }}
+        shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        env:
+          MODE: ${{ needs.resolve.outputs.mode }}
+          PR_NUMBER: ${{ needs.resolve.outputs.pr_number }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          CONTROL_SHA: ${{ needs.resolve.outputs.control_sha }}
+          HOSTED_RUN_ID: ${{ needs.resolve.outputs.hosted_run_id }}
+          INSTALL_RUN_ID: ${{ needs.install.outputs.install_run_id }}
+          REQUESTED_PROBE: ${{ needs.resolve.outputs.probe }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $targeted = "$env:RUNNER_TEMP\\mish-targeted-probe-v1.json"
+          if (-not (Test-Path -LiteralPath $targeted -PathType Leaf)) { $targeted = '' }
+          .\\lab\\windows\\new-device-cycle-report.ps1 `
+            -Mode $env:MODE `
+            -PrNumber ([int]$env:PR_NUMBER) `
+            -SourceSha $env:SOURCE_SHA `
+            -ControlSha $env:CONTROL_SHA `
+            -HostedRunId $env:HOSTED_RUN_ID `
+            -InstallRunId $env:INSTALL_RUN_ID `
+            -LaunchReceiptPath "$env:RUNNER_TEMP\\mish-device-start-v1.json" `
+            -DiagnosticEvidencePath "$env:RUNNER_TEMP\\mish-device-diagnostic-v2.json" `
+            -RequestedProbe $env:REQUESTED_PROBE `
+            -TargetedEvidencePath $targeted `
+            -OutputPath "$env:RUNNER_TEMP\\mish-device-cycle-v1.json" | Out-Host
+          $report = Get-Content -Raw -LiteralPath "$env:RUNNER_TEMP\\mish-device-cycle-v1.json" | ConvertFrom-Json
+          "cycle_result=$([string]$report.cycle_result)" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_OUTPUT
+          "classification=$([string]$report.classification)" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_OUTPUT
+          "exact_candidate_acceptance=$([string]$report.exact_candidate_acceptance)" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_OUTPUT
+
+      - name: Upload one cycle evidence bundle
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mish-device-cycle-${{ needs.resolve.outputs.pr_number }}-${{ needs.resolve.outputs.source_sha }}
+          path: |
+            ${{ runner.temp }}\\mish-device-cycle-v1.json
+            ${{ runner.temp }}\\mish-device-start-v1.json
+            ${{ runner.temp }}\\mish-device-diagnostic-v2.json
+            ${{ runner.temp }}\\mish-targeted-probe-v1.json
+            ${{ runner.temp }}\\mish-device-post-recovery-start-v1.json
+            ${{ runner.temp }}\\mish-device-post-recovery-diagnostic-v2.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Publish cycle summary and stop for analysis
+        if: ${{ always() }}
+        shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $reportPath = "$env:RUNNER_TEMP\\mish-device-cycle-v1.json"
+          if (Test-Path -LiteralPath $reportPath -PathType Leaf) {
+            $report = Get-Content -Raw -LiteralPath $reportPath | ConvertFrom-Json
+            @(
+              '### DEVICE-1 cycle',
+              '- Trigger: **explicit analysis decision**',
+              '- PR: `#${{ needs.resolve.outputs.pr_number }}`',
+              '- PRODUCT SHA: `${{ needs.resolve.outputs.source_sha }}`',
+              '- CONTROL SHA: `${{ needs.resolve.outputs.control_sha }}`',
+              '- Mode: `${{ needs.resolve.outputs.mode }}`',
+              "- Execution/evidence result: **$([string]$report.cycle_result)**",
+              "- Classification: $([string]$report.classification)",
+              "- Exact candidate acceptance: **$([string]$report.exact_candidate_acceptance)**",
+              '- Explicit probe: `${{ needs.resolve.outputs.probe }}`',
+              "- Targeted acceptance: $([string]$report.targeted_probe.acceptance_result)",
+              '- Automatic cycle start: **NO**',
+              '- Automatic repair/probe decision: **NO**',
+              '- Next action: **STOP_FOR_ANALYSIS**'
+            ) | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_STEP_SUMMARY
+          }
+
+      - name: Enforce observed result
+        if: ${{ always() }}
+        shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $path = "$env:RUNNER_TEMP\\mish-device-cycle-v1.json"
+          if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            throw 'MISH_DEVICE_CYCLE_FAILURE|REPORT_MISSING|Cycle report was not produced.'
+          }
+          $report = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json
+          if ([string]$report.cycle_result -cne 'PASS') {
+            throw "MISH_DEVICE_CYCLE_RESULT|$([string]$report.cycle_result)|$([string]$report.classification)"
+          }
+ })
+          if ($LASTEXITCODE -ne 0 -or $devices.Count -ne 1) { throw 'MISH_DEVICE_CYCLE_FAILURE|DEVICE_UNAVAILABLE|Exactly one authorized DEVICE-1 is required.' }
+          $api = (& $env:ADB_EXE shell getprop ro.build.version.sdk).Trim()
+          $abi = (& $env:ADB_EXE shell getprop ro.product.cpu.abi).Trim()
+          if ($api -ne '30' -or $abi -ne 'armeabi-v7a') { throw "MISH_DEVICE_CYCLE_FAILURE|DEVICE_IDENTITY_MISMATCH|Observed API=$api ABI=$abi" }
+
+      - name: Run one bounded U8-E remote-control acceptance
+        shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''''{0}'''')))"'
+        env:
+          MISH_MANAGER_TOKEN: ${{ secrets.MISH_MANAGER_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\\lab\\windows\\diagnose-u8-remote-control.ps1 `
+            -AdbPath $env:ADB_EXE `
+            -PackageName $env:PACKAGE_NAME `
+            -ComponentName "$env:PACKAGE_NAME/com.mobileproxymish.app.MainActivity" `
+            -ControlHost 'api.alegria.by' `
+            -EvidencePath "$env:RUNNER_TEMP\\mish-u8-remote-control-v1.json" `
+            -BaselineDiagnosticPath "$env:RUNNER_TEMP\\mish-u8-remote-control-baseline-v2.json" `
+            -PostDiagnosticPath "$env:RUNNER_TEMP\\mish-u8-remote-control-post-v2.json"
+
+      - name: Enforce redacted U8-E acceptance evidence
+        shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''''{0}'''')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Get-Content -Raw -LiteralPath "$env:RUNNER_TEMP\\mish-u8-remote-control-v1.json" | ConvertFrom-Json
+          if ([string]$evidence.acceptance_result -cne 'PASS' -or [string]$evidence.classification -cne 'U8_REMOTE_CONTROL_ROTATION_PASS' -or [string]$evidence.exact_candidate_acceptance -cne 'PASS' -or [int]$evidence.logical_rotation_requests -ne 1 -or [int]$evidence.duplicate_same_request_replays -ne 1 -or -not [bool]$evidence.wrong_manager_auth_zero_rotation_mutation -or -not [bool]$evidence.idempotent_same_operation -or [bool]$evidence.manager_token_persisted -or [bool]$evidence.public_spki_persisted -or [bool]$evidence.raw_public_ip_persisted -or [bool]$evidence.secrets_persisted_in_evidence) {
+            throw 'MISH_DEVICE_CYCLE_FAILURE|U8_REMOTE_CONTROL_ACCEPTANCE_FAILED|Remote-control evidence did not satisfy the bounded acceptance contract.'
+          }
+
+      - name: Upload bounded U8-E remote-control evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mish-u8-remote-control-${{ needs.resolve.outputs.pr_number }}-${{ needs.resolve.outputs.source_sha }}
+          path: |
+            ${{ runner.temp }}\\mish-u8-remote-control-v1.json
+            ${{ runner.temp }}\\mish-u8-remote-control-baseline-v2.json
+            ${{ runner.temp }}\\mish-u8-remote-control-after-wrong-auth-v2.json
+            ${{ runner.temp }}\\mish-u8-remote-control-post-v2.json
+            ${{ runner.temp }}\\mish-u8-remote-control-start-before-v1.json
+            ${{ runner.temp }}\\mish-u8-remote-control-start-after-v1.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Publish U8-E remote-control summary
+        shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''''{0}'''')))"'
+        run: |
+          $evidence = Get-Content -Raw -LiteralPath "$env:RUNNER_TEMP\\mish-u8-remote-control-v1.json" | ConvertFrom-Json
+          @(
+            '### U8-E authenticated remote rotation'
+            '- Exact PRODUCT SHA: `${{ needs.resolve.outputs.source_sha }}`'
+            '- Exact CONTROL SHA: `${{ needs.resolve.outputs.control_sha }}`'
+            "- Result: **$([string]$evidence.acceptance_result) / $([string]$evidence.classification)**"
+            "- Terminal: **$([string]$evidence.terminal_result)**"
+            "- Operation id: `$([int64]$evidence.operation_id)`"
+            '- Logical valid rotation requests: **1**'
+            '- Same-request replay: **same terminal operation**'
+            '- Wrong manager auth: **401 / zero Rotation mutation**'
+            '- Post PRODUCT diagnostic: **PASS**'
+            '- Raw public IP persisted: **NO**'
+            '- Secrets/SPKI persisted: **NO**'
+          ) | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_STEP_SUMMARY
 
   diagnose:
     name: Launch -> canonical diagnostic -> STOP
