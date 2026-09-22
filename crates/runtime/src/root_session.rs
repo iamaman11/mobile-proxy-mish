@@ -411,9 +411,8 @@ mod tests {
             );
             let manager = RootSessionManager::new();
 
-            let uncertain =
-                RootCommand::mutation(format!("printf x >> {path}; exec true"))
-                    .expect("valid mutation");
+            let uncertain = RootCommand::mutation(format!("printf x >> {path}; exec true"))
+                .expect("valid mutation");
             let first = manager
                 .execute_with_starter(uncertain, start_unprivileged_shell)
                 .await
