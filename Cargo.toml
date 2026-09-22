@@ -8,6 +8,7 @@ members = [
     "crates/runtime",
     "crates/identity",
     "crates/configuration",
+    "crates/control",
     "crates/credentials",
     "crates/readiness",
     "crates/application",
