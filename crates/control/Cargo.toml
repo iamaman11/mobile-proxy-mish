@@ -1,0 +1,19 @@
+[package]
+name = "mish-control"
+description = "Authenticated remote-control protocol natural-owner capability"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+ring = "=0.17.14"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+
+[lints]
+workspace = true

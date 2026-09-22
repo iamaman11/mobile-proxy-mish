@@ -5,8 +5,9 @@
 
 use crate::{
     CellularDnsResolver, CellularPolicyCoordinator, CellularRuntimeCoordinator,
-    MeshCompositionCoordinator, ProxyRuntimeCoordinator, ReadinessRuntimeCoordinator,
-    RotationRuntimeCoordinator, RuntimeExecutionError, RuntimeExecutor,
+    ControlRuntimeCoordinator, MeshCompositionCoordinator, ProxyRuntimeCoordinator,
+    ReadinessRuntimeCoordinator, RotationRuntimeCoordinator, RuntimeExecutionError,
+    RuntimeExecutor,
 };
 use mish_cellular::RootPolicyNamespace;
 use std::future::Future;
@@ -26,6 +27,7 @@ pub struct ProductGeneration {
     readiness: Arc<ReadinessRuntimeCoordinator>,
     proxy: Arc<ProxyRuntimeCoordinator>,
     rotation: Arc<RotationRuntimeCoordinator>,
+    control: Arc<ControlRuntimeCoordinator>,
     shutdown_result: OnceCell<bool>,
 }
 
@@ -77,6 +79,7 @@ impl ProductGeneration {
             Arc::clone(&policy),
             Arc::clone(&proxy),
         );
+        let control = ControlRuntimeCoordinator::new(Arc::clone(&executor), Arc::clone(&rotation))?;
 
         Ok(Arc::new(Self {
             generation,
@@ -87,6 +90,7 @@ impl ProductGeneration {
             readiness,
             proxy,
             rotation,
+            control,
             shutdown_result: OnceCell::new(),
         }))
     }
@@ -123,11 +127,16 @@ impl ProductGeneration {
         Arc::clone(&self.rotation)
     }
 
+    pub fn control(&self) -> Arc<ControlRuntimeCoordinator> {
+        Arc::clone(&self.control)
+    }
+
     /// Exact native generation drain. Concurrent callers share one cleanup execution and one
     /// terminal result; the shared process executor intentionally remains alive so a later
     /// generation can be constructed without creating a second Tokio runtime.
     pub async fn shutdown_async(&self) -> bool {
         run_shutdown_once(&self.shutdown_result, || async {
+            let control_clean = self.control.shutdown().await;
             let rotation_clean = self.rotation.shutdown().await;
 
             let proxy = Arc::clone(&self.proxy);
@@ -145,7 +154,7 @@ impl ProductGeneration {
                 .unwrap_or(false);
 
             let policy_clean = self.policy.shutdown().await;
-            rotation_clean && proxy_clean && mesh_clean && policy_clean
+            control_clean && rotation_clean && proxy_clean && mesh_clean && policy_clean
         })
         .await
     }
