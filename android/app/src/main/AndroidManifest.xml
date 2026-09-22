@@ -57,6 +57,12 @@
             android:permission="android.permission.DUMP" />
 
         <receiver
+            android:name=".ControlIdentityProvisioningReceiver"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
+
+        <receiver
             android:name=".ProxyRuntimeStartReceiver"
             android:enabled="true"
             android:exported="false">
