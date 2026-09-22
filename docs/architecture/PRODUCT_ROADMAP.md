@@ -536,19 +536,176 @@ Keep simpler mechanisms when budgets are healthy. Do not add frameworks for hypo
 
 # U8 — Production durability and deployment closure
 
-Prove the appliance can remain operational across normal lifecycle events:
+U8 is the final current PRODUCT stage. It proves production durability, real IP-rotation outcome, the narrow authenticated remote rotation command, external privacy/path behavior and exact release/support closure without introducing parallel owners.
 
-- app/process restart;
-- device reboot and expected startup path;
-- repeated `adb install -r` upgrades using the same signing identity;
-- no repeated Magisk authorization after the existing grant unless Magisk itself revokes it;
-- one persistent `su` transport remains bounded and replaceable on shell death without becoming a second privileged daemon/lifecycle;
-- bounded recovery from cellular/provider loss;
-- long soak with no unbounded FD/thread/task/memory growth;
-- exact accepted Android artifact provenance remains reproducible through the single hosted candidate -> Device Cycle path; any future external distribution/signing is downstream packaging, not an RC acceptance lineage;
-- diagnostics/support bundle remains typed, bounded and secret-safe.
+Canonical execution/evidence ledger: issue #314. Specialized external proxy/privacy evidence: issue #315.
 
-Exit: production durability is accepted on exact artifact provenance plus accepted physical evidence; any external distribution package must derive from accepted source without creating a competing acceptance pipeline.
+## Ordered U8 closure
+
+```text
+U8-A inventory                                      COMPLETE
+U8-B reboot + replacement-install                   NEXT
+U8-C root-shell death/replacement
+U8-D public Cellular egress IP rotation proof
+U8-E authenticated remote IP-rotation command
+U8-F low-impact durability soak
+     + reverse-WSS reconnect/heartbeat/traffic/resource budget
+     + Mesh peer liveness
+     + one long-lived proxy CONNECT/WebSocket lifetime probe
+     + bounded latency/error/resource evidence
+U8-G external privacy/path closure #315
+     + clean intended Windows client profile
+     + DNS no-bypass proof
+     + short final external regression across rotation
+U8-H support + exact provenance closure
+U8 FINAL PASS
+```
+
+Already accepted U2-U7 evidence is reused. Do not repeat process restart, ordinary cellular loss/recovery, accepted rotation lifecycle, 512/513 capacity or repeated 512 cleanup merely because U8 names durability again.
+
+## U8 implementation admission rule
+
+Every remaining item starts as `EVIDENCE_ONLY`, `CONTROL/LAB_ONLY` or `MINIMAL_PRODUCT_CHANGE_REQUIRED`. `NO CHANGE` is preferred whenever accepted owners already satisfy the requirement.
+
+```text
+U8-B reboot/install       -> CONTROL/LAB first
+U8-C root-shell death     -> hosted fault/test seam first
+U8-D IP-change proof      -> reuse U4/U5; evidence/CONTROL first
+U8-E remote rotation      -> the one justified new feature slice
+U8-F soak                 -> CONTROL/LAB first
+U8-G privacy/path         -> client/LAB first
+U8-H provenance           -> docs/evidence only
+```
+
+U8-E v1 is intentionally narrow: device session authentication/registration, `ROTATE_IP`, operation-result retrieval and only the liveness protocol required for those operations. No generic status RPC, arbitrary commands, remote proxy-credential retrieval, fleet scheduler, offline command queue, persistent device-state mirror or proxy data tunneling is part of U8.
+
+
+### U8-B — reboot and replacement install
+
+Prove on the exact hosted candidate:
+
+- physical device reboot -> expected startup -> Cellular/root/Proxy/Mesh/READY convergence;
+- one deliberate `adb install -r`;
+- stable package UID and signing identity before/after;
+- existing Magisk authority remains sufficient unless Magisk itself revoked it;
+- no clean uninstall, second updater or competing deployment path.
+
+### U8-C — persistent root-shell death/replacement
+
+The existing process-wide serialized root transport remains the only root transport.
+
+Prove that an unhealthy/dead shell is discarded, uncertain mutation is never replayed, and the next caller establishes a strictly newer shell generation. Prefer the smallest deterministic hosted fault seam; add one bounded physical fault injection only if hosted evidence cannot close the fact. No root daemon/helper/pool.
+
+### U8-D — public Cellular egress IP rotation correctness
+
+The existing Rust/Tokio rotation owner remains the only rotation owner.
+
+For one explicit operation, observe the public Cellular egress before and after through the accepted Cellular path and return one typed outcome:
+
+- `CHANGED` — bounded rotation completed, PRODUCT reconverged and the externally observed public egress IP differs;
+- `UNCHANGED` — bounded rotation completed and PRODUCT reconverged but the carrier assigned the same public IP;
+- `FAILED` — operation/recovery failed the required contract;
+- `REJECTED` — authorization/precondition/busy/stale request rejection before mutation.
+
+One request means at most one underlying rotation. Never hide repeated airplane/cellular cycles until a different IP appears. A caller may issue a new explicit request after `UNCHANGED`.
+
+Raw public IP may be shown to an authenticated operator/controller, but ordinary GitHub logs/issues/artifacts persist only redacted change/equality and observer-consensus facts.
+
+### U8-E — authenticated remote IP-rotation command
+
+Production control transport is **MISH-initiated outbound WSS -> Cloudflare Worker -> Durable Object per device**, with **no Workers VPC dependency**:
+
+```text
+Remote Manager
+      | HTTPS + manager authentication
+      v
+Cloudflare Worker / API
+      |
+      v
+Durable Object(device_id)
+      ^
+      || authenticated long-lived outbound WSS
+      ||
+MISH control client on the existing Tokio runtime
+      |
+      v
+existing Rotation owner
+```
+
+Design rules:
+
+- MISH initiates the connection; Worker never needs to dial the Android Mesh IP;
+- no public Android control listener, Workers VPC binding, second runtime, root daemon/helper, scheduler, lifecycle owner or generic RPC framework;
+- reuse the existing Android Keystore/storage effect boundary for the per-device control key where applicable; do not create a second secrets database;
+- Durable Object is a broker/coordinator for the live device connection and bounded recent operation correlation, not a second PRODUCT state authority;
+- proxy credentials remain owned by MISH; do not persist plaintext proxy password in DO by default;
+- Remote Manager -> Worker and MISH -> Worker/DO have separate reviewed authentication boundaries;
+- one explicit remote command maps to at most one existing rotation operation; replay/duplicate/concurrent requests remain bounded and fail closed;
+- WSS may survive or may drop across Cellular/underlay changes; correctness depends on neither outcome. If it drops, reconnect uses bounded backoff and the same device identity, then publishes the terminal result for the same `operation_id`;
+- raw old/new public IP is privileged response data only; ordinary durable evidence stays redacted.
+
+Hosted contracts cover authentication, expiry/tamper/replay, idempotency, BUSY/rejection, acceptance-before-mutation, WSS loss/reconnect, deterministic terminal result, redaction, no VPC/public-listener dependency and proof that the existing Rotation owner remains the sole mutation owner.
+
+Physical E2E: invalid command -> no mutation; valid command -> operation id; WSS may disappear during rotation; reconnect; terminal `CHANGED|UNCHANGED|FAILED|REJECTED`; READY/root/Proxy/Mesh recovery; before/after public egress result; short external proxy smoke.
+
+Control-session efficiency is part of U8 rather than an unmeasured background cost:
+
+- push-driven channel; no status polling;
+- do not add app-level heartbeat unless physical carrier/NAT behavior requires it; if required, evaluate **2–5 minutes** first and shorten only from measured evidence;
+- target idle control traffic **<10 MB/month/device**, preferably **<5 MB/month/device**;
+- bounded reconnect backoff; no reconnect storms;
+- expose bounded typed observations for session age/state, reconnect count, heartbeat count, bytes TX/RX and last RX/TX age;
+- U8-F correlates those with CPU/radio wakeup/thread/FD/task/RSS/PSS behavior.
+
+Workers VPC remains only a possible future data-plane gateway capability if a Worker later needs to initiate private connections to MISH proxy services; it is not part of the U8 control dependency.
+
+
+### U8-F — low-impact durability soak
+
+Run only after B-E are accepted.
+
+Soak proves lifetime/leak behavior, not throughput:
+
+- no unbounded FD/thread/task/memory growth;
+- Mesh peer liveness is checked, not merely local WARP/adapter “Connected” status;
+- one bounded long-lived **proxy data-plane** CONNECT/WebSocket lifetime probe;
+- summarized latency/error/resource evidence;
+- no repeated 512-session stress unless a concrete new durability failure requires it.
+
+### U8-G — external privacy/path closure
+
+Issue #315 remains the specialized external-client/browser evidence owner rather than duplicating its full matrix here.
+
+Final U8 regression must use the intended clean Windows client path and prove:
+
+- proxy egress remains the expected Cellular egress across explicit rotation;
+- auth fail-closed and valid-after-negative remain healthy;
+- no HOST_DEFAULT/WARP public fallback;
+- DNS no-bypass contract for the intended client profile;
+- no unexpected IPv6/WebRTC/identity-header leak under the accepted policy;
+- long-lived lifetime evidence is referenced from U8-F rather than duplicated as another stress harness.
+
+Population-level fingerprint anonymity and cosmetic anti-detect scores are not PRODUCT blockers.
+
+### U8-H — support and provenance closure
+
+This is deliberately last.
+
+Record exact source/tree, CONTROL, immutable hosted candidate, physical evidence and bounded redacted support evidence. External distribution/signing may derive from the accepted source/artifact later, but must not create a competing RC acceptance lineage.
+
+## U8 architecture invariants
+
+- Rust/Tokio remains sole PRODUCT lifecycle/execution/rotation authority;
+- Kotlin remains thin Android platform/effect/presentation boundary;
+- exactly one process-wide Tokio runtime;
+- exactly one persistent serialized root transport;
+- no second VPN/TUN, root daemon/helper, lifecycle/recovery/rotation owner, mutable status database, connection manager, scheduler or autoscaler;
+- proxy credentials and control credentials are separate durable authorities and change only by explicit commands;
+- no Wi-Fi/default/WARP fallback for PRODUCT public egress;
+- physical Device Cycle remains explicit owner-controlled only; no automatic physical trigger.
+
+Exit: U8 closes only when B-H are accepted on exact provenance. U8 is the final stage in the current PRODUCT roadmap.
+
 
 ---
 
