@@ -533,7 +533,10 @@ impl ControlRuntimeCoordinator {
         };
         let message = encode_result_message(&pending.request_id, result, pending.operation_id)
             .map_err(|_| ControlRunError::Protocol)?;
-        transport.write_text(&message).await.map_err(ControlRunError::from)
+        transport
+            .write_text(&message)
+            .await
+            .map_err(ControlRunError::from)
     }
 
     fn ack_result(&self, request_id: &str) {
