@@ -365,6 +365,7 @@ dependencies = [
  "mish-application",
  "mish-cellular",
  "mish-configuration",
+ "mish-control",
  "mish-credentials",
  "mish-proxy",
  "mish-readiness",
