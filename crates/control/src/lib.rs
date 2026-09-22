@@ -221,6 +221,13 @@ pub fn websocket_client_key() -> Result<String, ControlProtocolError> {
     Ok(encode_base64(&random_key, false, true))
 }
 
+pub fn websocket_masking_key() -> Result<[u8; 4], ControlProtocolError> {
+    let mut mask = [0_u8; 4];
+    rand::SecureRandom::fill(&rand::SystemRandom::new(), &mut mask)
+        .map_err(|_| ControlProtocolError::RandomUnavailable)?;
+    Ok(mask)
+}
+
 pub fn websocket_expected_accept(client_key: &str) -> Result<String, ControlProtocolError> {
     if client_key.is_empty() || client_key.len() > 64 || !client_key.is_ascii() {
         return Err(ControlProtocolError::MalformedWebSocketHandshake);
