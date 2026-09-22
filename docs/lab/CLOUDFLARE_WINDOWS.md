@@ -21,7 +21,7 @@ Windows DNS
  -> not Cloudflare DNS mode
 ```
 
-The accepted account-side profile and Mesh prerequisites remain owned by `infra/cloudflare/**` plus the protected hosted `Cloudflare Terraform Verify` path from CF-1. This stage does not apply Terraform, edit the dashboard, call hidden APIs, or create a second provider configuration path.
+The accepted account-side profile and Mesh prerequisites are verified through the protected hosted `Cloudflare Live Preflight` path using Cloudflare's official read-only API. This stage does not edit the dashboard, mutate account configuration, call hidden APIs, or create a second provider configuration path.
 
 ## Supported vendor boundary
 
