@@ -64,7 +64,7 @@ def main() -> None:
         "candidate build is not a completed successful PR preflight",
         "PR Validation + PRODUCT Candidate",
         "probe_only supports only the current-function loopback_connect probe",
-        "full accepts only none, capacity_resources, recovery_lifecycle, dns_lifetime_live, u5_rotation, u7_runtime_restart_resources, u7_512_lifecycle_stability, or u8_reboot_install_durability",
+        "full accepts only none, capacity_resources, recovery_lifecycle, dns_lifetime_live, u5_rotation, u7_runtime_restart_resources, u7_512_lifecycle_stability, u8_reboot_install_durability, or u8_public_egress_rotation",
         "install_only/diagnose_only require probe=none",
         "capacity_resources",
         "recovery_lifecycle",
@@ -73,7 +73,10 @@ def main() -> None:
         "u7_runtime_restart_resources",
         "u7_512_lifecycle_stability",
         "u8_reboot_install_durability",
+        "u8_public_egress_rotation",
         "Explicit U8 reboot + replacement-install durability",
+        "Explicit U8 public Cellular egress rotation proof",
+        "diagnose-u8-public-egress-rotation.ps1",
         "diagnose-u8-reboot-install-durability.ps1",
         "Explicit U3 DNS lifetime - live same-process observation",
         "diagnose-dns-lifetime-live.ps1",
@@ -120,6 +123,11 @@ def main() -> None:
         "lab/windows/test-device-cycle.ps1",
         "test-u8-reboot-install-probe-contract.ps1",
         "U8 durability probe guard must run inside the existing Device Cycle Contracts job without changing candidate-producer policy",
+    )
+    require(
+        "lab/windows/test-device-cycle.ps1",
+        "test-u8-public-egress-rotation-probe-contract.ps1",
+        "U8 public-egress probe guard must run inside the existing Device Cycle Contracts job without changing candidate-producer policy",
     )
 
     for required in (
@@ -362,6 +370,56 @@ def main() -> None:
     ):
         require(u8_probe_contract, required, "U8 durability self-test drifted")
 
+
+    u8_egress_probe = "lab/windows/diagnose-u8-public-egress-rotation.ps1"
+    for required in (
+        "mish.lab.u8-public-egress-rotation/v1",
+        "https://checkip.amazonaws.com/",
+        "[Net.Http.HttpClientHandler]::new()",
+        "[Net.WebProxy]::new(\"http://127.0.0.1:$ProxyPort\")",
+        "Invoke-MishExternalProxyCredentialProvisioning",
+        "Open-MishExternalProxyCredentialLease",
+        "@('forward', 'tcp:0', 'tcp:3128')",
+        "diagnose-u5-rotation.ps1",
+        "-SuccessfulOperations 1",
+        "-SkipShutdownRestoreAfterOn",
+        "rotation_requests = 1",
+        "external_outcome",
+        "observer_consensus",
+        "PRODUCT_EXTERNAL_EGRESS_RESULT_MISMATCH",
+        "U8_PUBLIC_EGRESS_ROTATION_PASS",
+        "raw_ip_persisted = $false",
+        "secrets_persisted_in_evidence = $false",
+        "$beforeAddress = $null",
+        "$afterAddress = $null",
+    ):
+        require(u8_egress_probe, required, "U8 external public-egress rotation contract drifted")
+    for forbidden in (
+        "curl.exe",
+        "Invoke-WebRequest",
+        "Invoke-RestMethod",
+        "retry-until-changed",
+        "retry_until_changed",
+        "'shell', 'su'",
+        "airplane-mode enable",
+        "airplane-mode disable",
+        "settings put",
+        "svc data",
+        "before_ip =",
+        "after_ip =",
+        "Write-Host $beforeAddress",
+        "Write-Host $afterAddress",
+    ):
+        forbid(u8_egress_probe, forbidden, "U8 external public-egress proof must remain one-shot, redacted and reuse PRODUCT mutation ownership")
+
+    u8_egress_contract = "lab/windows/test-u8-public-egress-rotation-probe-contract.ps1"
+    for required in (
+        "U8_PUBLIC_EGRESS_ROTATION_PROBE_CONTRACT=PASS",
+        "rotation_requests = 1",
+        "MISH_U8_PUBLIC_EGRESS_RAW_IP_PERSISTED=false",
+    ):
+        require(u8_egress_contract, required, "U8 external public-egress self-test drifted")
+
     rotation_probe = "lab/windows/diagnose-u5-rotation.ps1"
     for required in (
         "mish.lab.u5-rotation-acceptance/v1",
@@ -369,6 +427,8 @@ def main() -> None:
         "DebugRuntimeStopActivity",
         "'shell', 'cmd', 'connectivity', 'airplane-mode'",
         "SuccessfulOperations = 3",
+        "SkipShutdownRestoreAfterOn",
+        "SINGLE_ROTATION_EXTERNAL_EGRESS_PROOF",
         "rotation_active_tasks",
         "runtime_generation_stable_across_normal_rotations",
         "root_session_stable_across_normal_rotations",

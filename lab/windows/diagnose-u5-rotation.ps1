@@ -5,6 +5,7 @@ param(
     [ValidateRange(1, 8)][int] $SuccessfulOperations = 3,
     [ValidateRange(30, 180)][int] $OperationDeadlineSeconds = 120,
     [ValidateRange(2, 30)][int] $AdbTransportTimeoutSeconds = 10,
+    [switch] $SkipShutdownRestoreAfterOn,
     [string] $EvidencePath = (Join-Path $env:TEMP 'mish-u5-rotation-acceptance-v1.json')
 )
 
@@ -1062,9 +1063,16 @@ if (
     Stop-MishRotationAcceptance 'PRODUCT_ROTATION_RESOURCE_REGRESSION' 'Repeated normal rotations changed runtime/root-session ownership or leaked tasks/resources.'
 }
 
-$restoreCase = Invoke-MishShutdownRestoreAfterOn `
-    -ExpectedCredentialVersion $credentialVersion `
-    -ExpectedProcessId ([int]$metricsAfterRotations.pid)
+$restoreCase = if ($SkipShutdownRestoreAfterOn) {
+    [ordered]@{
+        skipped = $true
+        reason = 'SINGLE_ROTATION_EXTERNAL_EGRESS_PROOF'
+    }
+} else {
+    Invoke-MishShutdownRestoreAfterOn `
+        -ExpectedCredentialVersion $credentialVersion `
+        -ExpectedProcessId ([int]$metricsAfterRotations.pid)
+}
 $resourceQuiescence = Wait-MishResourceQuiescence -BaselineMetrics $metricsBefore
 if ($null -eq $resourceQuiescence.metrics) {
     Stop-MishRotationAcceptance 'LAB_PROCESS_METRICS_UNAVAILABLE' 'No post-restart resource sample was collected.'

@@ -35,6 +35,7 @@ on:
           - u7_runtime_restart_resources
           - u7_512_lifecycle_stability
           - u8_reboot_install_durability
+          - u8_public_egress_rotation
           - loopback_connect
   issue_comment:
     types: [created]
@@ -110,7 +111,7 @@ jobs:
               match = re.fullmatch(
                   r"/mish-cycle\s+([1-9][0-9]*)\s+([0-9a-f]{40})\s+"
                   r"(full|install_only|diagnose_only|probe_only)\s+"
-                  r"(none|capacity_resources|recovery_lifecycle|dns_lifetime_live|u5_rotation|u7_runtime_restart_resources|u7_512_lifecycle_stability|u8_reboot_install_durability|loopback_connect)",
+                  r"(none|capacity_resources|recovery_lifecycle|dns_lifetime_live|u5_rotation|u7_runtime_restart_resources|u7_512_lifecycle_stability|u8_reboot_install_durability|u8_public_egress_rotation|loopback_connect)",
                   body,
               )
               if match is None:
@@ -160,8 +161,8 @@ jobs:
               if probe != 'loopback_connect':
                   raise SystemExit('probe_only supports only the current-function loopback_connect probe')
           elif mode == 'full':
-              if probe not in {'none', 'capacity_resources', 'recovery_lifecycle', 'dns_lifetime_live', 'u5_rotation', 'u7_runtime_restart_resources', 'u7_512_lifecycle_stability', 'u8_reboot_install_durability'}:
-                  raise SystemExit('full accepts only none, capacity_resources, recovery_lifecycle, dns_lifetime_live, u5_rotation, u7_runtime_restart_resources, u7_512_lifecycle_stability, or u8_reboot_install_durability')
+              if probe not in {'none', 'capacity_resources', 'recovery_lifecycle', 'dns_lifetime_live', 'u5_rotation', 'u7_runtime_restart_resources', 'u7_512_lifecycle_stability', 'u8_reboot_install_durability', 'u8_public_egress_rotation'}:
+                  raise SystemExit('full accepts only none, capacity_resources, recovery_lifecycle, dns_lifetime_live, u5_rotation, u7_runtime_restart_resources, u7_512_lifecycle_stability, u8_reboot_install_durability, or u8_public_egress_rotation')
           elif probe != 'none':
               raise SystemExit('install_only/diagnose_only require probe=none')
           PY
@@ -619,6 +620,17 @@ jobs:
             -AdbPath $env:ADB_EXE `
             -PackageName $env:PACKAGE_NAME `
             -SuccessfulOperations 3 `
+            -EvidencePath "$env:RUNNER_TEMP\\mish-targeted-probe-v1.json"
+
+      - name: Explicit U8 public Cellular egress rotation proof
+        if: ${{ needs.resolve.outputs.mode == 'full' && needs.resolve.outputs.probe == 'u8_public_egress_rotation' && steps.baseline.outcome == 'success' }}
+        continue-on-error: true
+        shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\\lab\\windows\\diagnose-u8-public-egress-rotation.ps1 `
+            -AdbPath $env:ADB_EXE `
+            -PackageName $env:PACKAGE_NAME `
             -EvidencePath "$env:RUNNER_TEMP\\mish-targeted-probe-v1.json"
 
       - name: Explicit U7 runtime restart resources - same-process STOP/START

@@ -544,14 +544,15 @@ Canonical execution/evidence ledger: issue #314. Specialized external proxy/priv
 
 ```text
 U8-A inventory                                      COMPLETE
-U8-B reboot + replacement-install                   NEXT
-U8-C root-shell death/replacement
-U8-D public Cellular egress IP rotation proof
+U8-B reboot + replacement-install                   COMPLETE
+U8-C root-shell death/replacement                    COMPLETE
+U8-D public Cellular egress IP rotation proof       NEXT
 U8-E authenticated remote IP-rotation command
 U8-F low-impact durability soak
      + reverse-WSS reconnect/heartbeat/traffic/resource budget
      + Mesh peer liveness
      + one long-lived proxy CONNECT/WebSocket lifetime probe
+     + controlled Android process/service-death recovery proof
      + bounded latency/error/resource evidence
 U8-G external privacy/path closure #315
      + clean intended Windows client profile
@@ -611,6 +612,8 @@ One request means at most one underlying rotation. Never hide repeated airplane/
 
 Raw public IP may be shown to an authenticated operator/controller, but ordinary GitHub logs/issues/artifacts persist only redacted change/equality and observer-consensus facts.
 
+Current U8-D acceptance shape is CONTROL/LAB-only unless evidence exposes a PRODUCT defect: an independent Windows LAB client observes `checkip.amazonaws.com` through the existing authenticated PRODUCT HTTP CONNECT path immediately before and after exactly one existing Rotation-owner operation. The two raw addresses exist only in memory for equality comparison. Durable evidence records only the PRODUCT terminal result, independent external `CHANGED|UNCHANGED`, observer consensus, owner generations and bounded timing milestones.
+
 ### U8-E — authenticated remote IP-rotation command
 
 Production control transport is **MISH-initiated outbound WSS -> Cloudflare Worker -> Durable Object per device**, with **no Workers VPC dependency**:
@@ -669,6 +672,8 @@ Soak proves lifetime/leak behavior, not throughput:
 - no unbounded FD/thread/task/memory growth;
 - Mesh peer liveness is checked, not merely local WARP/adapter “Connected” status;
 - one bounded long-lived **proxy data-plane** CONNECT/WebSocket lifetime probe;
+- one controlled Android process/service-death proof: start from READY, terminate the current MISH process/service through the bounded LAB fault seam, perform no user action or explicit recovery launch, require Android's existing service/lifecycle path to produce a fresh PID/runtime and reconverge Cellular/root/Proxy/Mesh to READY, then prove external proxy E2E again;
+- the process-death proof must reuse the existing foreground-Service/platform lifecycle; no watchdog process, second scheduler, root daemon or alternate lifecycle owner;
 - summarized latency/error/resource evidence;
 - no repeated 512-session stress unless a concrete new durability failure requires it.
 

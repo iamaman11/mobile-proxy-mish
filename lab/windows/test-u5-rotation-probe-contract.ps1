@@ -22,6 +22,8 @@ foreach ($required in @(
     'DebugRuntimeStartActivity',
     "'shell', 'cmd', 'connectivity', 'airplane-mode'",
     'SuccessfulOperations = 3',
+    'SkipShutdownRestoreAfterOn',
+    'SINGLE_ROTATION_EXTERNAL_EGRESS_PROOF',
     'request_to_airplane_on_ms',
     'request_to_cellular_loss_ms',
     'loss_to_airplane_off_request_ms',
