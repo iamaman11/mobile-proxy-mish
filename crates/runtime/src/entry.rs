@@ -31,6 +31,7 @@ mod cellular_connector;
 pub use cellular_connector::*;
 
 mod cellular_runtime;
+mod control_transport;
 mod control_runtime;
 pub use cellular_runtime::*;
 pub use control_runtime::*;

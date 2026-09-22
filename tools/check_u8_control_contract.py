@@ -27,6 +27,7 @@ def forbid(path: str, needle: str, reason: str) -> None:
 def main() -> None:
     control = "crates/control/src/lib.rs"
     runtime = "crates/runtime/src/control_runtime.rs"
+    transport = "crates/runtime/src/control_transport.rs"
     rotation = "crates/runtime/src/rotation_runtime.rs"
     product = "crates/runtime/src/product_runtime.rs"
     generation = "crates/runtime/src/product_generation.rs"
@@ -60,14 +61,12 @@ def main() -> None:
 
     for needle in (
         "RuntimeExecutor",
-        "ProductTlsClient",
-        "lookup_host",
-        "TcpStream::connect",
+        "ControlTransport",
         "CONTROL_RECONNECT_DELAYS_MS",
         "CONTROL_RECENT_TERMINAL_REQUESTS: usize = 32",
         "rotation.prepare(",
         "encode_accepted_message(&request_id, operation_id)",
-        "websocket.write_text(&accepted).await",
+        "transport.write_text(&accepted).await",
         "rotation.activate_prepared(operation_id)",
         "recent_terminal",
         "ServerControlMessage::ResultAck",
@@ -84,8 +83,62 @@ def main() -> None:
     ):
         forbid(runtime, forbidden, "control must stay ordinary outbound, one-runtime and no retry-until-changed")
 
+    for forbidden in (
+        "ControlWebSocket",
+        "Sec-WebSocket-Key",
+        "Sec-WebSocket-Accept",
+        "websocket_client_key",
+        "websocket_masking_key",
+        "validate_upgrade_response",
+        "write_frame(",
+        "read_exact(",
+        "AsyncReadExt",
+        "AsyncWriteExt",
+    ):
+        forbid(runtime, forbidden, "control_runtime must contain PRODUCT semantics, not RFC6455 mechanics")
+
+    for needle in (
+        "ProductTlsClient",
+        "lookup_host",
+        "TcpStream::connect",
+        "client_async_with_config",
+        "WebSocketConfig",
+        "Message::Text",
+        "Message::Binary",
+        "CONTROL_WIRE_MAX_BYTES",
+    ):
+        require(transport, needle, "control transport mechanism drifted")
+    for forbidden in (
+        "request_id",
+        "operation_id",
+        "RotateIp",
+        "RotationRuntime",
+        "CONTROL_RECONNECT_DELAYS_MS",
+        "retry_until_changed",
+        "MISH_MANAGER_TOKEN",
+        "proxy_password",
+    ):
+        forbid(transport, forbidden, "control transport must not acquire PRODUCT/control-session policy")
+
+    for needle in (
+        'futures-util = { version = "=0.3.32", default-features = false, features = ["sink", "std"] }',
+        '"macros"',
+        'tokio-tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake"] }',
+    ):
+        require("Cargo.toml", needle, "workspace WebSocket dependencies drifted")
+    for forbidden in ("hyper", "tonic", "axum"):
+        forbid("Cargo.toml", forbidden, "U8-E must not add a generic HTTP/RPC framework")
+
+    for forbidden in (
+        "websocket_client_key",
+        "websocket_expected_accept",
+        "websocket_masking_key",
+        "SHA1_FOR_LEGACY_USE_ONLY",
+    ):
+        forbid(control, forbidden, "mish-control must own MISH wire semantics, not RFC6455 mechanics")
+
     runtime_text = read(runtime)
-    accepted = runtime_text.find("websocket.write_text(&accepted).await")
+    accepted = runtime_text.find("transport.write_text(&accepted).await")
     activate = runtime_text.find("rotation.activate_prepared(operation_id)")
     if accepted < 0 or activate < 0 or accepted >= activate:
         raise SystemExit("u8 control contract: ACCEPTED(operation_id) must flush before rotation activation")
@@ -222,6 +275,7 @@ def main() -> None:
     for path in (
         control,
         runtime,
+        transport,
         android,
         controller,
         receiver,

@@ -1,0 +1,24 @@
+name: U8 Dependency Lock Resolution
+
+on:
+  push:
+    branches:
+      - u8/remote-rotation-control
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Resolve only the existing lockfile plus new pinned dependencies
+        run: cargo metadata --format-version=1 > /dev/null
+      - name: Emit compressed lockfile for the bounded development handoff
+        run: |
+          printf 'U8_LOCK_GZIP_B64='
+          gzip -9c Cargo.lock | base64 -w0
+          printf '\n'

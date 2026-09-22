@@ -4,7 +4,7 @@
 //! It owns no socket, scheduler, Android Keystore effect, Cloudflare implementation or rotation
 //! mutation. The only v1 command is ROTATE_IP.
 
-use ring::{digest, rand};
+use ring::digest;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -222,32 +222,7 @@ pub fn p256_der_signature_to_p1363_b64url(
     Ok(encode_base64(&signature, true, false))
 }
 
-pub fn websocket_client_key() -> Result<String, ControlProtocolError> {
-    let mut random_key = [0_u8; 16];
-    rand::SecureRandom::fill(&rand::SystemRandom::new(), &mut random_key)
-        .map_err(|_| ControlProtocolError::RandomUnavailable)?;
-    Ok(encode_base64(&random_key, false, true))
-}
-
-pub fn websocket_masking_key() -> Result<[u8; 4], ControlProtocolError> {
-    let mut mask = [0_u8; 4];
-    rand::SecureRandom::fill(&rand::SystemRandom::new(), &mut mask)
-        .map_err(|_| ControlProtocolError::RandomUnavailable)?;
-    Ok(mask)
-}
-
-pub fn websocket_expected_accept(client_key: &str) -> Result<String, ControlProtocolError> {
-    if client_key.is_empty() || client_key.len() > 64 || !client_key.is_ascii() {
-        return Err(ControlProtocolError::MalformedWebSocketHandshake);
-    }
-    let mut input = Vec::with_capacity(client_key.len() + 36);
-    input.extend_from_slice(client_key.as_bytes());
-    input.extend_from_slice(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
-    let value = digest::digest(&digest::SHA1_FOR_LEGACY_USE_ONLY, &input);
-    Ok(encode_base64(value.as_ref(), false, true))
-}
-
-fn encode_wire<T: Serialize>(message: &T) -> Result<String, ControlProtocolError> {
+fn encode_wireT: Serialize>(message: &T) -> Result<String, ControlProtocolError> {
     let encoded =
         serde_json::to_string(message).map_err(|_| ControlProtocolError::MalformedWireMessage)?;
     if encoded.len() > CONTROL_WIRE_MAX_BYTES {
@@ -446,8 +421,6 @@ pub enum ControlProtocolError {
     InvalidSignature,
     MalformedWireMessage,
     WireMessageTooLarge,
-    MalformedWebSocketHandshake,
-    RandomUnavailable,
 }
 
 impl fmt::Display for ControlProtocolError {
@@ -462,8 +435,6 @@ impl fmt::Display for ControlProtocolError {
             Self::InvalidSignature => "control ECDSA signature encoding is invalid",
             Self::MalformedWireMessage => "control wire message is malformed",
             Self::WireMessageTooLarge => "control wire message exceeds the bounded size",
-            Self::MalformedWebSocketHandshake => "control WebSocket handshake is malformed",
-            Self::RandomUnavailable => "secure random source is unavailable",
         })
     }
 }
@@ -562,13 +533,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn websocket_accept_matches_rfc6455_fixture() {
-        assert_eq!(
-            websocket_expected_accept("dGhlIHNhbXBsZSBub25jZQ==").unwrap(),
-            "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
-        );
-    }
 
     #[test]
     fn request_ids_are_narrow_and_injection_safe() {

@@ -19,8 +19,10 @@ mish-proxy = { path = "../proxy" }
 mish-readiness = { path = "../readiness" }
 mish-rotation = { path = "../rotation" }
 mish-transport = { path = "../transport" }
+futures-util.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
+tokio-tungstenite.workspace = true
 webpki-roots.workspace = true
 
 [lints]
