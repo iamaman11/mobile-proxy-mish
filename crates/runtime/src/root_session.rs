@@ -394,58 +394,60 @@ mod tests {
 
     #[test]
     fn uncertain_mutation_is_not_replayed_after_shell_death() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("test Tokio runtime");
         runtime.block_on(async {
-        use std::time::{SystemTime, UNIX_EPOCH};
+            let path = format!(
+                "/tmp/mish-root-session-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("system clock")
+                    .as_nanos(),
+            );
+            let manager = RootSessionManager::new();
 
-        let path = format!(
-            "/tmp/mish-root-session-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("system clock")
-                .as_nanos(),
-        );
-        let manager = RootSessionManager::new();
+            let uncertain =
+                RootCommand::mutation(format!("printf x >> {path}; exec true"))
+                    .expect("valid mutation");
+            let first = manager
+                .execute_with_starter(uncertain, start_unprivileged_shell)
+                .await
+                .expect("transport failure remains command outcome");
 
-        let uncertain = RootCommand::mutation(format!("printf x >> {path}; exec true"))
-            .expect("valid mutation");
-        let first = manager
-            .execute_with_starter(uncertain, start_unprivileged_shell)
-            .await
-            .expect("transport failure remains command outcome");
+            assert_eq!(first.session_generation, 1);
+            assert_eq!(first.exit_code, -1);
+            assert!(!first.output_complete);
+            assert!(!first.timed_out);
+            assert_eq!(manager.session_generation().await, None);
 
-        assert_eq!(first.session_generation, 1);
-        assert_eq!(first.exit_code, -1);
-        assert!(!first.output_complete);
-        assert!(!first.timed_out);
-        assert_eq!(manager.session_generation().await, None);
+            let observe =
+                RootCommand::observation(format!("cat {path}")).expect("valid observation");
+            let second = manager
+                .execute_with_starter(observe, start_unprivileged_shell)
+                .await
+                .expect("replacement session");
+            assert_eq!(second.session_generation, 2);
+            assert_eq!(second.exit_code, 0);
+            assert!(second.output_complete);
+            assert_eq!(second.stdout, "x\n");
+            assert_eq!(manager.session_generation().await, Some(2));
 
-        let observe = RootCommand::observation(format!("cat {path}")).expect("valid observation");
-        let second = manager
-            .execute_with_starter(observe, start_unprivileged_shell)
-            .await
-            .expect("replacement session");
-        assert_eq!(second.session_generation, 2);
-        assert_eq!(second.exit_code, 0);
-        assert!(second.output_complete);
-        assert_eq!(second.stdout, "x\n");
-        assert_eq!(manager.session_generation().await, Some(2));
+            let observe_again =
+                RootCommand::observation(format!("cat {path}")).expect("valid observation");
+            let third = manager
+                .execute_with_starter(observe_again, start_unprivileged_shell)
+                .await
+                .expect("same healthy replacement session");
+            assert_eq!(third.session_generation, 2);
+            assert_eq!(third.stdout, "x\n");
 
-        let observe_again =
-            RootCommand::observation(format!("cat {path}")).expect("valid observation");
-        let third = manager
-            .execute_with_starter(observe_again, start_unprivileged_shell)
-            .await
-            .expect("same healthy replacement session");
-        assert_eq!(third.session_generation, 2);
-        assert_eq!(third.stdout, "x\n");
-
-        let _ = std::fs::remove_file(path);
-        manager.shutdown().await;
+            let _ = std::fs::remove_file(path);
+            manager.shutdown().await;
         });
     }
 
