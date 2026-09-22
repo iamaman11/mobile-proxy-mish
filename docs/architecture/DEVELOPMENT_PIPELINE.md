@@ -221,12 +221,12 @@ The capacity probe is deliberately correlated to the implementation owners:
 
 ```text
 Windows external client -> admitted Mesh endpoint:3128
- -> mish-transport external session owner (limit 64)
+ -> mish-transport external session owner (canonical limit 512)
  -> loopback native Proxy Serving backend
  -> Cellular Egress target connect
 ```
 
-Capacity acceptance uses one monotonic application-live set that grows through `10`, `32` and `64`. At every milestone every currently held path must pass a fresh bounded HTTP request/response round-trip over its same already-established TLS connection before owner-backed `mesh.active_sessions` and `proxy.active_sessions` are accepted. At the full `64/64` precondition the probe makes exactly the required 65th overflow attempt, requires it to be rejected before Proxy Serving, then re-proves the same original 64 application-live paths and `64/64` owner counts. Finally it drains to `0/0`, records threads / FD / RSS / PSS, and performs one fresh external Mesh application round-trip after cleanup.
+Capacity acceptance uses one monotonic application-live set that grows through `10`, `32`, `64` and the current canonical `512`. At every milestone every currently held path must pass a fresh bounded HTTP request/response round-trip over its same already-established TLS connection before owner-backed `mesh.active_sessions` and `proxy.active_sessions` are accepted. At the full `512/512` precondition the probe makes exactly the required 513th overflow attempt, requires it to be rejected before Proxy Serving, then re-proves the same original 512 application-live paths and `512/512` owner counts. Finally it drains to `0/0`, records threads / FD / RSS / PSS, and performs one fresh external Mesh application round-trip after cleanup.
 
 The routine acceptance path is deliberately linear in the configured capacity. Long lifetime soaks, repeated all-set keepalive loops while opening, and repeated overflow attempts belong to targeted diagnostics, not to the normal capacity gate. This keeps capacity acceptance bounded as the configured limit grows while preserving the decisive facts: application liveness at each milestone, natural-owner agreement, deterministic first-overflow rejection, preservation of the admitted set, cleanup, PID stability and resource evidence.
 
