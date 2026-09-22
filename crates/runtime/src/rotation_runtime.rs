@@ -66,6 +66,7 @@ struct RotationRuntimeState {
     cancel: Option<Arc<Notify>>,
     tasks: Vec<JoinHandle<()>>,
     observer: Option<RotationObserver>,
+    internal_observers: Vec<RotationObserver>,
     closed: bool,
 }
 
@@ -100,6 +101,7 @@ impl RotationRuntimeCoordinator {
                 cancel: None,
                 tasks: Vec::new(),
                 observer: None,
+                internal_observers: Vec::new(),
                 closed: false,
             }),
         });
@@ -139,6 +141,18 @@ impl RotationRuntimeCoordinator {
                 return;
             };
             state.observer = Some(Arc::clone(&observer));
+            state.machine.snapshot()
+        };
+        notify(Some((observer, snapshot)));
+    }
+
+    /// Internal native composition subscribers do not displace the Android projection observer.
+    pub fn add_internal_observer(&self, observer: RotationObserver) {
+        let snapshot = {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            state.internal_observers.push(Arc::clone(&observer));
             state.machine.snapshot()
         };
         notify(Some((observer, snapshot)));
@@ -791,12 +805,15 @@ impl RotationRuntimeCoordinator {
     }
 
     fn publish(&self, snapshot: RotationSnapshot) {
-        let observer = self
+        let (observer, internal) = self
             .state
             .lock()
-            .ok()
-            .and_then(|state| state.observer.clone());
+            .map(|state| (state.observer.clone(), state.internal_observers.clone()))
+            .unwrap_or((None, Vec::new()));
         notify(observer.map(|observer| (observer, snapshot)));
+        for observer in internal {
+            notify(Some((observer, snapshot)));
+        }
     }
 
     fn state(&self) -> Result<MutexGuard<'_, RotationRuntimeState>, ()> {
@@ -925,6 +942,7 @@ mod tests {
                 cancel: None,
                 tasks: Vec::new(),
                 observer: None,
+                internal_observers: Vec::new(),
                 closed: false,
             },
             operation_id,
