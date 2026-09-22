@@ -72,6 +72,14 @@ jobs:
       - name: Verify delivery and CI invariants
         run: python3 tools/check_delivery_contract.py
 
+      - name: Verify U8 remote-control invariants
+        run: |
+          set -euo pipefail
+          python3 tools/check_u8_control_contract.py
+          node --check infra/cloudflare/control-worker/src/index.mjs
+          node --check infra/cloudflare/control-worker/src/protocol.mjs
+          node --test infra/cloudflare/control-worker/test/protocol.test.mjs
+
       - name: Verify capacity probe held-session contract
         shell: pwsh
         run: ./lab/windows/test-capacity-probe-contract.ps1
