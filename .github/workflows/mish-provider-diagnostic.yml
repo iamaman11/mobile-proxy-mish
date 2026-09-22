@@ -25,7 +25,7 @@ jobs:
       PACKAGE_NAME: com.mobileproxymish.app.debug
     steps:
       - name: Collect bounded process/provider/exit evidence
-        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -File {0}'
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
         run: |
           $ErrorActionPreference = 'Stop'
           if (-not (Test-Path -LiteralPath $env:ADB_EXE -PathType Leaf)) {
