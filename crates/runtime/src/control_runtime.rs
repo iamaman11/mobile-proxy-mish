@@ -7,8 +7,8 @@
 
 use crate::tls_client::ProductTlsClient;
 use crate::{
-    CellularRequestRearmEffect, CellularRuntimeCoordinator, RotationRuntimeCoordinator,
-    RotationRuntimeStartError, RuntimeExecutionError, RuntimeExecutor,
+    CellularRequestRearmEffect, RotationRuntimeCoordinator, RotationRuntimeStartError,
+    RuntimeExecutionError, RuntimeExecutor,
 };
 use mish_configuration::ControlEndpoint;
 use mish_control::{
@@ -17,13 +17,13 @@ use mish_control::{
     p256_der_signature_to_p1363_b64url, websocket_client_key, websocket_expected_accept,
     websocket_masking_key, CONTROL_WIRE_MAX_BYTES,
 };
-use mish_proxy::ProxyConnectTarget;
 use mish_rotation::{RotationSnapshot, RotationTerminalResult};
+use std::collections::VecDeque;
 use std::io;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::net::{TcpStream, lookup_host};
 use tokio::sync::{Notify, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep, timeout};
@@ -31,10 +31,10 @@ use tokio_rustls::client::TlsStream;
 
 const CONTROL_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const CONTROL_AUTH_TIMEOUT: Duration = Duration::from_secs(10);
-const CONTROL_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(300);
 const CONTROL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTROL_HTTP_HEADER_MAX_BYTES: usize = 8_192;
 const CONTROL_RECONNECT_DELAYS_MS: [u64; 5] = [1_000, 5_000, 15_000, 30_000, 60_000];
+const CONTROL_RECENT_TERMINAL_REQUESTS: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlSessionState {
@@ -87,6 +87,7 @@ struct ControlState {
     reconnect_attempts: u32,
     next_delay_ms: u64,
     pending: Option<PendingRemoteOperation>,
+    recent_terminal: VecDeque<PendingRemoteOperation>,
     last_terminal_result: Option<RemoteRotationResult>,
     device_id: Option<String>,
     task: Option<JoinHandle<()>>,
@@ -96,7 +97,6 @@ struct ControlState {
 
 pub struct ControlRuntimeCoordinator {
     executor: Arc<RuntimeExecutor>,
-    cellular: Arc<CellularRuntimeCoordinator>,
     rotation: Arc<RotationRuntimeCoordinator>,
     endpoint: ControlEndpoint,
     result_changed: Arc<Notify>,
@@ -106,14 +106,12 @@ pub struct ControlRuntimeCoordinator {
 impl ControlRuntimeCoordinator {
     pub fn new(
         executor: Arc<RuntimeExecutor>,
-        cellular: Arc<CellularRuntimeCoordinator>,
         rotation: Arc<RotationRuntimeCoordinator>,
     ) -> Result<Arc<Self>, RuntimeExecutionError> {
         let endpoint =
             ControlEndpoint::deployment().map_err(|_| RuntimeExecutionError::StateUnavailable)?;
         let coordinator = Arc::new(Self {
             executor,
-            cellular,
             rotation: Arc::clone(&rotation),
             endpoint,
             result_changed: Arc::new(Notify::new()),
@@ -122,6 +120,7 @@ impl ControlRuntimeCoordinator {
                 reconnect_attempts: 0,
                 next_delay_ms: CONTROL_RECONNECT_DELAYS_MS[0],
                 pending: None,
+                recent_terminal: VecDeque::new(),
                 last_terminal_result: None,
                 device_id: None,
                 task: None,
@@ -290,20 +289,16 @@ impl ControlRuntimeCoordinator {
         cellular_request_rearm: Arc<dyn CellularRequestRearmEffect>,
         cancel: &mut watch::Receiver<bool>,
     ) -> Result<(), ControlRunError> {
-        let connector = self
-            .cellular
-            .outbound_connector(CONTROL_CONNECT_TIMEOUT)
-            .map_err(|_| ControlRunError::Network)?;
-        let target = ProxyConnectTarget::domain(self.endpoint.hostname(), self.endpoint.port())
-            .map_err(|_| ControlRunError::Network)?;
-        let socket = tokio::task::spawn_blocking(move || connector.connect(&target))
-            .await
-            .map_err(|_| ControlRunError::Network)?
-            .map_err(|_| ControlRunError::Network)?;
-        socket
-            .set_nonblocking(true)
-            .map_err(|_| ControlRunError::Network)?;
-        let tcp = TcpStream::from_std(socket).map_err(|_| ControlRunError::Network)?;
+        // Control is an ordinary outbound management connection. It deliberately does not
+        // borrow the Cellular Egress proxy connector or its owner-bound DNS authority: the
+        // control plane is not the proxy data plane. Existing kernel/root policy may still route
+        // this UID while Cellular is current; loss of that path simply drives bounded reconnect.
+        let tcp = connect_control_tcp(
+            self.endpoint.hostname(),
+            self.endpoint.port(),
+            CONTROL_CONNECT_TIMEOUT,
+        )
+        .await?;
 
         let tls = ProductTlsClient::new().map_err(|_| ControlRunError::Tls)?;
         let tls_stream = tokio::select! {
@@ -335,8 +330,6 @@ impl ControlRuntimeCoordinator {
             if *cancel.borrow() {
                 return Err(ControlRunError::Cancelled);
             }
-            let heartbeat = sleep(CONTROL_HEARTBEAT_INTERVAL);
-            tokio::pin!(heartbeat);
             tokio::select! {
                 changed = cancel.changed() => {
                     if changed.is_err() || *cancel.borrow() {
@@ -345,9 +338,6 @@ impl ControlRuntimeCoordinator {
                 }
                 _ = self.result_changed.notified() => {
                     self.send_pending_result_if_terminal(&mut websocket).await?;
-                }
-                _ = &mut heartbeat => {
-                    websocket.write_text("PING").await?;
                 }
                 message = websocket.read_message() => {
                     match message? {
@@ -439,25 +429,23 @@ impl ControlRuntimeCoordinator {
         request_id: String,
         cellular_request_rearm: Arc<dyn CellularRequestRearmEffect>,
     ) -> Result<(), ControlRunError> {
-        let existing = self
+        let (active, recent) = self
             .state()
-            .ok()
-            .and_then(|state| state.pending.clone());
+            .map(|state| {
+                (
+                    state.pending.clone(),
+                    state
+                        .recent_terminal
+                        .iter()
+                        .find(|item| item.request_id == request_id)
+                        .cloned(),
+                )
+            })
+            .map_err(|_| ControlRunError::State)?;
 
-        if let Some(existing) = existing {
+        if let Some(existing) = active {
             if existing.request_id == request_id {
-                let accepted =
-                    encode_accepted_message(&request_id).map_err(|_| ControlRunError::Protocol)?;
-                websocket.write_text(&accepted).await?;
-                if let Some(result) = existing.result {
-                    let message = encode_result_message(
-                        &request_id,
-                        result,
-                        existing.operation_id,
-                    )
-                    .map_err(|_| ControlRunError::Protocol)?;
-                    websocket.write_text(&message).await?;
-                }
+                self.send_known_operation(websocket, &existing).await?;
                 return Ok(());
             }
             let rejected = encode_result_message(
@@ -470,44 +458,89 @@ impl ControlRuntimeCoordinator {
             return Ok(());
         }
 
-        // The server receives ACCEPTED before PRODUCT starts the mutation. If the control
-        // transport breaks after this flush, the same request_id is never auto-redelivered.
-        let accepted =
-            encode_accepted_message(&request_id).map_err(|_| ControlRunError::Protocol)?;
-        websocket.write_text(&accepted).await?;
+        if let Some(existing) = recent {
+            self.send_known_operation(websocket, &existing).await?;
+            return Ok(());
+        }
+
+        // Reserve an operation id only after PRODUCT preconditions have passed. prepare() owns
+        // no timer/network/radio effect, so a rejected/busy request cannot mutate Cellular.
+        let operation_id = match self.rotation.prepare(Arc::clone(&cellular_request_rearm)) {
+            Ok(operation_id) => operation_id,
+            Err(error) => {
+                let result = map_rotation_start_error(error);
+                let rejected =
+                    encode_result_message(&request_id, result, None)
+                        .map_err(|_| ControlRunError::Protocol)?;
+                websocket.write_text(&rejected).await?;
+                if let Ok(mut state) = self.state.lock() {
+                    state.last_terminal_result = Some(result);
+                }
+                return Ok(());
+            }
+        };
 
         {
             let mut state = self.state_mut().map_err(|_| ControlRunError::State)?;
             if state.pending.is_some() {
+                self.rotation.fail_prepared_before_mutation(operation_id);
                 return Err(ControlRunError::State);
             }
             state.pending = Some(PendingRemoteOperation {
                 request_id: request_id.clone(),
-                operation_id: None,
+                operation_id: Some(operation_id),
                 result: None,
             });
         }
 
-        match self.rotation.start(cellular_request_rearm) {
-            Ok(operation_id) => {
-                if let Ok(mut state) = self.state.lock()
-                    && let Some(pending) = state.pending.as_mut()
-                    && pending.request_id == request_id
-                {
-                    pending.operation_id = Some(operation_id);
-                }
+        // Acceptance is externally visible before the existing Rotation owner may start even the
+        // first public-IP probe. A failed write aborts the prepared operation without mutation.
+        let accepted = encode_accepted_message(&request_id, operation_id)
+            .map_err(|_| ControlRunError::Protocol)?;
+        if let Err(error) = websocket.write_text(&accepted).await {
+            self.rotation.fail_prepared_before_mutation(operation_id);
+            if let Ok(mut state) = self.state.lock()
+                && state
+                    .pending
+                    .as_ref()
+                    .is_some_and(|pending| pending.request_id == request_id)
+            {
+                state.pending = None;
             }
-            Err(error) => {
-                let result = map_rotation_start_error(error);
-                if let Ok(mut state) = self.state.lock()
-                    && let Some(pending) = state.pending.as_mut()
-                    && pending.request_id == request_id
-                {
-                    pending.result = Some(result);
-                    state.last_terminal_result = Some(result);
-                }
-                self.result_changed.notify_waiters();
+            return Err(error);
+        }
+
+        if let Err(error) = self.rotation.activate_prepared(operation_id) {
+            self.rotation.fail_prepared_before_mutation(operation_id);
+            let result = map_rotation_start_error(error);
+            if let Ok(mut state) = self.state.lock()
+                && let Some(pending) = state.pending.as_mut()
+                && pending.request_id == request_id
+            {
+                pending.result = Some(result);
+                state.last_terminal_result = Some(result);
             }
+            self.result_changed.notify_waiters();
+        }
+        Ok(())
+    }
+
+    async fn send_known_operation(
+        &self,
+        websocket: &mut ControlWebSocket,
+        operation: &PendingRemoteOperation,
+    ) -> Result<(), ControlRunError> {
+        let Some(operation_id) = operation.operation_id else {
+            return Err(ControlRunError::State);
+        };
+        let accepted = encode_accepted_message(&operation.request_id, operation_id)
+            .map_err(|_| ControlRunError::Protocol)?;
+        websocket.write_text(&accepted).await?;
+        if let Some(result) = operation.result {
+            let message =
+                encode_result_message(&operation.request_id, result, Some(operation_id))
+                    .map_err(|_| ControlRunError::Protocol)?;
+            websocket.write_text(&message).await?;
         }
         Ok(())
     }
@@ -532,10 +565,17 @@ impl ControlRuntimeCoordinator {
     fn ack_result(&self, request_id: &str) {
         if let Ok(mut state) = self.state.lock()
             && state.pending.as_ref().is_some_and(|pending| {
-                pending.request_id == request_id && pending.result.is_some()
+                pending.request_id == request_id
+                    && pending.operation_id.is_some()
+                    && pending.result.is_some()
             })
+            && let Some(completed) = state.pending.take()
         {
-            state.pending = None;
+            state.recent_terminal.retain(|item| item.request_id != request_id);
+            state.recent_terminal.push_front(completed);
+            while state.recent_terminal.len() > CONTROL_RECENT_TERMINAL_REQUESTS {
+                state.recent_terminal.pop_back();
+            }
         }
     }
 
@@ -594,6 +634,30 @@ impl ControlRuntimeCoordinator {
     fn state_mut(&self) -> Result<MutexGuard<'_, ControlState>, ()> {
         self.state()
     }
+}
+
+async fn connect_control_tcp(
+    hostname: &str,
+    port: u16,
+    operation_timeout: Duration,
+) -> Result<TcpStream, ControlRunError> {
+    let deadline = Instant::now() + operation_timeout;
+    let addresses = timeout(operation_timeout, lookup_host((hostname, port)))
+        .await
+        .map_err(|_| ControlRunError::Network)?
+        .map_err(|_| ControlRunError::Network)?;
+
+    for address in addresses {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match timeout(remaining, TcpStream::connect(address)).await {
+            Ok(Ok(stream)) => return Ok(stream),
+            Ok(Err(_)) | Err(_) => continue,
+        }
+    }
+    Err(ControlRunError::Network)
 }
 
 fn reconnect_delay_ms(failures: u32) -> u64 {
@@ -800,6 +864,13 @@ fn validate_upgrade_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn control_reconnect_has_no_application_heartbeat_policy() {
+        // RFC6455 server PING frames are answered by ControlWebSocket::read_message. The PRODUCT
+        // client does not generate an app-level heartbeat until U8-F physical evidence requires it.
+        assert!(!include_str!("control_runtime.rs").contains("CONTROL_HEARTBEAT_INTERVAL"));
+    }
 
     #[test]
     fn reconnect_backoff_is_bounded() {
