@@ -64,7 +64,7 @@ def main() -> None:
         "candidate build is not a completed successful PR preflight",
         "PR Validation + PRODUCT Candidate",
         "probe_only supports only the current-function loopback_connect probe",
-        "full accepts only none, capacity_resources, recovery_lifecycle, dns_lifetime_live, u5_rotation, u7_runtime_restart_resources, u7_512_lifecycle_stability, u8_reboot_install_durability, or u8_public_egress_rotation",
+        "full accepts only none, capacity_resources, recovery_lifecycle, dns_lifetime_live, u5_rotation, u7_runtime_restart_resources, u7_512_lifecycle_stability, u8_reboot_install_durability, u8_public_egress_rotation, or u8_remote_control",
         "install_only/diagnose_only require probe=none",
         "capacity_resources",
         "recovery_lifecycle",
@@ -74,6 +74,11 @@ def main() -> None:
         "u7_512_lifecycle_stability",
         "u8_reboot_install_durability",
         "u8_public_egress_rotation",
+        "u8_remote_control",
+        "U8-E authenticated remote rotation",
+        "diagnose-u8-remote-control.ps1",
+        "environment: cloudflare-control",
+        "MISH_MANAGER_TOKEN: ${{ secrets.MISH_MANAGER_TOKEN }}",
         "Explicit U8 reboot + replacement-install durability",
         "Explicit U8 public Cellular egress rotation proof",
         "diagnose-u8-public-egress-rotation.ps1",
@@ -129,6 +134,11 @@ def main() -> None:
         "test-u8-public-egress-rotation-probe-contract.ps1",
         "U8 public-egress probe guard must run inside the existing Device Cycle Contracts job without changing candidate-producer policy",
     )
+    require(
+        "lab/windows/test-device-cycle.ps1",
+        "test-u8-remote-control-probe-contract.ps1",
+        "U8 remote-control probe guard must run inside the existing Device Cycle Contracts job",
+    )
 
     for required in (
         "name: Device Cycle Contracts",
@@ -183,8 +193,8 @@ def main() -> None:
         raise SystemExit("device cycle contract: DEVICE-1 jobs must use pinned portable PowerShell 7.6.6")
     if github_scriptblock_shell not in physical_text:
         raise SystemExit("device cycle contract: pinned PowerShell must execute GitHub temp script through ScriptBlock::Create")
-    if physical_text.count("Verify pinned PowerShell 7 runtime") != 2:
-        raise SystemExit("device cycle contract: both DEVICE-1 jobs must verify pinned PowerShell")
+    if physical_text.count("Verify pinned PowerShell 7 runtime") != 3:
+        raise SystemExit("device cycle contract: all three DEVICE-1 jobs must verify pinned PowerShell")
     if "shell: powershell" in workflow_text:
         raise SystemExit("device cycle contract: Windows PowerShell 5.1 must not execute Device Cycle")
 
@@ -420,6 +430,48 @@ def main() -> None:
     ):
         require(u8_egress_contract, required, "U8 external public-egress self-test drifted")
 
+    u8_remote_probe = "lab/windows/diagnose-u8-remote-control.ps1"
+    for required in (
+        "mish.lab.u8-remote-control/v1",
+        "READ_CONTROL_IDENTITY_V1",
+        "ControlIdentityProvisioningReceiver",
+        "public_key_spki_b64",
+        "wrong_manager_auth_status = 401",
+        "wrong_manager_auth_zero_rotation_mutation = $true",
+        "logical_rotation_requests = 1",
+        "duplicate_same_request_replays = 1",
+        "Expected one HTTP 202 dispatch",
+        "DEVICE_OFFLINE is an acceptance failure, never a retry loop",
+        "REMOTE_OPERATION_ID_CHANGED",
+        "REMOTE_IDEMPOTENCY_FAILED",
+        "PRODUCT_OPERATION_ID_MISMATCH",
+        "POST_ROTATION_PROXY_E2E_FAILED",
+        "U8_REMOTE_CONTROL_ROTATION_PASS",
+        "manager_token_persisted = $false",
+        "public_spki_persisted = $false",
+        "raw_public_ip_persisted = $false",
+        "secrets_persisted_in_evidence = $false",
+    ):
+        require(u8_remote_probe, required, "U8 remote-control acceptance contract drifted")
+    for forbidden in (
+        "DebugRotationActivity",
+        "airplane-mode",
+        "'shell', 'su'",
+        "'cmd', 'phone', 'data'",
+        "retry-until",
+        "retry_until",
+        "Write-Host $publicSpki",
+        "Write-Host $deviceId",
+        "Write-Host $env:MISH_MANAGER_TOKEN",
+    ):
+        forbid(u8_remote_probe, forbidden, "U8 remote-control acceptance must not add a second mutation owner or expose secrets")
+
+    u8_remote_contract = "lab/windows/test-u8-remote-control-probe-contract.ps1"
+    require(
+        u8_remote_contract,
+        "U8_REMOTE_CONTROL_PROBE_CONTRACT=PASS",
+        "U8 remote-control hosted self-test drifted",
+    )
     rotation_probe = "lab/windows/diagnose-u5-rotation.ps1"
     for required in (
         "mish.lab.u5-rotation-acceptance/v1",
