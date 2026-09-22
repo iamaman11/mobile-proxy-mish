@@ -546,8 +546,8 @@ Canonical execution/evidence ledger: issue #314. Specialized external proxy/priv
 U8-A inventory                                      COMPLETE
 U8-B reboot + replacement-install                   COMPLETE
 U8-C root-shell death/replacement                    COMPLETE
-U8-D public Cellular egress IP rotation proof       NEXT
-U8-E authenticated remote IP-rotation command
+U8-D public Cellular egress IP rotation proof       COMPLETE
+U8-E authenticated remote IP-rotation command       NEXT
 U8-F low-impact durability soak
      + reverse-WSS reconnect/heartbeat/traffic/resource budget
      + Mesh peer liveness
@@ -613,6 +613,10 @@ One request means at most one underlying rotation. Never hide repeated airplane/
 Raw public IP may be shown to an authenticated operator/controller, but ordinary GitHub logs/issues/artifacts persist only redacted change/equality and observer-consensus facts.
 
 Current U8-D acceptance shape is CONTROL/LAB-only unless evidence exposes a PRODUCT defect: an independent Windows LAB client observes `checkip.amazonaws.com` through the existing authenticated PRODUCT HTTP CONNECT path immediately before and after exactly one existing Rotation-owner operation. The two raw addresses exist only in memory for equality comparison. Durable evidence records only the PRODUCT terminal result, independent external `CHANGED|UNCHANGED`, observer consensus, owner generations and bounded timing milestones.
+
+### U8-D accepted physical evidence
+
+U8-D closed without a PRODUCT code change. CONTROL PR #320 merged as `c348f8f03180452b37d1f273a5855a5b4b29f047`; exact PRODUCT remained PR #319 head `aea2fc7ad90adf5b68680aefd60e71b3e82bcb9e`. Device Cycle #650 / run `35769781964` passed with one explicit rotation: PRODUCT terminal `CHANGED`, independent authenticated-proxy external observation `CHANGED`, `observer_consensus=true`, `rotation_requests=1`, exact-candidate acceptance PASS, and no raw IP/secrets persisted. Current physical baseline: `total_rotation_ms=17516`, airplane-OFF -> fresh owner/root authorization `15587 ms`, functional public-IP `17166 ms`, READY `18541 ms`.
 
 ### U8-E — authenticated remote IP-rotation command
 
