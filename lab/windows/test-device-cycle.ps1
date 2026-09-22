@@ -1,5 +1,6 @@
 $ErrorActionPreference = 'Stop'
 & (Join-Path $PSScriptRoot 'test-u8-reboot-install-probe-contract.ps1')
+& (Join-Path $PSScriptRoot 'test-u8-public-egress-rotation-probe-contract.ps1')
 & (Join-Path $PSScriptRoot 'test-u7-runtime-restart-probe-contract.ps1')
 Set-StrictMode -Version Latest
 
@@ -16,6 +17,8 @@ try {
         'diagnose-dns-lifetime-live.ps1',
         'diagnose-u8-reboot-install-durability.ps1',
         'test-u8-reboot-install-probe-contract.ps1',
+        'diagnose-u8-public-egress-rotation.ps1',
+        'test-u8-public-egress-rotation-probe-contract.ps1',
         'test-diagnostic-connect-probe.ps1',
         'new-device-cycle-report.ps1'
     )) {
@@ -522,6 +525,68 @@ try {
         [string]$u8Lab.exact_candidate_acceptance -cne 'NOT_EVALUATED'
     ) {
         throw 'U8 reboot/install LAB collection failure must not reject the PRODUCT candidate.'
+    }
+
+
+    $u8EgressPassPath = Join-Path $root 'u8-public-egress-rotation-pass.json'
+    [ordered]@{
+        schema = 'mish.lab.u8-public-egress-rotation/v1'
+        acceptance_result = 'PASS'
+        classification = 'U8_PUBLIC_EGRESS_ROTATION_PASS'
+        rotation_requests = 1
+        product_terminal_result = 'CHANGED'
+        external_outcome = 'CHANGED'
+        observer_consensus = $true
+        raw_ip_persisted = $false
+        secrets_persisted_in_evidence = $false
+    } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 -LiteralPath $u8EgressPassPath
+    $u8EgressPass = & $reportScript -Mode full -PrNumber 320 -SourceSha ('1' * 40) -ControlSha $controlSha -DiagnosticEvidencePath $passDiagnostic -RequestedProbe u8_public_egress_rotation -TargetedEvidencePath $u8EgressPassPath -OutputPath (Join-Path $root 'u8-public-egress-rotation-pass-report.json') | Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$u8EgressPass.cycle_result -cne 'PASS' -or
+        [string]$u8EgressPass.classification -cne 'U8_PUBLIC_EGRESS_ROTATION_PASS' -or
+        [string]$u8EgressPass.acceptance_scope -cne 'FULL_BASELINE_PLUS_U8_PUBLIC_EGRESS_ROTATION' -or
+        [string]$u8EgressPass.exact_candidate_acceptance -cne 'PASS'
+    ) {
+        throw 'U8 external public-egress rotation PASS must require baseline + targeted evidence.'
+    }
+
+    $u8EgressProductPath = Join-Path $root 'u8-public-egress-rotation-product-fail.json'
+    [ordered]@{
+        schema = 'mish.lab.u8-public-egress-rotation/v1'
+        acceptance_result = 'FAIL'
+        classification = 'PRODUCT_EXTERNAL_EGRESS_RESULT_MISMATCH'
+        rotation_requests = 1
+        product_terminal_result = 'CHANGED'
+        external_outcome = 'UNCHANGED'
+        observer_consensus = $false
+        raw_ip_persisted = $false
+        secrets_persisted_in_evidence = $false
+    } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 -LiteralPath $u8EgressProductPath
+    $u8EgressProduct = & $reportScript -Mode full -PrNumber 320 -SourceSha ('2' * 40) -ControlSha $controlSha -DiagnosticEvidencePath $passDiagnostic -RequestedProbe u8_public_egress_rotation -TargetedEvidencePath $u8EgressProductPath -OutputPath (Join-Path $root 'u8-public-egress-rotation-product-report.json') | Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$u8EgressProduct.cycle_result -cne 'PRODUCT_FAIL' -or
+        [string]$u8EgressProduct.classification -cne 'PRODUCT_EXTERNAL_EGRESS_RESULT_MISMATCH' -or
+        [string]$u8EgressProduct.exact_candidate_acceptance -cne 'FAIL'
+    ) {
+        throw 'U8 external public-egress observer mismatch must reject the exact candidate.'
+    }
+
+    $u8EgressLabPath = Join-Path $root 'u8-public-egress-rotation-lab-fail.json'
+    [ordered]@{
+        schema = 'mish.lab.u8-public-egress-rotation/v1'
+        acceptance_result = 'FAIL'
+        classification = 'LAB_EXTERNAL_IP_REQUEST_FAILED'
+        rotation_requests = 1
+        raw_ip_persisted = $false
+        secrets_persisted_in_evidence = $false
+    } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 -LiteralPath $u8EgressLabPath
+    $u8EgressLab = & $reportScript -Mode full -PrNumber 320 -SourceSha ('3' * 40) -ControlSha $controlSha -DiagnosticEvidencePath $passDiagnostic -RequestedProbe u8_public_egress_rotation -TargetedEvidencePath $u8EgressLabPath -OutputPath (Join-Path $root 'u8-public-egress-rotation-lab-report.json') | Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$u8EgressLab.cycle_result -cne 'LAB_FAIL' -or
+        [string]$u8EgressLab.classification -cne 'LAB_EXTERNAL_IP_REQUEST_FAILED' -or
+        [string]$u8EgressLab.exact_candidate_acceptance -cne 'NOT_EVALUATED'
+    ) {
+        throw 'U8 external public-egress LAB collection failure must not reject the PRODUCT candidate.'
     }
 
     Write-Host 'DEVICE_CYCLE_CONTRACT=PASS'
