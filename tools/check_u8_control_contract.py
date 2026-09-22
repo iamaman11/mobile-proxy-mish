@@ -186,6 +186,16 @@ def main() -> None:
         'Signature.getInstance(SIGNATURE_ALGORITHM)',
     ):
         require(android, needle, "control identity must remain non-exportable Android Keystore P-256")
+    require(
+        android,
+        "by lazy(LazyThreadSafetyMode.SYNCHRONIZED)",
+        "control identity construction must remain side-effect free before Application attach completes",
+    )
+    forbid(
+        android,
+        "private val keyStore = KeyStore.getInstance",
+        "AndroidKeyStore must not be opened during MishApplication.attachBaseContext composition",
+    )
     for forbidden in (
         "ProxyPassword",
         "proxyPassword",

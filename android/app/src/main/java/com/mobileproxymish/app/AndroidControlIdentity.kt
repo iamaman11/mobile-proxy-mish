@@ -15,7 +15,12 @@ import java.security.spec.ECGenParameterSpec
  * private-key custody only; Rust owns the signed message and authentication protocol.
  */
 internal class AndroidControlIdentity {
-    private val keyStore = KeyStore.getInstance(ANDROID_KEY_STORE).apply { load(null) }
+    // Application composition happens from MishApplication.attachBaseContext(), before Android 11
+    // exposes the application Context required by AndroidKeyStore. Keep construction side-effect
+    // free and open the platform keystore only on the first real identity operation.
+    private val keyStore: KeyStore by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        KeyStore.getInstance(ANDROID_KEY_STORE).apply { load(null) }
+    }
 
     @Synchronized
     fun publicKeySpki(): ByteArray {
