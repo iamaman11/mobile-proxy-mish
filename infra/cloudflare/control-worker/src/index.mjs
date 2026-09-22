@@ -193,12 +193,25 @@ export class DeviceControl {
         device_id: attachment.device_id,
       });
       ws.send(readyMessage());
+
+      // Re-deliver only the one already-active request when the previous socket disappeared
+      // before the broker observed ACCEPTED. This is correlation recovery, not an offline queue:
+      // MISH deduplicates the same request_id and never starts a second rotation.
+      const active = await this.ctx.storage.get("active_operation");
+      if (active?.status === "DISPATCHED") {
+        ws.send(rotateMessage(active.request_id));
+      }
       return;
     }
 
     if (parsed.type === "ACCEPTED") {
       const active = await this.ctx.storage.get("active_operation");
       if (!active || active.request_id !== parsed.request_id) {
+        const recent = (await this.ctx.storage.get("recent_operations")) || [];
+        const known = recent.find((item) => item.request_id === parsed.request_id);
+        if (known?.operation_id === parsed.operation_id) {
+          return;
+        }
         ws.close(1008, "unexpected acceptance");
         return;
       }

@@ -230,6 +230,71 @@ test("replacement authentication retires the old socket before broker selection"
   assert.equal(control.authenticatedSocket(), newSocket);
 });
 
+test("authenticated reattach re-delivers only the one active dispatched request", async () => {
+  const identity = await generateIdentity();
+  const nonce = "d".repeat(43);
+  const signature = await signAuth(identity.keyPair.privateKey, identity.deviceId, nonce);
+  const storage = new MemoryStorage();
+  await storage.put("public_key_spki_b64", identity.spkiB64);
+  await storage.put("active_operation", {
+    request_id: "req_resume",
+    status: "DISPATCHED",
+    operation_id: null,
+    result: null,
+    created_at_ms: Date.now(),
+    completed_at_ms: null,
+  });
+
+  const socket = new FakeSocket({
+    kind: "device",
+    authenticated: false,
+    device_id: identity.deviceId,
+    challenge: nonce,
+    challenge_issued_at_ms: Date.now(),
+  });
+  const control = new DeviceControl(new FakeContext(storage, [socket]), {});
+
+  await control.webSocketMessage(socket, JSON.stringify({
+    v: 1,
+    type: "AUTH",
+    device_id: identity.deviceId,
+    signature,
+  }));
+
+  assert.deepEqual(
+    socket.sent.map((message) => JSON.parse(message).type),
+    ["READY", "ROTATE_IP"],
+  );
+  assert.equal(JSON.parse(socket.sent[1]).request_id, "req_resume");
+  assert.equal((await storage.get("active_operation")).request_id, "req_resume");
+});
+
+test("late duplicate acceptance after terminal correlation is harmless", async () => {
+  const storage = new MemoryStorage();
+  await storage.put("recent_operations", [{
+    request_id: "req_terminal",
+    status: "TERMINAL",
+    operation_id: 17,
+    result: "CHANGED",
+    created_at_ms: 1,
+    completed_at_ms: 2,
+  }]);
+  const socket = new FakeSocket({
+    kind: "device",
+    authenticated: true,
+    device_id: "a".repeat(64),
+  });
+  const control = new DeviceControl(new FakeContext(storage, [socket]), {});
+
+  await control.webSocketMessage(
+    socket,
+    '{"v":1,"type":"ACCEPTED","request_id":"req_terminal","operation_id":17}',
+  );
+
+  assert.equal(socket.closed.length, 0);
+  assert.equal((await storage.get("recent_operations"))[0].result, "CHANGED");
+});
+
 test("durable broker is idempotent, busy-bounded and has no offline queue", async () => {
   const storage = new MemoryStorage();
   let activeWasStoredBeforeSend = false;
