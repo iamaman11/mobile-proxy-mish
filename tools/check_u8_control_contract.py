@@ -268,6 +268,10 @@ def main() -> None:
     )
     if config.get("compatibility_date") != "2026-09-22":
         raise SystemExit("u8 control contract: Worker compatibility date must remain explicit")
+    if config.get("workers_dev") is not False:
+        raise SystemExit("u8 control contract: control Worker must not expose a workers.dev endpoint")
+    if config.get("routes") != [{"pattern": "api.alegria.by", "custom_domain": True}]:
+        raise SystemExit("u8 control contract: control Worker must own only the exact api.alegria.by custom domain")
     if config.get("secrets", {}).get("required") != ["MISH_MANAGER_TOKEN"]:
         raise SystemExit("u8 control contract: manager token must be a required Worker secret")
     if "vars" in config:

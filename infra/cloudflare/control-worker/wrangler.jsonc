@@ -3,6 +3,13 @@
   "name": "mish-device-control",
   "main": "src/index.mjs",
   "compatibility_date": "2026-09-22",
+  "workers_dev": false,
+  "routes": [
+    {
+      "pattern": "api.alegria.by",
+      "custom_domain": true
+    }
+  ],
   "durable_objects": {
     "bindings": [
       {
