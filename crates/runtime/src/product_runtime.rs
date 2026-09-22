@@ -14,6 +14,7 @@ use crate::{
 use mish_cellular::{
     CellularAdmissionSnapshot, NetworkHandle, NetworkObservation, RootPolicyNamespace,
 };
+use mish_control::ControlDeviceIdentity;
 use mish_transport::{MeshTransportError, MeshTransportSnapshot, MeshVpnObservation};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -262,27 +263,47 @@ impl ProductRuntimeCoordinator {
         signer: Arc<dyn ControlAuthSigner>,
         cellular_request_rearm: Arc<dyn CellularRequestRearmEffect>,
     ) -> Result<String, ControlRuntimeStartError> {
+        let identity = ControlDeviceIdentity::from_public_key_spki(public_key_spki.clone())
+            .map_err(|_| ControlRuntimeStartError::InvalidIdentity)?;
+        let device_id = identity.device_id().to_owned();
         let input = ControlStartInput {
             public_key_spki,
             signer,
             cellular_request_rearm,
         };
-        let (generation, previous) = {
+        let (generation, previous, start_now) = {
             let mut state = self
                 .state
                 .lock()
                 .map_err(|_| ControlRuntimeStartError::StateUnavailable)?;
+            let lifecycle = state.lifecycle.state();
             if state.closed
                 || !matches!(
-                    state.lifecycle.state(),
+                    lifecycle,
                     RuntimeLifecycleState::Starting | RuntimeLifecycleState::Running
                 )
             {
                 return Err(ControlRuntimeStartError::StateUnavailable);
             }
+            if state.control_start.as_ref().is_some_and(|existing| {
+                existing.public_key_spki != input.public_key_spki
+            }) {
+                return Err(ControlRuntimeStartError::AlreadyStarted);
+            }
             let previous = state.control_start.replace(input.clone());
-            (Arc::clone(&state.generation), previous)
+            (
+                Arc::clone(&state.generation),
+                previous,
+                lifecycle == RuntimeLifecycleState::Running,
+            )
         };
+
+        // Remote control is ancillary to PRODUCT startup. While the lifecycle is STARTING, store
+        // only the validated control intent. run_start() launches it after complete_start(), so
+        // DNS/TCP/TLS/WebSocket work cannot compete with policy/proxy/readiness bootstrap.
+        if !start_now {
+            return Ok(device_id);
+        }
 
         let result = generation.control().start(
             input.public_key_spki.clone(),
@@ -1092,6 +1113,103 @@ mod tests {
                 .expect("duplicate start"),
             RuntimeStartAction::AlreadyActive
         );
+        runtime.executor.shutdown().expect("executor shutdown");
+    }
+
+    struct TestControlSigner;
+
+    impl ControlAuthSigner for TestControlSigner {
+        fn sign_control_auth(
+            &self,
+            _payload: &[u8],
+        ) -> Result<Vec<u8>, crate::ControlAuthSignError> {
+            Ok(vec![1; 64])
+        }
+    }
+
+    struct TestControlRearmEffect;
+
+    impl CellularRequestRearmEffect for TestControlRearmEffect {
+        fn rearm_cellular_request(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn remote_control_is_deferred_until_product_start_completes() {
+        let runtime = ProductRuntimeCoordinator::new(
+            Arc::new(EmptyResolver),
+            10_126,
+            RootPolicyNamespace::Debug,
+        )
+        .expect("runtime");
+
+        {
+            let mut state = runtime.state_mut().expect("state");
+            assert_eq!(
+                state.lifecycle.request_start(),
+                RuntimeStartAction::StartNow
+            );
+        }
+
+        let device_id = runtime
+            .start_remote_control(
+                vec![1, 2, 3, 4],
+                Arc::new(TestControlSigner),
+                Arc::new(TestControlRearmEffect),
+            )
+            .expect("deferred control");
+
+        assert_eq!(device_id.len(), 64);
+        assert_eq!(
+            runtime.control_snapshot().state,
+            crate::ControlSessionState::Stopped
+        );
+        assert!(
+            runtime
+                .state()
+                .expect("state")
+                .control_start
+                .as_ref()
+                .is_some_and(|control| control.public_key_spki == vec![1, 2, 3, 4])
+        );
+
+        runtime.executor.shutdown().expect("executor shutdown");
+    }
+
+    #[test]
+    fn starting_product_rejects_replacing_control_identity() {
+        let runtime = ProductRuntimeCoordinator::new(
+            Arc::new(EmptyResolver),
+            10_127,
+            RootPolicyNamespace::Debug,
+        )
+        .expect("runtime");
+
+        {
+            let mut state = runtime.state_mut().expect("state");
+            assert_eq!(
+                state.lifecycle.request_start(),
+                RuntimeStartAction::StartNow
+            );
+        }
+
+        runtime
+            .start_remote_control(
+                vec![1, 2, 3, 4],
+                Arc::new(TestControlSigner),
+                Arc::new(TestControlRearmEffect),
+            )
+            .expect("first control");
+        assert_eq!(
+            runtime.start_remote_control(
+                vec![9, 8, 7, 6],
+                Arc::new(TestControlSigner),
+                Arc::new(TestControlRearmEffect),
+            ),
+            Err(ControlRuntimeStartError::AlreadyStarted)
+        );
+
         runtime.executor.shutdown().expect("executor shutdown");
     }
 
