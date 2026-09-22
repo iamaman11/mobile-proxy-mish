@@ -15,7 +15,7 @@ if (@($tokens | Where-Object { $_.Text -ieq '$PID' }).Count -ne 0) {
 
 $source = Get-Content -Raw -LiteralPath $probePath
 $required = @(
-    'mish.lab.u8-reboot-install-durability/v1',
+    'mish.lab.u8-reboot-install-durability/v2',
     'snapshot_v2',
     "'shell', 'pidof'",
     'Do not touch the diagnostics provider until PRODUCT is independently observable',
@@ -29,6 +29,14 @@ $required = @(
     'adb_reboot_attempts = 1',
     '/proc/sys/kernel/random/boot_id',
     'sys.boot_completed',
+    "'shell', 'dumpsys', 'user'",
+    'RUNNING_UNLOCKED',
+    'UserUnlockTimeoutSeconds = 300',
+    'user_unlock_observed = $false',
+    'user_unlock_wait_ms = $null',
+    'process_observed_before_unlock = $false',
+    'convergence_milestones_ms = $null',
+    'LAB_REBOOT_USER_UNLOCK_NOT_OBSERVED',
     'boot_id_changed = $false',
     'passive_process_start_observed = $false',
     'uid_stable = $false',

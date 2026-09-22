@@ -7,14 +7,15 @@ param(
     [string] $AdbPath = 'C:\\mish-lab\\tools\\android-sdk\\platform-tools\\adb.exe',
     [string] $AndroidSdkRoot = 'C:\\mish-lab\\tools\\android-sdk',
     [string] $PackageName = 'com.mobileproxymish.app.debug',
-    [ValidateRange(30, 300)][int] $StartupTimeoutSeconds = 120,
+    [ValidateRange(30, 600)][int] $StartupTimeoutSeconds = 300,
+    [ValidateRange(30, 600)][int] $UserUnlockTimeoutSeconds = 300,
     [ValidateRange(60, 420)][int] $RebootTimeoutSeconds = 240,
     [string] $EvidencePath = (Join-Path $env:TEMP 'mish-u8-reboot-install-durability-v1.json')
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$script:Schema = 'mish.lab.u8-reboot-install-durability/v1'
+$script:Schema = 'mish.lab.u8-reboot-install-durability/v2'
 $script:SnapshotMethod = 'snapshot_v2'
 
 function Invoke-MishAdbCapture {
@@ -102,31 +103,62 @@ function Wait-MishPassiveReady {
         [Parameter(Mandatory)][int] $TimeoutSeconds
     )
 
+    $watch = [Diagnostics.Stopwatch]::StartNew()
     $deadline = [DateTimeOffset]::UtcNow.AddSeconds($TimeoutSeconds)
     $firstPidAt = $null
     $lastPid = ''
     $stablePidSamples = 0
     $snapshot = $null
+    $milestones = [ordered]@{
+        process_observed_ms = $null
+        runtime_running_ms = $null
+        cellular_admitted_ms = $null
+        root_authorized_ms = $null
+        proxy_running_ms = $null
+        credential_active_ms = $null
+        mesh_admitted_ms = $null
+        mesh_ingress_running_ms = $null
+        readiness_ready_ms = $null
+    }
+
     while ([DateTimeOffset]::UtcNow -lt $deadline) {
         $pidResult = Invoke-MishAdbCapture -Arguments @('shell', 'pidof', $PackageName)
         $processId = if ($pidResult.ExitCode -eq 0 -and $pidResult.Text -match '^\d+$') { [string]$pidResult.Text } else { '' }
 
         if (-not [string]::IsNullOrWhiteSpace($processId)) {
-            if ($null -eq $firstPidAt) { $firstPidAt = [DateTimeOffset]::UtcNow }
+            if ($null -eq $firstPidAt) {
+                $firstPidAt = [DateTimeOffset]::UtcNow
+                $milestones.process_observed_ms = [int64]$watch.ElapsedMilliseconds
+            }
             if ($processId -ceq $lastPid) { $stablePidSamples += 1 } else { $stablePidSamples = 1; $lastPid = $processId }
 
             # Do not touch the diagnostics provider until PRODUCT is independently observable
             # through pidof. This keeps BOOT_COMPLETED / MY_PACKAGE_REPLACED startup evidence passive.
             if ($stablePidSamples -ge 2) {
                 $snapshot = Read-MishSnapshot
-                if (Test-MishReadySnapshot -Snapshot $snapshot) {
-                    return [pscustomobject]@{
-                        Phase = $Phase
-                        Pid = [int]$processId
-                        PassiveProcessObserved = $true
-                        Ready = $true
-                        FirstPidAt = $firstPidAt
-                        Snapshot = $snapshot
+                if ($null -ne $snapshot) {
+                    $elapsed = [int64]$watch.ElapsedMilliseconds
+                    if ($null -eq $milestones.runtime_running_ms -and [bool]$snapshot.runtime.running) { $milestones.runtime_running_ms = $elapsed }
+                    if ($null -eq $milestones.cellular_admitted_ms -and [bool]$snapshot.cellular.admitted) { $milestones.cellular_admitted_ms = $elapsed }
+                    if ($null -eq $milestones.root_authorized_ms -and [bool]$snapshot.root.policy_authorized) { $milestones.root_authorized_ms = $elapsed }
+                    if ($null -eq $milestones.proxy_running_ms -and [string]$snapshot.proxy.state -ceq 'RUNNING') { $milestones.proxy_running_ms = $elapsed }
+                    if ($null -eq $milestones.credential_active_ms -and [bool]$snapshot.credential.active) { $milestones.credential_active_ms = $elapsed }
+                    if ($null -eq $milestones.mesh_admitted_ms -and [bool]$snapshot.mesh.admitted) { $milestones.mesh_admitted_ms = $elapsed }
+                    if ($null -eq $milestones.mesh_ingress_running_ms -and [bool]$snapshot.mesh.ingress_running) { $milestones.mesh_ingress_running_ms = $elapsed }
+                    if ($null -eq $milestones.readiness_ready_ms -and [string]$snapshot.readiness.state -ceq 'READY') { $milestones.readiness_ready_ms = $elapsed }
+
+                    if (Test-MishReadySnapshot -Snapshot $snapshot) {
+                        $watch.Stop()
+                        return [pscustomobject]@{
+                            Phase = $Phase
+                            Pid = [int]$processId
+                            PassiveProcessObserved = $true
+                            Ready = $true
+                            FirstPidAt = $firstPidAt
+                            ElapsedMs = [int64]$watch.ElapsedMilliseconds
+                            Milestones = $milestones
+                            Snapshot = $snapshot
+                        }
                     }
                 }
             }
@@ -138,12 +170,15 @@ function Wait-MishPassiveReady {
         Start-Sleep -Milliseconds 1000
     }
 
+    $watch.Stop()
     return [pscustomobject]@{
         Phase = $Phase
-        Pid = $null
+        Pid = if ([string]::IsNullOrWhiteSpace($lastPid)) { $null } else { [int]$lastPid }
         PassiveProcessObserved = $null -ne $firstPidAt
         Ready = $false
         FirstPidAt = $firstPidAt
+        ElapsedMs = [int64]$watch.ElapsedMilliseconds
+        Milestones = $milestones
         Snapshot = $snapshot
     }
 }
@@ -210,6 +245,85 @@ function Get-MishBootId {
     $result = Invoke-MishAdbCapture -Arguments @('shell', 'cat', '/proc/sys/kernel/random/boot_id')
     if ($result.ExitCode -ne 0 -or $result.Text -notmatch '^[0-9a-fA-F-]{36}$') { return '' }
     return $result.Text.ToLowerInvariant()
+}
+
+function Get-MishCurrentUserState {
+    $result = Invoke-MishAdbCapture -Arguments @('shell', 'dumpsys', 'user')
+    if ($result.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($result.Text)) {
+        return [pscustomobject]@{ Available = $false; Unlocked = $false; State = 'UNKNOWN' }
+    }
+
+    $current = [regex]::Match($result.Text, '(?m)^Current user:\s*(?<id>\d+)\s*$')
+    if (-not $current.Success) {
+        return [pscustomobject]@{ Available = $false; Unlocked = $false; State = 'UNKNOWN' }
+    }
+
+    $currentId = [int]$current.Groups['id'].Value
+    $insideCurrent = $false
+    foreach ($line in ($result.Text -split "`r?`n")) {
+        $user = [regex]::Match($line, '^\s*UserInfo\{(?<id>\d+):')
+        if ($user.Success) {
+            $insideCurrent = [int]$user.Groups['id'].Value -eq $currentId
+            continue
+        }
+        if ($insideCurrent) {
+            $state = [regex]::Match($line, '^\s*State:\s*(?<state>[A-Z_0-9-]+)\s*$')
+            if ($state.Success) {
+                $value = [string]$state.Groups['state'].Value
+                return [pscustomobject]@{
+                    Available = $true
+                    Unlocked = $value -ceq 'RUNNING_UNLOCKED'
+                    State = $value
+                }
+            }
+        }
+    }
+
+    return [pscustomobject]@{ Available = $false; Unlocked = $false; State = 'UNKNOWN' }
+}
+
+function Wait-MishUserUnlocked {
+    param([Parameter(Mandatory)][int] $TimeoutSeconds)
+
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds($TimeoutSeconds)
+    $lastState = 'UNKNOWN'
+    $stateAvailable = $false
+    $processBeforeUnlock = $false
+
+    while ([DateTimeOffset]::UtcNow -lt $deadline) {
+        $user = Get-MishCurrentUserState
+        if ([bool]$user.Available) {
+            $stateAvailable = $true
+            $lastState = [string]$user.State
+        }
+
+        $pidResult = Invoke-MishAdbCapture -Arguments @('shell', 'pidof', $PackageName)
+        if ($pidResult.ExitCode -eq 0 -and $pidResult.Text -match '^\d+$') {
+            $processBeforeUnlock = $true
+        }
+
+        if ([bool]$user.Unlocked) {
+            $watch.Stop()
+            return [pscustomobject]@{
+                Observed = $true
+                StateAvailable = $stateAvailable
+                State = $lastState
+                WaitMs = [int64]$watch.ElapsedMilliseconds
+                ProcessObservedBeforeUnlock = $processBeforeUnlock
+            }
+        }
+        Start-Sleep -Milliseconds 1000
+    }
+
+    $watch.Stop()
+    return [pscustomobject]@{
+        Observed = $false
+        StateAvailable = $stateAvailable
+        State = $lastState
+        WaitMs = [int64]$watch.ElapsedMilliseconds
+        ProcessObservedBeforeUnlock = $processBeforeUnlock
+    }
 }
 
 function Wait-MishRebootComplete {
@@ -348,6 +462,12 @@ $evidence = [ordered]@{
         signing_certificate_stable = $false
         root_authorized_after = $false
         ready_after = $false
+        user_unlock_observed = $false
+        user_state_observed = 'UNKNOWN'
+        user_unlock_wait_ms = $null
+        process_observed_before_unlock = $false
+        convergence_elapsed_ms = $null
+        convergence_milestones_ms = $null
     }
     secrets_persisted_in_evidence = $false
     raw_public_ip_persisted = $false
@@ -404,6 +524,8 @@ try {
     $evidence.replacement_install.passive_process_start_observed = [bool]$replacementReady.PassiveProcessObserved
     $evidence.replacement_install.root_authorized_after = [bool]$replacementReady.Snapshot.root.policy_authorized
     $evidence.replacement_install.ready_after = $true
+    $evidence.replacement_install.convergence_elapsed_ms = [int64]$replacementReady.ElapsedMs
+    $evidence.replacement_install.convergence_milestones_ms = $replacementReady.Milestones
     $evidence.replacement_install.ready = Convert-MishReadyProjection -Snapshot $replacementReady.Snapshot
 
     $bootIdBeforeReboot = Get-MishBootId
@@ -419,7 +541,16 @@ try {
     $evidence.reboot.boot_completed = [bool]$reboot.Complete
     if (-not $reboot.Complete -or -not $reboot.BootIdChanged) { throw 'LAB_REBOOT_NOT_OBSERVED' }
 
-    $rebootReady = Wait-MishPassiveReady -Phase 'reboot' -TimeoutSeconds $StartupTimeoutSeconds
+    $unlock = Wait-MishUserUnlocked -TimeoutSeconds $UserUnlockTimeoutSeconds
+    $evidence.reboot.user_unlock_observed = [bool]$unlock.Observed
+    $evidence.reboot.user_state_observed = [string]$unlock.State
+    $evidence.reboot.user_unlock_wait_ms = [int64]$unlock.WaitMs
+    $evidence.reboot.process_observed_before_unlock = [bool]$unlock.ProcessObservedBeforeUnlock
+    if (-not $unlock.Observed) { throw 'LAB_REBOOT_USER_UNLOCK_NOT_OBSERVED' }
+
+    $rebootReady = Wait-MishPassiveReady -Phase 'reboot_after_unlock' -TimeoutSeconds $StartupTimeoutSeconds
+    $evidence.reboot.convergence_elapsed_ms = [int64]$rebootReady.ElapsedMs
+    $evidence.reboot.convergence_milestones_ms = $rebootReady.Milestones
     if (-not $rebootReady.PassiveProcessObserved) { throw 'PRODUCT_REBOOT_AUTOSTART_NOT_OBSERVED' }
     if (-not $rebootReady.Ready) { throw 'PRODUCT_REBOOT_NOT_READY' }
 

@@ -478,7 +478,7 @@ try {
 
     $u8PassPath = Join-Path $root 'u8-reboot-install-pass.json'
     [ordered]@{
-        schema = 'mish.lab.u8-reboot-install-durability/v1'
+        schema = 'mish.lab.u8-reboot-install-durability/v2'
         acceptance_result = 'PASS'
         classification = 'U8_REBOOT_INSTALL_DURABILITY_PASS'
         replacement_install = [ordered]@{ adb_install_r_attempts = 1; uid_stable = $true; signing_certificate_stable = $true; root_authorized_after = $true; ready_after = $true }
@@ -496,7 +496,7 @@ try {
 
     $u8ProductPath = Join-Path $root 'u8-reboot-install-product-fail.json'
     [ordered]@{
-        schema = 'mish.lab.u8-reboot-install-durability/v1'
+        schema = 'mish.lab.u8-reboot-install-durability/v2'
         acceptance_result = 'FAIL'
         classification = 'PRODUCT_REBOOT_NOT_READY'
     } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $u8ProductPath
@@ -511,7 +511,7 @@ try {
 
     $u8LabPath = Join-Path $root 'u8-reboot-install-lab-fail.json'
     [ordered]@{
-        schema = 'mish.lab.u8-reboot-install-durability/v1'
+        schema = 'mish.lab.u8-reboot-install-durability/v2'
         acceptance_result = 'FAIL'
         classification = 'LAB_REBOOT_NOT_OBSERVED'
     } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $u8LabPath
