@@ -563,6 +563,23 @@ U8 FINAL PASS
 
 Already accepted U2-U7 evidence is reused. Do not repeat process restart, ordinary cellular loss/recovery, accepted rotation lifecycle, 512/513 capacity or repeated 512 cleanup merely because U8 names durability again.
 
+## U8 implementation admission rule
+
+Every remaining item starts as `EVIDENCE_ONLY`, `CONTROL/LAB_ONLY` or `MINIMAL_PRODUCT_CHANGE_REQUIRED`. `NO CHANGE` is preferred whenever accepted owners already satisfy the requirement.
+
+```text
+U8-B reboot/install       -> CONTROL/LAB first
+U8-C root-shell death     -> hosted fault/test seam first
+U8-D IP-change proof      -> reuse U4/U5; evidence/CONTROL first
+U8-E remote rotation      -> the one justified new feature slice
+U8-F soak                 -> CONTROL/LAB first
+U8-G privacy/path         -> client/LAB first
+U8-H provenance           -> docs/evidence only
+```
+
+U8-E v1 is intentionally narrow: device session authentication/registration, `ROTATE_IP`, operation-result retrieval and only the liveness protocol required for those operations. No generic status RPC, arbitrary commands, remote proxy-credential retrieval, fleet scheduler, offline command queue, persistent device-state mirror or proxy data tunneling is part of U8.
+
+
 ### U8-B — reboot and replacement install
 
 Prove on the exact hosted candidate:
@@ -619,11 +636,12 @@ Design rules:
 
 - MISH initiates the connection; Worker never needs to dial the Android Mesh IP;
 - no public Android control listener, Workers VPC binding, second runtime, root daemon/helper, scheduler, lifecycle owner or generic RPC framework;
+- reuse the existing Android Keystore/storage effect boundary for the per-device control key where applicable; do not create a second secrets database;
 - Durable Object is a broker/coordinator for the live device connection and bounded recent operation correlation, not a second PRODUCT state authority;
 - proxy credentials remain owned by MISH; do not persist plaintext proxy password in DO by default;
 - Remote Manager -> Worker and MISH -> Worker/DO have separate reviewed authentication boundaries;
 - one explicit remote command maps to at most one existing rotation operation; replay/duplicate/concurrent requests remain bounded and fail closed;
-- rotation may tear down WSS; reconnect uses bounded backoff and the same device identity, after which the terminal result for the same `operation_id` is published;
+- WSS may survive or may drop across Cellular/underlay changes; correctness depends on neither outcome. If it drops, reconnect uses bounded backoff and the same device identity, then publishes the terminal result for the same `operation_id`;
 - raw old/new public IP is privileged response data only; ordinary durable evidence stays redacted.
 
 Hosted contracts cover authentication, expiry/tamper/replay, idempotency, BUSY/rejection, acceptance-before-mutation, WSS loss/reconnect, deterministic terminal result, redaction, no VPC/public-listener dependency and proof that the existing Rotation owner remains the sole mutation owner.
@@ -633,7 +651,7 @@ Physical E2E: invalid command -> no mutation; valid command -> operation id; WSS
 Control-session efficiency is part of U8 rather than an unmeasured background cost:
 
 - push-driven channel; no status polling;
-- initial heartbeat target **2–5 minutes**, shortened only by measured carrier/NAT need;
+- do not add app-level heartbeat unless physical carrier/NAT behavior requires it; if required, evaluate **2–5 minutes** first and shorten only from measured evidence;
 - target idle control traffic **<10 MB/month/device**, preferably **<5 MB/month/device**;
 - bounded reconnect backoff; no reconnect storms;
 - expose bounded typed observations for session age/state, reconnect count, heartbeat count, bytes TX/RX and last RX/TX age;
@@ -650,7 +668,7 @@ Soak proves lifetime/leak behavior, not throughput:
 
 - no unbounded FD/thread/task/memory growth;
 - Mesh peer liveness is checked, not merely local WARP/adapter “Connected” status;
-- one bounded long-lived CONNECT/WebSocket lifetime probe;
+- one bounded long-lived **proxy data-plane** CONNECT/WebSocket lifetime probe;
 - summarized latency/error/resource evidence;
 - no repeated 512-session stress unless a concrete new durability failure requires it.
 
