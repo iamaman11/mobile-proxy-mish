@@ -20,6 +20,7 @@ mish-android-network = { path = "../android-network" }
 mish-application = { path = "../application" }
 mish-cellular = { path = "../cellular" }
 mish-configuration = { path = "../configuration" }
+mish-control = { path = "../control" }
 mish-credentials = { path = "../credentials" }
 mish-proxy = { path = "../proxy" }
 mish-readiness = { path = "../readiness" }
