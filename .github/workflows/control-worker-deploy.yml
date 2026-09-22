@@ -1,0 +1,323 @@
+name: Control Worker Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number containing the exact U8-E Worker candidate'
+        required: true
+        type: string
+      source_sha:
+        description: 'Exact 40-hex PR head SHA'
+        required: true
+        type: string
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+
+concurrency:
+  group: mish-control-worker-deploy
+  cancel-in-progress: false
+
+env:
+  WRANGLER_VERSION: '4.135.0'
+  CONTROL_HOST: api.alegria.by
+  WORKER_DIR: infra/cloudflare/control-worker
+
+jobs:
+  resolve:
+    name: Resolve exact accepted Worker candidate
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'issue_comment' &&
+           github.actor == 'iamaman11' &&
+           startsWith(github.event.comment.body, '/mish-control-deploy ')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      pr_number: ${{ steps.resolve.outputs.pr_number }}
+      source_sha: ${{ steps.resolve.outputs.source_sha }}
+      hosted_run_id: ${{ steps.resolve.outputs.hosted_run_id }}
+    steps:
+      - name: Normalize explicit owner request
+        id: request
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          ACTOR: ${{ github.actor }}
+          COMMENT_BODY: ${{ github.event.comment.body || '' }}
+          INPUT_PR_NUMBER: ${{ inputs.pr_number || '' }}
+          INPUT_SOURCE_SHA: ${{ inputs.source_sha || '' }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import os
+          import re
+
+          if os.environ["EVENT_NAME"] == "workflow_dispatch":
+              pr = os.environ["INPUT_PR_NUMBER"].strip()
+              sha = os.environ["INPUT_SOURCE_SHA"].strip()
+          elif os.environ["EVENT_NAME"] == "issue_comment":
+              if os.environ["ACTOR"] != "iamaman11":
+                  raise SystemExit("control deploy is restricted to the repository owner")
+              match = re.fullmatch(
+                  r"/mish-control-deploy\s+([1-9][0-9]*)\s+([0-9a-f]{40})",
+                  os.environ["COMMENT_BODY"].strip(),
+              )
+              if match is None:
+                  raise SystemExit(
+                      "command must be exactly: /mish-control-deploy <PR> <SOURCE_SHA>"
+                  )
+              pr, sha = match.groups()
+          else:
+              raise SystemExit("unsupported event")
+
+          if not re.fullmatch(r"[1-9][0-9]*", pr):
+              raise SystemExit("PR number must be positive")
+          if not re.fullmatch(r"[0-9a-f]{40}", sha):
+              raise SystemExit("source SHA must be exact 40-hex")
+          print(f"pr_number={pr}")
+          print(f"source_sha={sha}")
+          PY
+
+      - name: Bind request to current protected main, exact PR head and GREEN hosted gate
+        id: resolve
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.request.outputs.pr_number }}
+          SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/control-worker-resolve"
+          mkdir -p "$root"
+
+          MAIN_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha // empty')"
+          test "$GITHUB_SHA" = "$MAIN_SHA"
+
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" > "$root/pr.json"
+          python3 - "$root/pr.json" "$GITHUB_REPOSITORY" "$PR_NUMBER" "$SOURCE_SHA" <<'PY'
+          import json
+          import sys
+
+          path, repository, requested_pr, source_sha = sys.argv[1:]
+          pr = json.load(open(path, encoding="utf-8"))
+          if str(pr.get("number")) != requested_pr:
+              raise SystemExit("PR identity mismatch")
+          if pr.get("state") != "open" or pr.get("draft") is not False:
+              raise SystemExit("deploy requires one open ready PR")
+          if ((pr.get("base") or {}).get("ref")) != "main":
+              raise SystemExit("deploy requires base main")
+          head = pr.get("head") or {}
+          if ((head.get("repo") or {}).get("full_name")) != repository:
+              raise SystemExit("deploy requires the canonical repository head")
+          if head.get("sha") != source_sha:
+              raise SystemExit("requested SHA is not the current PR head")
+          PY
+
+          gh api             "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$SOURCE_SHA&event=pull_request&status=completed&per_page=100"             > "$root/runs.json"
+          HOSTED_RUN_ID="$(python3 - "$root/runs.json" "$PR_NUMBER" "$SOURCE_SHA" <<'PY'
+          import json
+          import sys
+
+          path, requested_pr, source_sha = sys.argv[1:]
+          payload = json.load(open(path, encoding="utf-8"))
+          candidates = []
+          for run in payload.get("workflow_runs", []):
+              if run.get("name") != "PR Validation + PRODUCT Candidate":
+                  continue
+              if run.get("head_sha") != source_sha or run.get("conclusion") != "success":
+                  continue
+              prs = {str(item.get("number")) for item in run.get("pull_requests", [])}
+              if requested_pr not in prs:
+                  continue
+              candidates.append(run)
+          if not candidates:
+              raise SystemExit("exact PR head has no successful PR Validation + PRODUCT Candidate run")
+          candidates.sort(key=lambda item: item.get("id", 0), reverse=True)
+          print(candidates[0]["id"])
+          PY
+          )"
+
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$HOSTED_RUN_ID/artifacts?per_page=100"             > "$root/artifacts.json"
+          python3 - "$root/artifacts.json" "$PR_NUMBER" "$SOURCE_SHA" <<'PY'
+          import json
+          import sys
+
+          path, pr, sha = sys.argv[1:]
+          payload = json.load(open(path, encoding="utf-8"))
+          expected = f"device-candidate-pr-{pr}-{sha}"
+          matches = [
+              item for item in payload.get("artifacts", [])
+              if item.get("name") == expected and item.get("expired") is False
+          ]
+          if len(matches) != 1:
+              raise SystemExit("exact hosted run must expose exactly one non-expired canonical candidate")
+          PY
+
+          {
+            echo "pr_number=$PR_NUMBER"
+            echo "source_sha=$SOURCE_SHA"
+            echo "hosted_run_id=$HOSTED_RUN_ID"
+          } >> "$GITHUB_OUTPUT"
+
+  validate:
+    name: Validate exact Worker deployment boundary
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact PR head without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.source_sha }}
+          persist-credentials: false
+
+      - name: Verify exact U8-E Worker configuration before any secret is exposed
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("infra/cloudflare/control-worker")
+          config = json.loads((root / "wrangler.jsonc").read_text(encoding="utf-8"))
+          expected_keys = {
+              "$schema", "name", "main", "compatibility_date", "workers_dev",
+              "routes", "durable_objects", "exports", "secrets",
+          }
+          if set(config) != expected_keys:
+              raise SystemExit("Worker config contains an unexpected deployment capability")
+          if config["name"] != "mish-device-control":
+              raise SystemExit("unexpected Worker name")
+          if config["main"] != "src/index.mjs":
+              raise SystemExit("unexpected Worker entrypoint")
+          if config["compatibility_date"] != "2026-09-22":
+              raise SystemExit("unexpected Worker compatibility date")
+          if config["workers_dev"] is not False:
+              raise SystemExit("workers.dev must remain disabled")
+          if config["routes"] != [{"pattern": "api.alegria.by", "custom_domain": True}]:
+              raise SystemExit("Worker must own only api.alegria.by")
+          if config["durable_objects"] != {
+              "bindings": [{"name": "DEVICE_CONTROL", "class_name": "DeviceControl"}]
+          }:
+              raise SystemExit("unexpected Durable Object binding")
+          if config["exports"] != {
+              "DeviceControl": {"type": "durable-object", "storage": "sqlite"}
+          }:
+              raise SystemExit("unexpected Durable Object export")
+          if config["secrets"] != {"required": ["MISH_MANAGER_TOKEN"]}:
+              raise SystemExit("unexpected Worker secret contract")
+          if (root / "package.json").exists() or (root / "package-lock.json").exists():
+              raise SystemExit("control Worker deploy must not execute repository package scripts")
+          PY
+
+          test "$(tr -d '\r\n' < config/deployment/control-host.txt)" = "$CONTROL_HOST"
+          node --check "$WORKER_DIR/src/index.mjs"
+          node --check "$WORKER_DIR/src/protocol.mjs"
+          node --test "$WORKER_DIR/test/protocol.test.mjs"
+
+  deploy:
+    name: Deploy exact Worker candidate
+    needs: [resolve, validate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: cloudflare-control
+    steps:
+      - name: Checkout exact accepted PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.source_sha }}
+          persist-credentials: false
+
+      - name: Materialize one ephemeral Worker secret file
+        shell: bash
+        env:
+          MISH_MANAGER_TOKEN: ${{ secrets.MISH_MANAGER_TOKEN }}
+          CLOUDFLARE_CONTROL_DEPLOY_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_DEPLOY_TOKEN }}
+          CLOUDFLARE_CONTROL_ACCOUNT_ID: ${{ vars.CLOUDFLARE_CONTROL_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_CONTROL_DEPLOY_TOKEN"
+          test -n "$CLOUDFLARE_CONTROL_ACCOUNT_ID"
+          test "${#MISH_MANAGER_TOKEN}" -ge 32
+          if ! [[ "$CLOUDFLARE_CONTROL_ACCOUNT_ID" =~ ^[0-9A-Fa-f]{32}$ ]]; then
+            echo '::error::CLOUDFLARE_CONTROL_ACCOUNT_ID has an unexpected shape.'
+            exit 1
+          fi
+          umask 077
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path("infra/cloudflare/control-worker/.mish-deploy-secrets.json")
+          path.write_text(
+              json.dumps({"MISH_MANAGER_TOKEN": os.environ["MISH_MANAGER_TOKEN"]}),
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Deploy Worker and Durable Object with pinned Wrangler
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_CONTROL_DEPLOY_TOKEN }}
+          accountId: ${{ vars.CLOUDFLARE_CONTROL_ACCOUNT_ID }}
+          wranglerVersion: '4.135.0'
+          workingDirectory: infra/cloudflare/control-worker
+          command: deploy --secrets-file .mish-deploy-secrets.json
+
+      - name: Remove ephemeral Worker secret file
+        if: ${{ always() }}
+        shell: bash
+        run: rm -f "$WORKER_DIR/.mish-deploy-secrets.json"
+
+      - name: Verify production hostname and manager-auth fail-closed boundary
+        shell: bash
+        env:
+          MISH_MANAGER_TOKEN: ${{ secrets.MISH_MANAGER_TOKEN }}
+        run: |
+          set -euo pipefail
+          device_id="$(printf '0%.0s' {1..64})"
+          request_id='deploy_smoke'
+
+          check_status() {
+            local expected="$1"
+            shift
+            local status=''
+            for _ in {1..12}; do
+              status="$(curl --proto '=https' --tlsv1.2 --silent --show-error                 --connect-timeout 10 --max-time 20 -o /dev/null -w '%{http_code}' "$@" || true)"
+              if [[ "$status" == "$expected" ]]; then
+                return 0
+              fi
+              sleep 10
+            done
+            echo "::error::Expected HTTP $expected from $CONTROL_HOST, last status=$status"
+            return 1
+          }
+
+          url="https://$CONTROL_HOST/v1/devices/$device_id/operations/$request_id"
+          check_status 401 "$url"
+          check_status 401 -H 'Authorization: Bearer definitely-wrong-manager-token' "$url"
+          check_status 404 -H "Authorization: Bearer $MISH_MANAGER_TOKEN" "$url"
+
+      - name: Publish deployment summary
+        shell: bash
+        run: |
+          {
+            echo '### U8-E Control Worker deployment: PASS'
+            echo '- Source PR: #${{ needs.resolve.outputs.pr_number }}'
+            echo '- Source SHA: `${{ needs.resolve.outputs.source_sha }}`'
+            echo '- Hosted gate run: `${{ needs.resolve.outputs.hosted_run_id }}`'
+            echo '- Wrangler: `4.135.0`'
+            echo '- Host: `api.alegria.by`'
+            echo '- workers.dev: **disabled**'
+            echo '- Unauthenticated/wrong-manager auth: **401**'
+            echo '- Authorized unknown operation: **404**'
+            echo '- Device enrollment/physical rotation: **NOT performed by this deploy workflow**'
+          } >> "$GITHUB_STEP_SUMMARY"

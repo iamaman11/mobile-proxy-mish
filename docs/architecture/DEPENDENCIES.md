@@ -71,7 +71,7 @@ Rust must not grow Android UI/platform API code or arbitrary root-shell mechanic
 
 There is no Android external proxy child dependency or pre-L8 proxy compatibility layer after L8. PRODUCT does not scan, identify, stop, migrate or model historical Android sing-box processes/files. Any residue on a development device is LAB hygiene outside PRODUCT and cannot become a startup prerequisite, lifecycle state, recovery reason or FFI semantic.
 
-YAML, Gradle Kotlin DSL, PowerShell, Terraform and bounded shell snippets are build/CI/operations technologies, not runtime domain layers.
+YAML, Gradle Kotlin DSL, PowerShell and bounded shell snippets are build/CI/operations technologies, not runtime domain layers.
 
 ## Minimal-layer extension invariant
 

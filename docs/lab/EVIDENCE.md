@@ -96,7 +96,7 @@ Evidence must never contain:
 - passwords/proxy credential material;
 - Cloudflare API/enrollment tokens;
 - GitHub runner registration tokens;
-- Terraform/R2 credentials;
+- Cloudflare API credentials;
 - IMEI, IMSI, ICCID, SIM number or phone number;
 - arbitrary environment dumps;
 - Android ephemeral Network handles;

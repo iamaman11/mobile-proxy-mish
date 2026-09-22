@@ -4,12 +4,12 @@ The physical lab executes explicitly authorized evidence against real Windows/An
 
 ## Threat model
 
-This repository is public. A persistent self-hosted runner can reach local machine state, attached devices and any credentials installed on that host. Terraform/provider authority and Android release-signing material are separately sensitive. Untrusted PR code must never select the physical runner or receive provider/release credentials.
+This repository is public. A persistent self-hosted runner can reach local machine state, attached devices and any credentials installed on that host. Cloudflare API authority and Android release-signing material are separately sensitive. Untrusted PR code must never select the physical runner or receive provider/release credentials.
 
 Primary threats:
 
 - untrusted code executing on the lab host;
-- provider/R2 credentials reaching PR-head execution;
+- Cloudflare API credentials reaching PR-head execution;
 - Android release keys/passwords reaching PR jobs or the physical runner;
 - credentials leaking through logs/artifacts/process environment;
 - a persistent runner retaining sensitive state;
@@ -24,7 +24,7 @@ Normal CI and Android release construction remain GitHub-hosted.
 ```text
 pull_request/static/product CI   -> GitHub-hosted, no provider/release secrets
 Android release build/sign       -> restricted GitHub-hosted release environment
-credentialed provider plan/apply -> protected hosted path only
+credentialed Cloudflare API verification -> protected hosted path only
 physical evidence                -> dedicated self-hosted Windows lab runner
 ```
 
@@ -58,7 +58,7 @@ Physical workflows must:
 - clean generated sensitive temporary material where practical;
 - never automatically select a repair/follow-up cycle after a result.
 
-Provider write workflows remain protected hosted paths. Pull requests may run only credential-free static/provider validation. Android release-signing credentials are available only to the restricted release job after its release gate.
+Credentialed Cloudflare verification remains a protected hosted path. Pull requests must not receive Cloudflare API credentials. Android release-signing credentials are available only to the restricted release job after its release gate.
 
 ## Host separation
 
@@ -72,7 +72,7 @@ C:\projects\mobile-proxy-mish\   # optional human clone only
 
 The runner owns its own `_work` checkout. A human development clone is never evidence identity.
 
-Prefer a dedicated Windows runner identity with only the local rights needed by accepted workflows. Do not make Cloudflare provider credentials or Android release-signing material generally available to that identity.
+Prefer a dedicated Windows runner identity with only the local rights needed by accepted workflows. Do not make Cloudflare API credentials or Android release-signing material generally available to that identity.
 
 ## Credential split
 
@@ -82,8 +82,7 @@ Only credentials materially required for the physical fixture and only through t
 
 ### Physical runner must not have
 
-- Cloudflare Terraform plan/apply API token;
-- R2 Terraform-state credentials;
+- Cloudflare account API tokens not explicitly required by the physical fixture;
 - Android release keystore/private key;
 - Android release keystore/key passwords or release-signing aliases;
 - broad GitHub write PAT;
@@ -94,9 +93,9 @@ Only credentials materially required for the physical fixture and only through t
 
 Android release-signing material belongs only to the restricted GitHub release environment and is materialized ephemerally in the hosted release job. The job fails closed if its signing set is incomplete, never logs private signing material, removes temporary key material, and publishes only the final signed APK plus non-secret identity/digests/attestation.
 
-### Hosted provider jobs
+### Hosted Cloudflare verification
 
-Provider desired-config credentials belong to protected hosted workflows under least privilege. Never expose them to PR-head Terraform execution or the physical runner merely to simplify orchestration.
+Cloudflare read-only verification credentials belong to protected hosted workflows under least privilege. Never expose them to PR-head execution or the physical runner merely to simplify orchestration.
 
 ## Public evidence redaction
 
@@ -109,7 +108,6 @@ SIM/ICCID/phone number
 Cloudflare enrollment/API tokens
 proxy passwords or credential material
 GitHub runner registration token
-R2 credentials
 Android release private key/passwords
 private account identifiers when not required
 Android ephemeral Network handles

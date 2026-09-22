@@ -193,6 +193,6 @@ jobs:
           {
             echo '### Cloudflare Live Preflight: PASS'
             echo '- Read-only official API observations only.'
-            echo '- No Terraform, R2 state, provider plan, import, PATCH, PUT, POST, DELETE, or apply operation was used.'
+            echo '- Read-only verification performs no Cloudflare configuration mutation.'
             echo '- Exact Windows profile, Mesh CIDR, device TCP/UDP/virtual-IP settings, and WARP-to-WARP connectivity are accepted.'
           } >> "$GITHUB_STEP_SUMMARY"

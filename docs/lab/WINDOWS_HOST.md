@@ -15,7 +15,7 @@ accepted protected main
  -> typed/redacted GitHub evidence
 ```
 
-It does **not** enroll a phone, configure Cloudflare One Client, implement `labctl`, mutate Cloudflare/Terraform state, or execute E3.
+It does **not** enroll a phone, configure Cloudflare One Client, implement `labctl`, mutate Cloudflare account configuration, or execute E3.
 
 ## Ownership
 
@@ -77,9 +77,8 @@ The accepted service identity is the Windows built-in `NT AUTHORITY\NETWORK SERV
 
 The physical runner must not receive or store:
 
-- Cloudflare Terraform API tokens;
-- R2 Terraform-state credentials;
-- provider apply credentials;
+- Cloudflare account API tokens;
+- Cloudflare configuration-write credentials;
 - broad GitHub PATs;
 - production credentials.
 
