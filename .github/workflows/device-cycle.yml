@@ -566,7 +566,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $evidence = Get-Content -Raw -LiteralPath "$env:RUNNER_TEMP\\mish-u8-remote-control-v1.json" | ConvertFrom-Json
-          if ([string]$evidence.acceptance_result -cne 'PASS' -or [string]$evidence.classification -cne 'U8_REMOTE_CONTROL_ROTATION_PASS' -or [string]$evidence.exact_candidate_acceptance -cne 'PASS' -or [int]$evidence.logical_rotation_requests -ne 1 -or [int]$evidence.duplicate_same_request_replays -ne 1 -or -not [bool]$evidence.wrong_manager_auth_zero_rotation_mutation -or -not [bool]$evidence.idempotent_same_operation -or [bool]$evidence.manager_token_persisted -or [bool]$evidence.public_spki_persisted -or [bool]$evidence.raw_public_ip_persisted -or [bool]$evidence.secrets_persisted_in_evidence) {
+          if ([string]$evidence.acceptance_result -cne 'PASS' -or [string]$evidence.classification -cne 'U8_REMOTE_CONTROL_ROTATION_PASS' -or [string]$evidence.exact_candidate_acceptance -cne 'PASS' -or [int]$evidence.logical_rotation_requests -ne 1 -or [int]$evidence.duplicate_same_request_replays -ne 1 -or [int]$evidence.wrong_manager_auth_status -ne 401 -or -not [bool]$evidence.wrong_manager_auth_zero_rotation_mutation -or [int]$evidence.authenticated_invalid_request_status -ne 400 -or -not [bool]$evidence.authenticated_invalid_request_zero_rotation_mutation -or -not [bool]$evidence.idempotent_same_operation -or [bool]$evidence.manager_token_persisted -or [bool]$evidence.public_spki_persisted -or [bool]$evidence.raw_public_ip_persisted -or [bool]$evidence.secrets_persisted_in_evidence) {
             throw 'MISH_DEVICE_CYCLE_FAILURE|U8_REMOTE_CONTROL_ACCEPTANCE_FAILED|Remote-control evidence did not satisfy the bounded acceptance contract.'
           }
 
@@ -579,6 +579,7 @@ jobs:
             ${{ runner.temp }}\\mish-u8-remote-control-v1.json
             ${{ runner.temp }}\\mish-u8-remote-control-baseline-v2.json
             ${{ runner.temp }}\\mish-u8-remote-control-after-wrong-auth-v2.json
+            ${{ runner.temp }}\\mish-u8-remote-control-after-invalid-request-v2.json
             ${{ runner.temp }}\\mish-u8-remote-control-post-v2.json
             ${{ runner.temp }}\\mish-u8-remote-control-start-before-v1.json
             ${{ runner.temp }}\\mish-u8-remote-control-start-after-v1.json
@@ -599,6 +600,7 @@ jobs:
             '- Logical valid rotation requests: **1**'
             '- Same-request replay: **same terminal operation**'
             '- Wrong manager auth: **401 / zero Rotation mutation**'
+            '- Authenticated invalid request: **400 / zero Rotation mutation**'
             '- Post PRODUCT diagnostic: **PASS**'
             '- Raw public IP persisted: **NO**'
             '- Secrets/SPKI persisted: **NO**'
