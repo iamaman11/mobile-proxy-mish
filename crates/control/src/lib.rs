@@ -222,7 +222,7 @@ pub fn p256_der_signature_to_p1363_b64url(
     Ok(encode_base64(&signature, true, false))
 }
 
-fn encode_wireT: Serialize>(message: &T) -> Result<String, ControlProtocolError> {
+fn encode_wire<T: Serialize>(message: &T) -> Result<String, ControlProtocolError> {
     let encoded =
         serde_json::to_string(message).map_err(|_| ControlProtocolError::MalformedWireMessage)?;
     if encoded.len() > CONTROL_WIRE_MAX_BYTES {

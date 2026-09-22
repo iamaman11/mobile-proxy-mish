@@ -6,7 +6,10 @@ on:
       - u8/remote-rotation-control
 
 permissions:
-  contents: read
+  contents: write
+
+env:
+  RUST_TOOLCHAIN: 1.98.1
 
 jobs:
   resolve:
@@ -14,11 +17,25 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          persist-credentials: false
-      - name: Resolve only the existing lockfile plus new pinned dependencies
-        run: cargo metadata --format-version=1 > /dev/null
-      - name: Emit compressed lockfile for the bounded development handoff
+          fetch-depth: 1
+
+      - name: Install exact Rust toolchain
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt
+
+      - name: Resolve pinned dependency lock
+        run: cargo +"$RUST_TOOLCHAIN" metadata --format-version=1 > /dev/null
+
+      - name: Normalize Rust formatting
+        run: cargo +"$RUST_TOOLCHAIN" fmt --all
+
+      - name: Commit generated lockfile and rustfmt only
         run: |
-          printf 'U8_LOCK_GZIP_B64='
-          gzip -9c Cargo.lock | base64 -w0
-          printf '\n'
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.lock crates
+          if git diff --cached --quiet; then
+            echo "U8_LOCK_AND_FMT=NOOP"
+            exit 0
+          fi
+          git commit -m "chore(u8): refresh lockfile and rustfmt"
+          git push origin HEAD:u8/remote-rotation-control

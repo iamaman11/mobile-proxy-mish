@@ -328,7 +328,7 @@ impl ControlRuntimeCoordinator {
                                 Arc::clone(&cellular_request_rearm),
                             ).await?;
                         }
-                        ControlTransportMessage::Close => return Err(ControlRunError::WebSocket),
+                        ControlTransportMessage::Closed => return Err(ControlRunError::Transport),
                     }
                 }
             }
@@ -351,7 +351,7 @@ impl ControlRuntimeCoordinator {
                 ServerControlMessage::Challenge { nonce } => nonce,
                 _ => return Err(ControlRunError::Protocol),
             },
-            ControlTransportMessage::Close => return Err(ControlRunError::WebSocket),
+            ControlTransportMessage::Closed => return Err(ControlRunError::Transport),
         };
 
         let payload = canonical_auth_payload(identity.device_id(), &nonce)
