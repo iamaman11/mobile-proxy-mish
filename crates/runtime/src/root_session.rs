@@ -86,16 +86,16 @@ impl RootShellSession {
     async fn start(generation: u64) -> Result<Self, RootSessionError> {
         // Android's shell performs the stderr merge and is replaced by su via exec, so there is
         // still exactly one persistent privilege process rather than one shell per command.
-        Self::start_with_process(generation, "sh", &["-c", "exec su 2>&1"]).await
+        let mut command = Command::new("sh");
+        command.arg("-c").arg("exec su 2>&1");
+        Self::start_with_command(generation, command).await
     }
 
-    async fn start_with_process(
+    async fn start_with_command(
         generation: u64,
-        program: &str,
-        args: &[&str],
+        mut command: Command,
     ) -> Result<Self, RootSessionError> {
-        let mut child = Command::new(program)
-            .args(args)
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -117,11 +117,6 @@ impl RootShellSession {
             stdin,
             stdout: BufReader::new(stdout),
         })
-    }
-
-    #[cfg(test)]
-    async fn start_unprivileged_for_test(generation: u64) -> Result<Self, RootSessionError> {
-        Self::start_with_process(generation, "sh", &[]).await
     }
 
     async fn execute(&mut self, command: &RootCommand) -> RootCommandOutcome {
@@ -353,6 +348,12 @@ impl RootSessionManager {
 mod tests {
     use super::*;
 
+    async fn start_unprivileged_shell(
+        generation: u64,
+    ) -> Result<RootShellSession, RootSessionError> {
+        RootShellSession::start_with_command(generation, Command::new("sh")).await
+    }
+
     #[test]
     fn root_command_boundary_rejects_multiline_or_empty_input() {
         assert_eq!(
@@ -410,7 +411,7 @@ mod tests {
         ))
         .expect("valid mutation");
         let first = manager
-            .execute_with_starter(uncertain, RootShellSession::start_unprivileged_for_test)
+            .execute_with_starter(uncertain, start_unprivileged_shell)
             .await
             .expect("transport failure remains command outcome");
 
@@ -422,7 +423,7 @@ mod tests {
 
         let observe = RootCommand::observation(format!("cat {path}")).expect("valid observation");
         let second = manager
-            .execute_with_starter(observe, RootShellSession::start_unprivileged_for_test)
+            .execute_with_starter(observe, start_unprivileged_shell)
             .await
             .expect("replacement session");
         assert_eq!(second.session_generation, 2);
@@ -434,7 +435,7 @@ mod tests {
         let observe_again =
             RootCommand::observation(format!("cat {path}")).expect("valid observation");
         let third = manager
-            .execute_with_starter(observe_again, RootShellSession::start_unprivileged_for_test)
+            .execute_with_starter(observe_again, start_unprivileged_shell)
             .await
             .expect("same healthy replacement session");
         assert_eq!(third.session_generation, 2);
