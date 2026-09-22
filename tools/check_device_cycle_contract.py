@@ -306,7 +306,7 @@ def main() -> None:
 
     u8_probe = "lab/windows/diagnose-u8-reboot-install-durability.ps1"
     for required in (
-        "mish.lab.u8-reboot-install-durability/v1",
+        "mish.lab.u8-reboot-install-durability/v2",
         "snapshot_v2",
         "Do not touch the diagnostics provider until PRODUCT is independently observable",
         "@('install', '-r', $SignedProductApkPath)",
@@ -315,6 +315,11 @@ def main() -> None:
         "adb_reboot_attempts = 1",
         "/proc/sys/kernel/random/boot_id",
         "sys.boot_completed",
+        "'shell', 'dumpsys', 'user'",
+        "RUNNING_UNLOCKED",
+        "UserUnlockTimeoutSeconds = 300",
+        "LAB_REBOOT_USER_UNLOCK_NOT_OBSERVED",
+        "convergence_milestones_ms",
         "verify-installed-candidate.ps1",
         "PRODUCT_REPLACEMENT_AUTOSTART_NOT_OBSERVED",
         "PRODUCT_REPLACEMENT_UID_CHANGED",
