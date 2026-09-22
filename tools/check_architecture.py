@@ -461,6 +461,41 @@ def main() -> None:
             "Transport must not regain listener/session execution or thread-per-session relay",
         )
 
+    # U7 accepted capacity is one explicit Transport-owned PRODUCT contract. Keep the current
+    # architecture docs and executable configuration synchronized so old 64/65 evidence cannot
+    # silently become a second current source of truth.
+    configuration = "crates/configuration/src/lib.rs"
+    require_product(
+        configuration,
+        "pub const EXTERNAL_TCP_SESSION_BUDGET: usize = 512;",
+        "accepted U7 external capacity must remain explicit in the configuration owner",
+    )
+    require(
+        "docs/architecture/OWNERSHIP.md",
+        "canonical external accepted-session budget=512",
+        "current ownership documentation must match accepted PRODUCT capacity",
+    )
+    forbid(
+        "docs/architecture/OWNERSHIP.md",
+        "accepted-session budget=64",
+        "historical U2 capacity must not remain current ownership truth",
+    )
+    require(
+        "docs/architecture/DEVELOPMENT_PIPELINE.md",
+        "mish-transport external session owner (canonical limit 512)",
+        "current Device Cycle documentation must match the executable 512/513 gate",
+    )
+    require(
+        "docs/architecture/U7_CAPACITY_SCALING.md",
+        "CLOSED / HISTORICAL U7 EXECUTION RECORD",
+        "completed U7 capacity planning must not masquerade as a current 64-session contract",
+    )
+    require(
+        "docs/architecture/U7_POST_TOKIO_CAPACITY_ENVELOPE.md",
+        "CLOSED / HISTORICAL U7 CHARACTERIZATION PLAN",
+        "completed U7 characterization must remain clearly historical",
+    )
+
     transport_runtime_owner = "crates/transport/src/runtime_owner.rs"
     require(
         transport_runtime_owner,
