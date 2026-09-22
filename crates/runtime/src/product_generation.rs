@@ -80,7 +80,6 @@ impl ProductGeneration {
         );
         let control = ControlRuntimeCoordinator::new(
             Arc::clone(&executor),
-            Arc::clone(&cellular),
             Arc::clone(&rotation),
         )?;
 
