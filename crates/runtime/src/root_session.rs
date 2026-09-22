@@ -392,8 +392,13 @@ mod tests {
         assert!(result.exit_code > 0);
     }
 
-    #[tokio::test]
-    async fn uncertain_mutation_is_not_replayed_after_shell_death() {
+    #[test]
+    fn uncertain_mutation_is_not_replayed_after_shell_death() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test Tokio runtime");
+        runtime.block_on(async {
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let path = format!(
@@ -441,6 +446,7 @@ mod tests {
 
         let _ = std::fs::remove_file(path);
         manager.shutdown().await;
+        });
     }
 
     #[test]
