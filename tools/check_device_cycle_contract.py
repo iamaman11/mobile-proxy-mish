@@ -122,8 +122,12 @@ def main() -> None:
     require(
         "lab/windows/test-device-cycle.ps1",
         "test-u8-reboot-install-probe-contract.ps1",
-        "test-u8-public-egress-rotation-probe-contract.ps1",
         "U8 durability probe guard must run inside the existing Device Cycle Contracts job without changing candidate-producer policy",
+    )
+    require(
+        "lab/windows/test-device-cycle.ps1",
+        "test-u8-public-egress-rotation-probe-contract.ps1",
+        "U8 public-egress probe guard must run inside the existing Device Cycle Contracts job without changing candidate-producer policy",
     )
 
     for required in (
