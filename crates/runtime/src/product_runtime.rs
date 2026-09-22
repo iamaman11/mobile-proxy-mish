@@ -285,9 +285,11 @@ impl ProductRuntimeCoordinator {
             {
                 return Err(ControlRuntimeStartError::StateUnavailable);
             }
-            if state.control_start.as_ref().is_some_and(|existing| {
-                existing.public_key_spki != input.public_key_spki
-            }) {
+            if state
+                .control_start
+                .as_ref()
+                .is_some_and(|existing| existing.public_key_spki != input.public_key_spki)
+            {
                 return Err(ControlRuntimeStartError::AlreadyStarted);
             }
             let previous = state.control_start.replace(input.clone());
