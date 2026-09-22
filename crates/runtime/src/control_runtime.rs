@@ -483,7 +483,7 @@ impl ControlRuntimeCoordinator {
             {
                 state.pending = None;
             }
-            return Err(error);
+            return Err(error.into());
         }
 
         if let Err(error) = self.rotation.activate_prepared(operation_id) {
@@ -533,7 +533,7 @@ impl ControlRuntimeCoordinator {
         };
         let message = encode_result_message(&pending.request_id, result, pending.operation_id)
             .map_err(|_| ControlRunError::Protocol)?;
-        transport.write_text(&message).await
+        transport.write_text(&message).await.map_err(ControlRunError::from)
     }
 
     fn ack_result(&self, request_id: &str) {

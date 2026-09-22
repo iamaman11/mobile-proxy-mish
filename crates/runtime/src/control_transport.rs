@@ -237,8 +237,8 @@ mod tests {
 
     #[test]
     fn protocol_ping_pong_and_close_are_transport_mechanics_only() {
-        assert_eq!(classify_message(Message::ping(vec![1])), Ok(None));
-        assert_eq!(classify_message(Message::pong(vec![1])), Ok(None));
+        assert_eq!(classify_message(Message::Ping(vec![1].into())), Ok(None));
+        assert_eq!(classify_message(Message::Pong(vec![1].into())), Ok(None));
         assert_eq!(
             classify_message(Message::Close(None)),
             Ok(Some(ControlTransportMessage::Closed))
