@@ -119,6 +119,16 @@ if ([string]$afterWrongAuth.android.rotation.state -cne $baselineRotationState -
     Stop-MishRemoteControl 'WRONG_MANAGER_AUTH_MUTATED_ROTATION' 'Rejected manager authentication changed Rotation-owner state.'
 }
 
+# Authenticated malformed manager input must fail before Durable Object/device mutation.
+$invalidAuthenticatedRequest = Invoke-MishManagerRequest -Method POST -Path "/v1/devices/$deviceId/rotate" -BearerToken $env:MISH_MANAGER_TOKEN -Body ([ordered]@{ request_id = 'invalid request id' })
+if ($invalidAuthenticatedRequest.Status -ne 400) { Stop-MishRemoteControl 'INVALID_AUTHENTICATED_REQUEST_NOT_REJECTED' "Expected HTTP 400, observed $($invalidAuthenticatedRequest.Status)." }
+Start-Sleep -Milliseconds 750
+$afterInvalidRequestPath = Join-Path $env:TEMP 'mish-u8-remote-control-after-invalid-request-v2.json'
+$afterInvalidRequest = Invoke-MishDiagnostic -Path $afterInvalidRequestPath
+if ([string]$afterInvalidRequest.android.rotation.state -cne $baselineRotationState -or [string]$afterInvalidRequest.android.rotation.operation_id -cne [string]$baselineRotationId -or [string]$afterInvalidRequest.android.rotation.terminal_result -cne [string]$baselineTerminal) {
+    Stop-MishRemoteControl 'INVALID_AUTHENTICATED_REQUEST_MUTATED_ROTATION' 'Authenticated invalid manager request changed Rotation-owner state.'
+}
+
 $requestId = "u8e_$env:GITHUB_RUN_ID"
 $dispatch = Invoke-MishManagerRequest -Method POST -Path "/v1/devices/$deviceId/rotate" -BearerToken $env:MISH_MANAGER_TOKEN -Body ([ordered]@{ request_id = $requestId })
 # Exactly one valid dispatch attempt. DEVICE_OFFLINE is an acceptance failure, never a retry loop.
@@ -173,6 +183,8 @@ $evidence = [ordered]@{
     restart_after_enrollment = 'PASS'
     wrong_manager_auth_status = 401
     wrong_manager_auth_zero_rotation_mutation = $true
+    authenticated_invalid_request_status = 400
+    authenticated_invalid_request_zero_rotation_mutation = $true
     logical_rotation_requests = 1
     duplicate_same_request_replays = 1
     request_id = $requestId
@@ -204,6 +216,7 @@ Write-Host 'MISH_U8_REMOTE_CONTROL=PASS'
 Write-Host 'MISH_U8_REMOTE_CONTROL_CLASSIFICATION=U8_REMOTE_CONTROL_ROTATION_PASS'
 Write-Host "MISH_U8_REMOTE_CONTROL_OPERATION_ID=$operationId"
 Write-Host "MISH_U8_REMOTE_CONTROL_TERMINAL=$terminalResult"
+Write-Host 'MISH_U8_REMOTE_CONTROL_INVALID_AUTHENTICATED_REQUEST=400_ZERO_MUTATION'
 Write-Host 'MISH_U8_REMOTE_CONTROL_LOGICAL_ROTATION_REQUESTS=1'
 Write-Host 'MISH_U8_REMOTE_CONTROL_IDEMPOTENT_REPLAY=PASS'
 Write-Host 'MISH_U8_REMOTE_CONTROL_RAW_IP_PERSISTED=false'
