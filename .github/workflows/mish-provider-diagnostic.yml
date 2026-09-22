@@ -49,7 +49,7 @@ jobs:
             }
           }
 
-          $pid = Invoke-AdbEvidence @('shell', 'pidof', $env:PACKAGE_NAME)
+          $pidResult = Invoke-AdbEvidence @('shell', 'pidof', $env:PACKAGE_NAME)
           $provider = Invoke-AdbEvidence @('shell', 'content', 'call', '--uri', "content://$env:PACKAGE_NAME.diagnostics", '--method', 'snapshot_v2')
           $exitInfo = Invoke-AdbEvidence @('shell', 'dumpsys', 'activity', 'exit-info', $env:PACKAGE_NAME)
           $logcat = Invoke-AdbEvidence @('logcat', '-d', '-v', 'threadtime', '-t', '1200')
@@ -67,12 +67,12 @@ jobs:
           [IO.File]::WriteAllText((Join-Path $root 'exit-info.txt'), $exitInfo.Text, [Text.UTF8Encoding]::new($false))
           [IO.File]::WriteAllLines((Join-Path $root 'bounded-logcat.txt'), $bounded, [Text.UTF8Encoding]::new($false))
 
-          $pidText = $pid.Text.Trim()
+          $pidText = $pidResult.Text.Trim()
           $summary = [ordered]@{
             schema = 'mish.lab.provider-state/v1'
             collected_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
             package = $env:PACKAGE_NAME
-            process_running = ($pid.ExitCode -eq 0 -and $pidText -match '^\d+$')
+            process_running = ($pidResult.ExitCode -eq 0 -and $pidText -match '^\d+$')
             provider_exit_code = $provider.ExitCode
             provider_has_payload = ($provider.Text -match 'payload_b64=[A-Za-z0-9+/=]+')
             provider_output_present = -not [string]::IsNullOrWhiteSpace($provider.Text)
