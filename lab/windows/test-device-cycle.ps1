@@ -1,4 +1,5 @@
 $ErrorActionPreference = 'Stop'
+& (Join-Path $PSScriptRoot 'test-u8-reboot-install-probe-contract.ps1')
 & (Join-Path $PSScriptRoot 'test-u7-runtime-restart-probe-contract.ps1')
 Set-StrictMode -Version Latest
 
@@ -13,6 +14,8 @@ try {
         'diagnose-loopback-connect.ps1',
         'diagnose-capacity-resources.ps1',
         'diagnose-dns-lifetime-live.ps1',
+        'diagnose-u8-reboot-install-durability.ps1',
+        'test-u8-reboot-install-probe-contract.ps1',
         'test-diagnostic-connect-probe.ps1',
         'new-device-cycle-report.ps1'
     )) {
@@ -470,6 +473,55 @@ try {
         [string]$stabilityProduct.exact_candidate_acceptance -cne 'FAIL'
     ) {
         throw 'Observed stop-during-ON restart PRODUCT failure must reject the exact candidate.'
+    }
+
+
+    $u8PassPath = Join-Path $root 'u8-reboot-install-pass.json'
+    [ordered]@{
+        schema = 'mish.lab.u8-reboot-install-durability/v1'
+        acceptance_result = 'PASS'
+        classification = 'U8_REBOOT_INSTALL_DURABILITY_PASS'
+        replacement_install = [ordered]@{ adb_install_r_attempts = 1; uid_stable = $true; signing_certificate_stable = $true; root_authorized_after = $true; ready_after = $true }
+        reboot = [ordered]@{ adb_reboot_attempts = 1; boot_id_changed = $true; uid_stable = $true; signing_certificate_stable = $true; root_authorized_after = $true; ready_after = $true }
+    } | ConvertTo-Json -Depth 6 | Set-Content -Encoding UTF8 -LiteralPath $u8PassPath
+    $u8Pass = & $reportScript -Mode full -PrNumber 309 -SourceSha ('0' * 40) -ControlSha $controlSha -DiagnosticEvidencePath $passDiagnostic -RequestedProbe u8_reboot_install_durability -TargetedEvidencePath $u8PassPath -OutputPath (Join-Path $root 'u8-reboot-install-pass-report.json') | Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$u8Pass.cycle_result -cne 'PASS' -or
+        [string]$u8Pass.classification -cne 'U8_REBOOT_INSTALL_DURABILITY_PASS' -or
+        [string]$u8Pass.acceptance_scope -cne 'FULL_BASELINE_PLUS_U8_REBOOT_INSTALL_DURABILITY' -or
+        [string]$u8Pass.exact_candidate_acceptance -cne 'PASS'
+    ) {
+        throw 'U8 reboot/install durability PASS must require baseline + targeted physical evidence.'
+    }
+
+    $u8ProductPath = Join-Path $root 'u8-reboot-install-product-fail.json'
+    [ordered]@{
+        schema = 'mish.lab.u8-reboot-install-durability/v1'
+        acceptance_result = 'FAIL'
+        classification = 'PRODUCT_REBOOT_NOT_READY'
+    } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $u8ProductPath
+    $u8Product = & $reportScript -Mode full -PrNumber 309 -SourceSha ('0' * 40) -ControlSha $controlSha -DiagnosticEvidencePath $passDiagnostic -RequestedProbe u8_reboot_install_durability -TargetedEvidencePath $u8ProductPath -OutputPath (Join-Path $root 'u8-reboot-install-product-report.json') | Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$u8Product.cycle_result -cne 'PRODUCT_FAIL' -or
+        [string]$u8Product.classification -cne 'PRODUCT_REBOOT_NOT_READY' -or
+        [string]$u8Product.exact_candidate_acceptance -cne 'FAIL'
+    ) {
+        throw 'Observed U8 reboot PRODUCT failure must reject the exact candidate.'
+    }
+
+    $u8LabPath = Join-Path $root 'u8-reboot-install-lab-fail.json'
+    [ordered]@{
+        schema = 'mish.lab.u8-reboot-install-durability/v1'
+        acceptance_result = 'FAIL'
+        classification = 'LAB_REBOOT_NOT_OBSERVED'
+    } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $u8LabPath
+    $u8Lab = & $reportScript -Mode full -PrNumber 309 -SourceSha ('0' * 40) -ControlSha $controlSha -DiagnosticEvidencePath $passDiagnostic -RequestedProbe u8_reboot_install_durability -TargetedEvidencePath $u8LabPath -OutputPath (Join-Path $root 'u8-reboot-install-lab-report.json') | Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$u8Lab.cycle_result -cne 'LAB_FAIL' -or
+        [string]$u8Lab.classification -cne 'LAB_REBOOT_NOT_OBSERVED' -or
+        [string]$u8Lab.exact_candidate_acceptance -cne 'NOT_EVALUATED'
+    ) {
+        throw 'U8 reboot/install LAB collection failure must not reject the PRODUCT candidate.'
     }
 
     Write-Host 'DEVICE_CYCLE_CONTRACT=PASS'
