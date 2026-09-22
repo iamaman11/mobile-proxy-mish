@@ -270,7 +270,6 @@ impl RotationRuntimeCoordinator {
             let current = state.machine.snapshot();
             if current.operation_id != Some(operation_id)
                 || current.phase != RotationPhase::Preparing
-                || !state.claimed.is_empty()
             {
                 return false;
             }
