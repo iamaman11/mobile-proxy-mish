@@ -549,8 +549,9 @@ U8-C root-shell death/replacement
 U8-D public Cellular egress IP rotation proof
 U8-E authenticated remote IP-rotation command
 U8-F low-impact durability soak
+     + reverse-WSS reconnect/heartbeat/traffic/resource budget
      + Mesh peer liveness
-     + one long-lived CONNECT/WebSocket lifetime probe
+     + one long-lived proxy CONNECT/WebSocket lifetime probe
      + bounded latency/error/resource evidence
 U8-G external privacy/path closure #315
      + clean intended Windows client profile
@@ -595,98 +596,51 @@ Raw public IP may be shown to an authenticated operator/controller, but ordinary
 
 ### U8-E — authenticated remote IP-rotation command
 
-Add one **narrow Mesh-only application control surface** over the existing rotation owner:
+Production control transport is **MISH-initiated outbound WSS -> Cloudflare Worker -> Durable Object per device**, with **no Workers VPC dependency**:
 
 ```text
-authorized remote application
-        |
-        | authenticated command over accepted private Mesh path
-        v
-thin MISH control endpoint
-        |
-        v
-existing Rust rotation owner
-        |
-        v
-Cellular rotation / recovery
-        |
-        v
-READY + Proxy + Mesh
-        |
-        v
-authenticated typed terminal result
+Remote Manager
+      | HTTPS + manager authentication
+      v
+Cloudflare Worker / API
+      |
+      v
+Durable Object(device_id)
+      ^
+      || authenticated long-lived outbound WSS
+      ||
+MISH control client on the existing Tokio runtime
+      |
+      v
+existing Rotation owner
 ```
 
-It must not create another rotation implementation, public Internet control API, root daemon/helper, scheduler, lifecycle owner or mutable status database.
+Design rules:
 
-Initial authentication contract:
+- MISH initiates the connection; Worker never needs to dial the Android Mesh IP;
+- no public Android control listener, Workers VPC binding, second runtime, root daemon/helper, scheduler, lifecycle owner or generic RPC framework;
+- Durable Object is a broker/coordinator for the live device connection and bounded recent operation correlation, not a second PRODUCT state authority;
+- proxy credentials remain owned by MISH; do not persist plaintext proxy password in DO by default;
+- Remote Manager -> Worker and MISH -> Worker/DO have separate reviewed authentication boundaries;
+- one explicit remote command maps to at most one existing rotation operation; replay/duplicate/concurrent requests remain bounded and fail closed;
+- rotation may tear down WSS; reconnect uses bounded backoff and the same device identity, after which the terminal result for the same `operation_id` is published;
+- raw old/new public IP is privileged response data only; ordinary durable evidence stays redacted.
 
-- dedicated durable high-entropy control credential, separate from proxy data-plane username/password;
-- versioned HMAC request signature over canonical fields;
-- signed `key_id`, caller `request_id`, `issued_at`, short `expires_at`, nonce, command and canonical body;
-- missing/wrong/expired/tampered/replayed requests fail closed with zero rotation mutation;
-- duplicate delivery of one accepted `request_id` must not start a second rotation;
-- concurrent distinct rotation while one is active returns typed BUSY/rejection rather than an unbounded queue;
-- control key changes only by explicit credential rotation and never appears in logs/diagnostics/responses.
+Hosted contracts cover authentication, expiry/tamper/replay, idempotency, BUSY/rejection, acceptance-before-mutation, WSS loss/reconnect, deterministic terminal result, redaction, no VPC/public-listener dependency and proof that the existing Rotation owner remains the sole mutation owner.
 
-The command is asynchronous because rotation may temporarily interrupt Mesh:
+Physical E2E: invalid command -> no mutation; valid command -> operation id; WSS may disappear during rotation; reconnect; terminal `CHANGED|UNCHANGED|FAILED|REJECTED`; READY/root/Proxy/Mesh recovery; before/after public egress result; short external proxy smoke.
 
-```text
-authenticate ROTATE_IP
- -> return accepted operation_id before disruptive mutation
- -> existing rotation owner performs exactly one bounded rotation
- -> Cellular/root/Proxy/Mesh reconverge
- -> remote client reconnects
- -> query same operation_id
- -> typed terminal result
-```
+Control-session efficiency is part of U8 rather than an unmeasured background cost:
 
-Minimum terminal result includes:
+- push-driven channel; no status polling;
+- initial heartbeat target **2–5 minutes**, shortened only by measured carrier/NAT need;
+- target idle control traffic **<10 MB/month/device**, preferably **<5 MB/month/device**;
+- bounded reconnect backoff; no reconnect storms;
+- expose bounded typed observations for session age/state, reconnect count, heartbeat count, bytes TX/RX and last RX/TX age;
+- U8-F correlates those with CPU/radio wakeup/thread/FD/task/RSS/PSS behavior.
 
-```text
-schema
-request_id
-operation_id
-result = CHANGED | UNCHANGED | FAILED | REJECTED
-error_code
-retryable
+Workers VPC remains only a possible future data-plane gateway capability if a Worker later needs to initiate private connections to MISH proxy services; it is not part of the U8 control dependency.
 
-previous_public_egress_ip   # authenticated response only
-new_public_egress_ip        # authenticated response only
-public_ip_changed
-ip_family
-
-rotation_generation_before
-rotation_generation_after
-runtime_generation
-cellular_state_after
-root_authorized_after
-proxy_state_after
-mesh_ingress_after
-readiness_after
-
-started_at
-completed_at
-duration_ms
-public_ip_observation_verified
-observer_count
-control_key_id              # non-secret key/version id
-```
-
-Do not add ASN/location/fingerprint fields unless a demonstrated operator requirement appears.
-
-Hosted contracts precede physical E2E: valid/invalid auth, expiry/tamper/replay, duplicate idempotency, concurrent BUSY/rejection, acceptance-before-mutation, lost control connection, deterministic terminal schema, secret/raw-IP redaction from ordinary evidence, and proof that the endpoint delegates to the existing rotation owner.
-
-Then one bounded physical E2E from the intended remote application over Mesh:
-
-1. invalid request -> rejected with no mutation;
-2. valid request -> one `operation_id`;
-3. tolerate temporary Mesh interruption;
-4. reconnect and query that operation;
-5. require READY/root/Proxy/Mesh recovery;
-6. receive before/after public egress result;
-7. require `CHANGED` for the acceptance run; if carrier returns `UNCHANGED`, record it honestly and issue another explicit bounded command rather than hiding retry;
-8. short external proxy smoke proves the resulting egress is actually used.
 
 ### U8-F — low-impact durability soak
 
