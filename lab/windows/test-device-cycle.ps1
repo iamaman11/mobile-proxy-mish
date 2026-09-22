@@ -1,6 +1,7 @@
 $ErrorActionPreference = 'Stop'
 & (Join-Path $PSScriptRoot 'test-u8-reboot-install-probe-contract.ps1')
 & (Join-Path $PSScriptRoot 'test-u8-public-egress-rotation-probe-contract.ps1')
+& (Join-Path $PSScriptRoot 'test-u8-remote-control-probe-contract.ps1')
 & (Join-Path $PSScriptRoot 'test-u7-runtime-restart-probe-contract.ps1')
 Set-StrictMode -Version Latest
 
@@ -19,6 +20,8 @@ try {
         'test-u8-reboot-install-probe-contract.ps1',
         'diagnose-u8-public-egress-rotation.ps1',
         'test-u8-public-egress-rotation-probe-contract.ps1',
+        'diagnose-u8-remote-control.ps1',
+        'test-u8-remote-control-probe-contract.ps1',
         'test-diagnostic-connect-probe.ps1',
         'new-device-cycle-report.ps1'
     )) {
