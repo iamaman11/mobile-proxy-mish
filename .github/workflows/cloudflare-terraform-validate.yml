@@ -3,13 +3,15 @@ name: Cloudflare Terraform Static
 on:
   pull_request:
     paths:
-      - 'infra/cloudflare/**'
+      - 'infra/cloudflare/**/*.tf'
+      - 'infra/cloudflare/.terraform.lock.hcl'
       - '.github/workflows/cloudflare-terraform-validate.yml'
       - '.gitignore'
   push:
     branches: [main]
     paths:
-      - 'infra/cloudflare/**'
+      - 'infra/cloudflare/**/*.tf'
+      - 'infra/cloudflare/.terraform.lock.hcl'
       - '.github/workflows/cloudflare-terraform-validate.yml'
       - '.gitignore'
   workflow_dispatch:
