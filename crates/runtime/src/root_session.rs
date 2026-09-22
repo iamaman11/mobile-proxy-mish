@@ -3,6 +3,7 @@
 //! The session is a runtime mechanism, not a policy owner. All command strings are constructed by
 //! sealed Rust capabilities (root policy / rotation); no arbitrary shell API crosses FFI.
 
+use std::future::Future;
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -85,9 +86,16 @@ impl RootShellSession {
     async fn start(generation: u64) -> Result<Self, RootSessionError> {
         // Android's shell performs the stderr merge and is replaced by su via exec, so there is
         // still exactly one persistent privilege process rather than one shell per command.
-        let mut child = Command::new("sh")
-            .arg("-c")
-            .arg("exec su 2>&1")
+        Self::start_with_process(generation, "sh", &["-c", "exec su 2>&1"]).await
+    }
+
+    async fn start_with_process(
+        generation: u64,
+        program: &str,
+        args: &[&str],
+    ) -> Result<Self, RootSessionError> {
+        let mut child = Command::new(program)
+            .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -109,6 +117,11 @@ impl RootShellSession {
             stdin,
             stdout: BufReader::new(stdout),
         })
+    }
+
+    #[cfg(test)]
+    async fn start_unprivileged_for_test(generation: u64) -> Result<Self, RootSessionError> {
+        Self::start_with_process(generation, "sh", &[]).await
     }
 
     async fn execute(&mut self, command: &RootCommand) -> RootCommandOutcome {
@@ -284,6 +297,19 @@ impl RootSessionManager {
         &self,
         command: RootCommand,
     ) -> Result<RootCommandResult, RootSessionError> {
+        self.execute_with_starter(command, RootShellSession::start)
+            .await
+    }
+
+    async fn execute_with_starter<F, Fut>(
+        &self,
+        command: RootCommand,
+        starter: F,
+    ) -> Result<RootCommandResult, RootSessionError>
+    where
+        F: FnOnce(u64) -> Fut,
+        Fut: Future<Output = Result<RootShellSession, RootSessionError>>,
+    {
         let mut state = self.state.lock().await;
         if state.session.is_none() {
             let generation = state.next_generation;
@@ -291,7 +317,7 @@ impl RootSessionManager {
                 .next_generation
                 .checked_add(1)
                 .ok_or(RootSessionError::StateUnavailable)?;
-            state.session = Some(RootShellSession::start(generation).await?);
+            state.session = Some(starter(generation).await?);
         }
 
         let outcome = match state.session.as_mut() {
@@ -363,6 +389,59 @@ mod tests {
         };
         assert!(result.timed_out || !result.output_complete || result.exit_code != 0);
         assert!(result.exit_code > 0);
+    }
+
+    #[tokio::test]
+    async fn uncertain_mutation_is_not_replayed_after_shell_death() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let path = format!(
+            "/tmp/mish-root-session-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos(),
+        );
+        let manager = RootSessionManager::new();
+
+        let uncertain = RootCommand::mutation(format!(
+            "printf x >> {path}; kill -9 $"
+        ))
+        .expect("valid mutation");
+        let first = manager
+            .execute_with_starter(uncertain, RootShellSession::start_unprivileged_for_test)
+            .await
+            .expect("transport failure remains command outcome");
+
+        assert_eq!(first.session_generation, 1);
+        assert_eq!(first.exit_code, -1);
+        assert!(!first.output_complete);
+        assert!(!first.timed_out);
+        assert_eq!(manager.session_generation().await, None);
+
+        let observe = RootCommand::observation(format!("cat {path}")).expect("valid observation");
+        let second = manager
+            .execute_with_starter(observe, RootShellSession::start_unprivileged_for_test)
+            .await
+            .expect("replacement session");
+        assert_eq!(second.session_generation, 2);
+        assert_eq!(second.exit_code, 0);
+        assert!(second.output_complete);
+        assert_eq!(second.stdout, "x\n");
+        assert_eq!(manager.session_generation().await, Some(2));
+
+        let observe_again =
+            RootCommand::observation(format!("cat {path}")).expect("valid observation");
+        let third = manager
+            .execute_with_starter(observe_again, RootShellSession::start_unprivileged_for_test)
+            .await
+            .expect("same healthy replacement session");
+        assert_eq!(third.session_generation, 2);
+        assert_eq!(third.stdout, "x\n");
+
+        let _ = std::fs::remove_file(path);
+        manager.shutdown().await;
     }
 
     #[test]
