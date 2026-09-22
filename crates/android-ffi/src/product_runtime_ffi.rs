@@ -13,13 +13,15 @@ use crate::transport_ffi::{
     map_view as map_mesh_view,
 };
 use mish_cellular::{NetworkHandle, NetworkObservation, ObservationSequence, RootPolicyNamespace};
+use mish_control::RemoteRotationResult;
 use mish_proxy::{ProxyProtocol as OwnerProxyProtocol, canonical_listeners};
 use mish_rotation::{
     RotationFailure, RotationPhase, RotationRestoreResult, RotationSnapshot, RotationTerminalResult,
 };
 use mish_runtime::{
     CellularPolicyObserver, CellularPolicyPublication, CellularReconcileDiagnostic,
-    CellularRequestRearmEffect, MeshRuntimeObserver, ProductDiagnosticSnapshot,
+    CellularRequestRearmEffect, ControlAuthSignError, ControlAuthSigner, ControlRuntimeSnapshot,
+    ControlRuntimeStartError, ControlSessionState, MeshRuntimeObserver, ProductDiagnosticSnapshot,
     ProductRuntimeCoordinator, ProductRuntimeSnapshot, ProxyRuntimeObserver,
     ProxyRuntimePublication, ProxyServingState as OwnerProxyServingState,
     ReadinessDiagnosticSnapshot, ReadinessObserver,
@@ -93,6 +95,38 @@ impl From<RotationRuntimeStartError> for NativeRotationStartError {
             RotationRuntimeStartError::CredentialUnavailable => Self::CredentialUnavailable,
             RotationRuntimeStartError::ExecutorUnavailable => Self::ExecutorUnavailable,
             RotationRuntimeStartError::StateUnavailable => Self::StateUnavailable,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Error)]
+pub enum NativeControlStartError {
+    AlreadyStarted,
+    InvalidIdentity,
+    ExecutorUnavailable,
+    StateUnavailable,
+}
+
+impl fmt::Display for NativeControlStartError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::AlreadyStarted => "control runtime is already started with another identity",
+            Self::InvalidIdentity => "control public identity is invalid",
+            Self::ExecutorUnavailable => "native PRODUCT executor is unavailable",
+            Self::StateUnavailable => "native control state is unavailable",
+        })
+    }
+}
+
+impl std::error::Error for NativeControlStartError {}
+
+impl From<ControlRuntimeStartError> for NativeControlStartError {
+    fn from(error: ControlRuntimeStartError) -> Self {
+        match error {
+            ControlRuntimeStartError::AlreadyStarted => Self::AlreadyStarted,
+            ControlRuntimeStartError::InvalidIdentity => Self::InvalidIdentity,
+            ControlRuntimeStartError::ExecutorUnavailable => Self::ExecutorUnavailable,
+            ControlRuntimeStartError::StateUnavailable => Self::StateUnavailable,
         }
     }
 }
@@ -297,6 +331,33 @@ pub struct RotationSnapshotView {
     pub restore_result: Option<RotationRestoreResultView>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum ControlSessionStateView {
+    Stopped,
+    Connecting,
+    Authenticating,
+    Ready,
+    Backoff,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum RemoteRotationResultView {
+    Changed,
+    Unchanged,
+    Failed,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct ControlRuntimeSnapshotView {
+    pub state: ControlSessionStateView,
+    pub reconnect_attempts: u32,
+    pub next_delay_ms: u64,
+    pub pending_operation: bool,
+    pub pending_operation_id: Option<u64>,
+    pub last_terminal_result: Option<RemoteRotationResultView>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct ProductDiagnosticSnapshotView {
     pub consistent: bool,
@@ -390,6 +451,12 @@ pub trait NativeCellularRequestRearmEffect: Send + Sync {
     fn rearm_cellular_request(&self) -> bool;
 }
 
+#[uniffi::export(foreign)]
+pub trait NativeControlAuthSigner: Send + Sync {
+    /// Returns Android Keystore SHA256withECDSA DER bytes. Empty means signing failed closed.
+    fn sign_control_auth(&self, payload: Vec<u8>) -> Vec<u8>;
+}
+
 struct ForeignCellularRequestRearmEffect {
     effect: Arc<dyn NativeCellularRequestRearmEffect>,
 }
@@ -397,6 +464,21 @@ struct ForeignCellularRequestRearmEffect {
 impl CellularRequestRearmEffect for ForeignCellularRequestRearmEffect {
     fn rearm_cellular_request(&self) -> bool {
         self.effect.rearm_cellular_request()
+    }
+}
+
+struct ForeignControlAuthSigner {
+    signer: Arc<dyn NativeControlAuthSigner>,
+}
+
+impl ControlAuthSigner for ForeignControlAuthSigner {
+    fn sign_control_auth(&self, payload: &[u8]) -> Result<Vec<u8>, ControlAuthSignError> {
+        let signature = self.signer.sign_control_auth(payload.to_vec());
+        if signature.is_empty() {
+            Err(ControlAuthSignError::SignFailed)
+        } else {
+            Ok(signature)
+        }
     }
 }
 
@@ -473,6 +555,27 @@ impl NativeProductRuntime {
 
     pub fn rotation_snapshot(&self) -> RotationSnapshotView {
         map_rotation_snapshot(self.runtime.rotation_snapshot())
+    }
+
+    pub fn start_remote_control(
+        self: &Arc<Self>,
+        public_key_spki: Vec<u8>,
+        signer: Arc<dyn NativeControlAuthSigner>,
+        cellular_request_rearm: Arc<dyn NativeCellularRequestRearmEffect>,
+    ) -> Result<String, NativeControlStartError> {
+        self.runtime
+            .start_remote_control(
+                public_key_spki,
+                Arc::new(ForeignControlAuthSigner { signer }),
+                Arc::new(ForeignCellularRequestRearmEffect {
+                    effect: cellular_request_rearm,
+                }),
+            )
+            .map_err(Into::into)
+    }
+
+    pub fn control_snapshot(&self) -> ControlRuntimeSnapshotView {
+        map_control_snapshot(self.runtime.control_snapshot())
     }
 
     pub fn observe_rotation(&self, observer: Arc<dyn NativeRotationObserver>) {
@@ -872,6 +975,28 @@ fn map_product_diagnostic_snapshot(
             .map(rotation_restore_code)
             .map(str::to_owned),
         rotation_active_tasks: u64::from(generation.rotation_active_tasks),
+    }
+}
+
+fn map_control_snapshot(snapshot: ControlRuntimeSnapshot) -> ControlRuntimeSnapshotView {
+    ControlRuntimeSnapshotView {
+        state: match snapshot.state {
+            ControlSessionState::Stopped => ControlSessionStateView::Stopped,
+            ControlSessionState::Connecting => ControlSessionStateView::Connecting,
+            ControlSessionState::Authenticating => ControlSessionStateView::Authenticating,
+            ControlSessionState::Ready => ControlSessionStateView::Ready,
+            ControlSessionState::Backoff => ControlSessionStateView::Backoff,
+        },
+        reconnect_attempts: snapshot.reconnect_attempts,
+        next_delay_ms: snapshot.next_delay_ms,
+        pending_operation: snapshot.pending_operation,
+        pending_operation_id: snapshot.pending_operation_id,
+        last_terminal_result: snapshot.last_terminal_result.map(|result| match result {
+            RemoteRotationResult::Changed => RemoteRotationResultView::Changed,
+            RemoteRotationResult::Unchanged => RemoteRotationResultView::Unchanged,
+            RemoteRotationResult::Failed => RemoteRotationResultView::Failed,
+            RemoteRotationResult::Rejected => RemoteRotationResultView::Rejected,
+        }),
     }
 }
 

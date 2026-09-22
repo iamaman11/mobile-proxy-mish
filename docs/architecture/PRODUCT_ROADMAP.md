@@ -547,7 +547,7 @@ U8-A inventory                                      COMPLETE
 U8-B reboot + replacement-install                   COMPLETE
 U8-C root-shell death/replacement                    COMPLETE
 U8-D public Cellular egress IP rotation proof       COMPLETE
-U8-E authenticated remote IP-rotation command       NEXT
+U8-E authenticated remote IP-rotation command       IN FINAL ACCEPTANCE
 U8-F low-impact durability soak
      + reverse-WSS reconnect/heartbeat/traffic/resource budget
      + Mesh peer liveness
@@ -650,6 +650,16 @@ Design rules:
 - one explicit remote command maps to at most one existing rotation operation; replay/duplicate/concurrent requests remain bounded and fail closed;
 - WSS may survive or may drop across Cellular/underlay changes; correctness depends on neither outcome. If it drops, reconnect uses bounded backoff and the same device identity, then publishes the terminal result for the same `operation_id`;
 - raw old/new public IP is privileged response data only; ordinary durable evidence stays redacted.
+
+U8-E v1 concrete identity/transport decision:
+
+- device authentication is asymmetric: one non-exportable Android Keystore P-256 signing key (`secp256r1`, SHA-256), with `device_id = SHA-256(public SPKI)`; Cloudflare receives only the public SPKI, never the private key or a shared device HMAC secret;
+- this supersedes the earlier provisional HMAC idea because it removes a duplicated long-lived shared secret from the Worker/DO while preserving challenge-response authentication;
+- manager authentication is a separate Cloudflare Worker secret (`MISH_MANAGER_TOKEN` in v1) and is never embedded in the APK or committed as a Wrangler variable;
+- DeviceControl uses the Durable Object WebSocket Hibernation API and SQLite-backed bounded storage: one active operation plus at most 32 recent terminal correlations; there is no offline command queue;
+- the Android control socket is an ordinary outbound management TLS/WebSocket path. It does not borrow the proxy/Cellular outbound connector or create a second data-plane owner;
+- remote acceptance is two-phase at the existing Rotation owner boundary: reserve `operation_id` with no effect -> flush `ACCEPTED(request_id, operation_id)` -> activate exactly that prepared operation. A failed ACCEPTED write fails the prepared operation before mutation;
+- the client does not generate an application heartbeat in U8-E. It responds to WebSocket protocol PING when received; any proactive heartbeat is admitted only later from U8-F physical NAT/carrier evidence.
 
 Hosted contracts cover authentication, expiry/tamper/replay, idempotency, BUSY/rejection, acceptance-before-mutation, WSS loss/reconnect, deterministic terminal result, redaction, no VPC/public-listener dependency and proof that the existing Rotation owner remains the sole mutation owner.
 

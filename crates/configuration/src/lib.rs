@@ -27,6 +27,12 @@ const DEPLOYMENT_READINESS_PROBE_HOST_RAW: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../config/deployment/readiness-probe-host.txt"
 ));
+const DEPLOYMENT_CONTROL_HOST_RAW: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../config/deployment/control-host.txt"
+));
+const CONTROL_PORT: u16 = 443;
+const CONTROL_DEVICE_PATH: &str = "/v1/device/connect";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MeshAcceptedCidr {
@@ -142,12 +148,80 @@ impl ReadinessProbeTarget {
     }
 }
 
+/// Repository-owned non-secret endpoint for the outbound control WebSocket.
+///
+/// Only the host/path are desired configuration. Device identity and authentication material are
+/// supplied by the dedicated control identity owner and never committed here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlEndpoint {
+    hostname: String,
+    port: u16,
+    path: &'static str,
+}
+
+impl ControlEndpoint {
+    pub fn deployment() -> Result<Self, DesiredConfigurationError> {
+        Self::parse(
+            DEPLOYMENT_CONTROL_HOST_RAW.trim(),
+            CONTROL_PORT,
+            CONTROL_DEVICE_PATH,
+        )
+    }
+
+    pub fn parse(
+        hostname: &str,
+        port: u16,
+        path: &'static str,
+    ) -> Result<Self, DesiredConfigurationError> {
+        if hostname.is_empty()
+            || hostname.trim() != hostname
+            || hostname.len() > 253
+            || port == 0
+            || hostname.parse::<IpAddr>().is_ok()
+            || !hostname.contains('.')
+            || path != CONTROL_DEVICE_PATH
+        {
+            return Err(DesiredConfigurationError::InvalidControlTarget);
+        }
+        for label in hostname.split('.') {
+            if label.is_empty()
+                || label.len() > 63
+                || label.starts_with('-')
+                || label.ends_with('-')
+                || !label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+            {
+                return Err(DesiredConfigurationError::InvalidControlTarget);
+            }
+        }
+        Ok(Self {
+            hostname: hostname.to_owned(),
+            port,
+            path,
+        })
+    }
+
+    pub fn hostname(&self) -> &str {
+        &self.hostname
+    }
+
+    pub const fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub const fn path(&self) -> &'static str {
+        self.path
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DesiredConfigurationError {
     InvalidMeshAcceptedCidr,
     UnsafeMeshAcceptedCidr,
     NonCanonicalMeshAcceptedCidr,
     InvalidReadinessProbeTarget,
+    InvalidControlTarget,
 }
 
 impl fmt::Display for DesiredConfigurationError {
@@ -160,6 +234,9 @@ impl fmt::Display for DesiredConfigurationError {
             }
             Self::InvalidReadinessProbeTarget => {
                 "readiness probe target must be one canonical lowercase DNS hostname and port"
+            }
+            Self::InvalidControlTarget => {
+                "control target must be one canonical lowercase DNS hostname and fixed WSS path"
             }
         })
     }
@@ -213,6 +290,28 @@ mod tests {
         let target = ReadinessProbeTarget::deployment().expect("deployment probe target");
         assert_eq!(target.hostname(), "example.com");
         assert_eq!(target.port(), 443);
+    }
+
+    #[test]
+    fn deployment_control_target_is_canonical_wss_origin() {
+        let target = ControlEndpoint::deployment().expect("control target");
+        assert_eq!(target.hostname(), "api.alegria.by");
+        assert_eq!(target.port(), 443);
+        assert_eq!(target.path(), "/v1/device/connect");
+    }
+
+    #[test]
+    fn control_target_rejects_ip_case_injection_and_alternate_path() {
+        for (host, port, path) in [
+            ("", 443, "/v1/device/connect"),
+            ("Api.alegria.by", 443, "/v1/device/connect"),
+            ("127.0.0.1", 443, "/v1/device/connect"),
+            ("api.alegria.by\r\nX: y", 443, "/v1/device/connect"),
+            ("api.alegria.by", 0, "/v1/device/connect"),
+            ("api.alegria.by", 443, "/other"),
+        ] {
+            assert!(ControlEndpoint::parse(host, port, path).is_err());
+        }
     }
 
     #[test]

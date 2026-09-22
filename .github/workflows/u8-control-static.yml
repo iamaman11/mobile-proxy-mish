@@ -1,0 +1,49 @@
+name: U8 Control Static
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - 'android/app/src/main/AndroidManifest.xml'
+      - 'android/app/src/main/java/com/mobileproxymish/app/AndroidControlIdentity.kt'
+      - 'android/app/src/main/java/com/mobileproxymish/app/ControlIdentityProvisioningReceiver.kt'
+      - 'android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt'
+      - 'config/deployment/control-host.txt'
+      - 'crates/android-ffi/**'
+      - 'crates/configuration/**'
+      - 'crates/control/**'
+      - 'crates/runtime/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'infra/cloudflare/control-worker/**'
+      - 'tools/check_u8_control_contract.py'
+      - '.github/workflows/u8-control-static.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: u8-control-static-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  control:
+    name: U8 Control Contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Verify U8 remote-control invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/check_u8_control_contract.py
+          node --check infra/cloudflare/control-worker/src/index.mjs
+          node --check infra/cloudflare/control-worker/src/protocol.mjs
+          node --test infra/cloudflare/control-worker/test/protocol.test.mjs
