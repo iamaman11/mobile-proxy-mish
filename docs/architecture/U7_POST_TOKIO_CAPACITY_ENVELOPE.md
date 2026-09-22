@@ -1,8 +1,8 @@
 # U7 Post-Tokio Capacity Envelope Characterization
 
-Status: **BOUNDARY / EVIDENCE PLAN UNDER THE CANONICAL PRODUCT ROADMAP**.
+Status: **CLOSED / HISTORICAL U7 CHARACTERIZATION PLAN**.
 
-This document elaborates the U7 `Efficiency and long-run hardening` capacity work. It does not change stage ordering and does not replace `docs/architecture/PRODUCT_ROADMAP.md`.
+This document records the pre-promotion capacity characterization that began from the accepted U2 64/65 boundary. U7 later promoted the same `mish-transport`-owned budget to **512 admitted / 513th rejected**. Any statement below saying the shipped/current PRODUCT remains 64 describes the historical baseline at the time of this plan and is superseded by the canonical roadmap and current configuration.
 
 ## Purpose
 
