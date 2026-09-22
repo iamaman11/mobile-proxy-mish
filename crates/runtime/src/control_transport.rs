@@ -213,8 +213,10 @@ mod tests {
         assert_eq!(config.max_message_size, Some(CONTROL_WEBSOCKET_MAX_BYTES));
         assert_eq!(config.max_frame_size, Some(CONTROL_WEBSOCKET_MAX_BYTES));
         assert!(!config.accept_unmasked_frames);
-        assert!(CONTROL_WEBSOCKET_MAX_BYTES > CONTROL_WIRE_MAX_BYTES);
-        assert!(CONTROL_WEBSOCKET_MAX_BYTES < 8 * 1024);
+        const {
+            assert!(CONTROL_WEBSOCKET_MAX_BYTES > CONTROL_WIRE_MAX_BYTES);
+            assert!(CONTROL_WEBSOCKET_MAX_BYTES < 8 * 1024);
+        }
     }
 
     #[test]
