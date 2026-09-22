@@ -196,6 +196,40 @@ test("device challenge is bounded, tamper-safe and non-replayable", async () => 
   assert.equal(expiredSocket.closed.at(-1)?.reason, "authentication expired");
 });
 
+test("replacement authentication retires the old socket before broker selection", async () => {
+  const identity = await generateIdentity();
+  const nonce = "c".repeat(43);
+  const signature = await signAuth(identity.keyPair.privateKey, identity.deviceId, nonce);
+  const storage = new MemoryStorage();
+  await storage.put("public_key_spki_b64", identity.spkiB64);
+
+  const oldSocket = new FakeSocket({
+    kind: "device",
+    authenticated: true,
+    device_id: identity.deviceId,
+  });
+  const newSocket = new FakeSocket({
+    kind: "device",
+    authenticated: false,
+    device_id: identity.deviceId,
+    challenge: nonce,
+    challenge_issued_at_ms: Date.now(),
+  });
+  const control = new DeviceControl(new FakeContext(storage, [oldSocket, newSocket]), {});
+
+  await control.webSocketMessage(newSocket, JSON.stringify({
+    v: 1,
+    type: "AUTH",
+    device_id: identity.deviceId,
+    signature,
+  }));
+
+  assert.equal(oldSocket.attachment.authenticated, false);
+  assert.equal(oldSocket.closed.at(-1)?.reason, "replaced");
+  assert.equal(newSocket.attachment.authenticated, true);
+  assert.equal(control.authenticatedSocket(), newSocket);
+});
+
 test("durable broker is idempotent, busy-bounded and has no offline queue", async () => {
   const storage = new MemoryStorage();
   let activeWasStoredBeforeSend = false;

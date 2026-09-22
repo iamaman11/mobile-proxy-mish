@@ -19,7 +19,6 @@ import {
 } from "./protocol.mjs";
 
 const DEVICE_CONNECT = "/v1/device/connect";
-const DEVICE_TAG = "authenticated-device";
 
 export default {
   async fetch(request, env) {
@@ -183,7 +182,10 @@ export class DeviceControl {
       for (const existing of this.ctx.getWebSockets()) {
         if (existing === ws) continue;
         const other = existing.deserializeAttachment();
-        if (other?.authenticated === true) existing.close(1000, "replaced");
+        if (other?.authenticated === true) {
+          existing.serializeAttachment({ ...other, authenticated: false });
+          existing.close(1000, "replaced");
+        }
       }
       ws.serializeAttachment({
         kind: "device",
