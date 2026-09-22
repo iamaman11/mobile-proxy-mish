@@ -48,6 +48,10 @@ test("terminal result permits rejected without mutation id only", () => {
     '{"v":1,"type":"RESULT","request_id":"r","result":"REJECTED"}',
   );
   assert.equal(rejected.result, "REJECTED");
+  const rejectedAfterFailedAcceptance = parseDeviceMessage(
+    '{"v":1,"type":"RESULT","request_id":"r","result":"REJECTED","operation_id":7}',
+  );
+  assert.equal(rejectedAfterFailedAcceptance.operation_id, 7);
   assert.throws(() => parseDeviceMessage(
     '{"v":1,"type":"RESULT","request_id":"r","result":"CHANGED"}',
   ));

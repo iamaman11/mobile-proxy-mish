@@ -67,6 +67,7 @@ def main() -> None:
         "rotation.prepare(",
         "encode_accepted_message(&request_id, operation_id)",
         "transport.write_text(&accepted).await",
+        "mark_acceptance_delivery_failed(&mut state, &request_id, operation_id)",
         "rotation.activate_prepared(operation_id)",
         "recent_terminal",
         "ServerControlMessage::ResultAck",

@@ -475,13 +475,8 @@ impl ControlRuntimeCoordinator {
             .map_err(|_| ControlRunError::Protocol)?;
         if let Err(error) = transport.write_text(&accepted).await {
             self.rotation.fail_prepared_before_mutation(operation_id);
-            if let Ok(mut state) = self.state.lock()
-                && state
-                    .pending
-                    .as_ref()
-                    .is_some_and(|pending| pending.request_id == request_id)
-            {
-                state.pending = None;
+            if let Ok(mut state) = self.state.lock() {
+                mark_acceptance_delivery_failed(&mut state, &request_id, operation_id);
             }
             return Err(error.into());
         }
@@ -615,6 +610,26 @@ impl ControlRuntimeCoordinator {
     }
 }
 
+fn mark_acceptance_delivery_failed(
+    state: &mut ControlState,
+    request_id: &str,
+    operation_id: u64,
+) -> bool {
+    let Some(pending) = state.pending.as_mut() else {
+        return false;
+    };
+    if pending.request_id != request_id
+        || pending.operation_id != Some(operation_id)
+        || pending.result.is_some()
+    {
+        return false;
+    }
+
+    pending.result = Some(RemoteRotationResult::Rejected);
+    state.last_terminal_result = Some(RemoteRotationResult::Rejected);
+    true
+}
+
 fn reconnect_delay_ms(failures: u32) -> u64 {
     let index = usize::try_from(failures.saturating_sub(1))
         .unwrap_or(usize::MAX)
@@ -649,6 +664,35 @@ impl From<ControlTransportError> for ControlRunError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_accepted_delivery_keeps_terminal_correlation_for_reconnect() {
+        let mut state = ControlState {
+            session_state: ControlSessionState::Ready,
+            reconnect_attempts: 0,
+            next_delay_ms: 0,
+            pending: Some(PendingRemoteOperation {
+                request_id: "req_1".to_owned(),
+                operation_id: Some(7),
+                result: None,
+            }),
+            recent_terminal: VecDeque::new(),
+            last_terminal_result: None,
+            device_id: None,
+            task: None,
+            cancel: None,
+            closed: false,
+        };
+
+        assert!(mark_acceptance_delivery_failed(&mut state, "req_1", 7));
+        let pending = state.pending.as_ref().expect("pending correlation");
+        assert_eq!(pending.operation_id, Some(7));
+        assert_eq!(pending.result, Some(RemoteRotationResult::Rejected));
+        assert_eq!(
+            state.last_terminal_result,
+            Some(RemoteRotationResult::Rejected)
+        );
+    }
 
     #[test]
     fn control_reconnect_has_no_application_heartbeat_policy() {
