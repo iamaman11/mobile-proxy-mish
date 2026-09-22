@@ -434,6 +434,7 @@ dependencies = [
  "mish-application",
  "mish-cellular",
  "mish-configuration",
+ "mish-control",
  "mish-proxy",
  "mish-readiness",
  "mish-rotation",
