@@ -74,7 +74,7 @@ def main() -> None:
         "websocket.write_text(&accepted).await",
         "rotation.activate_prepared(operation_id)",
         "recent_terminal",
-        "RESULT_ACK",
+        "ServerControlMessage::ResultAck",
     ):
         require(runtime, needle, "native control lifecycle/idempotency contract drifted")
     for forbidden in (
