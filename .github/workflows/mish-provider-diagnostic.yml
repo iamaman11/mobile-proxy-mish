@@ -49,7 +49,7 @@ jobs:
             }
           }
 
-          $pid = Invoke-AdbEvidence @('shell', 'pidof', $env:PACKAGE_NAME)
+          $pidResult = Invoke-AdbEvidence @('shell', 'pidof', $env:PACKAGE_NAME)
           $provider = Invoke-AdbEvidence @('shell', 'content', 'call', '--uri', "content://$env:PACKAGE_NAME.diagnostics", '--method', 'snapshot_v2')
           $exitInfo = Invoke-AdbEvidence @('shell', 'dumpsys', 'activity', 'exit-info', $env:PACKAGE_NAME)
           $logcat = Invoke-AdbEvidence @('logcat', '-d', '-v', 'threadtime', '-t', '1200')
@@ -67,12 +67,38 @@ jobs:
           [IO.File]::WriteAllText((Join-Path $root 'exit-info.txt'), $exitInfo.Text, [Text.UTF8Encoding]::new($false))
           [IO.File]::WriteAllLines((Join-Path $root 'bounded-logcat.txt'), $bounded, [Text.UTF8Encoding]::new($false))
 
-          $pidText = $pid.Text.Trim()
+          $pidText = $pidResult.Text.Trim()
           $summary = [ordered]@{
             schema = 'mish.lab.provider-state/v1'
             collected_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
             package = $env:PACKAGE_NAME
-            process_running = ($pid.ExitCode -eq 0 -and $pidText -match '^\d+$')
+            process_running = ($pidResult.ExitCode -eq 0 -and $pidText -match '^\d+
+            provider_exit_code = $provider.ExitCode
+            provider_has_payload = ($provider.Text -match 'payload_b64=[A-Za-z0-9+/=]+')
+            provider_output_present = -not [string]::IsNullOrWhiteSpace($provider.Text)
+            exit_info_exit_code = $exitInfo.ExitCode
+            logcat_exit_code = $logcat.ExitCode
+            bounded_log_lines = $bounded.Count
+            fatal_markers = @($bounded | Where-Object { $_ -match 'FATAL EXCEPTION|Fatal signal|am_crash' }).Count
+            mutation_performed = $false
+          }
+          [IO.File]::WriteAllText((Join-Path $root 'summary.json'), (($summary | ConvertTo-Json -Depth 4) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+
+          Write-Host "MISH_PROVIDER_PROCESS_RUNNING=$($summary.process_running)"
+          Write-Host "MISH_PROVIDER_CALL_EXIT=$($summary.provider_exit_code)"
+          Write-Host "MISH_PROVIDER_HAS_PAYLOAD=$($summary.provider_has_payload)"
+          Write-Host "MISH_PROVIDER_OUTPUT_PRESENT=$($summary.provider_output_present)"
+          Write-Host "MISH_PROVIDER_FATAL_MARKERS=$($summary.fatal_markers)"
+          Write-Host 'MISH_PROVIDER_MUTATION=false'
+
+      - name: Upload bounded provider evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mish-provider-state-${{ github.run_id }}
+          path: ${{ runner.temp }}\mish-provider-state\
+          if-no-files-found: error
+          retention-days: 7
+)
             provider_exit_code = $provider.ExitCode
             provider_has_payload = ($provider.Text -match 'payload_b64=[A-Za-z0-9+/=]+')
             provider_output_present = -not [string]::IsNullOrWhiteSpace($provider.Text)
