@@ -264,7 +264,11 @@ impl ControlRuntimeCoordinator {
                 break;
             }
 
-            failures = failures.saturating_add(1);
+            let last_session_state = self
+                .state()
+                .map(|state| state.session_state)
+                .unwrap_or(ControlSessionState::Connecting);
+            failures = next_reconnect_failure_count(failures, last_session_state);
             let delay_ms = reconnect_delay_ms(failures);
             self.publish_connection_state(ControlSessionState::Backoff, failures, delay_ms);
             tokio::select! {
@@ -630,6 +634,17 @@ fn mark_acceptance_delivery_failed(
     true
 }
 
+fn next_reconnect_failure_count(
+    previous_failures: u32,
+    last_session_state: ControlSessionState,
+) -> u32 {
+    if last_session_state == ControlSessionState::Ready {
+        1
+    } else {
+        previous_failures.saturating_add(1)
+    }
+}
+
 fn reconnect_delay_ms(failures: u32) -> u64 {
     let index = usize::try_from(failures.saturating_sub(1))
         .unwrap_or(usize::MAX)
@@ -699,6 +714,22 @@ mod tests {
         // RFC6455 Ping/Pong is owned by tungstenite. PRODUCT does not generate an application
         // heartbeat until U8-F physical evidence demonstrates that one is required.
         assert!(!include_str!("control_runtime.rs").contains("CONTROL_HEARTBEAT_INTERVAL"));
+    }
+
+    #[test]
+    fn reconnect_failure_count_resets_after_ready_session() {
+        assert_eq!(
+            next_reconnect_failure_count(4, ControlSessionState::Ready),
+            1
+        );
+        assert_eq!(
+            next_reconnect_failure_count(4, ControlSessionState::Connecting),
+            5
+        );
+        assert_eq!(
+            next_reconnect_failure_count(u32::MAX, ControlSessionState::Authenticating),
+            u32::MAX
+        );
     }
 
     #[test]
