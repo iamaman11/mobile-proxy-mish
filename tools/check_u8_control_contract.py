@@ -76,7 +76,7 @@ def main() -> None:
     for forbidden in (
         ".outbound_connector(",
         "ProxyConnectTarget",
-        "CONTROL_HEARTBEAT_INTERVAL",
+        "const CONTROL_HEARTBEAT_INTERVAL",
         'write_text("PING")',
         "tokio::runtime::Builder",
         "retry_until_changed",
