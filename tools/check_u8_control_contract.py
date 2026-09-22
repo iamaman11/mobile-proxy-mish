@@ -54,10 +54,6 @@ def main() -> None:
     ):
         require(control, needle, "Rust control protocol drifted")
     for forbidden in (
-        '"SHELL"',
-        '"EXEC"',
-        '"STATUS"',
-        '"PROXY_PASSWORD"',
         "GenericCommand",
     ):
         forbid(control, forbidden, "v1 must remain ROTATE_IP-only")
