@@ -71,6 +71,7 @@ def main() -> None:
         "rotation.activate_prepared(operation_id)",
         "recent_terminal",
         "ServerControlMessage::ResultAck",
+        "result_changed.notify_one()",
     ):
         require(runtime, needle, "native control lifecycle/idempotency contract drifted")
     for forbidden in (
@@ -81,6 +82,7 @@ def main() -> None:
         "tokio::runtime::Builder",
         "retry_until_changed",
         "retry-until-changed",
+        "result_changed.notify_waiters()",
     ):
         forbid(runtime, forbidden, "control must stay ordinary outbound, one-runtime and no retry-until-changed")
 

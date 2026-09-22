@@ -221,7 +221,7 @@ impl ControlRuntimeCoordinator {
         if let Some(cancel) = cancel {
             let _ = cancel.send(true);
         }
-        self.result_changed.notify_waiters();
+        self.result_changed.notify_one();
 
         let Some(mut task) = task else {
             return true;
@@ -491,7 +491,7 @@ impl ControlRuntimeCoordinator {
                 pending.result = Some(result);
                 state.last_terminal_result = Some(result);
             }
-            self.result_changed.notify_waiters();
+            self.result_changed.notify_one();
         }
         Ok(())
     }
@@ -577,7 +577,7 @@ impl ControlRuntimeCoordinator {
             false
         };
         if changed {
-            self.result_changed.notify_waiters();
+            self.result_changed.notify_one();
         }
     }
 
