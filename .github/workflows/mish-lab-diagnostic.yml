@@ -99,6 +99,504 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+  provider-state:
+    name: Read-only Android provider state
+    if: >-
+      github.event.issue.number == 163 &&
+      github.event.comment.user.login == 'iamaman11' &&
+      github.event.comment.body == '/mish-diag provider-state'
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 5
+    env:
+      ADB_EXE: C:\\mish-lab\\tools\\android-sdk\\platform-tools\\adb.exe
+      PACKAGE_NAME: com.mobileproxymish.app.debug
+    steps:
+      - name: Collect bounded process/provider/exit evidence
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''''{0}'''')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path -LiteralPath $env:ADB_EXE -PathType Leaf)) {
+            throw 'MISH_DIAGNOSTIC_FAILURE|ADB_MISSING|Canonical ADB is unavailable.'
+          }
+          $devices = @(& $env:ADB_EXE devices | Where-Object { $_ -match '^\S+\s+device\s*
+    name: Read-only U2 protocol parity
+    if: >-
+      github.event.issue.number == 163 &&
+      github.event.comment.user.login == 'iamaman11' &&
+      github.event.comment.body == '/mish-diag protocol-parity'
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 10
+    env:
+      ADB_EXE: C:\\mish-lab\\tools\\android-sdk\\platform-tools\\adb.exe
+      CURRENT_ACCEPTED_SOURCE_SHA: '07b61e2de90bedb4c9179a5e92b9e51e309b2478'
+      CURRENT_ACCEPTED_INSTALLED_APK_SHA256: 'b779fda8551a2bbe3ba06e791f92361cac88dcb878ec6755dab80882fbcd9a2f'
+    steps:
+      - name: Checkout protected main diagnostic bridge
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+          clean: true
+
+      - name: Verify pinned PowerShell 7 runtime
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($PSVersionTable.PSEdition -cne 'Core' -or $PSVersionTable.PSVersion.ToString() -cne $env:DIAGNOSTIC_PWSH_VERSION) {
+            throw "MISH_DIAGNOSTIC_FAILURE|POWERSHELL_RUNTIME_MISMATCH|Expected PowerShell $env:DIAGNOSTIC_PWSH_VERSION; observed $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)"
+          }
+
+      - name: Verify physical LAB identity
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\labctl.ps1 host inspect -PhysicalLab
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Prove exact installed U2 protocol parity
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\diagnose-protocol-parity.ps1 -AdbPath "$env:ADB_EXE" -PackageName 'com.mobileproxymish.app.debug' -ExpectedInstalledApkSha256 "$env:CURRENT_ACCEPTED_INSTALLED_APK_SHA256" -ExpectedSourceSha "$env:CURRENT_ACCEPTED_SOURCE_SHA" -EvidencePath "$env:RUNNER_TEMP\mish-protocol-parity-v1.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Publish protocol parity summary
+        if: ${{ always() }}
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $path = Join-Path $env:RUNNER_TEMP 'mish-protocol-parity-v1.json'
+          if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            '### U2 Protocol Parity' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            'Evidence was not produced.' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            exit 0
+          }
+          $evidence = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json
+          @(
+            '### U2 Protocol Parity',
+            '',
+            "- Acceptance: **$($evidence.acceptance_result)**",
+            "- Classification: **$($evidence.classification)**",
+            "- Exact installed bytes: **$($evidence.exact_installed_bytes)**",
+            "- PID stable: **$($evidence.product_pid_stable)**",
+            "- HTTP :3128 positive: **$($evidence.probes.http_3128_positive.result)**",
+            "- HTTP :3128 wrong-auth rejection: **$($evidence.probes.http_3128_negative_auth.result)**",
+            "- SOCKS5 :1081 positive: **$($evidence.probes.socks5_1081_positive.result)**",
+            "- SOCKS5 :1081 wrong-auth rejection: **$($evidence.probes.socks5_1081_negative_auth.result)**",
+            "- Mixed :1080 HTTP positive: **$($evidence.probes.mixed_1080_http_positive.result)**",
+            "- Mixed :1080 HTTP wrong-auth rejection: **$($evidence.probes.mixed_1080_http_negative_auth.result)**",
+            "- Mixed :1080 SOCKS5 positive: **$($evidence.probes.mixed_1080_socks5_positive.result)**",
+            "- Mixed :1080 SOCKS5 wrong-auth rejection: **$($evidence.probes.mixed_1080_socks5_negative_auth.result)**",
+            '',
+            'No install, restart, network toggle, root-policy mutation or Cloudflare mutation is performed.'
+          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Upload protocol parity evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mish-protocol-parity-v1-${{ github.run_id }}
+          path: ${{ runner.temp }}\mish-protocol-parity-v1.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  mesh-route:
+    name: Read-only Windows Mesh route attribution
+    if: >-
+      github.event.issue.number == 163 &&
+      github.event.comment.user.login == 'iamaman11' &&
+      github.event.comment.body == '/mish-diag mesh-route'
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 5
+    env:
+      ADB_EXE: C:\\mish-lab\\tools\\android-sdk\\platform-tools\\adb.exe
+    steps:
+      - name: Verify pinned PowerShell 7 runtime
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($PSVersionTable.PSEdition -cne 'Core' -or $PSVersionTable.PSVersion.ToString() -cne $env:DIAGNOSTIC_PWSH_VERSION) {
+            throw "MISH_DIAGNOSTIC_FAILURE|POWERSHELL_RUNTIME_MISMATCH|Expected PowerShell $env:DIAGNOSTIC_PWSH_VERSION; observed $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)"
+          }
+
+      - name: Attribute Windows route to current DEVICE Mesh endpoint
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Test-MishMeshAddress {
+            param([Parameter(Mandatory)][string] $Address)
+            try {
+              $bytes = [Net.IPAddress]::Parse($Address).GetAddressBytes()
+            }
+            catch { return $false }
+            if ($bytes.Length -ne 4 -or $bytes[0] -ne 100) { return $false }
+            return ([int]$bytes[1] -ge 96 -and [int]$bytes[1] -le 111)
+          }
+
+          $rows = @(& $env:ADB_EXE shell ip -o -4 addr show 2>$null | ForEach-Object { [string]$_ })
+          if ($LASTEXITCODE -ne 0) {
+            throw 'MISH_DIAGNOSTIC_FAILURE|ADB_FAILED|Could not read DEVICE IPv4 addresses.'
+          }
+          $meshAddresses = @(
+            [regex]::Matches(($rows -join "`n"), '\binet\s+(?<ip>\d{1,3}(?:\.\d{1,3}){3})/\d+') |
+              ForEach-Object { $_.Groups['ip'].Value } |
+              Where-Object { Test-MishMeshAddress $_ } |
+              Sort-Object -Unique
+          )
+          if ($meshAddresses.Count -ne 1) {
+            throw "MISH_DIAGNOSTIC_FAILURE|MESH_ENDPOINT_COUNT|Expected one DEVICE Mesh IPv4 endpoint; observed $($meshAddresses.Count)."
+          }
+
+          $meshAddress = [string]$meshAddresses[0]
+          $route = @(Find-NetRoute -RemoteIPAddress $meshAddress -ErrorAction Stop) | Select-Object -First 1
+          if ($null -eq $route) {
+            throw 'MISH_DIAGNOSTIC_FAILURE|WINDOWS_MESH_ROUTE_MISSING|No Windows route resolves the DEVICE Mesh endpoint.'
+          }
+
+          $tcp = Test-NetConnection -ComputerName $meshAddress -Port 3128 -InformationLevel Detailed -WarningAction SilentlyContinue
+          $cloudflareAdapters = @(
+            Get-NetAdapter -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match 'Cloudflare|WARP' -or $_.InterfaceDescription -match 'Cloudflare|WARP' } |
+              ForEach-Object {
+                [ordered]@{
+                  name = [string]$_.Name
+                  description = [string]$_.InterfaceDescription
+                  status = [string]$_.Status
+                  interface_index = [int]$_.ifIndex
+                }
+              }
+          )
+          $cloudflareServices = @(
+            Get-Service -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match 'Cloudflare|WARP' -or $_.DisplayName -match 'Cloudflare|WARP' } |
+              ForEach-Object {
+                [ordered]@{
+                  name = [string]$_.Name
+                  display_name = [string]$_.DisplayName
+                  status = [string]$_.Status
+                  start_type = [string]$_.StartType
+                }
+              }
+          )
+
+          $evidence = [ordered]@{
+            schema = 'mish.lab.windows-mesh-route/v1'
+            collected_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
+            mesh_endpoint_count = 1
+            route = [ordered]@{
+              present = $true
+              interface_alias = [string]$route.InterfaceAlias
+              interface_index = [int]$route.InterfaceIndex
+              route_metric = [int]$route.RouteMetric
+            }
+            tcp_3128 = [ordered]@{
+              succeeded = [bool]$tcp.TcpTestSucceeded
+              interface_alias = [string]$tcp.InterfaceAlias
+            }
+            cloudflare_adapters = $cloudflareAdapters
+            cloudflare_services = $cloudflareServices
+          }
+          $path = Join-Path $env:RUNNER_TEMP 'mish-windows-mesh-route-v1.json'
+          [IO.File]::WriteAllText(
+            $path,
+            (($evidence | ConvertTo-Json -Depth 8) + [Environment]::NewLine),
+            [Text.UTF8Encoding]::new($false)
+          )
+
+          Write-Host "MISH_WINDOWS_MESH_ROUTE_INTERFACE=$($evidence.route.interface_alias)"
+          Write-Host "MISH_WINDOWS_MESH_ROUTE_INDEX=$($evidence.route.interface_index)"
+          Write-Host "MISH_WINDOWS_MESH_TCP_3128=$($evidence.tcp_3128.succeeded)"
+          Write-Host "MISH_WINDOWS_MESH_TCP_INTERFACE=$($evidence.tcp_3128.interface_alias)"
+          Write-Host "MISH_WINDOWS_CLOUDFLARE_ADAPTERS=$($cloudflareAdapters.Count)"
+          Write-Host "MISH_WINDOWS_CLOUDFLARE_SERVICES=$($cloudflareServices.Count)"
+
+      - name: Upload Windows Mesh route evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mish-windows-mesh-route-v1-${{ github.run_id }}
+          path: ${{ runner.temp }}\mish-windows-mesh-route-v1.json
+          if-no-files-found: error
+          retention-days: 7
+ })
+          if ($LASTEXITCODE -ne 0 -or $devices.Count -ne 1) {
+            throw 'MISH_DIAGNOSTIC_FAILURE|DEVICE_UNAVAILABLE|Exactly one authorized DEVICE-1 is required.'
+          }
+
+          function Invoke-AdbEvidence {
+            param([Parameter(Mandatory)][string[]] $Arguments)
+            $previous = $ErrorActionPreference
+            try {
+              $ErrorActionPreference = 'Continue'
+              $lines = @(& $env:ADB_EXE @Arguments 2>&1 | ForEach-Object { [string]$_ })
+              return [pscustomobject]@{
+                ExitCode = [int]$LASTEXITCODE
+                Lines = $lines
+                Text = ($lines -join [Environment]::NewLine)
+              }
+            }
+            finally {
+              $ErrorActionPreference = $previous
+            }
+          }
+
+          $pid = Invoke-AdbEvidence @('shell', 'pidof', $env:PACKAGE_NAME)
+          $provider = Invoke-AdbEvidence @(
+            'shell', 'content', 'call',
+            '--uri', "content://$env:PACKAGE_NAME.diagnostics",
+            '--method', 'snapshot_v2'
+          )
+          $exitInfo = Invoke-AdbEvidence @('shell', 'dumpsys', 'activity', 'exit-info', $env:PACKAGE_NAME)
+          $logcat = Invoke-AdbEvidence @('logcat', '-d', '-v', 'threadtime', '-t', '1200')
+
+          $boundedLog = @(
+            $logcat.Lines |
+              Where-Object {
+                $_ -match [regex]::Escape($env:PACKAGE_NAME) -or
+                $_ -match 'AndroidRuntime|FATAL EXCEPTION|Fatal signal|am_crash|am_kill|ContentProvider'
+              } |
+              Select-Object -Last 300
+          )
+
+          $root = Join-Path $env:RUNNER_TEMP 'mish-provider-state'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+
+          [IO.File]::WriteAllText((Join-Path $root 'provider-call.txt'), $provider.Text, [Text.UTF8Encoding]::new($false))
+          [IO.File]::WriteAllText((Join-Path $root 'exit-info.txt'), $exitInfo.Text, [Text.UTF8Encoding]::new($false))
+          [IO.File]::WriteAllLines((Join-Path $root 'bounded-logcat.txt'), $boundedLog, [Text.UTF8Encoding]::new($false))
+
+          $pidText = $pid.Text.Trim()
+          $providerHasPayload = $provider.Text -match 'payload_b64=[A-Za-z0-9+/=]+'
+          $fatalMarkers = @($boundedLog | Where-Object { $_ -match 'FATAL EXCEPTION|Fatal signal|am_crash' }).Count
+          $summary = [ordered]@{
+            schema = 'mish.lab.provider-state/v1'
+            collected_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
+            package = $env:PACKAGE_NAME
+            process_running = ($pid.ExitCode -eq 0 -and $pidText -match '^\d+
+    name: Read-only U2 protocol parity
+    if: >-
+      github.event.issue.number == 163 &&
+      github.event.comment.user.login == 'iamaman11' &&
+      github.event.comment.body == '/mish-diag protocol-parity'
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 10
+    env:
+      ADB_EXE: C:\\mish-lab\\tools\\android-sdk\\platform-tools\\adb.exe
+      CURRENT_ACCEPTED_SOURCE_SHA: '07b61e2de90bedb4c9179a5e92b9e51e309b2478'
+      CURRENT_ACCEPTED_INSTALLED_APK_SHA256: 'b779fda8551a2bbe3ba06e791f92361cac88dcb878ec6755dab80882fbcd9a2f'
+    steps:
+      - name: Checkout protected main diagnostic bridge
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+          clean: true
+
+      - name: Verify pinned PowerShell 7 runtime
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($PSVersionTable.PSEdition -cne 'Core' -or $PSVersionTable.PSVersion.ToString() -cne $env:DIAGNOSTIC_PWSH_VERSION) {
+            throw "MISH_DIAGNOSTIC_FAILURE|POWERSHELL_RUNTIME_MISMATCH|Expected PowerShell $env:DIAGNOSTIC_PWSH_VERSION; observed $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)"
+          }
+
+      - name: Verify physical LAB identity
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\labctl.ps1 host inspect -PhysicalLab
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Prove exact installed U2 protocol parity
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\diagnose-protocol-parity.ps1 -AdbPath "$env:ADB_EXE" -PackageName 'com.mobileproxymish.app.debug' -ExpectedInstalledApkSha256 "$env:CURRENT_ACCEPTED_INSTALLED_APK_SHA256" -ExpectedSourceSha "$env:CURRENT_ACCEPTED_SOURCE_SHA" -EvidencePath "$env:RUNNER_TEMP\mish-protocol-parity-v1.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Publish protocol parity summary
+        if: ${{ always() }}
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $path = Join-Path $env:RUNNER_TEMP 'mish-protocol-parity-v1.json'
+          if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            '### U2 Protocol Parity' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            'Evidence was not produced.' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            exit 0
+          }
+          $evidence = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json
+          @(
+            '### U2 Protocol Parity',
+            '',
+            "- Acceptance: **$($evidence.acceptance_result)**",
+            "- Classification: **$($evidence.classification)**",
+            "- Exact installed bytes: **$($evidence.exact_installed_bytes)**",
+            "- PID stable: **$($evidence.product_pid_stable)**",
+            "- HTTP :3128 positive: **$($evidence.probes.http_3128_positive.result)**",
+            "- HTTP :3128 wrong-auth rejection: **$($evidence.probes.http_3128_negative_auth.result)**",
+            "- SOCKS5 :1081 positive: **$($evidence.probes.socks5_1081_positive.result)**",
+            "- SOCKS5 :1081 wrong-auth rejection: **$($evidence.probes.socks5_1081_negative_auth.result)**",
+            "- Mixed :1080 HTTP positive: **$($evidence.probes.mixed_1080_http_positive.result)**",
+            "- Mixed :1080 HTTP wrong-auth rejection: **$($evidence.probes.mixed_1080_http_negative_auth.result)**",
+            "- Mixed :1080 SOCKS5 positive: **$($evidence.probes.mixed_1080_socks5_positive.result)**",
+            "- Mixed :1080 SOCKS5 wrong-auth rejection: **$($evidence.probes.mixed_1080_socks5_negative_auth.result)**",
+            '',
+            'No install, restart, network toggle, root-policy mutation or Cloudflare mutation is performed.'
+          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Upload protocol parity evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mish-protocol-parity-v1-${{ github.run_id }}
+          path: ${{ runner.temp }}\mish-protocol-parity-v1.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  mesh-route:
+    name: Read-only Windows Mesh route attribution
+    if: >-
+      github.event.issue.number == 163 &&
+      github.event.comment.user.login == 'iamaman11' &&
+      github.event.comment.body == '/mish-diag mesh-route'
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 5
+    env:
+      ADB_EXE: C:\\mish-lab\\tools\\android-sdk\\platform-tools\\adb.exe
+    steps:
+      - name: Verify pinned PowerShell 7 runtime
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($PSVersionTable.PSEdition -cne 'Core' -or $PSVersionTable.PSVersion.ToString() -cne $env:DIAGNOSTIC_PWSH_VERSION) {
+            throw "MISH_DIAGNOSTIC_FAILURE|POWERSHELL_RUNTIME_MISMATCH|Expected PowerShell $env:DIAGNOSTIC_PWSH_VERSION; observed $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)"
+          }
+
+      - name: Attribute Windows route to current DEVICE Mesh endpoint
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Test-MishMeshAddress {
+            param([Parameter(Mandatory)][string] $Address)
+            try {
+              $bytes = [Net.IPAddress]::Parse($Address).GetAddressBytes()
+            }
+            catch { return $false }
+            if ($bytes.Length -ne 4 -or $bytes[0] -ne 100) { return $false }
+            return ([int]$bytes[1] -ge 96 -and [int]$bytes[1] -le 111)
+          }
+
+          $rows = @(& $env:ADB_EXE shell ip -o -4 addr show 2>$null | ForEach-Object { [string]$_ })
+          if ($LASTEXITCODE -ne 0) {
+            throw 'MISH_DIAGNOSTIC_FAILURE|ADB_FAILED|Could not read DEVICE IPv4 addresses.'
+          }
+          $meshAddresses = @(
+            [regex]::Matches(($rows -join "`n"), '\binet\s+(?<ip>\d{1,3}(?:\.\d{1,3}){3})/\d+') |
+              ForEach-Object { $_.Groups['ip'].Value } |
+              Where-Object { Test-MishMeshAddress $_ } |
+              Sort-Object -Unique
+          )
+          if ($meshAddresses.Count -ne 1) {
+            throw "MISH_DIAGNOSTIC_FAILURE|MESH_ENDPOINT_COUNT|Expected one DEVICE Mesh IPv4 endpoint; observed $($meshAddresses.Count)."
+          }
+
+          $meshAddress = [string]$meshAddresses[0]
+          $route = @(Find-NetRoute -RemoteIPAddress $meshAddress -ErrorAction Stop) | Select-Object -First 1
+          if ($null -eq $route) {
+            throw 'MISH_DIAGNOSTIC_FAILURE|WINDOWS_MESH_ROUTE_MISSING|No Windows route resolves the DEVICE Mesh endpoint.'
+          }
+
+          $tcp = Test-NetConnection -ComputerName $meshAddress -Port 3128 -InformationLevel Detailed -WarningAction SilentlyContinue
+          $cloudflareAdapters = @(
+            Get-NetAdapter -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match 'Cloudflare|WARP' -or $_.InterfaceDescription -match 'Cloudflare|WARP' } |
+              ForEach-Object {
+                [ordered]@{
+                  name = [string]$_.Name
+                  description = [string]$_.InterfaceDescription
+                  status = [string]$_.Status
+                  interface_index = [int]$_.ifIndex
+                }
+              }
+          )
+          $cloudflareServices = @(
+            Get-Service -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match 'Cloudflare|WARP' -or $_.DisplayName -match 'Cloudflare|WARP' } |
+              ForEach-Object {
+                [ordered]@{
+                  name = [string]$_.Name
+                  display_name = [string]$_.DisplayName
+                  status = [string]$_.Status
+                  start_type = [string]$_.StartType
+                }
+              }
+          )
+
+          $evidence = [ordered]@{
+            schema = 'mish.lab.windows-mesh-route/v1'
+            collected_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
+            mesh_endpoint_count = 1
+            route = [ordered]@{
+              present = $true
+              interface_alias = [string]$route.InterfaceAlias
+              interface_index = [int]$route.InterfaceIndex
+              route_metric = [int]$route.RouteMetric
+            }
+            tcp_3128 = [ordered]@{
+              succeeded = [bool]$tcp.TcpTestSucceeded
+              interface_alias = [string]$tcp.InterfaceAlias
+            }
+            cloudflare_adapters = $cloudflareAdapters
+            cloudflare_services = $cloudflareServices
+          }
+          $path = Join-Path $env:RUNNER_TEMP 'mish-windows-mesh-route-v1.json'
+          [IO.File]::WriteAllText(
+            $path,
+            (($evidence | ConvertTo-Json -Depth 8) + [Environment]::NewLine),
+            [Text.UTF8Encoding]::new($false)
+          )
+
+          Write-Host "MISH_WINDOWS_MESH_ROUTE_INTERFACE=$($evidence.route.interface_alias)"
+          Write-Host "MISH_WINDOWS_MESH_ROUTE_INDEX=$($evidence.route.interface_index)"
+          Write-Host "MISH_WINDOWS_MESH_TCP_3128=$($evidence.tcp_3128.succeeded)"
+          Write-Host "MISH_WINDOWS_MESH_TCP_INTERFACE=$($evidence.tcp_3128.interface_alias)"
+          Write-Host "MISH_WINDOWS_CLOUDFLARE_ADAPTERS=$($cloudflareAdapters.Count)"
+          Write-Host "MISH_WINDOWS_CLOUDFLARE_SERVICES=$($cloudflareServices.Count)"
+
+      - name: Upload Windows Mesh route evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mish-windows-mesh-route-v1-${{ github.run_id }}
+          path: ${{ runner.temp }}\mish-windows-mesh-route-v1.json
+          if-no-files-found: error
+          retention-days: 7
+)
+            provider_exit_code = $provider.ExitCode
+            provider_has_payload = $providerHasPayload
+            provider_output_present = -not [string]::IsNullOrWhiteSpace($provider.Text)
+            exit_info_exit_code = $exitInfo.ExitCode
+            logcat_exit_code = $logcat.ExitCode
+            bounded_log_lines = $boundedLog.Count
+            fatal_markers = $fatalMarkers
+            mutation_performed = $false
+          }
+          [IO.File]::WriteAllText((Join-Path $root 'summary.json'), (($summary | ConvertTo-Json -Depth 4) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+
+          Write-Host "MISH_PROVIDER_PROCESS_RUNNING=$($summary.process_running)"
+          Write-Host "MISH_PROVIDER_CALL_EXIT=$($summary.provider_exit_code)"
+          Write-Host "MISH_PROVIDER_HAS_PAYLOAD=$($summary.provider_has_payload)"
+          Write-Host "MISH_PROVIDER_OUTPUT_PRESENT=$($summary.provider_output_present)"
+          Write-Host "MISH_PROVIDER_FATAL_MARKERS=$($summary.fatal_markers)"
+          Write-Host 'MISH_PROVIDER_MUTATION=false'
+
+      - name: Upload bounded provider evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mish-provider-state-${{ github.run_id }}
+          path: ${{ runner.temp }}\mish-provider-state\
+          if-no-files-found: error
+          retention-days: 7
+
 
   protocol-parity:
     name: Read-only U2 protocol parity
