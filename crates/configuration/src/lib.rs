@@ -161,7 +161,11 @@ pub struct ControlEndpoint {
 
 impl ControlEndpoint {
     pub fn deployment() -> Result<Self, DesiredConfigurationError> {
-        Self::parse(DEPLOYMENT_CONTROL_HOST_RAW.trim(), CONTROL_PORT, CONTROL_DEVICE_PATH)
+        Self::parse(
+            DEPLOYMENT_CONTROL_HOST_RAW.trim(),
+            CONTROL_PORT,
+            CONTROL_DEVICE_PATH,
+        )
     }
 
     pub fn parse(

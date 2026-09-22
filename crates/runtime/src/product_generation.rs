@@ -6,7 +6,8 @@
 use crate::{
     CellularDnsResolver, CellularPolicyCoordinator, CellularRuntimeCoordinator,
     ControlRuntimeCoordinator, MeshCompositionCoordinator, ProxyRuntimeCoordinator,
-    ReadinessRuntimeCoordinator, RotationRuntimeCoordinator, RuntimeExecutionError, RuntimeExecutor,
+    ReadinessRuntimeCoordinator, RotationRuntimeCoordinator, RuntimeExecutionError,
+    RuntimeExecutor,
 };
 use mish_cellular::RootPolicyNamespace;
 use std::future::Future;
@@ -78,10 +79,7 @@ impl ProductGeneration {
             Arc::clone(&policy),
             Arc::clone(&proxy),
         );
-        let control = ControlRuntimeCoordinator::new(
-            Arc::clone(&executor),
-            Arc::clone(&rotation),
-        )?;
+        let control = ControlRuntimeCoordinator::new(Arc::clone(&executor), Arc::clone(&rotation))?;
 
         Ok(Arc::new(Self {
             generation,

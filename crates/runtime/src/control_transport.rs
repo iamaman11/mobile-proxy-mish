@@ -10,11 +10,11 @@ use std::time::Duration;
 use tokio::net::{TcpStream, lookup_host};
 use tokio::time::{Instant, timeout};
 use tokio_rustls::client::TlsStream;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::http::header::USER_AGENT;
-use tokio_tungstenite::tungstenite::http::HeaderValue;
-use tokio_tungstenite::tungstenite::protocol::{Message, WebSocketConfig};
 use tokio_tungstenite::tungstenite::Error as WebSocketError;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http::HeaderValue;
+use tokio_tungstenite::tungstenite::http::header::USER_AGENT;
+use tokio_tungstenite::tungstenite::protocol::{Message, WebSocketConfig};
 use tokio_tungstenite::{WebSocketStream, client_async_with_config};
 
 const CONTROL_WEBSOCKET_FRAMING_HEADROOM_BYTES: usize = 256;
@@ -192,13 +192,8 @@ mod tests {
     #[test]
     fn request_uses_exact_wss_host_path_and_device_id() {
         let device_id = "a".repeat(64);
-        let request = build_request(
-            "api.alegria.by",
-            443,
-            "/v1/device/connect",
-            &device_id,
-        )
-        .expect("valid request");
+        let request = build_request("api.alegria.by", 443, "/v1/device/connect", &device_id)
+            .expect("valid request");
         assert_eq!(
             request.uri().to_string(),
             format!("wss://api.alegria.by/v1/device/connect?device_id={device_id}")

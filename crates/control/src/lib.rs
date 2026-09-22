@@ -215,9 +215,7 @@ pub fn validate_request_id(request_id: &str) -> Result<(), ControlProtocolError>
     Ok(())
 }
 
-pub fn p256_der_signature_to_p1363_b64url(
-    der: &[u8],
-) -> Result<String, ControlProtocolError> {
+pub fn p256_der_signature_to_p1363_b64url(der: &[u8]) -> Result<String, ControlProtocolError> {
     let signature = p256_der_signature_to_p1363(der)?;
     Ok(encode_base64(&signature, true, false))
 }
@@ -382,10 +380,8 @@ fn encode_hex(bytes: &[u8]) -> String {
 }
 
 fn encode_base64(bytes: &[u8], url_safe: bool, padding: bool) -> String {
-    const STANDARD: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    const URL_SAFE: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const STANDARD: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const URL_SAFE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let alphabet = if url_safe { URL_SAFE } else { STANDARD };
     let capacity = bytes.len().div_ceil(3) * 4;
     let mut out = String::with_capacity(capacity);
@@ -532,7 +528,6 @@ mod tests {
             Err(ControlProtocolError::InvalidSignature)
         );
     }
-
 
     #[test]
     fn request_ids_are_narrow_and_injection_safe() {

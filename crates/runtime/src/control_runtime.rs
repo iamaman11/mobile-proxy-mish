@@ -5,9 +5,7 @@
 //! Android radio state itself, never retries a rotation until the IP changes, and never creates a
 //! second network/executor/lifecycle owner.
 
-use crate::control_transport::{
-    ControlTransport, ControlTransportError, ControlTransportMessage,
-};
+use crate::control_transport::{ControlTransport, ControlTransportError, ControlTransportMessage};
 use crate::{
     CellularRequestRearmEffect, RotationRuntimeCoordinator, RotationRuntimeStartError,
     RuntimeExecutionError, RuntimeExecutor,
@@ -15,8 +13,8 @@ use crate::{
 use mish_configuration::ControlEndpoint;
 use mish_control::{
     ControlDeviceIdentity, RemoteRotationResult, ServerControlMessage, canonical_auth_payload,
-    encode_accepted_message, encode_auth_message, encode_result_message, parse_server_message,
-    p256_der_signature_to_p1363_b64url,
+    encode_accepted_message, encode_auth_message, encode_result_message,
+    p256_der_signature_to_p1363_b64url, parse_server_message,
 };
 use mish_rotation::{RotationSnapshot, RotationTerminalResult};
 use std::collections::VecDeque;
@@ -141,7 +139,10 @@ impl ControlRuntimeCoordinator {
                 reconnect_attempts: state.reconnect_attempts,
                 next_delay_ms: state.next_delay_ms,
                 pending_operation: state.pending.is_some(),
-                pending_operation_id: state.pending.as_ref().and_then(|pending| pending.operation_id),
+                pending_operation_id: state
+                    .pending
+                    .as_ref()
+                    .and_then(|pending| pending.operation_id),
                 last_terminal_result: state.last_terminal_result,
             })
             .unwrap_or(ControlRuntimeSnapshot {
@@ -275,7 +276,11 @@ impl ControlRuntimeCoordinator {
                 _ = sleep(Duration::from_millis(delay_ms)) => {}
             }
         }
-        self.publish_connection_state(ControlSessionState::Stopped, 0, CONTROL_RECONNECT_DELAYS_MS[0]);
+        self.publish_connection_state(
+            ControlSessionState::Stopped,
+            0,
+            CONTROL_RECONNECT_DELAYS_MS[0],
+        );
     }
 
     async fn connect_and_run(
@@ -345,12 +350,12 @@ impl ControlRuntimeCoordinator {
             .await
             .map_err(|_| ControlRunError::Authentication)??;
         let nonce = match challenge {
-            ControlTransportMessage::Text(text) => match parse_server_message(&text)
-                .map_err(|_| ControlRunError::Protocol)?
-            {
-                ServerControlMessage::Challenge { nonce } => nonce,
-                _ => return Err(ControlRunError::Protocol),
-            },
+            ControlTransportMessage::Text(text) => {
+                match parse_server_message(&text).map_err(|_| ControlRunError::Protocol)? {
+                    ServerControlMessage::Challenge { nonce } => nonce,
+                    _ => return Err(ControlRunError::Protocol),
+                }
+            }
             ControlTransportMessage::Closed => return Err(ControlRunError::Transport),
         };
 
@@ -370,10 +375,7 @@ impl ControlRuntimeCoordinator {
             .map_err(|_| ControlRunError::Authentication)??;
         match ready {
             ControlTransportMessage::Text(text)
-                if matches!(
-                    parse_server_message(&text),
-                    Ok(ServerControlMessage::Ready)
-                ) =>
+                if matches!(parse_server_message(&text), Ok(ServerControlMessage::Ready)) =>
             {
                 Ok(())
             }
@@ -427,12 +429,8 @@ impl ControlRuntimeCoordinator {
                 self.send_known_operation(transport, &existing).await?;
                 return Ok(());
             }
-            let rejected = encode_result_message(
-                &request_id,
-                RemoteRotationResult::Rejected,
-                None,
-            )
-            .map_err(|_| ControlRunError::Protocol)?;
+            let rejected = encode_result_message(&request_id, RemoteRotationResult::Rejected, None)
+                .map_err(|_| ControlRunError::Protocol)?;
             transport.write_text(&rejected).await?;
             return Ok(());
         }
@@ -448,9 +446,8 @@ impl ControlRuntimeCoordinator {
             Ok(operation_id) => operation_id,
             Err(error) => {
                 let result = map_rotation_start_error(error);
-                let rejected =
-                    encode_result_message(&request_id, result, None)
-                        .map_err(|_| ControlRunError::Protocol)?;
+                let rejected = encode_result_message(&request_id, result, None)
+                    .map_err(|_| ControlRunError::Protocol)?;
                 transport.write_text(&rejected).await?;
                 if let Ok(mut state) = self.state.lock() {
                     state.last_terminal_result = Some(result);
@@ -516,9 +513,8 @@ impl ControlRuntimeCoordinator {
             .map_err(|_| ControlRunError::Protocol)?;
         transport.write_text(&accepted).await?;
         if let Some(result) = operation.result {
-            let message =
-                encode_result_message(&operation.request_id, result, Some(operation_id))
-                    .map_err(|_| ControlRunError::Protocol)?;
+            let message = encode_result_message(&operation.request_id, result, Some(operation_id))
+                .map_err(|_| ControlRunError::Protocol)?;
             transport.write_text(&message).await?;
         }
         Ok(())
@@ -535,9 +531,8 @@ impl ControlRuntimeCoordinator {
         let Some(result) = pending.result else {
             return Ok(());
         };
-        let message =
-            encode_result_message(&pending.request_id, result, pending.operation_id)
-                .map_err(|_| ControlRunError::Protocol)?;
+        let message = encode_result_message(&pending.request_id, result, pending.operation_id)
+            .map_err(|_| ControlRunError::Protocol)?;
         transport.write_text(&message).await
     }
 
@@ -550,7 +545,9 @@ impl ControlRuntimeCoordinator {
             })
             && let Some(completed) = state.pending.take()
         {
-            state.recent_terminal.retain(|item| item.request_id != request_id);
+            state
+                .recent_terminal
+                .retain(|item| item.request_id != request_id);
             state.recent_terminal.push_front(completed);
             while state.recent_terminal.len() > CONTROL_RECENT_TERMINAL_REQUESTS {
                 state.recent_terminal.pop_back();
@@ -666,7 +663,6 @@ mod tests {
         assert_eq!(reconnect_delay_ms(5), 60_000);
         assert_eq!(reconnect_delay_ms(u32::MAX), 60_000);
     }
-
 
     #[test]
     fn every_rotation_start_error_maps_to_rejected_without_retrying_mutation() {
