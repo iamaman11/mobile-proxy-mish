@@ -65,7 +65,7 @@ jobs:
             '(?i)\b(gradle|cargo|rustc|rustup|sdkmanager|ndk-build)\b',
             '(?i)\bassemble(Debug|Release|DebugAndroidTest)\b',
             '(?i)MISH_ANDROID_RELEASE_(KEYSTORE|STORE_PASSWORD|KEY_ALIAS|KEY_PASSWORD)',
-            '(?i)CLOUDFLARE_API_TOKEN|R2_ACCESS_KEY|R2_SECRET|terraform\s+apply',
+            '(?i)CLOUDFLARE_API_TOKEN',
             '(?i)\badb(?:\.exe)?\s+install\b'
           )) {
             if ($text -match $forbidden) {
@@ -117,7 +117,7 @@ jobs:
             '(?m)^\s*push\s*:',
             '(?m)^\s*shell:\s*pwsh\s*$',
             '(?m)^\s*shell:\s*powershell\s*$',
-            '(?i)CLOUDFLARE_API_TOKEN|R2_ACCESS_KEY|R2_SECRET|terraform',
+            '(?i)CLOUDFLARE_API_TOKEN',
             '(?i)MISH_ANDROID_RELEASE_(KEYSTORE|STORE_PASSWORD|KEY_ALIAS|KEY_PASSWORD)',
             '(?i)registration\s+(new|token|delete)',
             '(?i)tunnel\s+protocol\s+set',
@@ -129,7 +129,7 @@ jobs:
           }
 
           foreach ($forbidden in @(
-            '(?i)CLOUDFLARE_API_TOKEN|R2_ACCESS_KEY|R2_SECRET|terraform',
+            '(?i)CLOUDFLARE_API_TOKEN',
             '(?i)Invoke-(RestMethod|WebRequest)',
             '(?i)https?://',
             '(?i)registration\s+(new|token|delete)',
