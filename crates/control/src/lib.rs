@@ -105,6 +105,7 @@ struct WireAccepted<'a> {
     #[serde(rename = "type")]
     message_type: &'static str,
     request_id: &'a str,
+    operation_id: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -168,12 +169,19 @@ pub fn encode_auth_message(
     })
 }
 
-pub fn encode_accepted_message(request_id: &str) -> Result<String, ControlProtocolError> {
+pub fn encode_accepted_message(
+    request_id: &str,
+    operation_id: u64,
+) -> Result<String, ControlProtocolError> {
     validate_request_id(request_id)?;
+    if operation_id == 0 {
+        return Err(ControlProtocolError::InvalidOperationId);
+    }
     encode_wire(&WireAccepted {
         v: CONTROL_PROTOCOL_VERSION,
         message_type: "ACCEPTED",
         request_id,
+        operation_id,
     })
 }
 
@@ -519,8 +527,11 @@ mod tests {
         let signature = "b".repeat(86);
         let auth = encode_auth_message(&device, &signature).unwrap();
         assert!(auth.contains(r#""type":"AUTH""#));
-        let accepted = encode_accepted_message("req_1").unwrap();
-        assert_eq!(accepted, r#"{"v":1,"type":"ACCEPTED","request_id":"req_1"}"#);
+        let accepted = encode_accepted_message("req_1", 7).unwrap();
+        assert_eq!(
+            accepted,
+            r#"{"v":1,"type":"ACCEPTED","request_id":"req_1","operation_id":7}"#
+        );
         let result =
             encode_result_message("req_1", RemoteRotationResult::Changed, Some(7)).unwrap();
         assert_eq!(
