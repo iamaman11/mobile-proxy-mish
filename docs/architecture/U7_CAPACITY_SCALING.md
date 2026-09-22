@@ -1,19 +1,19 @@
 # U7 Capacity Scaling Acceptance
 
-Status: **BOUND U7 EXECUTION / ACCEPTANCE PLAN**.
+Status: **CLOSED / HISTORICAL U7 EXECUTION RECORD**.
 
-This document refines the U7 `Efficiency and long-run hardening` stage from `PRODUCT_ROADMAP.md`. It does not change roadmap order, does not change the current U2 stage, and does not change the currently accepted PRODUCT capacity.
+This document records the promotion plan that started from the former 64-session baseline. U7 subsequently accepted and promoted **512 admitted sessions with deterministic 513th rejection**. The current contract is owned by `PRODUCT_ROADMAP.md`, `OWNERSHIP.md`, `EXTERNAL_TCP_SESSION_BUDGET`, and the executable capacity probe; statements below describing 64 as the shipped/current limit are historical pre-promotion conditions, not current PRODUCT truth.
 
-## Current production baseline
+## Accepted U7 closure
 
-The accepted external Mesh capacity remains:
+The current accepted external Mesh capacity is:
 
 ```text
-64 admitted sessions
-65th rejected at the mish-transport edge
+512 admitted sessions
+513th rejected at the mish-transport edge
 ```
 
-That value remains the shipped PRODUCT contract until a later capacity promotion satisfies this document and is accepted by a separate PRODUCT change.
+The promotion was accepted by the U7 physical evidence recorded in the canonical roadmap. Capacity remains a `mish-transport` admission-policy fact; this historical plan does not override the accepted 512/513 contract.
 
 Capacity is a `mish-transport` admission policy fact. The one process-wide Tokio runtime in `mish-runtime` owns execution, cancellation and drain, but it must not become a second external-capacity authority.
 
@@ -112,13 +112,11 @@ If a tier is selected for promotion:
 6. update the current-stage checkpoint with the accepted exact SHA/evidence;
 7. only then treat the new value as the production contract.
 
-Until that sequence completes, PRODUCT capacity remains 64.
+That promotion sequence completed in U7; current PRODUCT capacity is 512.
 
 ## Relationship to U8
 
-U8 release/durability acceptance uses whichever production capacity has actually been promoted and accepted by the end of U7.
-
-If no larger tier satisfies the evidence/need threshold, U8 proceeds with 64. There is no roadmap requirement that U7 must increase the limit.
+U8 release/durability acceptance uses the capacity actually promoted and accepted by the end of U7: **512 admitted / 513th rejected**. The conditional 64-retention path below remains historical decision rationale only.
 
 ## Exit criteria
 
