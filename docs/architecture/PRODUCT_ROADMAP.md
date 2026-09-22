@@ -547,7 +547,7 @@ U8-A inventory                                      COMPLETE
 U8-B reboot + replacement-install                   COMPLETE
 U8-C root-shell death/replacement                    COMPLETE
 U8-D public Cellular egress IP rotation proof       COMPLETE
-U8-E authenticated remote IP-rotation command       NEXT
+U8-E authenticated remote IP-rotation command       IN FINAL ACCEPTANCE
 U8-F low-impact durability soak
      + reverse-WSS reconnect/heartbeat/traffic/resource budget
      + Mesh peer liveness
