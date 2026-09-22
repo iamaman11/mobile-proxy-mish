@@ -3,6 +3,7 @@ export const AUTH_DOMAIN = "MISH_CONTROL_AUTH_V1";
 export const MAX_REQUEST_ID_BYTES = 64;
 export const MAX_BODY_BYTES = 4096;
 export const MAX_RECENT_OPERATIONS = 32;
+export const DEVICE_AUTH_CHALLENGE_MAX_AGE_MS = 60_000;
 export const RESULT_CODES = new Set(["CHANGED", "UNCHANGED", "FAILED", "REJECTED"]);
 
 const REQUEST_ID = /^[A-Za-z0-9_-]{1,64}$/;
@@ -18,6 +19,13 @@ export function isRequestId(value) {
   return typeof value === "string" &&
     new TextEncoder().encode(value).length <= MAX_REQUEST_ID_BYTES &&
     REQUEST_ID.test(value);
+}
+
+export function isFreshAuthChallenge(issuedAtMs, nowMs = Date.now()) {
+  return Number.isSafeInteger(issuedAtMs) &&
+    Number.isSafeInteger(nowMs) &&
+    issuedAtMs <= nowMs &&
+    nowMs - issuedAtMs <= DEVICE_AUTH_CHALLENGE_MAX_AGE_MS;
 }
 
 export function challengeMessage(nonce) {

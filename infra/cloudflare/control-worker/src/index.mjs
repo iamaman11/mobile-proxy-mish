@@ -4,6 +4,7 @@ import {
   challengeMessage,
   deviceIdFromSpkiB64,
   isDeviceId,
+  isFreshAuthChallenge,
   isRequestId,
   managerAuthorized,
   parseDeviceMessage,
@@ -129,6 +130,7 @@ export class DeviceControl {
       authenticated: false,
       device_id: deviceId,
       challenge,
+      challenge_issued_at_ms: Date.now(),
     });
     server.send(challengeMessage(challenge));
     return new Response(null, { status: 101, webSocket: client });
@@ -162,6 +164,10 @@ export class DeviceControl {
       const spki = await this.ctx.storage.get("public_key_spki_b64");
       if (!spki || !attachment.challenge) {
         ws.close(1008, "identity unavailable");
+        return;
+      }
+      if (!isFreshAuthChallenge(attachment.challenge_issued_at_ms)) {
+        ws.close(1008, "authentication expired");
         return;
       }
       const valid = await verifyDeviceSignature(
