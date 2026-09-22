@@ -1,0 +1,100 @@
+name: MISH Provider Diagnostic
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mish-provider-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  provider-state:
+    name: Read-only Android provider state
+    if: >-
+      github.event.issue.number == 163 &&
+      github.event.comment.user.login == 'iamaman11' &&
+      github.event.comment.body == '/mish-diag provider-state'
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 5
+    env:
+      ADB_EXE: C:\\mish-lab\\tools\\android-sdk\\platform-tools\\adb.exe
+      PACKAGE_NAME: com.mobileproxymish.app.debug
+    steps:
+      - name: Collect bounded process/provider/exit evidence
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -File {0}'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path -LiteralPath $env:ADB_EXE -PathType Leaf)) {
+            throw 'MISH_PROVIDER_DIAG|ADB_MISSING'
+          }
+          $devices = @(& $env:ADB_EXE devices | Where-Object { $_ -match '^\S+\s+device\s*$' })
+          if ($LASTEXITCODE -ne 0 -or $devices.Count -ne 1) {
+            throw 'MISH_PROVIDER_DIAG|DEVICE_UNAVAILABLE'
+          }
+
+          function Invoke-AdbEvidence {
+            param([Parameter(Mandatory)][string[]] $Arguments)
+            $old = $ErrorActionPreference
+            try {
+              $ErrorActionPreference = 'Continue'
+              $rows = @(& $env:ADB_EXE @Arguments 2>&1 | ForEach-Object { [string]$_ })
+              [pscustomobject]@{ ExitCode = [int]$LASTEXITCODE; Lines = $rows; Text = ($rows -join [Environment]::NewLine) }
+            }
+            finally {
+              $ErrorActionPreference = $old
+            }
+          }
+
+          $pid = Invoke-AdbEvidence @('shell', 'pidof', $env:PACKAGE_NAME)
+          $provider = Invoke-AdbEvidence @('shell', 'content', 'call', '--uri', "content://$env:PACKAGE_NAME.diagnostics", '--method', 'snapshot_v2')
+          $exitInfo = Invoke-AdbEvidence @('shell', 'dumpsys', 'activity', 'exit-info', $env:PACKAGE_NAME)
+          $logcat = Invoke-AdbEvidence @('logcat', '-d', '-v', 'threadtime', '-t', '1200')
+
+          $bounded = @(
+            $logcat.Lines | Where-Object {
+              $_ -match [regex]::Escape($env:PACKAGE_NAME) -or
+              $_ -match 'AndroidRuntime|FATAL EXCEPTION|Fatal signal|am_crash|am_kill|ContentProvider'
+            } | Select-Object -Last 300
+          )
+
+          $root = Join-Path $env:RUNNER_TEMP 'mish-provider-state'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          [IO.File]::WriteAllText((Join-Path $root 'provider-call.txt'), $provider.Text, [Text.UTF8Encoding]::new($false))
+          [IO.File]::WriteAllText((Join-Path $root 'exit-info.txt'), $exitInfo.Text, [Text.UTF8Encoding]::new($false))
+          [IO.File]::WriteAllLines((Join-Path $root 'bounded-logcat.txt'), $bounded, [Text.UTF8Encoding]::new($false))
+
+          $pidText = $pid.Text.Trim()
+          $summary = [ordered]@{
+            schema = 'mish.lab.provider-state/v1'
+            collected_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
+            package = $env:PACKAGE_NAME
+            process_running = ($pid.ExitCode -eq 0 -and $pidText -match '^\d+$')
+            provider_exit_code = $provider.ExitCode
+            provider_has_payload = ($provider.Text -match 'payload_b64=[A-Za-z0-9+/=]+')
+            provider_output_present = -not [string]::IsNullOrWhiteSpace($provider.Text)
+            exit_info_exit_code = $exitInfo.ExitCode
+            logcat_exit_code = $logcat.ExitCode
+            bounded_log_lines = $bounded.Count
+            fatal_markers = @($bounded | Where-Object { $_ -match 'FATAL EXCEPTION|Fatal signal|am_crash' }).Count
+            mutation_performed = $false
+          }
+          [IO.File]::WriteAllText((Join-Path $root 'summary.json'), (($summary | ConvertTo-Json -Depth 4) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+
+          Write-Host "MISH_PROVIDER_PROCESS_RUNNING=$($summary.process_running)"
+          Write-Host "MISH_PROVIDER_CALL_EXIT=$($summary.provider_exit_code)"
+          Write-Host "MISH_PROVIDER_HAS_PAYLOAD=$($summary.provider_has_payload)"
+          Write-Host "MISH_PROVIDER_OUTPUT_PRESENT=$($summary.provider_output_present)"
+          Write-Host "MISH_PROVIDER_FATAL_MARKERS=$($summary.fatal_markers)"
+          Write-Host 'MISH_PROVIDER_MUTATION=false'
+
+      - name: Upload bounded provider evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mish-provider-state-${{ github.run_id }}
+          path: ${{ runner.temp }}\mish-provider-state\
+          if-no-files-found: error
+          retention-days: 7
