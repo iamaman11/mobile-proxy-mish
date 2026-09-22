@@ -306,6 +306,12 @@ def main() -> None:
                         f"{kotlin_relative} contains {forbidden!r}"
                     )
 
+        if kotlin_relative != runtime_controller and "NativeProductRuntime(" in kotlin_text:
+            raise SystemExit(
+                "architecture guard: only MishRuntimeController may construct NativeProductRuntime; "
+                f"{kotlin_relative} contains an alternate PRODUCT composition root"
+            )
+
     # Native Mesh serving may be stopped by readiness/proxy callbacks already running on the
     # shared PRODUCT Tokio runtime. A direct Handle::block_on from that worker panics and poisons
     # the Mesh owner mutex. The bounded drain must use Tokio's multi-thread block-in-place bridge.
