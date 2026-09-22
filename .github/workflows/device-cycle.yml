@@ -596,7 +596,7 @@ jobs:
             '- Exact CONTROL SHA: `${{ needs.resolve.outputs.control_sha }}`'
             "- Result: **$([string]$evidence.acceptance_result) / $([string]$evidence.classification)**"
             "- Terminal: **$([string]$evidence.terminal_result)**"
-            "- Operation id: `$([int64]$evidence.operation_id)`"
+            "- Operation id: **$([int64]$evidence.operation_id)**"
             '- Logical valid rotation requests: **1**'
             '- Same-request replay: **same terminal operation**'
             '- Wrong manager auth: **401 / zero Rotation mutation**'
