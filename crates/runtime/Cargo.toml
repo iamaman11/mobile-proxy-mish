@@ -14,6 +14,7 @@ path = "src/entry.rs"
 mish-application = { path = "../application" }
 mish-cellular = { path = "../cellular" }
 mish-configuration = { path = "../configuration" }
+mish-control = { path = "../control" }
 mish-proxy = { path = "../proxy" }
 mish-readiness = { path = "../readiness" }
 mish-rotation = { path = "../rotation" }
