@@ -88,6 +88,7 @@ struct ControlState {
     next_delay_ms: u64,
     pending: Option<PendingRemoteOperation>,
     last_terminal_result: Option<RemoteRotationResult>,
+    device_id: Option<String>,
     task: Option<JoinHandle<()>>,
     cancel: Option<watch::Sender<bool>>,
     closed: bool,
@@ -122,6 +123,7 @@ impl ControlRuntimeCoordinator {
                 next_delay_ms: CONTROL_RECONNECT_DELAYS_MS[0],
                 pending: None,
                 last_terminal_result: None,
+                device_id: None,
                 task: None,
                 cancel: None,
                 closed: false,
@@ -174,10 +176,14 @@ impl ControlRuntimeCoordinator {
                 return Err(ControlRuntimeStartError::StateUnavailable);
             }
             if state.task.as_ref().is_some_and(|task| !task.is_finished()) {
+                if state.device_id.as_deref() == Some(identity.device_id()) {
+                    return Ok(identity.device_id().to_owned());
+                }
                 return Err(ControlRuntimeStartError::AlreadyStarted);
             }
             let (cancel_tx, cancel_rx) = watch::channel(false);
             state.cancel = Some(cancel_tx);
+            state.device_id = Some(identity.device_id().to_owned());
             state.session_state = ControlSessionState::Connecting;
             state.reconnect_attempts = 0;
             state.next_delay_ms = CONTROL_RECONNECT_DELAYS_MS[0];
