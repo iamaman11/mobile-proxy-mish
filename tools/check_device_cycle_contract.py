@@ -64,7 +64,7 @@ def main() -> None:
         "candidate build is not a completed successful PR preflight",
         "PR Validation + PRODUCT Candidate",
         "probe_only supports only the current-function loopback_connect probe",
-        "full accepts only none, capacity_resources, recovery_lifecycle, dns_lifetime_live, u5_rotation, u7_runtime_restart_resources, or u7_512_lifecycle_stability",
+        "full accepts only none, capacity_resources, recovery_lifecycle, dns_lifetime_live, u5_rotation, u7_runtime_restart_resources, u7_512_lifecycle_stability, or u8_reboot_install_durability",
         "install_only/diagnose_only require probe=none",
         "capacity_resources",
         "recovery_lifecycle",
@@ -72,6 +72,9 @@ def main() -> None:
         "u5_rotation",
         "u7_runtime_restart_resources",
         "u7_512_lifecycle_stability",
+        "u8_reboot_install_durability",
+        "Explicit U8 reboot + replacement-install durability",
+        "diagnose-u8-reboot-install-durability.ps1",
         "Explicit U3 DNS lifetime - live same-process observation",
         "diagnose-dns-lifetime-live.ps1",
         "Explicit U5 rotation - PRODUCT-owned airplane cycle acceptance",
@@ -112,6 +115,12 @@ def main() -> None:
         "Targeted acceptance",
     ):
         require(workflow, required, "explicit single-run orchestration contract drifted")
+
+    require(
+        "lab/windows/test-device-cycle.ps1",
+        "test-u8-reboot-install-probe-contract.ps1",
+        "U8 durability probe guard must run inside the existing Device Cycle Contracts job without changing candidate-producer policy",
+    )
 
     for required in (
         "name: Device Cycle Contracts",
@@ -293,6 +302,60 @@ def main() -> None:
         "cargo build",
     ):
         forbid(dns_probe, forbidden, "DNS lifetime observation must not become a second PRODUCT/root/build path")
+
+
+    u8_probe = "lab/windows/diagnose-u8-reboot-install-durability.ps1"
+    for required in (
+        "mish.lab.u8-reboot-install-durability/v1",
+        "snapshot_v2",
+        "Do not touch the diagnostics provider until PRODUCT is independently observable",
+        "@('install', '-r', $SignedProductApkPath)",
+        "adb_install_r_attempts = 1",
+        "Invoke-MishAdbCapture -Arguments @('reboot')",
+        "adb_reboot_attempts = 1",
+        "/proc/sys/kernel/random/boot_id",
+        "sys.boot_completed",
+        "verify-installed-candidate.ps1",
+        "PRODUCT_REPLACEMENT_AUTOSTART_NOT_OBSERVED",
+        "PRODUCT_REPLACEMENT_UID_CHANGED",
+        "PRODUCT_REPLACEMENT_SIGNER_CHANGED",
+        "PRODUCT_REPLACEMENT_ROOT_AUTHORITY_NOT_RESTORED",
+        "PRODUCT_REBOOT_AUTOSTART_NOT_OBSERVED",
+        "PRODUCT_REBOOT_NOT_READY",
+        "PRODUCT_REBOOT_ROOT_AUTHORITY_NOT_RESTORED",
+        "U8_REBOOT_INSTALL_DURABILITY_PASS",
+        "secrets_persisted_in_evidence = $false",
+        "raw_public_ip_persisted = $false",
+    ):
+        require(u8_probe, required, "U8 reboot/install durability evidence contract drifted")
+    for forbidden in (
+        "'shell', 'su'",
+        "'shell', 'iptables'",
+        "'shell', 'ip6tables'",
+        "pm uninstall",
+        "adb uninstall",
+        "airplane-mode",
+        "'cmd', 'phone', 'data'",
+        "settings put",
+        "svc data",
+        "gradle ",
+        "cargo build",
+        "ProxyUserName",
+        "ProxyPassword",
+        "before_ip",
+        "after_ip",
+        "retry-until",
+        "retry_until",
+    ):
+        forbid(u8_probe, forbidden, "U8 durability probe must stay bounded CONTROL/LAB-only")
+
+    u8_probe_contract = "lab/windows/test-u8-reboot-install-probe-contract.ps1"
+    for required in (
+        "U8_REBOOT_INSTALL_PROBE_CONTRACT=PASS",
+        "exactly one deliberate replacement-install command",
+        "exactly one physical reboot request",
+    ):
+        require(u8_probe_contract, required, "U8 durability self-test drifted")
 
     rotation_probe = "lab/windows/diagnose-u5-rotation.ps1"
     for required in (
