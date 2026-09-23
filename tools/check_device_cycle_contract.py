@@ -39,6 +39,17 @@ def main() -> None:
         "Device Cycle summary must remain valid PowerShell without a trailing array comma",
     )
 
+    forbid(
+        workflow,
+        "u8g_final_clean_client",
+        "external Camoufox acceptance must remain outside the Android Device Cycle boundary",
+    )
+    forbid(
+        workflow,
+        "diagnose-u8g-final-clean-client.ps1",
+        "external Camoufox acceptance must not execute inside Device Cycle",
+    )
+
     for required in (
         "workflow_dispatch:",
         "issue_comment:",
