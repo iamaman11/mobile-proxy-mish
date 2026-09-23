@@ -66,7 +66,7 @@ def main() -> None:
         "CONTROL_RECENT_TERMINAL_REQUESTS: usize = 32",
         "rotation.prepare(",
         "encode_accepted_message(&request_id, operation_id)",
-        "transport.write_text(&accepted).await",
+        "self.write_text_observed(transport, &accepted).await",
         "mark_acceptance_delivery_failed(&mut state, &request_id, operation_id)",
         "rotation.activate_prepared(operation_id)",
         "recent_terminal",
@@ -141,7 +141,7 @@ def main() -> None:
         forbid(control, forbidden, "mish-control must own MISH wire semantics, not RFC6455 mechanics")
 
     runtime_text = read(runtime)
-    accepted = runtime_text.find("transport.write_text(&accepted).await")
+    accepted = runtime_text.find("self.write_text_observed(transport, &accepted).await")
     activate = runtime_text.find("rotation.activate_prepared(operation_id)")
     if accepted < 0 or activate < 0 or accepted >= activate:
         raise SystemExit("u8 control contract: ACCEPTED(operation_id) must flush before rotation activation")

@@ -8,12 +8,15 @@ import android.os.Bundle
 import android.os.Process
 import android.os.SystemClock
 import android.util.Base64
+import com.mobileproxymish.ffi.ControlRuntimeSnapshotView
 import com.mobileproxymish.ffi.ProductDiagnosticSnapshotView
 import java.nio.charset.StandardCharsets
 import org.json.JSONObject
 
 internal const val MISH_DIAGNOSTICS_SCHEMA_V2 = "mish.diagnostics/v2"
+internal const val MISH_CONTROL_DIAGNOSTICS_SCHEMA_V1 = "mish.control.diagnostics/v1"
 internal const val MISH_DIAGNOSTICS_METHOD_SNAPSHOT_V2 = "snapshot_v2"
+internal const val MISH_DIAGNOSTICS_METHOD_CONTROL_SNAPSHOT_V1 = "control_snapshot_v1"
 internal const val MISH_DIAGNOSTICS_RESULT_PAYLOAD_B64 = "payload_b64"
 
 /**
@@ -36,6 +39,7 @@ internal fun renderMishDiagnosticSnapshotV2(
     put("runtime", JSONObject().apply {
         put("running", snapshot.runtimeRunning)
         put("generation", snapshot.runtimeGeneration.toLong())
+        put("active_tasks", snapshot.runtimeActiveTasks.toLong())
     })
     put("cellular", JSONObject().apply {
         put("state", snapshot.cellularState)
@@ -227,6 +231,39 @@ internal fun renderMishDiagnosticSnapshotV2(
     })
 }.toString()
 
+internal fun renderMishControlDiagnosticSnapshotV1(
+    applicationId: String,
+    pid: Int,
+    capturedElapsedMs: Long,
+    snapshot: ControlRuntimeSnapshotView,
+): String = JSONObject().apply {
+    put("schema", MISH_CONTROL_DIAGNOSTICS_SCHEMA_V1)
+    put("application_id", applicationId)
+    put("pid", pid)
+    put("captured_elapsed_ms", capturedElapsedMs)
+    put("control", JSONObject().apply {
+        put("state", snapshot.state.name)
+        put("reconnect_attempts", snapshot.reconnectAttempts.toLong())
+        put("reconnect_count", snapshot.reconnectCount.toLong())
+        put("next_delay_ms", snapshot.nextDelayMs.toLong())
+        put("session_age_ms", snapshot.sessionAgeMs?.toLong() ?: JSONObject.NULL)
+        put("application_heartbeat_count", snapshot.applicationHeartbeatCount.toLong())
+        put("payload_tx_bytes", snapshot.payloadTxBytes.toLong())
+        put("payload_rx_bytes", snapshot.payloadRxBytes.toLong())
+        put("last_tx_age_ms", snapshot.lastTxAgeMs?.toLong() ?: JSONObject.NULL)
+        put("last_rx_age_ms", snapshot.lastRxAgeMs?.toLong() ?: JSONObject.NULL)
+        put("pending_operation", snapshot.pendingOperation)
+        put(
+            "pending_operation_id",
+            snapshot.pendingOperationId?.toLong() ?: JSONObject.NULL,
+        )
+        put(
+            "last_terminal_result",
+            snapshot.lastTerminalResult?.name ?: JSONObject.NULL,
+        )
+    })
+}.toString()
+
 private fun JSONObject.putNullable(name: String, value: String?) {
     put(name, value ?: JSONObject.NULL)
 }
@@ -241,7 +278,10 @@ class MishDiagnosticsProvider : ContentProvider() {
     override fun onCreate(): Boolean = true
 
     override fun call(method: String, arg: String?, extras: Bundle?): Bundle {
-        require(method == MISH_DIAGNOSTICS_METHOD_SNAPSHOT_V2) {
+        require(
+            method == MISH_DIAGNOSTICS_METHOD_SNAPSHOT_V2 ||
+                method == MISH_DIAGNOSTICS_METHOD_CONTROL_SNAPSHOT_V1,
+        ) {
             "unsupported diagnostics method"
         }
         require(arg == null && (extras == null || extras.isEmpty)) {
@@ -249,19 +289,34 @@ class MishDiagnosticsProvider : ContentProvider() {
         }
         val app = context?.applicationContext as? MishApplication
             ?: error("MishApplication is unavailable")
-        val snapshot = app.runtimeController.diagnosticSnapshot()
-        val json = renderMishDiagnosticSnapshotV2(
-            applicationId = app.packageName,
-            pid = Process.myPid(),
-            capturedElapsedMs = SystemClock.elapsedRealtime(),
-            snapshot = snapshot,
-        )
+        val capturedElapsedMs = SystemClock.elapsedRealtime()
+        val (schema, json) = when (method) {
+            MISH_DIAGNOSTICS_METHOD_SNAPSHOT_V2 -> {
+                val snapshot = app.runtimeController.diagnosticSnapshot()
+                MISH_DIAGNOSTICS_SCHEMA_V2 to renderMishDiagnosticSnapshotV2(
+                    applicationId = app.packageName,
+                    pid = Process.myPid(),
+                    capturedElapsedMs = capturedElapsedMs,
+                    snapshot = snapshot,
+                )
+            }
+            MISH_DIAGNOSTICS_METHOD_CONTROL_SNAPSHOT_V1 -> {
+                val snapshot = app.runtimeController.controlSnapshot()
+                MISH_CONTROL_DIAGNOSTICS_SCHEMA_V1 to renderMishControlDiagnosticSnapshotV1(
+                    applicationId = app.packageName,
+                    pid = Process.myPid(),
+                    capturedElapsedMs = capturedElapsedMs,
+                    snapshot = snapshot,
+                )
+            }
+            else -> error("unsupported diagnostics method")
+        }
         val encoded = Base64.encodeToString(
             json.toByteArray(StandardCharsets.UTF_8),
             Base64.NO_WRAP,
         )
         return Bundle().apply {
-            putString("schema", MISH_DIAGNOSTICS_SCHEMA_V2)
+            putString("schema", schema)
             putString(MISH_DIAGNOSTICS_RESULT_PAYLOAD_B64, encoded)
         }
     }

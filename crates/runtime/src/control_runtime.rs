@@ -19,7 +19,7 @@ use mish_control::{
 use mish_rotation::{RotationSnapshot, RotationTerminalResult};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{Notify, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
@@ -43,7 +43,14 @@ pub enum ControlSessionState {
 pub struct ControlRuntimeSnapshot {
     pub state: ControlSessionState,
     pub reconnect_attempts: u32,
+    pub reconnect_count: u64,
     pub next_delay_ms: u64,
+    pub session_age_ms: Option<u64>,
+    pub application_heartbeat_count: u64,
+    pub payload_tx_bytes: u64,
+    pub payload_rx_bytes: u64,
+    pub last_tx_age_ms: Option<u64>,
+    pub last_rx_age_ms: Option<u64>,
     pub pending_operation: bool,
     pub pending_operation_id: Option<u64>,
     pub last_terminal_result: Option<RemoteRotationResult>,
@@ -79,7 +86,14 @@ struct PendingRemoteOperation {
 struct ControlState {
     session_state: ControlSessionState,
     reconnect_attempts: u32,
+    reconnect_count: u64,
     next_delay_ms: u64,
+    session_ready_at: Option<Instant>,
+    application_heartbeat_count: u64,
+    payload_tx_bytes: u64,
+    payload_rx_bytes: u64,
+    last_tx_at: Option<Instant>,
+    last_rx_at: Option<Instant>,
     pending: Option<PendingRemoteOperation>,
     recent_terminal: VecDeque<PendingRemoteOperation>,
     last_terminal_result: Option<RemoteRotationResult>,
@@ -112,7 +126,14 @@ impl ControlRuntimeCoordinator {
             state: Mutex::new(ControlState {
                 session_state: ControlSessionState::Stopped,
                 reconnect_attempts: 0,
+                reconnect_count: 0,
                 next_delay_ms: CONTROL_RECONNECT_DELAYS_MS[0],
+                session_ready_at: None,
+                application_heartbeat_count: 0,
+                payload_tx_bytes: 0,
+                payload_rx_bytes: 0,
+                last_tx_at: None,
+                last_rx_at: None,
                 pending: None,
                 recent_terminal: VecDeque::new(),
                 last_terminal_result: None,
@@ -133,11 +154,19 @@ impl ControlRuntimeCoordinator {
     }
 
     pub fn snapshot(&self) -> ControlRuntimeSnapshot {
+        let now = Instant::now();
         self.state()
             .map(|state| ControlRuntimeSnapshot {
                 state: state.session_state,
                 reconnect_attempts: state.reconnect_attempts,
+                reconnect_count: state.reconnect_count,
                 next_delay_ms: state.next_delay_ms,
+                session_age_ms: state.session_ready_at.map(|at| elapsed_ms_since(now, at)),
+                application_heartbeat_count: state.application_heartbeat_count,
+                payload_tx_bytes: state.payload_tx_bytes,
+                payload_rx_bytes: state.payload_rx_bytes,
+                last_tx_age_ms: state.last_tx_at.map(|at| elapsed_ms_since(now, at)),
+                last_rx_age_ms: state.last_rx_at.map(|at| elapsed_ms_since(now, at)),
                 pending_operation: state.pending.is_some(),
                 pending_operation_id: state
                     .pending
@@ -148,7 +177,14 @@ impl ControlRuntimeCoordinator {
             .unwrap_or(ControlRuntimeSnapshot {
                 state: ControlSessionState::Stopped,
                 reconnect_attempts: 0,
+                reconnect_count: 0,
                 next_delay_ms: CONTROL_RECONNECT_DELAYS_MS[0],
+                session_age_ms: None,
+                application_heartbeat_count: 0,
+                payload_tx_bytes: 0,
+                payload_rx_bytes: 0,
+                last_tx_age_ms: None,
+                last_rx_age_ms: None,
                 pending_operation: false,
                 pending_operation_id: None,
                 last_terminal_result: None,
@@ -182,7 +218,14 @@ impl ControlRuntimeCoordinator {
             state.device_id = Some(identity.device_id().to_owned());
             state.session_state = ControlSessionState::Connecting;
             state.reconnect_attempts = 0;
+            state.reconnect_count = 0;
             state.next_delay_ms = CONTROL_RECONNECT_DELAYS_MS[0];
+            state.session_ready_at = None;
+            state.application_heartbeat_count = 0;
+            state.payload_tx_bytes = 0;
+            state.payload_rx_bytes = 0;
+            state.last_tx_at = None;
+            state.last_rx_at = None;
             cancel_rx
         };
 
@@ -270,6 +313,7 @@ impl ControlRuntimeCoordinator {
                 .unwrap_or(ControlSessionState::Connecting);
             failures = next_reconnect_failure_count(failures, last_session_state);
             let delay_ms = reconnect_delay_ms(failures);
+            self.record_reconnect();
             self.publish_connection_state(ControlSessionState::Backoff, failures, delay_ms);
             tokio::select! {
                 changed = cancel.changed() => {
@@ -328,7 +372,7 @@ impl ControlRuntimeCoordinator {
                 _ = self.result_changed.notified() => {
                     self.send_pending_result_if_terminal(&mut transport).await?;
                 }
-                message = transport.read_message() => {
+                message = self.read_message_observed(&mut transport) => {
                     match message? {
                         ControlTransportMessage::Text(text) => {
                             self.handle_server_message(
@@ -350,7 +394,7 @@ impl ControlRuntimeCoordinator {
         identity: &ControlDeviceIdentity,
         signer: Arc<dyn ControlAuthSigner>,
     ) -> Result<(), ControlRunError> {
-        let challenge = timeout(CONTROL_AUTH_TIMEOUT, transport.read_message())
+        let challenge = timeout(CONTROL_AUTH_TIMEOUT, self.read_message_observed(transport))
             .await
             .map_err(|_| ControlRunError::Authentication)??;
         let nonce = match challenge {
@@ -372,9 +416,9 @@ impl ControlRuntimeCoordinator {
             .map_err(|_| ControlRunError::Authentication)?;
         let auth = encode_auth_message(identity.device_id(), &signature)
             .map_err(|_| ControlRunError::Protocol)?;
-        transport.write_text(&auth).await?;
+        self.write_text_observed(transport, &auth).await?;
 
-        let ready = timeout(CONTROL_AUTH_TIMEOUT, transport.read_message())
+        let ready = timeout(CONTROL_AUTH_TIMEOUT, self.read_message_observed(transport))
             .await
             .map_err(|_| ControlRunError::Authentication)??;
         match ready {
@@ -435,7 +479,7 @@ impl ControlRuntimeCoordinator {
             }
             let rejected = encode_result_message(&request_id, RemoteRotationResult::Rejected, None)
                 .map_err(|_| ControlRunError::Protocol)?;
-            transport.write_text(&rejected).await?;
+            self.write_text_observed(transport, &rejected).await?;
             return Ok(());
         }
 
@@ -452,7 +496,7 @@ impl ControlRuntimeCoordinator {
                 let result = map_rotation_start_error(error);
                 let rejected = encode_result_message(&request_id, result, None)
                     .map_err(|_| ControlRunError::Protocol)?;
-                transport.write_text(&rejected).await?;
+                self.write_text_observed(transport, &rejected).await?;
                 if let Ok(mut state) = self.state.lock() {
                     state.last_terminal_result = Some(result);
                 }
@@ -477,12 +521,12 @@ impl ControlRuntimeCoordinator {
         // first public-IP probe. A failed write aborts the prepared operation without mutation.
         let accepted = encode_accepted_message(&request_id, operation_id)
             .map_err(|_| ControlRunError::Protocol)?;
-        if let Err(error) = transport.write_text(&accepted).await {
+        if let Err(error) = self.write_text_observed(transport, &accepted).await {
             self.rotation.fail_prepared_before_mutation(operation_id);
             if let Ok(mut state) = self.state.lock() {
                 mark_acceptance_delivery_failed(&mut state, &request_id, operation_id);
             }
-            return Err(error.into());
+            return Err(error);
         }
 
         if let Err(error) = self.rotation.activate_prepared(operation_id) {
@@ -510,11 +554,11 @@ impl ControlRuntimeCoordinator {
         };
         let accepted = encode_accepted_message(&operation.request_id, operation_id)
             .map_err(|_| ControlRunError::Protocol)?;
-        transport.write_text(&accepted).await?;
+        self.write_text_observed(transport, &accepted).await?;
         if let Some(result) = operation.result {
             let message = encode_result_message(&operation.request_id, result, Some(operation_id))
                 .map_err(|_| ControlRunError::Protocol)?;
-            transport.write_text(&message).await?;
+            self.write_text_observed(transport, &message).await?;
         }
         Ok(())
     }
@@ -532,10 +576,7 @@ impl ControlRuntimeCoordinator {
         };
         let message = encode_result_message(&pending.request_id, result, pending.operation_id)
             .map_err(|_| ControlRunError::Protocol)?;
-        transport
-            .write_text(&message)
-            .await
-            .map_err(ControlRunError::from)
+        self.write_text_observed(transport, &message).await
     }
 
     fn ack_result(&self, request_id: &str) {
@@ -585,6 +626,39 @@ impl ControlRuntimeCoordinator {
         }
     }
 
+    async fn write_text_observed(
+        &self,
+        transport: &mut ControlTransport,
+        text: &str,
+    ) -> Result<(), ControlRunError> {
+        transport.write_text(text).await?;
+        if let Ok(mut state) = self.state.lock() {
+            state.payload_tx_bytes = state.payload_tx_bytes.saturating_add(text.len() as u64);
+            state.last_tx_at = Some(Instant::now());
+        }
+        Ok(())
+    }
+
+    async fn read_message_observed(
+        &self,
+        transport: &mut ControlTransport,
+    ) -> Result<ControlTransportMessage, ControlRunError> {
+        let message = transport.read_message().await?;
+        if let ControlTransportMessage::Text(text) = &message
+            && let Ok(mut state) = self.state.lock()
+        {
+            state.payload_rx_bytes = state.payload_rx_bytes.saturating_add(text.len() as u64);
+            state.last_rx_at = Some(Instant::now());
+        }
+        Ok(message)
+    }
+
+    fn record_reconnect(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.reconnect_count = state.reconnect_count.saturating_add(1);
+        }
+    }
+
     fn publish_connection_state(
         &self,
         session_state: ControlSessionState,
@@ -594,6 +668,13 @@ impl ControlRuntimeCoordinator {
         if let Ok(mut state) = self.state.lock() {
             if state.closed && session_state != ControlSessionState::Stopped {
                 return;
+            }
+            if session_state == ControlSessionState::Ready
+                && state.session_state != ControlSessionState::Ready
+            {
+                state.session_ready_at = Some(Instant::now());
+            } else if session_state != ControlSessionState::Ready {
+                state.session_ready_at = None;
             }
             state.session_state = session_state;
             state.reconnect_attempts = reconnect_attempts;
@@ -612,6 +693,10 @@ impl ControlRuntimeCoordinator {
     fn state_mut(&self) -> Result<MutexGuard<'_, ControlState>, ()> {
         self.state()
     }
+}
+
+fn elapsed_ms_since(now: Instant, then: Instant) -> u64 {
+    u64::try_from(now.saturating_duration_since(then).as_millis()).unwrap_or(u64::MAX)
 }
 
 fn mark_acceptance_delivery_failed(
@@ -685,7 +770,14 @@ mod tests {
         let mut state = ControlState {
             session_state: ControlSessionState::Ready,
             reconnect_attempts: 0,
+            reconnect_count: 0,
             next_delay_ms: 0,
+            session_ready_at: Some(Instant::now()),
+            application_heartbeat_count: 0,
+            payload_tx_bytes: 0,
+            payload_rx_bytes: 0,
+            last_tx_at: None,
+            last_rx_at: None,
             pending: Some(PendingRemoteOperation {
                 request_id: "req_1".to_owned(),
                 operation_id: Some(7),

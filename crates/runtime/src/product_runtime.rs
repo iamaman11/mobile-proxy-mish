@@ -26,6 +26,7 @@ pub struct ProductRuntimeSnapshot {
     pub state: RuntimeLifecycleState,
     pub generation: u64,
     pub generation_requires_replacement: bool,
+    pub active_tasks: u64,
 }
 
 #[derive(Clone)]
@@ -221,8 +222,9 @@ impl ProductRuntimeCoordinator {
                 state: RuntimeLifecycleState::Stopped,
                 generation: 0,
                 generation_requires_replacement: true,
+                active_tasks: self.executor.active_task_count(),
             },
-            |state| snapshot(&state),
+            |state| snapshot(&state, self.executor.active_task_count()),
         )
     }
 
@@ -326,7 +328,14 @@ impl ProductRuntimeCoordinator {
             .unwrap_or(ControlRuntimeSnapshot {
                 state: crate::ControlSessionState::Stopped,
                 reconnect_attempts: 0,
+                reconnect_count: 0,
                 next_delay_ms: 1_000,
+                session_age_ms: None,
+                application_heartbeat_count: 0,
+                payload_tx_bytes: 0,
+                payload_rx_bytes: 0,
+                last_tx_age_ms: None,
+                last_rx_age_ms: None,
                 pending_operation: false,
                 pending_operation_id: None,
                 last_terminal_result: None,
@@ -1054,11 +1063,12 @@ fn bind_rotation_observer(
         }));
 }
 
-fn snapshot(state: &ProductRuntimeState) -> ProductRuntimeSnapshot {
+fn snapshot(state: &ProductRuntimeState, active_tasks: u64) -> ProductRuntimeSnapshot {
     ProductRuntimeSnapshot {
         state: state.lifecycle.state(),
         generation: state.lifecycle.generation(),
         generation_requires_replacement: state.lifecycle.generation_requires_replacement(),
+        active_tasks,
     }
 }
 

@@ -1461,7 +1461,9 @@ def main() -> None:
         )
     for obsolete in (
         "MISH_DIAGNOSTICS_SCHEMA_V1",
-        "snapshot_v1",
+        "MISH_DIAGNOSTICS_METHOD_SNAPSHOT_V1",
+        'renderMishDiagnosticSnapshotV1(',
+        'method == "snapshot_v1"',
         'put("bridge"',
         "private_healthy",
         "privateBridge",
@@ -2148,6 +2150,95 @@ def main() -> None:
             diagnostics_provider,
             forbidden,
             "diagnostics must never project proxy username/password",
+        )
+
+    # U8-F task-growth evidence is owned by the sole process-wide RuntimeExecutor. The counter
+    # observes existing spawn/abort/completion only; it must not introduce another executor.
+    execution = "crates/runtime/src/execution.rs"
+    for required in (
+        "active_tasks: Arc<AtomicU64>",
+        "self.active_tasks.fetch_add(1, Ordering::AcqRel)",
+        "self.active_tasks.fetch_sub(1, Ordering::AcqRel)",
+        "pub fn active_task_count(&self) -> u64",
+    ):
+        require(
+            execution,
+            required,
+            "U8-F task telemetry must stay on the sole RuntimeExecutor",
+        )
+    require(
+        "crates/runtime/src/product_runtime.rs",
+        "pub active_tasks: u64",
+        "process-wide PRODUCT runtime snapshot must expose the sole-executor task count",
+    )
+    require(
+        "crates/android-ffi/src/product_runtime_ffi.rs",
+        "runtime_active_tasks: snapshot.runtime.active_tasks",
+        "typed FFI must project task count from the process-wide runtime owner",
+    )
+    require(
+        diagnostics_provider,
+        'put("active_tasks", snapshot.runtimeActiveTasks.toLong())',
+        "Kotlin diagnostics must only serialize the Rust-owned executor task count",
+    )
+
+    # U8-F control-session observability stays inside the existing Rust owner and projects through
+    # one DUMP-only single-owner snapshot. No polling loop, heartbeat policy or Kotlin control owner.
+    control_runtime = "crates/runtime/src/control_runtime.rs"
+    for required in (
+        "pub reconnect_count: u64",
+        "pub session_age_ms: Option<u64>",
+        "pub application_heartbeat_count: u64",
+        "pub payload_tx_bytes: u64",
+        "pub payload_rx_bytes: u64",
+        "pub last_tx_age_ms: Option<u64>",
+        "pub last_rx_age_ms: Option<u64>",
+        "fn record_reconnect(&self)",
+        "async fn write_text_observed(",
+        "async fn read_message_observed(",
+    ):
+        require(
+            control_runtime,
+            required,
+            "U8-F control telemetry must remain owned by ControlRuntimeCoordinator",
+        )
+    for forbidden in (
+        "CONTROL_HEARTBEAT_INTERVAL",
+        "scheduleAtFixedRate",
+        "setInterval(",
+        'write_text("PING")',
+    ):
+        forbid(
+            control_runtime,
+            forbidden,
+            "U8-F observability must not introduce an application heartbeat or second scheduler",
+        )
+
+    for required in (
+        'MISH_CONTROL_DIAGNOSTICS_SCHEMA_V1 = "mish.control.diagnostics/v1"',
+        'MISH_DIAGNOSTICS_METHOD_CONTROL_SNAPSHOT_V1 = "control_snapshot_v1"',
+        "app.runtimeController.controlSnapshot()",
+        "renderMishControlDiagnosticSnapshotV1(",
+        'put("application_heartbeat_count"',
+        'put("payload_tx_bytes"',
+        'put("payload_rx_bytes"',
+    ):
+        require(
+            diagnostics_provider,
+            required,
+            "U8-F control telemetry must project through the existing DUMP-only diagnostics boundary",
+        )
+    for forbidden in (
+        "WebSocket(",
+        "OkHttp",
+        "CoroutineScope(",
+        "postDelayed(",
+        "scheduleAtFixedRate",
+    ):
+        forbid(
+            diagnostics_provider,
+            forbidden,
+            "Kotlin diagnostics must remain serialization-only and may not own control execution",
         )
 
     # No second Android VPN/TUN ownership may appear in PRODUCT.
