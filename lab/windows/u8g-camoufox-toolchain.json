@@ -1,0 +1,25 @@
+{
+  "schema": "mish.lab.u8g-camoufox-toolchain/v1",
+  "python": {
+    "executable": "C:\\Python314\\python.exe",
+    "version": "3.14.4",
+    "architecture": "x64",
+    "pip_version": "26.0.1"
+  },
+  "camoufox_python": {
+    "version": "0.5.6",
+    "wheel": "camoufox-0.5.6-py3-none-any.whl",
+    "url": "https://files.pythonhosted.org/packages/6f/b3/5f93b720522cbc9e95d8b2a5e47a6a1797b61e45bd1f9a220f9a985af9e1/camoufox-0.5.6-py3-none-any.whl",
+    "sha256": "b906836cd952376a466f0e55445f139b8a65adfb9f18ab55cb2cd0c727b11561"
+  },
+  "playwright": {
+    "version": "1.61.0"
+  },
+  "browser": {
+    "version": "152.0.4-beta.30",
+    "asset": "camoufox-152.0.4-beta.30-win.x86_64.zip",
+    "url": "https://github.com/daijro/camoufox/releases/download/v152.0.4-beta.30/camoufox-152.0.4-beta.30-win.x86_64.zip",
+    "sha256": "ea52a02fb1cfb1813ef6a326bea03fb2b650c9774143d953a94a27bfc8f10072",
+    "install_root": "C:\\mish-lab\\tools\\camoufox-152.0.4-beta.30"
+  }
+}
