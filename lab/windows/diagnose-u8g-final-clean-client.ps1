@@ -309,7 +309,8 @@ function Invoke-MishCamoufoxWindow {
         [Parameter(Mandatory)][string] $WindowName
     )
 
-    $runtimeRoot = Join-Path $env:RUNNER_TEMP ('mish-u8g-final-' + $WindowName + '-' + [guid]::NewGuid().ToString('N'))
+    $runtimeBase = if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) { $env:RUNNER_TEMP } else { $env:TEMP }
+    $runtimeRoot = Join-Path $runtimeBase ('mish-u8g-final-' + $WindowName + '-' + [guid]::NewGuid().ToString('N'))
     $localAppData = Join-Path $runtimeRoot 'localappdata'
     $appData = Join-Path $runtimeRoot 'appdata'
     $userProfile = Join-Path $runtimeRoot 'userprofile'
