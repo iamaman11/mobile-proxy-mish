@@ -5,6 +5,7 @@
 //! executor; none of them may construct or destroy a second runtime.
 
 use std::future::Future;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::runtime::{Builder, Handle, Runtime};
@@ -21,6 +22,17 @@ pub enum RuntimeExecutionError {
 
 pub struct RuntimeExecutor {
     runtime: Mutex<Option<Runtime>>,
+    active_tasks: Arc<AtomicU64>,
+}
+
+struct ActiveTaskGuard {
+    active_tasks: Arc<AtomicU64>,
+}
+
+impl Drop for ActiveTaskGuard {
+    fn drop(&mut self) {
+        self.active_tasks.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 impl RuntimeExecutor {
@@ -34,6 +46,7 @@ impl RuntimeExecutor {
             .map_err(|_| RuntimeExecutionError::ThreadUnavailable)?;
         Ok(Arc::new(Self {
             runtime: Mutex::new(Some(runtime)),
+            active_tasks: Arc::new(AtomicU64::new(0)),
         }))
     }
 
@@ -51,7 +64,19 @@ impl RuntimeExecutor {
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        Ok(self.handle()?.spawn(future))
+        let handle = self.handle()?;
+        self.active_tasks.fetch_add(1, Ordering::AcqRel);
+        let guard = ActiveTaskGuard {
+            active_tasks: Arc::clone(&self.active_tasks),
+        };
+        Ok(handle.spawn(async move {
+            let _guard = guard;
+            future.await
+        }))
+    }
+
+    pub fn active_task_count(&self) -> u64 {
+        self.active_tasks.load(Ordering::Acquire)
     }
 
     pub(crate) fn block_on<F>(&self, future: F) -> Result<F::Output, RuntimeExecutionError>
@@ -105,6 +130,7 @@ mod tests {
             })
             .expect("block_on");
         assert_eq!(sum, 42);
+        assert_eq!(executor.active_task_count(), 0);
         assert!(executor.is_running());
         executor.shutdown().expect("shutdown");
         assert!(!executor.is_running());
@@ -112,5 +138,24 @@ mod tests {
             executor.handle().err(),
             Some(RuntimeExecutionError::StateUnavailable)
         );
+    }
+
+    #[test]
+    fn task_counter_tracks_spawn_and_abort_without_owning_task_policy() {
+        let executor = RuntimeExecutor::new().expect("runtime");
+        let task = executor
+            .spawn(std::future::pending::<()>())
+            .expect("pending task");
+        assert_eq!(executor.active_task_count(), 1);
+
+        task.abort();
+        executor
+            .block_on(async {
+                let _ = task.await;
+            })
+            .expect("join aborted task");
+        assert_eq!(executor.active_task_count(), 0);
+
+        executor.shutdown().expect("shutdown");
     }
 }
