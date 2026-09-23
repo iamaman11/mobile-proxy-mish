@@ -309,7 +309,9 @@ print(json.dumps(result, separators=(",", ":")))
 
         $raw = (& $Toolchain.PythonExe $pythonPath $Toolchain.BrowserExe 2>&1 | Out-String).Trim()
         if ($LASTEXITCODE -ne 0) { Stop-MishU8GFinal 'CAMOUFOX_EXTERNAL_NAVIGATION_FAILED' "Camoufox $WindowName window failed." }
-        try { $parsed = $raw | ConvertFrom-Json }
+        $jsonLine = @($raw -split '[\r\n]+' | Where-Object { $_.TrimStart().StartsWith('{') } | Select-Object -Last 1)
+        if ($jsonLine.Count -ne 1) { Stop-MishU8GFinal 'CAMOUFOX_RESULT_INVALID' "Camoufox $WindowName emitted no unique JSON result." }
+        try { $parsed = $jsonLine[0] | ConvertFrom-Json }
         catch { Stop-MishU8GFinal 'CAMOUFOX_RESULT_INVALID' "Camoufox $WindowName result was not valid JSON." }
         if (-not [bool]$parsed.navigation_pass) { Stop-MishU8GFinal 'CAMOUFOX_EXTERNAL_NAVIGATION_FAILED' "Camoufox $WindowName did not complete all bounded navigations." }
         return $parsed
@@ -392,7 +394,7 @@ try {
     $wrongStatus = Invoke-MishHttpProxyRequest -ProxyAddress $proxyServer -UserName ([string]$lease.ProxyUserName) -Password 'mish-u8g-intentionally-wrong' -Url 'https://example.com/'
     $validAfterNegativeStatus = Invoke-MishHttpProxyRequest -ProxyAddress $proxyServer -UserName ([string]$lease.ProxyUserName) -Password $plainPassword -Url 'https://example.com/'
     $plainPassword = $null
-    $authNegativePass = ($wrongStatus -eq 407 -or $wrongStatus -eq -1)
+    $authNegativePass = ($wrongStatus -eq 407)
     $validAfterNegativePass = ($validAfterNegativeStatus -ge 200 -and $validAfterNegativeStatus -lt 400)
     if (-not $authNegativePass -or -not $validAfterNegativePass) { Stop-MishU8GFinal 'AUTH_REGRESSION' 'Bounded HTTP proxy auth regression failed.' }
 
