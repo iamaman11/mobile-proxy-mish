@@ -48,7 +48,14 @@ foreach ($required in @(
     'raw_dns_server_persisted = $false',
     'proxy_credentials_persisted = $false',
     'error_class',
+    'error_category',
+    'error_code',
     'stage',
+    'def extract_error_code(exc):',
+    'NS_ERROR',
+    'SEC_ERROR',
+    'MOZILLA_PKIX_ERROR',
+    'result["error_code"] = extract_error_code(exc)',
     'result["error_class"] = type(exc).__name__',
     'result["error_category"] = classify_error(exc)',
     'def classify_error(exc):',
@@ -97,6 +104,7 @@ foreach ($forbidden in @(
     'str(exc)',
     'repr(exc)',
     'print(message)',
+    'print(getattr(exc',
     'error_message'
 )) {
     if ($probe.Contains($forbidden)) {
