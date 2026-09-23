@@ -38,6 +38,7 @@ on:
           - u8_public_egress_rotation
           - u8_remote_control
           - u8_durability_soak
+          - u8g_final_clean_client
           - loopback_connect
   issue_comment:
     types: [created]
@@ -113,7 +114,7 @@ jobs:
               match = re.fullmatch(
                   r"/mish-cycle\s+([1-9][0-9]*)\s+([0-9a-f]{40})\s+"
                   r"(full|install_only|diagnose_only|probe_only)\s+"
-                  r"(none|capacity_resources|recovery_lifecycle|dns_lifetime_live|u5_rotation|u7_runtime_restart_resources|u7_512_lifecycle_stability|u8_reboot_install_durability|u8_public_egress_rotation|u8_remote_control|u8_durability_soak|loopback_connect)",
+                  r"(none|capacity_resources|recovery_lifecycle|dns_lifetime_live|u5_rotation|u7_runtime_restart_resources|u7_512_lifecycle_stability|u8_reboot_install_durability|u8_public_egress_rotation|u8_remote_control|u8_durability_soak|u8g_final_clean_client|loopback_connect)",
                   body,
               )
               if match is None:
@@ -163,8 +164,8 @@ jobs:
               if probe != 'loopback_connect':
                   raise SystemExit('probe_only supports only the current-function loopback_connect probe')
           elif mode == 'full':
-              if probe not in {'none', 'capacity_resources', 'recovery_lifecycle', 'dns_lifetime_live', 'u5_rotation', 'u7_runtime_restart_resources', 'u7_512_lifecycle_stability', 'u8_reboot_install_durability', 'u8_public_egress_rotation', 'u8_remote_control', 'u8_durability_soak'}:
-                  raise SystemExit('full accepts only none, capacity_resources, recovery_lifecycle, dns_lifetime_live, u5_rotation, u7_runtime_restart_resources, u7_512_lifecycle_stability, u8_reboot_install_durability, u8_public_egress_rotation, u8_remote_control, or u8_durability_soak')
+              if probe not in {'none', 'capacity_resources', 'recovery_lifecycle', 'dns_lifetime_live', 'u5_rotation', 'u7_runtime_restart_resources', 'u7_512_lifecycle_stability', 'u8_reboot_install_durability', 'u8_public_egress_rotation', 'u8_remote_control', 'u8_durability_soak', 'u8g_final_clean_client'}:
+                  raise SystemExit('full accepts only none, capacity_resources, recovery_lifecycle, dns_lifetime_live, u5_rotation, u7_runtime_restart_resources, u7_512_lifecycle_stability, u8_reboot_install_durability, u8_public_egress_rotation, u8_remote_control, u8_durability_soak, or u8g_final_clean_client')
           elif probe != 'none':
               raise SystemExit('install_only/diagnose_only require probe=none')
           PY
@@ -746,6 +747,17 @@ jobs:
             -SoakSeconds 300 `
             -SampleIntervalSeconds 20 `
             -RecoveryTimeoutSeconds 180 `
+            -EvidencePath "$env:RUNNER_TEMP\\mish-targeted-probe-v1.json"
+
+      - name: Explicit U8-G final clean-client privacy acceptance
+        if: ${{ needs.resolve.outputs.mode == 'full' && needs.resolve.outputs.probe == 'u8g_final_clean_client' && steps.baseline.outcome == 'success' }}
+        continue-on-error: true
+        shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\\lab\\windows\\diagnose-u8g-final-clean-client.ps1 `
+            -AdbPath $env:ADB_EXE `
+            -PackageName $env:PACKAGE_NAME `
             -EvidencePath "$env:RUNNER_TEMP\\mish-targeted-probe-v1.json"
 
       - name: Explicit U7 runtime restart resources - same-process STOP/START
