@@ -39,6 +39,17 @@ def main() -> None:
         "Device Cycle summary must remain valid PowerShell without a trailing array comma",
     )
 
+    retired_u8g_workflow = ROOT / ".github/workflows/u8g-final-clean-client.yml"
+    if retired_u8g_workflow.exists():
+        raise SystemExit(
+            "device cycle contract: U8-G final acceptance must not recreate a second standalone physical workflow"
+        )
+    forbid(
+        workflow,
+        "/mish-u8g-final-acceptance",
+        "retired standalone U8-G trigger must not survive in Device Cycle",
+    )
+
     for required in (
         "workflow_dispatch:",
         "issue_comment:",
