@@ -918,7 +918,7 @@ fn map_product_diagnostic_snapshot(
         consistent: snapshot.consistent,
         runtime_running: snapshot.runtime.state != mish_runtime::RuntimeLifecycleState::Stopped,
         runtime_generation: snapshot.runtime.generation,
-        runtime_active_tasks: u64::from(generation.runtime_active_tasks),
+        runtime_active_tasks: generation.runtime_active_tasks,
         cellular_state,
         cellular_reason,
         cellular_admitted,
