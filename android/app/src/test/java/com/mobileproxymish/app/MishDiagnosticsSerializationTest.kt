@@ -21,6 +21,7 @@ class MishDiagnosticsSerializationTest {
             consistent = true,
             runtimeRunning = true,
             runtimeGeneration = 11uL,
+            runtimeActiveTasks = 6uL,
             cellularState = "ADMITTED",
             cellularReason = "NONE",
             cellularAdmitted = true,
@@ -133,6 +134,7 @@ class MishDiagnosticsSerializationTest {
 
         assertTrue(json.getBoolean("consistent"))
         assertEquals(11L, json.getJSONObject("runtime").getLong("generation"))
+        assertEquals(6L, json.getJSONObject("runtime").getLong("active_tasks"))
         assertEquals(41L, json.getJSONObject("cellular").getLong("owner_sequence"))
 
         val root = json.getJSONObject("root")
