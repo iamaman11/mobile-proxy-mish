@@ -75,7 +75,7 @@ function Get-MishCycleFailureKind {
 
 function Test-MishSupportedFullProbe {
     param([Parameter(Mandatory)][string] $Probe)
-    return $Probe -in @('capacity_resources', 'recovery_lifecycle', 'dns_lifetime_live', 'u5_rotation', 'u7_runtime_restart_resources', 'u7_512_lifecycle_stability', 'u8_reboot_install_durability', 'u8_public_egress_rotation', 'u8_durability_soak', 'u8g_final_clean_client')
+    return $Probe -in @('capacity_resources', 'recovery_lifecycle', 'dns_lifetime_live', 'u5_rotation', 'u7_runtime_restart_resources', 'u7_512_lifecycle_stability', 'u8_reboot_install_durability', 'u8_public_egress_rotation', 'u8_durability_soak')
 }
 
 $launch = Read-OptionalJson -Path $LaunchReceiptPath
@@ -197,7 +197,6 @@ $report = [ordered]@{
             elseif ($RequestedProbe -ceq 'u8_reboot_install_durability') { 'FULL_BASELINE_PLUS_U8_REBOOT_INSTALL_DURABILITY' }
             elseif ($RequestedProbe -ceq 'u8_public_egress_rotation') { 'FULL_BASELINE_PLUS_U8_PUBLIC_EGRESS_ROTATION' }
             elseif ($RequestedProbe -ceq 'u8_durability_soak') { 'FULL_BASELINE_PLUS_U8_DURABILITY_SOAK' }
-            elseif ($RequestedProbe -ceq 'u8g_final_clean_client') { 'FULL_BASELINE_PLUS_U8G_FINAL_CLEAN_CLIENT' }
             else { 'FULL_BASELINE' }
         }
         'install_only' { 'INSTALL_ONLY' }

@@ -7,7 +7,6 @@ on:
       - 'docs/lab/WINDOWS_HOST.md'
       - '.github/workflows/lab-host-static.yml'
       - '.github/workflows/lab-host-preflight.yml'
-      - '.github/workflows/device-cycle.yml'
   push:
     branches: [main]
     paths:
@@ -15,7 +14,6 @@ on:
       - 'docs/lab/WINDOWS_HOST.md'
       - '.github/workflows/lab-host-static.yml'
       - '.github/workflows/lab-host-preflight.yml'
-      - '.github/workflows/device-cycle.yml'
   workflow_dispatch:
 
 permissions:
