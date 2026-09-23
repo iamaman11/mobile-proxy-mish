@@ -595,7 +595,7 @@ if result["result"] != "PASS":
         $env:MISH_U8G_PROXY_SERVER = $ProxyServer
         $env:MISH_U8G_PROXY_USER = $ProxyUserName
         $env:MISH_U8G_PROXY_PASSWORD = $plainPassword
-        $env:MISH_U8G_URLS_JSON = ($Urls | ConvertTo-Json -Compress)
+        $env:MISH_U8G_URLS_JSON = (ConvertTo-Json -InputObject @($Urls) -Compress)
 
         $raw = (& $Toolchain.PythonExe $pythonPath $Toolchain.BrowserExe 2>&1 | Out-String).Trim()
         $pythonExitCode = if ($null -eq $LASTEXITCODE) { -1 } else { [int]$LASTEXITCODE }
