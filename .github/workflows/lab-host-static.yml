@@ -94,7 +94,9 @@ jobs:
             'lab/windows/CredentialProvisioning.psm1',
             'lab/windows/test-credential-provisioning.ps1',
             'lab/windows/diagnose-u8-external-privacy-preflight.ps1',
-            'lab/windows/test-u8-external-privacy-preflight-contract.ps1'
+            'lab/windows/test-u8-external-privacy-preflight-contract.ps1',
+            'lab/windows/diagnose-u8-camoufox-python-runtime.ps1',
+            'lab/windows/test-u8-camoufox-python-runtime-contract.ps1'
           )) {
             $tokens = $null
             $errors = $null
@@ -297,6 +299,12 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           & 'lab/windows/test-u8-external-privacy-preflight-contract.ps1'
+
+      - name: Exercise U8-G Camoufox Python runtime contract
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & 'lab/windows/test-u8-camoufox-python-runtime-contract.ps1'
 
       - name: Validate physical-workflow trust and execution-policy boundary
         shell: pwsh
