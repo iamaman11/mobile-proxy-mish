@@ -377,7 +377,7 @@ result = {
 }
 try:
     with Camoufox(
-        headless=False,
+        headless=True,
         executable_path=exe,
         ff_version=152,
         geoip=False,
@@ -685,8 +685,8 @@ try {
         client_fixture = [ordered]@{
             browser = 'camoufox'
             browser_version = [string]$toolchain.BrowserVersion
-            browser_mode = 'headful'
-            interactive_session = $true
+            browser_mode = 'headless'
+            interactive_session = $false
             profile = 'temporary_clean'
             proxy_mode = 'HTTP_CONNECT'
             proxy_port = 3128
