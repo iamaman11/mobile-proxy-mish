@@ -50,6 +50,16 @@ foreach ($required in @(
     'error_class',
     'stage',
     'result["error_class"] = type(exc).__name__',
+    'result["error_category"] = classify_error(exc)',
+    'def classify_error(exc):',
+    'PROXY_AUTH',
+    'PROXY_CONNECT',
+    'TIMEOUT',
+    'DNS',
+    'TLS',
+    'RESET',
+    'REFUSED',
+    'PLAYWRIGHT_ERROR_OTHER',
     'MISH_U8G_FINAL_DNS_NO_BYPASS=PASS',
     'MISH_U8G_FINAL_RAW_ADDRESSES_PERSISTED=NO'
 )) {
@@ -85,7 +95,9 @@ foreach ($forbidden in @(
     'function Invoke-MishHttpProxyRequest',
     '[Net.Http.HttpClientHandler]::new()',
     'str(exc)',
-    'repr(exc)'
+    'repr(exc)',
+    'print(message)',
+    'error_message'
 )) {
     if ($probe.Contains($forbidden)) {
         throw "Final U8-G clean-client probe contains forbidden duplicate/workaround path: $forbidden"
