@@ -15,7 +15,10 @@ if ($errors.Count -ne 0) {
 $probe = Get-Content -Raw -LiteralPath $probePath
 foreach ($required in @(
     'mish.lab.u8g-final-clean-client/v1',
-    'Microsoft-Windows-DNS-Client/Operational',
+    'Get-DnsClientCache',
+    'Select-MishCleanDnsProofUrl',
+    'WINDOWS_DNS_CACHE_NO_CLEAN_TARGET',
+    'target_present_after',
     'CredentialProvisioning.psm1',
     'DiagnosticConnectProbe.psm1',
     'Invoke-MishDiagnosticHttpRelayProbe',
@@ -33,10 +36,9 @@ foreach ($required in @(
     'network.http.speculative-parallel-limit',
     'geoip=False',
     'block_webrtc=True',
-    'Get-WinEvent',
     'accepted_current',
     'product_dns_advanced',
-    'windows_target_query_events',
+    "observer = 'Get-DnsClientCache'",
     'diagnose-u5-rotation.ps1',
     '-SuccessfulOperations 1',
     '-SkipShutdownRestoreAfterOn',
@@ -74,6 +76,9 @@ foreach ($forbidden in @(
     'retry-until',
     'retry_until',
     'FullControl',
+    'Get-WinEvent',
+    'wevtutil',
+    'Microsoft-Windows-DNS-Client/Operational',
     'function Invoke-MishHttpProxyRequest',
     '[Net.Http.HttpClientHandler]::new()'
 )) {
