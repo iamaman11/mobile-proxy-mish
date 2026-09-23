@@ -230,10 +230,28 @@ prefs = {
     "network.http.speculative-parallel-limit": 0,
     "network.http.http3.enable": False,
 }
+def classify_error(exc):
+    message = getattr(exc, "message", "") or ""
+    value = message.lower()
+    rules = [
+        (("proxy" in value and "auth" in value) or "407" in value, "PROXY_AUTH"),
+        ("proxy" in value and ("connect" in value or "connection" in value), "PROXY_CONNECT"),
+        ("ns_error_proxy" in value, "PROXY_CONNECT"),
+        ("timed out" in value or "timeout" in value or "ns_error_net_timeout" in value, "TIMEOUT"),
+        ("unknown host" in value or "name_not_resolved" in value or "ns_error_unknown_host" in value, "DNS"),
+        ("certificate" in value or "ssl" in value or "tls" in value or "sec_error" in value, "TLS"),
+        ("connection reset" in value or "net_reset" in value or "ns_error_net_reset" in value, "RESET"),
+        ("connection refused" in value or "ns_error_connection_refused" in value, "REFUSED"),
+    ]
+    for matched, label in rules:
+        if matched:
+            return label
+    return "PLAYWRIGHT_ERROR_OTHER"
+
 result = {
-    "result": "FAIL",
-    "stage": "LAUNCH",
+    "result": "FAIL",    "stage": "LAUNCH",
     "error_class": None,
+    "error_category": None,
     "navigation_pass": False,
     "statuses": [],
     "egress_a": None,
@@ -272,6 +290,7 @@ try:
         result["navigation_pass"] = True
 except BaseException as exc:
     result["error_class"] = type(exc).__name__
+    result["error_category"] = classify_error(exc)
 print(json.dumps(result, separators=(",", ":")))
 if result["result"] != "PASS":
     sys.exit(20)
@@ -304,8 +323,9 @@ if result["result"] != "PASS":
         if ($pythonExitCode -ne 0 -or [string]$parsed.result -cne 'PASS' -or -not [bool]$parsed.navigation_pass) {
             $stage = if ([string]::IsNullOrWhiteSpace([string]$parsed.stage)) { 'UNKNOWN' } else { [string]$parsed.stage }
             $errorClass = if ([string]::IsNullOrWhiteSpace([string]$parsed.error_class)) { 'UNKNOWN' } else { [string]$parsed.error_class }
-            Stop-MishU8GFinal 'CAMOUFOX_EXTERNAL_NAVIGATION_FAILED' ("Camoufox {0} failed at stage={1}; error_class={2}; exit_code={3}" -f
-                $WindowName, $stage, $errorClass, $pythonExitCode)
+            $errorCategory = if ([string]::IsNullOrWhiteSpace([string]$parsed.error_category)) { 'UNKNOWN' } else { [string]$parsed.error_category }
+            Stop-MishU8GFinal 'CAMOUFOX_EXTERNAL_NAVIGATION_FAILED' ("Camoufox {0} failed at stage={1}; error_class={2}; error_category={3}; exit_code={4}" -f
+                $WindowName, $stage, $errorClass, $errorCategory, $pythonExitCode)
         }
         return $parsed
     }
