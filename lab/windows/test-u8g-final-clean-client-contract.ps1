@@ -47,6 +47,9 @@ foreach ($required in @(
     'raw_private_ip_persisted = $false',
     'raw_dns_server_persisted = $false',
     'proxy_credentials_persisted = $false',
+    'error_class',
+    'stage',
+    'result["error_class"] = type(exc).__name__',
     'MISH_U8G_FINAL_DNS_NO_BYPASS=PASS',
     'MISH_U8G_FINAL_RAW_ADDRESSES_PERSISTED=NO'
 )) {
@@ -80,7 +83,9 @@ foreach ($forbidden in @(
     'wevtutil',
     'Microsoft-Windows-DNS-Client/Operational',
     'function Invoke-MishHttpProxyRequest',
-    '[Net.Http.HttpClientHandler]::new()'
+    '[Net.Http.HttpClientHandler]::new()',
+    'str(exc)',
+    'repr(exc)'
 )) {
     if ($probe.Contains($forbidden)) {
         throw "Final U8-G clean-client probe contains forbidden duplicate/workaround path: $forbidden"

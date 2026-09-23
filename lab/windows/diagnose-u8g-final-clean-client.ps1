@@ -230,32 +230,51 @@ prefs = {
     "network.http.speculative-parallel-limit": 0,
     "network.http.http3.enable": False,
 }
-result = {"navigation_pass": True, "statuses": [], "egress_a": None, "egress_b": None}
-with Camoufox(
-    headless=True,
-    executable_path=exe,
-    ff_version=152,
-    geoip=False,
-    block_webrtc=True,
-    proxy=proxy,
-    firefox_user_prefs=prefs,
-    i_know_what_im_doing=True,
-) as browser:
-    page = browser.new_page()
-    for index, url in enumerate(urls):
-        response = page.goto(url, wait_until="domcontentloaded", timeout=20000)
-        status = None if response is None else response.status
-        result["statuses"].append(status)
-        if response is None or status is None or status < 200 or status >= 400:
-            result["navigation_pass"] = False
-        if index in (1, 2):
-            value = page.locator("body").inner_text().strip()
-            ipaddress.ip_address(value)
-            if index == 1:
-                result["egress_a"] = value
-            else:
-                result["egress_b"] = value
+result = {
+    "result": "FAIL",
+    "stage": "LAUNCH",
+    "error_class": None,
+    "navigation_pass": False,
+    "statuses": [],
+    "egress_a": None,
+    "egress_b": None,
+}
+try:
+    with Camoufox(
+        headless=True,
+        executable_path=exe,
+        ff_version=152,
+        geoip=False,
+        block_webrtc=True,
+        proxy=proxy,
+        firefox_user_prefs=prefs,
+        i_know_what_im_doing=True,
+    ) as browser:
+        result["stage"] = "CONTEXT"
+        page = browser.new_page()
+        for index, url in enumerate(urls):
+            result["stage"] = f"NAVIGATION_{index}"
+            response = page.goto(url, wait_until="domcontentloaded", timeout=20000)
+            status = None if response is None else response.status
+            result["statuses"].append(status)
+            if response is None or status is None or status < 200 or status >= 400:
+                raise RuntimeError("navigation status outside accepted range")
+            if index in (1, 2):
+                result["stage"] = f"EGRESS_PARSE_{index}"
+                value = page.locator("body").inner_text().strip()
+                ipaddress.ip_address(value)
+                if index == 1:
+                    result["egress_a"] = value
+                else:
+                    result["egress_b"] = value
+        result["result"] = "PASS"
+        result["stage"] = "COMPLETE"
+        result["navigation_pass"] = True
+except BaseException as exc:
+    result["error_class"] = type(exc).__name__
 print(json.dumps(result, separators=(",", ":")))
+if result["result"] != "PASS":
+    sys.exit(20)
 '@
     [IO.File]::WriteAllText($pythonPath, $python, [Text.UTF8Encoding]::new($false))
 
@@ -277,12 +296,17 @@ print(json.dumps(result, separators=(",", ":")))
         $env:MISH_U8G_URLS_JSON = ($Urls | ConvertTo-Json -Compress)
 
         $raw = (& $Toolchain.PythonExe $pythonPath $Toolchain.BrowserExe 2>&1 | Out-String).Trim()
-        if ($LASTEXITCODE -ne 0) { Stop-MishU8GFinal 'CAMOUFOX_EXTERNAL_NAVIGATION_FAILED' "Camoufox $WindowName window failed." }
+        $pythonExitCode = if ($null -eq $LASTEXITCODE) { -1 } else { [int]$LASTEXITCODE }
         $jsonLine = @($raw -split '[\r\n]+' | Where-Object { $_.TrimStart().StartsWith('{') } | Select-Object -Last 1)
         if ($jsonLine.Count -ne 1) { Stop-MishU8GFinal 'CAMOUFOX_RESULT_INVALID' "Camoufox $WindowName emitted no unique JSON result." }
         try { $parsed = $jsonLine[0] | ConvertFrom-Json }
         catch { Stop-MishU8GFinal 'CAMOUFOX_RESULT_INVALID' "Camoufox $WindowName result was not valid JSON." }
-        if (-not [bool]$parsed.navigation_pass) { Stop-MishU8GFinal 'CAMOUFOX_EXTERNAL_NAVIGATION_FAILED' "Camoufox $WindowName did not complete all bounded navigations." }
+        if ($pythonExitCode -ne 0 -or [string]$parsed.result -cne 'PASS' -or -not [bool]$parsed.navigation_pass) {
+            $stage = if ([string]::IsNullOrWhiteSpace([string]$parsed.stage)) { 'UNKNOWN' } else { [string]$parsed.stage }
+            $errorClass = if ([string]::IsNullOrWhiteSpace([string]$parsed.error_class)) { 'UNKNOWN' } else { [string]$parsed.error_class }
+            Stop-MishU8GFinal 'CAMOUFOX_EXTERNAL_NAVIGATION_FAILED' ("Camoufox {0} failed at stage={1}; error_class={2}; exit_code={3}" -f
+                $WindowName, $stage, $errorClass, $pythonExitCode)
+        }
         return $parsed
     }
     finally {
