@@ -32,6 +32,113 @@ function Stop-MishU8GFinal {
     throw "MISH_U8G_FINAL_FAILURE|$Classification|$Message"
 }
 
+function Write-MishU8GEvidenceFile {
+    param([Parameter(Mandatory)] $Evidence)
+
+    $fullPath = [IO.Path]::GetFullPath($EvidencePath)
+    $parent = Split-Path -Parent $fullPath
+    if ($parent) { [IO.Directory]::CreateDirectory($parent) | Out-Null }
+    [IO.File]::WriteAllText(
+        $fullPath,
+        (($Evidence | ConvertTo-Json -Depth 16) + [Environment]::NewLine),
+        [Text.UTF8Encoding]::new($false)
+    )
+    return $fullPath
+}
+
+function ConvertTo-MishBrowserFailureEvidence {
+    param($Browser)
+
+    if ($null -eq $Browser -or [string]$Browser.result -ceq 'PASS') { return $null }
+    return [ordered]@{
+        stage = [string]$Browser.stage
+        error_class = [string]$Browser.error_class
+        error_category = [string]$Browser.error_category
+        error_code = [string]$Browser.error_code
+        error_message_sanitized = [string]$Browser.error_message_sanitized
+        error_stack_sanitized = [string]$Browser.error_stack_sanitized
+        request_count = [int64]$Browser.request_count
+        response_count = [int64]$Browser.response_count
+        response_statuses = @($Browser.response_statuses | ForEach-Object { [int]$_ })
+        request_failure_present = [bool]$Browser.request_failure_present
+        request_failure_code = [string]$Browser.request_failure_code
+        request_failure_message_sanitized = [string]$Browser.request_failure_message_sanitized
+        browser_connected_after_error = if ($null -eq $Browser.browser_connected_after_error) { $null } else { [bool]$Browser.browser_connected_after_error }
+        page_closed_after_error = if ($null -eq $Browser.page_closed_after_error) { $null } else { [bool]$Browser.page_closed_after_error }
+        python_exit_code = [int]$Browser.python_exit_code
+    }
+}
+
+function Write-MishU8GPreRotationFailureEvidence {
+    param(
+        [Parameter(Mandatory)][string] $Classification,
+        [Parameter(Mandatory)][string] $Phase,
+        [Parameter(Mandatory)] $Toolchain,
+        [Parameter(Mandatory)] $AuthNegative,
+        [Parameter(Mandatory)] $AuthPositiveAfterNegative,
+        [Parameter(Mandatory)] $HttpsConnect,
+        [Parameter(Mandatory)] $DnsWindow,
+        $Browser = $null
+    )
+
+    $browserResult = if ($null -ne $Browser) { $Browser } else { $DnsWindow.Browser }
+    $evidence = [ordered]@{
+        schema = $script:Schema
+        collected_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
+        control_sha = if ($env:GITHUB_SHA -match '^[0-9a-f]{40}$') { $env:GITHUB_SHA } else { $null }
+        acceptance_result = 'FAIL'
+        classification = $Classification
+        phase = $Phase
+        client_fixture = [ordered]@{
+            browser = 'camoufox'
+            browser_version = [string]$Toolchain.BrowserVersion
+            browser_mode = 'headless'
+            interactive_session = $false
+            profile = 'temporary_clean'
+            proxy_mode = 'HTTP_CONNECT'
+            proxy_port = 3128
+            geoip = $false
+            hidden_geoip_lookup = 'DISABLED'
+            webrtc_blocked = $true
+            firefox_doh_mode = 5
+            speculative_dns_disabled = $true
+        }
+        auth = [ordered]@{
+            owner = 'DiagnosticConnectProbe.psm1'
+            wrong_auth_rejected = ([string]$AuthNegative.result -ceq 'PASS' -and [string]$AuthNegative.reason -ceq 'AUTH_REJECTED')
+            wrong_auth_reason = [string]$AuthNegative.reason
+            valid_after_negative = [string]$AuthPositiveAfterNegative.result -ceq 'PASS'
+            valid_after_negative_reason = [string]$AuthPositiveAfterNegative.reason
+            https_connect_443 = [string]$HttpsConnect.result -ceq 'PASS'
+            https_connect_443_reason = [string]$HttpsConnect.reason
+        }
+        dns_before_rotation = [ordered]@{
+            product_delta = $DnsWindow.DnsDelta
+            product_dns_advanced = [bool]$DnsWindow.ProductDnsAdvanced
+            windows_observer = [string]$DnsWindow.WindowsDns.observer
+            clean_target_present_before = [bool]$DnsWindow.WindowsDns.target_present_before
+            clean_target_present_after = [bool]$DnsWindow.WindowsDns.target_present_after
+            no_bypass = [bool]$DnsWindow.WindowsNoBypass
+        }
+        browser_failure = ConvertTo-MishBrowserFailureEvidence -Browser $browserResult
+        privacy = [ordered]@{
+            raw_public_ip_persisted = $false
+            raw_private_ip_persisted = $false
+            raw_dns_server_persisted = $false
+            proxy_credentials_persisted = $false
+        }
+        mutation = [ordered]@{
+            product_code_changed = $false
+            cloudflare_policy_changed = $false
+            windows_route_changed = $false
+            one_product_rotation_requested = $false
+        }
+    }
+
+    $fullPath = Write-MishU8GEvidenceFile -Evidence $evidence
+    Write-Host "MISH_U8G_FINAL_EVIDENCE=$fullPath"
+}
+
 function Invoke-MishAdbText {
     param([Parameter(Mandatory)][string[]] $Arguments, [string] $Operation = 'adb')
     $rows = @(& $AdbPath @Arguments 2>&1 | ForEach-Object { [string]$_ })
@@ -660,6 +767,29 @@ try {
     $beforeDnsUrl = Select-MishCleanDnsProofUrl
     $beforeWindow = Invoke-MishDnsWindow -Toolchain $toolchain -ProxyServer $proxyServer -Lease $lease -DnsProofUrl $beforeDnsUrl -WindowName 'before'
 
+    if ([string]$beforeWindow.Browser.result -cne 'PASS' -or -not [bool]$beforeWindow.Browser.navigation_pass) {
+        Write-MishU8GPreRotationFailureEvidence `
+            -Classification 'LAB_CAMOUFOX_EXTERNAL_NAVIGATION_FAILED' `
+            -Phase 'DNS_BEFORE_ROTATION_BROWSER' `
+            -Toolchain $toolchain `
+            -AuthNegative $authNegative `
+            -AuthPositiveAfterNegative $authPositiveAfterNegative `
+            -HttpsConnect $httpsConnect `
+            -DnsWindow $beforeWindow
+        Stop-MishU8GFinal 'LAB_CAMOUFOX_EXTERNAL_NAVIGATION_FAILED' 'Camoufox failed during the pre-rotation DNS window; sanitized browser and DNS evidence was persisted.'
+    }
+    if (-not [bool]$beforeWindow.ProductDnsAdvanced -or -not [bool]$beforeWindow.WindowsNoBypass) {
+        Write-MishU8GPreRotationFailureEvidence `
+            -Classification 'LAB_U8G_DNS_NO_BYPASS_NOT_PROVEN' `
+            -Phase 'DNS_BEFORE_ROTATION_VERIFICATION' `
+            -Toolchain $toolchain `
+            -AuthNegative $authNegative `
+            -AuthPositiveAfterNegative $authPositiveAfterNegative `
+            -HttpsConnect $httpsConnect `
+            -DnsWindow $beforeWindow
+        Stop-MishU8GFinal 'LAB_U8G_DNS_NO_BYPASS_NOT_PROVEN' 'Pre-rotation DNS no-bypass contract was not proven; exact redacted DNS evidence was persisted.'
+    }
+
     $beforeExpected = Invoke-MishPublicIpPair `
         -ProxyServer $proxyServer `
         -ProxyUserName ([string]$lease.ProxyUserName) `
@@ -670,6 +800,18 @@ try {
     }
 
     $beforeEgress = Invoke-MishCamoufoxWindow -Toolchain $toolchain -ProxyServer $proxyServer -ProxyUserName ([string]$lease.ProxyUserName) -ProxyPassword ([Security.SecureString]$lease.ProxyPassword) -Urls $script:EgressUrls -WindowName 'before-egress'
+    if ([string]$beforeEgress.result -cne 'PASS' -or -not [bool]$beforeEgress.navigation_pass) {
+        Write-MishU8GPreRotationFailureEvidence `
+            -Classification 'LAB_CAMOUFOX_EXTERNAL_NAVIGATION_FAILED' `
+            -Phase 'EGRESS_BEFORE_ROTATION_BROWSER' `
+            -Toolchain $toolchain `
+            -AuthNegative $authNegative `
+            -AuthPositiveAfterNegative $authPositiveAfterNegative `
+            -HttpsConnect $httpsConnect `
+            -DnsWindow $beforeWindow `
+            -Browser $beforeEgress
+        Stop-MishU8GFinal 'LAB_CAMOUFOX_EXTERNAL_NAVIGATION_FAILED' 'Camoufox failed during the pre-rotation egress window; sanitized browser and DNS evidence was persisted.'
+    }
     $beforeA = [string]$beforeEgress.egress_a
     $beforeB = [string]$beforeEgress.egress_b
     $beforeEgressConsensus = (-not [string]::IsNullOrWhiteSpace($beforeA) -and $beforeA -ceq $beforeB)
@@ -678,7 +820,6 @@ try {
         -ExpectedProxyAddress ([string]$beforeExpected.First) `
         -HostDefaultAddress ([string]$beforeHostDefault.First)
 
-    if (-not [bool]$beforeWindow.ProductDnsAdvanced -or -not [bool]$beforeWindow.WindowsNoBypass) { Stop-MishU8GFinal 'DNS_NO_BYPASS_NOT_PROVEN' 'Pre-rotation clean-client DNS no-bypass contract was not proven.' }
     if (-not $beforeEgressConsensus) { Stop-MishU8GFinal 'EXTERNAL_EGRESS_CONSENSUS_FAILED' 'Independent browser egress observers disagreed before rotation.' }
     if ([string]$beforeClassification.Classification -cne 'EXPECTED_PROXY_EGRESS') {
         Stop-MishU8GFinal 'BROWSER_EGRESS_PATH_INVALID' ("Camoufox pre-rotation egress classification={0}." -f [string]$beforeClassification.Classification)
@@ -817,10 +958,7 @@ try {
         }
     }
 
-    $fullPath = [IO.Path]::GetFullPath($EvidencePath)
-    $parent = Split-Path -Parent $fullPath
-    if ($parent) { [IO.Directory]::CreateDirectory($parent) | Out-Null }
-    [IO.File]::WriteAllText($fullPath, (($evidence | ConvertTo-Json -Depth 16) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+    $fullPath = Write-MishU8GEvidenceFile -Evidence $evidence
 
     Write-Host 'MISH_U8G_FINAL_ACCEPTANCE=PASS'
     Write-Host 'MISH_U8G_FINAL_DNS_NO_BYPASS=PASS'
