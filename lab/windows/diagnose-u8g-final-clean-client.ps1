@@ -11,14 +11,14 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $script:Schema = 'mish.lab.u8g-final-clean-client/v1'
-$script:DnsLogName = 'Microsoft-Windows-DNS-Client/Operational'
-$script:BeforeUrls = @(
+$script:DnsProofUrls = @(
     'https://example.com/',
-    'https://checkip.amazonaws.com/',
-    'https://api.ipify.org/'
+    'https://example.org/',
+    'https://example.net/',
+    'https://www.iana.org/'
 )
-$script:AfterUrls = @(
-    'https://www.cloudflare.com/cdn-cgi/trace',
+$script:EgressUrls = @(
+    'https://example.com/',
     'https://checkip.amazonaws.com/',
     'https://api.ipify.org/'
 )
@@ -131,48 +131,46 @@ function Get-MishAndroidMeshAddress {
     return [string]$addresses[0]
 }
 
-function Get-MishDnsClientCursor {
+function Get-MishDnsCacheNames {
+    $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     try {
-        $log = Get-WinEvent -ListLog $script:DnsLogName -ErrorAction Stop
-        if (-not [bool]$log.IsEnabled) { return [pscustomobject]@{ Available = $false; RecordId = [int64]0; Reason = 'LOG_DISABLED' } }
-        $last = Get-WinEvent -LogName $script:DnsLogName -MaxEvents 1 -ErrorAction SilentlyContinue
-        $recordId = if ($null -eq $last) { [int64]0 } else { [int64]$last.RecordId }
-        return [pscustomobject]@{ Available = $true; RecordId = $recordId; Reason = 'READY' }
-    }
-    catch { return [pscustomobject]@{ Available = $false; RecordId = [int64]0; Reason = 'LOG_UNAVAILABLE' } }
-}
-
-function Get-MishDnsClientTargetObservation {
-    param([Parameter(Mandatory)][int64] $AfterRecordId, [Parameter(Mandatory)][string[]] $HostNames)
-    $cursor = Get-MishDnsClientCursor
-    if (-not [bool]$cursor.Available) {
-        return [ordered]@{ available = $false; reason = [string]$cursor.Reason; matching_event_count = 0; queried_target_count = 0 }
-    }
-
-    $normalized = @($HostNames | ForEach-Object { $_.ToLowerInvariant() } | Sort-Object -Unique)
-    $matching = 0
-    $targets = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-
-    try {
-        $events = @(Get-WinEvent -LogName $script:DnsLogName -MaxEvents 512 -ErrorAction SilentlyContinue | Where-Object { [int64]$_.RecordId -gt $AfterRecordId })
-        foreach ($event in $events) {
-            try { $xml = [xml]$event.ToXml() } catch { continue }
-            $values = @($xml.Event.EventData.Data | ForEach-Object { [string]$_.'#text' })
-            foreach ($hostName in $normalized) {
-                if (@($values | Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and $_.ToLowerInvariant().Contains($hostName) }).Count -gt 0) {
-                    $matching++
-                    [void]$targets.Add($hostName)
-                }
-            }
-        }
+        $entries = @(Get-DnsClientCache -ErrorAction Stop)
     }
     catch {
-        return [ordered]@{ available = $false; reason = 'EVENT_READ_FAILED'; matching_event_count = 0; queried_target_count = 0 }
+        Stop-MishU8GFinal 'WINDOWS_DNS_CACHE_OBSERVER_UNAVAILABLE' 'Get-DnsClientCache is unavailable to the LAB runner identity.'
     }
 
-    return [ordered]@{ available = $true; reason = 'READY'; matching_event_count = $matching; queried_target_count = $targets.Count }
+    foreach ($entry in $entries) {
+        $name = $null
+        foreach ($propertyName in @('Entry', 'RecordName', 'Name')) {
+            $property = $entry.PSObject.Properties[$propertyName]
+            if ($null -ne $property -and -not [string]::IsNullOrWhiteSpace([string]$property.Value)) {
+                $name = [string]$property.Value
+                break
+            }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($name)) {
+            [void]$names.Add($name.Trim().TrimEnd('.'))
+        }
+    }
+    return $names
 }
 
+function Select-MishCleanDnsProofUrl {
+    param([string] $ExcludeHost)
+
+    $cache = Get-MishDnsCacheNames
+    foreach ($url in $script:DnsProofUrls) {
+        $hostName = ([Uri]$url).DnsSafeHost
+        if (-not [string]::IsNullOrWhiteSpace($ExcludeHost) -and $hostName -ieq $ExcludeHost) {
+            continue
+        }
+        if (-not $cache.Contains($hostName)) {
+            return [string]$url
+        }
+    }
+    Stop-MishU8GFinal 'WINDOWS_DNS_CACHE_NO_CLEAN_TARGET' 'No uncached bounded DNS proof target is available.'
+}
 function Resolve-MishCamoufoxToolchain {
     $manifestPath = Join-Path $PSScriptRoot 'u8g-camoufox-toolchain.json'
     if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { Stop-MishU8GFinal 'CAMOUFOX_MANIFEST_MISSING' 'Canonical Camoufox toolchain manifest is unavailable.' }
@@ -303,35 +301,59 @@ function Invoke-MishDnsWindow {
         [Parameter(Mandatory)] $Toolchain,
         [Parameter(Mandatory)][string] $ProxyServer,
         [Parameter(Mandatory)] $Lease,
-        [Parameter(Mandatory)][string[]] $Urls,
+        [Parameter(Mandatory)][string] $DnsProofUrl,
         [Parameter(Mandatory)][string] $WindowName
     )
-    $hosts = @($Urls | ForEach-Object { ([Uri]$_).DnsSafeHost } | Sort-Object -Unique)
-    $snapshotBefore = Read-MishProductSnapshot
-    if (-not (Test-MishProductReady -Snapshot $snapshotBefore)) { Stop-MishU8GFinal 'PRODUCT_NOT_READY' "PRODUCT is not READY before $WindowName DNS window." }
-    $dnsBefore = Get-MishDnsObservation -Snapshot $snapshotBefore
-    $cursor = Get-MishDnsClientCursor
-    if (-not [bool]$cursor.Available) { Stop-MishU8GFinal 'WINDOWS_DNS_OBSERVER_UNAVAILABLE' "Windows DNS Client observation is unavailable before $WindowName." }
 
-    $browser = Invoke-MishCamoufoxWindow -Toolchain $Toolchain -ProxyServer $ProxyServer -ProxyUserName ([string]$Lease.ProxyUserName) -ProxyPassword ([Security.SecureString]$Lease.ProxyPassword) -Urls $Urls -WindowName $WindowName
+    $dnsProofHost = ([Uri]$DnsProofUrl).DnsSafeHost
+    $cacheBefore = Get-MishDnsCacheNames
+    if ($cacheBefore.Contains($dnsProofHost)) {
+        Stop-MishU8GFinal 'WINDOWS_DNS_CACHE_TARGET_PREEXISTING' "DNS proof target was already present in Windows cache before $WindowName."
+    }
+
+    $snapshotBefore = Read-MishProductSnapshot
+    if (-not (Test-MishProductReady -Snapshot $snapshotBefore)) {
+        Stop-MishU8GFinal 'PRODUCT_NOT_READY' "PRODUCT is not READY before $WindowName DNS window."
+    }
+    $dnsBefore = Get-MishDnsObservation -Snapshot $snapshotBefore
+
+    $browser = Invoke-MishCamoufoxWindow `
+        -Toolchain $Toolchain `
+        -ProxyServer $ProxyServer `
+        -ProxyUserName ([string]$Lease.ProxyUserName) `
+        -ProxyPassword ([Security.SecureString]$Lease.ProxyPassword) `
+        -Urls @($DnsProofUrl) `
+        -WindowName $WindowName
 
     $snapshotAfter = Read-MishProductSnapshot
-    if (-not (Test-MishProductReady -Snapshot $snapshotAfter)) { Stop-MishU8GFinal 'PRODUCT_NOT_READY' "PRODUCT is not READY after $WindowName DNS window." }
+    if (-not (Test-MishProductReady -Snapshot $snapshotAfter)) {
+        Stop-MishU8GFinal 'PRODUCT_NOT_READY' "PRODUCT is not READY after $WindowName DNS window."
+    }
     $dnsAfter = Get-MishDnsObservation -Snapshot $snapshotAfter
     $delta = New-MishDnsDelta -Before $dnsBefore -After $dnsAfter
-    $windows = Get-MishDnsClientTargetObservation -AfterRecordId ([int64]$cursor.RecordId) -HostNames $hosts
-    $productDnsAdvanced = ([int64]$delta.started -gt 0 -and [int64]$delta.completed -gt 0 -and [int64]$delta.accepted_current -gt 0)
-    $windowsNoBypass = ([bool]$windows.available -and [int]$windows.queried_target_count -eq 0)
+    $cacheAfter = Get-MishDnsCacheNames
+    $targetPresentAfter = $cacheAfter.Contains($dnsProofHost)
+
+    $productDnsAdvanced = (
+        [int64]$delta.started -gt 0 -and
+        [int64]$delta.completed -gt 0 -and
+        [int64]$delta.accepted_current -gt 0
+    )
+    $windowsNoBypass = -not $targetPresentAfter
 
     return [pscustomobject]@{
         Browser = $browser
+        DnsProofHost = $dnsProofHost
         DnsDelta = $delta
-        WindowsDns = $windows
+        WindowsDns = [ordered]@{
+            observer = 'Get-DnsClientCache'
+            target_present_before = $false
+            target_present_after = $targetPresentAfter
+        }
         ProductDnsAdvanced = $productDnsAdvanced
         WindowsNoBypass = $windowsNoBypass
     }
 }
-
 if (-not (Test-Path -LiteralPath $AdbPath -PathType Leaf)) { Stop-MishU8GFinal 'LAB_ADB_MISSING' 'Canonical ADB executable is unavailable.' }
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 if ($identity -ine 'NT AUTHORITY\NETWORK SERVICE') { Stop-MishU8GFinal 'RUNNER_IDENTITY' 'Final U8-G acceptance must run under NetworkService.' }
@@ -389,9 +411,11 @@ try {
             [string]$authPositiveAfterNegative.reason)
     }
 
-    $beforeWindow = Invoke-MishDnsWindow -Toolchain $toolchain -ProxyServer $proxyServer -Lease $lease -Urls $script:BeforeUrls -WindowName 'before'
-    $beforeA = [string]$beforeWindow.Browser.egress_a
-    $beforeB = [string]$beforeWindow.Browser.egress_b
+    $beforeDnsUrl = Select-MishCleanDnsProofUrl
+    $beforeWindow = Invoke-MishDnsWindow -Toolchain $toolchain -ProxyServer $proxyServer -Lease $lease -DnsProofUrl $beforeDnsUrl -WindowName 'before'
+    $beforeEgress = Invoke-MishCamoufoxWindow -Toolchain $toolchain -ProxyServer $proxyServer -ProxyUserName ([string]$lease.ProxyUserName) -ProxyPassword ([Security.SecureString]$lease.ProxyPassword) -Urls $script:EgressUrls -WindowName 'before-egress'
+    $beforeA = [string]$beforeEgress.egress_a
+    $beforeB = [string]$beforeEgress.egress_b
     $beforeEgressConsensus = (-not [string]::IsNullOrWhiteSpace($beforeA) -and $beforeA -ceq $beforeB)
     if (-not [bool]$beforeWindow.ProductDnsAdvanced -or -not [bool]$beforeWindow.WindowsNoBypass) { Stop-MishU8GFinal 'DNS_NO_BYPASS_NOT_PROVEN' 'Pre-rotation clean-client DNS no-bypass contract was not proven.' }
     if (-not $beforeEgressConsensus) { Stop-MishU8GFinal 'EXTERNAL_EGRESS_CONSENSUS_FAILED' 'Independent browser egress observers disagreed before rotation.' }
@@ -405,9 +429,12 @@ try {
     $terminal = [string]$operation.terminal_result
     if ($terminal -notin @('CHANGED','UNCHANGED')) { Stop-MishU8GFinal 'ROTATION_TERMINAL_INVALID' 'Rotation terminal result is invalid.' }
 
-    $afterWindow = Invoke-MishDnsWindow -Toolchain $toolchain -ProxyServer $proxyServer -Lease $lease -Urls $script:AfterUrls -WindowName 'after'
-    $afterA = [string]$afterWindow.Browser.egress_a
-    $afterB = [string]$afterWindow.Browser.egress_b
+    $beforeDnsHost = ([Uri]$beforeDnsUrl).DnsSafeHost
+    $afterDnsUrl = Select-MishCleanDnsProofUrl -ExcludeHost $beforeDnsHost
+    $afterWindow = Invoke-MishDnsWindow -Toolchain $toolchain -ProxyServer $proxyServer -Lease $lease -DnsProofUrl $afterDnsUrl -WindowName 'after'
+    $afterEgress = Invoke-MishCamoufoxWindow -Toolchain $toolchain -ProxyServer $proxyServer -ProxyUserName ([string]$lease.ProxyUserName) -ProxyPassword ([Security.SecureString]$lease.ProxyPassword) -Urls $script:EgressUrls -WindowName 'after-egress'
+    $afterA = [string]$afterEgress.egress_a
+    $afterB = [string]$afterEgress.egress_b
     $afterEgressConsensus = (-not [string]::IsNullOrWhiteSpace($afterA) -and $afterA -ceq $afterB)
     if (-not [bool]$afterWindow.ProductDnsAdvanced -or -not [bool]$afterWindow.WindowsNoBypass) { Stop-MishU8GFinal 'DNS_NO_BYPASS_NOT_PROVEN' 'Post-rotation clean-client DNS no-bypass contract was not proven.' }
     if (-not $afterEgressConsensus) { Stop-MishU8GFinal 'EXTERNAL_EGRESS_CONSENSUS_FAILED' 'Independent browser egress observers disagreed after rotation.' }
@@ -447,9 +474,9 @@ try {
         dns_before_rotation = [ordered]@{
             product_delta = $beforeWindow.DnsDelta
             product_dns_advanced = [bool]$beforeWindow.ProductDnsAdvanced
-            windows_observer_available = [bool]$beforeWindow.WindowsDns.available
-            windows_target_query_events = [int]$beforeWindow.WindowsDns.matching_event_count
-            windows_target_host_count = [int]$beforeWindow.WindowsDns.queried_target_count
+            windows_observer = [string]$beforeWindow.WindowsDns.observer
+            clean_target_present_before = [bool]$beforeWindow.WindowsDns.target_present_before
+            clean_target_present_after = [bool]$beforeWindow.WindowsDns.target_present_after
             no_bypass = [bool]$beforeWindow.WindowsNoBypass
         }
         egress_before_rotation = [ordered]@{
@@ -466,9 +493,9 @@ try {
         dns_after_rotation = [ordered]@{
             product_delta = $afterWindow.DnsDelta
             product_dns_advanced = [bool]$afterWindow.ProductDnsAdvanced
-            windows_observer_available = [bool]$afterWindow.WindowsDns.available
-            windows_target_query_events = [int]$afterWindow.WindowsDns.matching_event_count
-            windows_target_host_count = [int]$afterWindow.WindowsDns.queried_target_count
+            windows_observer = [string]$afterWindow.WindowsDns.observer
+            clean_target_present_before = [bool]$afterWindow.WindowsDns.target_present_before
+            clean_target_present_after = [bool]$afterWindow.WindowsDns.target_present_after
             no_bypass = [bool]$afterWindow.WindowsNoBypass
         }
         egress_after_rotation = [ordered]@{
