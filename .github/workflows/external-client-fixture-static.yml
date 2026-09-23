@@ -5,6 +5,20 @@ on:
     paths:
       - 'lab/windows/external-client-fixture.json'
       - 'lab/windows/test-external-client-fixture.ps1'
+      - 'lab/windows/u8g-camoufox-toolchain.json'
+      - 'lab/windows/diagnose-u8-external-privacy-preflight.ps1'
+      - 'lab/windows/test-u8-external-privacy-preflight-contract.ps1'
+      - 'lab/windows/diagnose-u8-camoufox-python-runtime.ps1'
+      - 'lab/windows/test-u8-camoufox-python-runtime-contract.ps1'
+      - 'lab/windows/resolve-u8g-camoufox-dependencies.ps1'
+      - 'lab/windows/test-u8g-camoufox-resolution-contract.ps1'
+      - 'lab/windows/materialize-u8g-camoufox-toolchain.ps1'
+      - 'lab/windows/verify-u8g-camoufox-toolchain.ps1'
+      - 'lab/windows/test-u8g-camoufox-materialization-contract.ps1'
+      - 'lab/windows/diagnose-u8g-final-clean-client.ps1'
+      - 'lab/windows/test-u8g-final-clean-client-contract.ps1'
+      - 'lab/windows/DiagnosticConnectProbe.psm1'
+      - 'lab/windows/CredentialProvisioning.psm1'
       - 'docs/lab/EXTERNAL_CLIENT_FIXTURE.md'
       - '.github/workflows/external-client-fixture-static.yml'
   push:
@@ -12,6 +26,20 @@ on:
     paths:
       - 'lab/windows/external-client-fixture.json'
       - 'lab/windows/test-external-client-fixture.ps1'
+      - 'lab/windows/u8g-camoufox-toolchain.json'
+      - 'lab/windows/diagnose-u8-external-privacy-preflight.ps1'
+      - 'lab/windows/test-u8-external-privacy-preflight-contract.ps1'
+      - 'lab/windows/diagnose-u8-camoufox-python-runtime.ps1'
+      - 'lab/windows/test-u8-camoufox-python-runtime-contract.ps1'
+      - 'lab/windows/resolve-u8g-camoufox-dependencies.ps1'
+      - 'lab/windows/test-u8g-camoufox-resolution-contract.ps1'
+      - 'lab/windows/materialize-u8g-camoufox-toolchain.ps1'
+      - 'lab/windows/verify-u8g-camoufox-toolchain.ps1'
+      - 'lab/windows/test-u8g-camoufox-materialization-contract.ps1'
+      - 'lab/windows/diagnose-u8g-final-clean-client.ps1'
+      - 'lab/windows/test-u8g-final-clean-client-contract.ps1'
+      - 'lab/windows/DiagnosticConnectProbe.psm1'
+      - 'lab/windows/CredentialProvisioning.psm1'
       - 'docs/lab/EXTERNAL_CLIENT_FIXTURE.md'
       - '.github/workflows/external-client-fixture-static.yml'
   workflow_dispatch:
@@ -51,6 +79,53 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           & 'lab/windows/test-external-client-fixture.ps1'
+
+      - name: Validate U8-G external-client PowerShell syntax
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($path in @(
+            'lab/windows/diagnose-u8-external-privacy-preflight.ps1',
+            'lab/windows/test-u8-external-privacy-preflight-contract.ps1',
+            'lab/windows/diagnose-u8-camoufox-python-runtime.ps1',
+            'lab/windows/test-u8-camoufox-python-runtime-contract.ps1',
+            'lab/windows/resolve-u8g-camoufox-dependencies.ps1',
+            'lab/windows/test-u8g-camoufox-resolution-contract.ps1',
+            'lab/windows/materialize-u8g-camoufox-toolchain.ps1',
+            'lab/windows/verify-u8g-camoufox-toolchain.ps1',
+            'lab/windows/test-u8g-camoufox-materialization-contract.ps1',
+            'lab/windows/diagnose-u8g-final-clean-client.ps1',
+            'lab/windows/test-u8g-final-clean-client-contract.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path),
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -ne 0) {
+              $errors | ForEach-Object { Write-Error "${path}:$($_.Message)" }
+              throw "U8-G PowerShell parse failed for $path."
+            }
+          }
+
+      - name: Run U8-G external-client contracts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($test in @(
+            'lab/windows/test-u8-external-privacy-preflight-contract.ps1',
+            'lab/windows/test-u8-camoufox-python-runtime-contract.ps1',
+            'lab/windows/test-u8g-camoufox-resolution-contract.ps1',
+            'lab/windows/test-u8g-camoufox-materialization-contract.ps1',
+            'lab/windows/test-u8g-final-clean-client-contract.ps1'
+          )) {
+            & $test
+            if ($LASTEXITCODE -ne 0) {
+              throw "U8-G external-client contract failed: $test (exit $LASTEXITCODE)."
+            }
+          }
 
       - name: Verify pinned Camoufox release still exists upstream
         shell: pwsh
