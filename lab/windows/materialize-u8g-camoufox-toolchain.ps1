@@ -114,6 +114,103 @@ function Assert-Browser(
     return $exe
 }
 
+function Resolve-NetworkServiceSid {
+    try {
+        return ([Security.Principal.NTAccount]::new('NT AUTHORITY\NETWORK SERVICE')).Translate(
+            [Security.Principal.SecurityIdentifier]
+        )
+    }
+    catch {
+        Fail 'LAB_TOOLS_ACL_CONTRACT' 'Unable to resolve the Network Service identity for LAB tools ACL validation.'
+    }
+}
+
+function Test-NetworkServiceReadExecuteAcl(
+    [string]$Path,
+    [Security.Principal.SecurityIdentifier]$ServiceSid,
+    [switch]$RequireInheritedAllow
+) {
+    $acl = Get-Acl -LiteralPath $Path
+    if ($acl.AreAccessRulesProtected) { return $false }
+
+    $rules = @($acl.GetAccessRules(
+        $true,
+        $true,
+        [Security.Principal.SecurityIdentifier]
+    ) | Where-Object { $_.IdentityReference -eq $ServiceSid })
+    $requiredRights = [int][Security.AccessControl.FileSystemRights]::ReadAndExecute
+    $deny = @($rules | Where-Object {
+        $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Deny -and
+        (([int]$_.FileSystemRights -band $requiredRights) -ne 0)
+    })
+    if ($deny.Count -gt 0) { return $false }
+
+    $allow = @($rules | Where-Object {
+        $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+        (([int]$_.FileSystemRights -band $requiredRights) -eq $requiredRights) -and
+        (-not $RequireInheritedAllow -or $_.IsInherited)
+    })
+    return ($allow.Count -gt 0)
+}
+
+function Assert-LabToolsAclContract(
+    [string]$ToolsRoot,
+    [Security.Principal.SecurityIdentifier]$ServiceSid
+) {
+    $acl = Get-Acl -LiteralPath $ToolsRoot
+    if ($acl.AreAccessRulesProtected) {
+        Fail 'LAB_TOOLS_ACL_CONTRACT' 'C:\mish-lab\tools ACL inheritance is protected.'
+    }
+
+    $rules = @($acl.GetAccessRules(
+        $true,
+        $true,
+        [Security.Principal.SecurityIdentifier]
+    ) | Where-Object { $_.IdentityReference -eq $ServiceSid })
+    $requiredRights = [int][Security.AccessControl.FileSystemRights]::ReadAndExecute
+    $deny = @($rules | Where-Object {
+        -not $_.IsInherited -and
+        $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Deny -and
+        (([int]$_.FileSystemRights -band $requiredRights) -ne 0)
+    })
+    $requiredInheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+        [Security.AccessControl.InheritanceFlags]::ObjectInherit
+    $allow = @($rules | Where-Object {
+        -not $_.IsInherited -and
+        $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+        (([int]$_.FileSystemRights -band $requiredRights) -eq $requiredRights) -and
+        (($_.InheritanceFlags -band $requiredInheritance) -eq $requiredInheritance)
+    })
+
+    if ($deny.Count -gt 0 -or $allow.Count -eq 0) {
+        Fail 'LAB_TOOLS_ACL_CONTRACT' 'C:\mish-lab\tools does not grant inheritable Network Service ReadAndExecute access.'
+    }
+}
+
+function Test-BrowserTreeAclContract(
+    [string]$BrowserRoot,
+    [Security.Principal.SecurityIdentifier]$ServiceSid
+) {
+    $items = @((Get-Item -LiteralPath $BrowserRoot -Force)) + @(
+        Get-ChildItem -LiteralPath $BrowserRoot -Force -Recurse -ErrorAction Stop
+    )
+    foreach ($item in $items) {
+        if (-not (Test-NetworkServiceReadExecuteAcl -Path $item.FullName -ServiceSid $ServiceSid -RequireInheritedAllow)) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Assert-BrowserTreeAclContract(
+    [string]$BrowserRoot,
+    [Security.Principal.SecurityIdentifier]$ServiceSid
+) {
+    if (-not (Test-BrowserTreeAclContract -BrowserRoot $BrowserRoot -ServiceSid $ServiceSid)) {
+        Fail 'BROWSER_ACL_CONTRACT' 'Camoufox browser tree lost the inherited LAB tools Network Service ReadAndExecute contract.'
+    }
+}
+
 Assert-Administrator
 
 if (-not $RepositoryRoot) {
@@ -160,6 +257,9 @@ foreach ($path in @($venvRoot, $browserRoot)) {
     }
 }
 
+$networkServiceSid = Resolve-NetworkServiceSid
+Assert-LabToolsAclContract -ToolsRoot $toolsRoot -ServiceSid $networkServiceSid
+
 $expected = Read-Lock $lockPath
 if ($expected.Count -ne [int]$manifest.python_env.package_count) {
     Fail 'LOCK_COUNT' 'Requirements lock package count disagrees with the manifest.'
@@ -186,9 +286,11 @@ if ($LASTEXITCODE -ne 0 -or $pipText -notmatch ('^pip\s+' + [regex]::Escape($pip
 $lockSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $lockPath).Hash.ToLowerInvariant()
 $tempRoot = Join-Path $env:TEMP ('mish-u8g-camoufox-materialize-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
+$stagingParent = Join-Path $toolsRoot '.mish-staging'
+$stagingRoot = $null
+$preserveStaging = $false
 
 $createdVenv = $false
-$createdBrowser = $false
 
 try {
     if (Test-Path -LiteralPath $venvRoot) {
@@ -260,11 +362,23 @@ try {
         )
     }
 
+    if (-not (Test-NetworkServiceReadExecuteAcl -Path $venvRoot -ServiceSid $networkServiceSid -RequireInheritedAllow)) {
+        Fail 'LAB_TOOLS_ACL_CONTRACT' 'LAB Python environment lost the inherited tools Network Service ReadAndExecute contract.'
+    }
+
+    $materializeBrowser = $true
     if (Test-Path -LiteralPath $browserRoot) {
         [void](Assert-Browser -BrowserRoot $browserRoot -ExpectedVersion ([string]$manifest.browser.version) -ExpectedArchiveSha ([string]$manifest.browser.sha256))
-        Write-Host 'Existing LAB-owned Camoufox browser satisfies the exact archive pin; download skipped.'
+        if (Test-BrowserTreeAclContract -BrowserRoot $browserRoot -ServiceSid $networkServiceSid) {
+            Write-Host 'Existing LAB-owned Camoufox browser satisfies the exact archive pin and inherited ACL contract; download skipped.'
+            $materializeBrowser = $false
+        }
+        else {
+            Write-Host 'Existing pinned Camoufox browser has stale inherited ACLs; replacing it through LAB tools staging.'
+        }
     }
-    else {
+
+    if ($materializeBrowser) {
         $archive = Join-Path $tempRoot ([string]$manifest.browser.asset)
         $curl = (Get-Command curl.exe -ErrorAction Stop).Source
         $curlArgs = @(
@@ -281,7 +395,20 @@ try {
             Fail 'BROWSER_ARCHIVE_DIGEST' 'Pinned Camoufox browser archive digest mismatch.'
         }
 
-        $extractRoot = Join-Path $tempRoot 'browser-extract'
+        if (-not (Test-Path -LiteralPath $stagingParent -PathType Container)) {
+            New-Item -ItemType Directory -Path $stagingParent | Out-Null
+        }
+        if (-not (Test-NetworkServiceReadExecuteAcl -Path $stagingParent -ServiceSid $networkServiceSid -RequireInheritedAllow)) {
+            Fail 'LAB_TOOLS_ACL_CONTRACT' 'LAB browser staging parent does not inherit the canonical tools ReadAndExecute ACL.'
+        }
+
+        $stagingRoot = Join-Path $stagingParent ([guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $stagingRoot | Out-Null
+        if (-not (Test-NetworkServiceReadExecuteAcl -Path $stagingRoot -ServiceSid $networkServiceSid -RequireInheritedAllow)) {
+            Fail 'LAB_TOOLS_ACL_CONTRACT' 'New LAB browser staging directory did not inherit the canonical tools ReadAndExecute ACL.'
+        }
+
+        $extractRoot = Join-Path $stagingRoot 'extract'
         New-Item -ItemType Directory -Force -Path $extractRoot | Out-Null
         Expand-Archive -LiteralPath $archive -DestinationPath $extractRoot -Force
 
@@ -295,42 +422,81 @@ try {
             Fail 'BROWSER_ARCHIVE_LAYOUT' 'Camoufox executable escaped the selected bundle root.'
         }
 
-        Move-Item -LiteralPath $bundleRoot -Destination $browserRoot
-        $createdBrowser = $true
-
-        $finalExe = Join-Path $browserRoot $relativeExe
-        if (-not (Test-Path -LiteralPath $finalExe -PathType Leaf)) {
-            Fail 'BROWSER_EXE_MISSING' 'Materialized Camoufox executable is missing.'
+        if (-not (Test-BrowserTreeAclContract -BrowserRoot $bundleRoot -ServiceSid $networkServiceSid)) {
+            Fail 'BROWSER_ACL_CONTRACT' 'Extracted Camoufox bundle did not inherit the LAB tools Network Service ReadAndExecute contract.'
         }
-        $propertiesPath = Join-Path $browserRoot 'properties.json'
-        if (-not (Test-Path -LiteralPath $propertiesPath -PathType Leaf)) {
-            Fail 'BROWSER_PROPERTIES_MISSING' 'Pinned Camoufox archive is missing properties.json beside the executable.'
-        }
-        $exeSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $finalExe).Hash.ToLowerInvariant()
 
-        $browserMarker = [ordered]@{
-            schema = 'mish.lab.u8g-camoufox-browser/v1'
-            identity_source = 'official_archive_sha256'
-            version = [string]$manifest.browser.version
-            archive_asset = [string]$manifest.browser.asset
-            archive_sha256 = [string]$manifest.browser.sha256
-            executable_relative_path = $relativeExe
-            executable_sha256 = $exeSha
-        }
-        [IO.File]::WriteAllText(
-            (Join-Path $browserRoot '.mish-u8g-browser.json'),
-            (($browserMarker | ConvertTo-Json -Depth 5) + [Environment]::NewLine),
-            [Text.UTF8Encoding]::new($false)
-        )
+        $backupRoot = Join-Path $stagingRoot 'previous-browser'
+        $oldBrowserMoved = $false
+        $newBrowserInstalled = $false
+        try {
+            if (Test-Path -LiteralPath $browserRoot) {
+                Move-Item -LiteralPath $browserRoot -Destination $backupRoot
+                $oldBrowserMoved = $true
+            }
 
-        [void](Assert-Browser -BrowserRoot $browserRoot -ExpectedVersion ([string]$manifest.browser.version) -ExpectedArchiveSha ([string]$manifest.browser.sha256))
+            Move-Item -LiteralPath $bundleRoot -Destination $browserRoot
+            $newBrowserInstalled = $true
+
+            $finalExe = Join-Path $browserRoot $relativeExe
+            if (-not (Test-Path -LiteralPath $finalExe -PathType Leaf)) {
+                Fail 'BROWSER_EXE_MISSING' 'Materialized Camoufox executable is missing.'
+            }
+            $propertiesPath = Join-Path $browserRoot 'properties.json'
+            if (-not (Test-Path -LiteralPath $propertiesPath -PathType Leaf)) {
+                Fail 'BROWSER_PROPERTIES_MISSING' 'Pinned Camoufox archive is missing properties.json beside the executable.'
+            }
+            $exeSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $finalExe).Hash.ToLowerInvariant()
+
+            $browserMarker = [ordered]@{
+                schema = 'mish.lab.u8g-camoufox-browser/v1'
+                identity_source = 'official_archive_sha256'
+                version = [string]$manifest.browser.version
+                archive_asset = [string]$manifest.browser.asset
+                archive_sha256 = [string]$manifest.browser.sha256
+                executable_relative_path = $relativeExe
+                executable_sha256 = $exeSha
+            }
+            [IO.File]::WriteAllText(
+                (Join-Path $browserRoot '.mish-u8g-browser.json'),
+                (($browserMarker | ConvertTo-Json -Depth 5) + [Environment]::NewLine),
+                [Text.UTF8Encoding]::new($false)
+            )
+
+            [void](Assert-Browser -BrowserRoot $browserRoot -ExpectedVersion ([string]$manifest.browser.version) -ExpectedArchiveSha ([string]$manifest.browser.sha256))
+            Assert-BrowserTreeAclContract -BrowserRoot $browserRoot -ServiceSid $networkServiceSid
+
+        }
+        catch {
+            if ($newBrowserInstalled -and (Test-Path -LiteralPath $browserRoot)) {
+                Remove-Item -LiteralPath $browserRoot -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            if ($oldBrowserMoved -and (Test-Path -LiteralPath $backupRoot) -and -not (Test-Path -LiteralPath $browserRoot)) {
+                try {
+                    Move-Item -LiteralPath $backupRoot -Destination $browserRoot -ErrorAction Stop
+                    $oldBrowserMoved = $false
+                }
+                catch {
+                    $preserveStaging = $true
+                    Fail 'BROWSER_REPLACE_ROLLBACK' 'Unable to restore the previous Camoufox tree; the staging backup has been preserved.'
+                }
+            }
+            throw
+        }
+
+        if ($oldBrowserMoved) {
+            try {
+                Remove-Item -LiteralPath $backupRoot -Recurse -Force -ErrorAction Stop
+                $oldBrowserMoved = $false
+            }
+            catch {
+                $preserveStaging = $true
+                Fail 'BROWSER_BACKUP_CLEANUP' 'Verified Camoufox replacement is active, but the prior tree remains in LAB staging.'
+            }
+        }
     }
 
-    $venvAcl = Get-Acl -LiteralPath $venvRoot
-    $browserAcl = Get-Acl -LiteralPath $browserRoot
-    if ($venvAcl.AreAccessRulesProtected -or $browserAcl.AreAccessRulesProtected) {
-        Fail 'ACL_INHERITANCE' 'LAB-owned Camoufox roots must inherit the existing C:\mish-lab\tools ACL boundary.'
-    }
+    Assert-BrowserTreeAclContract -BrowserRoot $browserRoot -ServiceSid $networkServiceSid
 
     Write-Host 'MISH_U8G_CAMOUFOX_MATERIALIZATION=PASS'
     Write-Host ('MISH_U8G_CAMOUFOX_VENV=' + $venvRoot)
@@ -339,19 +505,20 @@ try {
     Write-Host ('MISH_U8G_CAMOUFOX_LOCK_SHA256=' + $lockSha)
     Write-Host ('MISH_U8G_CAMOUFOX_BROWSER_ARCHIVE_SHA256=' + [string]$manifest.browser.sha256)
     Write-Host 'MISH_U8G_CAMOUFOX_BROWSER_IDENTITY=OFFICIAL_ARCHIVE_SHA256'
+    Write-Host 'MISH_U8G_CAMOUFOX_ACL_CONTRACT=PASS'
     Write-Host 'MISH_U8G_CAMOUFOX_FETCH_USED=NO'
 }
 catch {
     if ($createdVenv -and (Test-Path -LiteralPath $venvRoot)) {
         Remove-Item -LiteralPath $venvRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
-    if ($createdBrowser -and (Test-Path -LiteralPath $browserRoot)) {
-        Remove-Item -LiteralPath $browserRoot -Recurse -Force -ErrorAction SilentlyContinue
-    }
     throw
 }
 finally {
     if (Test-Path -LiteralPath $tempRoot) {
         Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if ($stagingRoot -and (Test-Path -LiteralPath $stagingRoot) -and -not $preserveStaging) {
+        Remove-Item -LiteralPath $stagingRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
