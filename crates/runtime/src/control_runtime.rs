@@ -770,7 +770,14 @@ mod tests {
         let mut state = ControlState {
             session_state: ControlSessionState::Ready,
             reconnect_attempts: 0,
+            reconnect_count: 0,
             next_delay_ms: 0,
+            session_ready_at: Some(Instant::now()),
+            application_heartbeat_count: 0,
+            payload_tx_bytes: 0,
+            payload_rx_bytes: 0,
+            last_tx_at: None,
+            last_rx_at: None,
             pending: Some(PendingRemoteOperation {
                 request_id: "req_1".to_owned(),
                 operation_id: Some(7),
