@@ -52,7 +52,15 @@ foreach ($required in @(
     'BROWSER_PROPERTIES_MISSING',
     "identity_source = 'official_archive_sha256'",
     'MISH_U8G_CAMOUFOX_BROWSER_IDENTITY=OFFICIAL_ARCHIVE_SHA256',
-    'AreAccessRulesProtected'
+    'AreAccessRulesProtected',
+    'Resolve-NetworkServiceSid',
+    'Assert-LabToolsAclContract',
+    'Test-BrowserTreeAclContract',
+    'Assert-BrowserTreeAclContract',
+    'LAB_TOOLS_ACL_CONTRACT',
+    'Join-Path $toolsRoot ' + "'.mish-staging'",
+    'Join-Path $stagingRoot ' + "'extract'",
+    'BROWSER_REPLACE_ROLLBACK'
 )) {
     if (-not $materialize.Contains($required)) { throw "Camoufox materializer lost safety marker: $required" }
 }
@@ -60,6 +68,9 @@ foreach ($forbidden in @(
     'camoufox fetch',
     'icacls',
     'Set-Acl',
+    'FullControl',
+    'FileSystemAccessRule',
+    'SetAccessControl',
     'Start-Service',
     'Stop-Service',
     'Restart-Service',
@@ -70,6 +81,40 @@ foreach ($forbidden in @(
     'MISH_MANAGER_TOKEN'
 )) {
     if ($materialize.Contains($forbidden)) { throw "Camoufox materializer violates bounded ownership: $forbidden" }
+}
+
+if ($materialize.Contains('Join-Path $tempRoot ' + "'browser-extract'")) {
+    throw 'Camoufox archive extraction must occur within LAB tools staging.'
+}
+if ($materialize.Contains('Move-Item -LiteralPath $bundleRoot -Destination $browserRoot') -and
+    -not $materialize.Contains('Join-Path $stagingRoot ' + "'extract'")) {
+    throw 'Camoufox final rename must originate inside LAB tools staging.'
+}
+if ($materialize -notmatch "ReadAndExecute" -or $materialize -notmatch "OI|ObjectInherit") {
+    throw 'Camoufox materializer must validate the inheritable Network Service ReadAndExecute contract.'
+}
+if ($materialize -notmatch "NT AUTHORITY\\NETWORK SERVICE") {
+    throw 'Camoufox ACL validation must resolve the named Network Service identity.'
+}
+if ($materialize -notmatch "GetAccessRules" -or $materialize -notmatch "IsInherited") {
+    throw 'Camoufox materializer must validate inherited service access, not only the ACL inheritance flag.'
+}
+if ($materialize -notmatch 'if \(Test-BrowserTreeAclContract -BrowserRoot \$browserRoot') {
+    throw 'An existing browser tree is valid only when its inherited Network Service ACL contract passes.'
+}
+if ($materialize -notmatch 'Assert-BrowserTreeAclContract -BrowserRoot \$browserRoot') {
+    throw 'The final browser tree must be revalidated after materialization.'
+}
+if ($materialize -notmatch 'Assert-LabToolsAclContract -ToolsRoot \$toolsRoot') {
+    throw 'The canonical tools ACL contract must be checked before materialization.'
+}
+
+$bootstrap = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'bootstrap-windows.ps1')
+if ($bootstrap -notmatch "S-1-5-20:\(OI\)\(CI\)RX") {
+    throw 'Bootstrap must remain the sole owner of the LAB tools Network Service ReadAndExecute ACL.'
+}
+if ($materialize -match 'icacls|Set-Acl|FileSystemAccessRule|SetAccessControl') {
+    throw 'Camoufox materializer must not mutate ACLs or become a second ACL authority.'
 }
 
 $verify = Get-Content -Raw -LiteralPath $verifyPath
