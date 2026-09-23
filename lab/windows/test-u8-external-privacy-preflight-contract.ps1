@@ -85,11 +85,14 @@ foreach ($required in @(
     'github.event.issue.number == 315',
     "github.event.comment.body == '/mish-u8g-preflight'",
     'runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]',
-    'ref: main',
+    "github.ref == 'refs/heads/main'",
+    'github.ref_protected == true',
+    'ref: ${{ github.sha }}',
     'persist-credentials: false',
     'diagnose-u8-external-privacy-preflight.ps1',
     'mish-u8g-clean-client-preflight-v1.json',
-    'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02'
+    'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02',
+    'if-no-files-found: warn'
 )) {
     if (-not $workflow.Contains($required)) {
         throw "U8-G privacy preflight workflow lost required trust marker: $required"
