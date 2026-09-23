@@ -212,6 +212,7 @@ function Invoke-MishCamoufoxWindow {
 import ipaddress
 import json
 import os
+import re
 import sys
 from camoufox.sync_api import Camoufox
 
@@ -248,10 +249,22 @@ def classify_error(exc):
             return label
     return "PLAYWRIGHT_ERROR_OTHER"
 
+def extract_error_code(exc):
+    message = getattr(exc, "message", "") or ""
+    match = re.search(r"\b(?:NS_ERROR|SEC_ERROR|MOZILLA_PKIX_ERROR|ERR)_[A-Z0-9_]+\b", message)
+    if match:
+        return match.group(0)
+    if "timeout" in message.lower() or "Timeout" in type(exc).__name__:
+        return "TIMEOUT"
+    if "Target page, context or browser has been closed" in message:
+        return "BROWSER_CLOSED"
+    return "UNCLASSIFIED"
+
 result = {
     "result": "FAIL",    "stage": "LAUNCH",
     "error_class": None,
     "error_category": None,
+    "error_code": None,
     "navigation_pass": False,
     "statuses": [],
     "egress_a": None,
@@ -291,6 +304,7 @@ try:
 except BaseException as exc:
     result["error_class"] = type(exc).__name__
     result["error_category"] = classify_error(exc)
+    result["error_code"] = extract_error_code(exc)
 print(json.dumps(result, separators=(",", ":")))
 if result["result"] != "PASS":
     sys.exit(20)
@@ -324,8 +338,9 @@ if result["result"] != "PASS":
             $stage = if ([string]::IsNullOrWhiteSpace([string]$parsed.stage)) { 'UNKNOWN' } else { [string]$parsed.stage }
             $errorClass = if ([string]::IsNullOrWhiteSpace([string]$parsed.error_class)) { 'UNKNOWN' } else { [string]$parsed.error_class }
             $errorCategory = if ([string]::IsNullOrWhiteSpace([string]$parsed.error_category)) { 'UNKNOWN' } else { [string]$parsed.error_category }
-            Stop-MishU8GFinal 'CAMOUFOX_EXTERNAL_NAVIGATION_FAILED' ("Camoufox {0} failed at stage={1}; error_class={2}; error_category={3}; exit_code={4}" -f
-                $WindowName, $stage, $errorClass, $errorCategory, $pythonExitCode)
+            $errorCode = if ([string]::IsNullOrWhiteSpace([string]$parsed.error_code)) { 'UNKNOWN' } else { [string]$parsed.error_code }
+            Stop-MishU8GFinal 'CAMOUFOX_EXTERNAL_NAVIGATION_FAILED' ("Camoufox {0} failed at stage={1}; error_class={2}; error_category={3}; error_code={4}; exit_code={5}" -f
+                $WindowName, $stage, $errorClass, $errorCategory, $errorCode, $pythonExitCode)
         }
         return $parsed
     }
