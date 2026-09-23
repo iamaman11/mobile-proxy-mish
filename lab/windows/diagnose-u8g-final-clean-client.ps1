@@ -32,6 +32,116 @@ function Stop-MishU8GFinal {
     throw "MISH_U8G_FINAL_FAILURE|$Classification|$Message"
 }
 
+function Write-MishU8GEvidenceFile {
+    param([Parameter(Mandatory)] $Evidence)
+
+    $fullPath = [IO.Path]::GetFullPath($EvidencePath)
+    $parent = Split-Path -Parent $fullPath
+    if ($parent) { [IO.Directory]::CreateDirectory($parent) | Out-Null }
+    [IO.File]::WriteAllText(
+        $fullPath,
+        (($Evidence | ConvertTo-Json -Depth 16) + [Environment]::NewLine),
+        [Text.UTF8Encoding]::new($false)
+    )
+    return $fullPath
+}
+
+function ConvertTo-MishBrowserFailureEvidence {
+    param($Browser)
+
+    if ($null -eq $Browser -or [string]$Browser.result -ceq 'PASS') { return $null }
+    return [ordered]@{
+        stage = [string]$Browser.stage
+        error_class = [string]$Browser.error_class
+        error_category = [string]$Browser.error_category
+        error_code = [string]$Browser.error_code
+        error_message_sanitized = [string]$Browser.error_message_sanitized
+        error_stack_sanitized = [string]$Browser.error_stack_sanitized
+        request_count = [int64]$Browser.request_count
+        response_count = [int64]$Browser.response_count
+        response_statuses = @($Browser.response_statuses | ForEach-Object { [int]$_ })
+        request_failure_present = [bool]$Browser.request_failure_present
+        request_failure_code = [string]$Browser.request_failure_code
+        request_failure_message_sanitized = [string]$Browser.request_failure_message_sanitized
+        process_exit_code = [int]$Browser.process_exit_code
+    }
+}
+
+function Write-MishU8GPreRotationFailureEvidence {
+    param(
+        [Parameter(Mandatory)][string] $Classification,
+        [Parameter(Mandatory)][string] $Phase,
+        [Parameter(Mandatory)] $Toolchain,
+        [Parameter(Mandatory)] $AuthNegative,
+        [Parameter(Mandatory)] $AuthPositiveAfterNegative,
+        [Parameter(Mandatory)] $HttpsConnect,
+        $DnsWindow
+    )
+
+    $browser = if ($null -eq $DnsWindow) { $null } else { $DnsWindow.Browser }
+    $evidence = [ordered]@{
+        schema = $script:Schema
+        collected_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
+        control_sha = if ($env:GITHUB_SHA -match '^[0-9a-f]{40}$') { $env:GITHUB_SHA } else { $null }
+        acceptance_result = 'FAIL'
+        classification = $Classification
+        phase = $Phase
+        client_fixture = [ordered]@{
+            browser = 'camoufox'
+            browser_version = [string]$Toolchain.BrowserVersion
+            browser_mode = 'headless'
+            interactive_session = $false
+            profile = 'temporary_clean'
+            proxy_mode = 'HTTP_CONNECT'
+            proxy_port = 3128
+            geoip = $false
+            hidden_geoip_lookup = 'DISABLED'
+            webrtc_blocked = $true
+            firefox_doh_mode = 5
+            speculative_dns_disabled = $true
+        }
+        auth = [ordered]@{
+            owner = 'DiagnosticConnectProbe.psm1'
+            wrong_auth_rejected = ([string]$AuthNegative.result -ceq 'PASS' -and [string]$AuthNegative.reason -ceq 'AUTH_REJECTED')
+            wrong_auth_reason = [string]$AuthNegative.reason
+            valid_after_negative = [string]$AuthPositiveAfterNegative.result -ceq 'PASS'
+            valid_after_negative_reason = [string]$AuthPositiveAfterNegative.reason
+            https_connect_443 = [string]$HttpsConnect.result -ceq 'PASS'
+            https_connect_443_reason = [string]$HttpsConnect.reason
+        }
+        dns_before_rotation = if ($null -eq $DnsWindow) {
+            $null
+        }
+        else {
+            [ordered]@{
+                product_delta = $DnsWindow.DnsDelta
+                product_dns_advanced = [bool]$DnsWindow.ProductDnsAdvanced
+                windows_observer = [string]$DnsWindow.WindowsDns.observer
+                clean_target_present_before = [bool]$DnsWindow.WindowsDns.target_present_before
+                clean_target_present_after = [bool]$DnsWindow.WindowsDns.target_present_after
+                no_bypass = [bool]$DnsWindow.WindowsNoBypass
+            }
+        }
+        browser_failure = ConvertTo-MishBrowserFailureEvidence -Browser $browser
+        privacy = [ordered]@{
+            raw_public_ip_persisted = $false
+            raw_private_ip_persisted = $false
+            raw_dns_server_persisted = $false
+            proxy_credentials_persisted = $false
+        }
+        mutation = [ordered]@{
+            product_code_changed = $false
+            cloudflare_policy_changed = $false
+            windows_route_changed = $false
+            one_product_rotation_requested = $false
+        }
+    }
+
+    $path = Write-MishU8GEvidenceFile -Evidence $evidence
+    Write-Host "MISH_U8G_FINAL_EVIDENCE=$path"
+}
+
+
 function Invoke-MishAdbText {
     param([Parameter(Mandatory)][string[]] $Arguments, [string] $Operation = 'adb')
     $rows = @(& $AdbPath @Arguments 2>&1 | ForEach-Object { [string]$_ })
@@ -323,6 +433,7 @@ import json
 import os
 import re
 import sys
+import traceback
 from camoufox.sync_api import Camoufox
 
 exe = sys.argv[1]
@@ -340,6 +451,29 @@ prefs = {
     "network.http.speculative-parallel-limit": 0,
     "network.http.http3.enable": False,
 }
+def sanitize_text(value, limit=2048):
+    if value is None:
+        return None
+    text = value if isinstance(value, str) else repr(value)
+    for secret in (
+        os.environ.get("MISH_U8G_PROXY_PASSWORD", ""),
+        os.environ.get("MISH_U8G_PROXY_USER", ""),
+        os.environ.get("MISH_U8G_PROXY_SERVER", ""),
+        os.environ.get("HOME", ""),
+        os.environ.get("USERPROFILE", ""),
+        os.environ.get("LOCALAPPDATA", ""),
+        os.environ.get("APPDATA", ""),
+    ):
+        if secret:
+            text = text.replace(secret, "<REDACTED>")
+    for url in urls:
+        text = text.replace(url, "<URL>")
+    text = re.sub(r"https?://[^\s\]\[\)\(\"']+", "<URL>", text, flags=re.IGNORECASE)
+    text = re.sub(r"(?<!\d)(?:\d{1,3}\.){3}\d{1,3}(?!\d)", "<IP>", text)
+    text = re.sub(r"(?i)\b[A-Z]:\\[^\r\n\t]+", "<PATH>", text)
+    text = re.sub(r"[\r\n\t]+", " | ", text)
+    return text[:limit]
+
 def extract_error_code(exc):
     message = getattr(exc, "message", "") or ""
     match = re.search(r"\b(?:NS_ERROR|SEC_ERROR|MOZILLA_PKIX_ERROR|ERR)_[A-Z0-9_]+\b", message.upper())
@@ -357,6 +491,7 @@ def classify_error(exc):
         ("certificate" in value or "ssl" in value or "tls" in value or "sec_error" in value, "TLS"),
         ("connection reset" in value or "net_reset" in value or "ns_error_net_reset" in value, "RESET"),
         ("connection refused" in value or "ns_error_connection_refused" in value, "REFUSED"),
+        ("targetclosed" in value or "target closed" in value, "TARGET_CLOSED"),
     ]
     for matched, label in rules:
         if matched:
@@ -364,17 +499,34 @@ def classify_error(exc):
     return "PLAYWRIGHT_ERROR_OTHER"
 
 result = {
-    "result": "FAIL",    "stage": "LAUNCH",
+    "result": "FAIL",
+    "stage": "LAUNCH",
     "error_class": None,
     "error_category": None,
     "error_code": None,
+    "error_message_sanitized": None,
+    "error_stack_sanitized": None,
+    "request_count": 0,
+    "response_count": 0,
+    "response_statuses": [],
     "request_failure_present": False,
     "request_failure_code": None,
+    "request_failure_message_sanitized": None,
     "navigation_pass": False,
     "statuses": [],
     "egress_a": None,
     "egress_b": None,
 }
+
+def capture_error(exc):
+    result["error_class"] = type(exc).__name__
+    result["error_category"] = classify_error(exc)
+    result["error_code"] = extract_error_code(exc)
+    result["error_message_sanitized"] = sanitize_text(getattr(exc, "message", "") or "")
+    result["error_stack_sanitized"] = sanitize_text(
+        "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+        4096,
+    )
 try:
     with Camoufox(
         headless=True,
@@ -388,11 +540,19 @@ try:
     ) as browser:
         result["stage"] = "CONTEXT"
         page = browser.new_page()
+        def on_request(request):
+            result["request_count"] += 1
+        def on_response(response):
+            result["response_count"] += 1
+            result["response_statuses"].append(response.status)
         def on_request_failed(request):
             failure = request.failure or ""
             result["request_failure_present"] = True
+            result["request_failure_message_sanitized"] = sanitize_text(failure)
             match = re.search(r"\b(?:NS_ERROR|SEC_ERROR|MOZILLA_PKIX_ERROR|ERR)_[A-Z0-9_]+\b", failure.upper())
             result["request_failure_code"] = None if match is None else match.group(0)
+        page.on("request", on_request)
+        page.on("response", on_response)
         page.on("requestfailed", on_request_failed)
         for index, url in enumerate(urls):
             result["stage"] = f"NAVIGATION_{index}"
@@ -413,9 +573,7 @@ try:
         result["stage"] = "COMPLETE"
         result["navigation_pass"] = True
 except BaseException as exc:
-    result["error_class"] = type(exc).__name__
-    result["error_category"] = classify_error(exc)
-    result["error_code"] = extract_error_code(exc)
+    capture_error(exc)
 print(json.dumps(result, separators=(",", ":")))
 if result["result"] != "PASS":
     sys.exit(20)
@@ -445,16 +603,7 @@ if result["result"] != "PASS":
         if ($jsonLine.Count -ne 1) { Stop-MishU8GFinal 'CAMOUFOX_RESULT_INVALID' "Camoufox $WindowName emitted no unique JSON result." }
         try { $parsed = $jsonLine[0] | ConvertFrom-Json }
         catch { Stop-MishU8GFinal 'CAMOUFOX_RESULT_INVALID' "Camoufox $WindowName result was not valid JSON." }
-        if ($pythonExitCode -ne 0 -or [string]$parsed.result -cne 'PASS' -or -not [bool]$parsed.navigation_pass) {
-            $stage = if ([string]::IsNullOrWhiteSpace([string]$parsed.stage)) { 'UNKNOWN' } else { [string]$parsed.stage }
-            $errorClass = if ([string]::IsNullOrWhiteSpace([string]$parsed.error_class)) { 'UNKNOWN' } else { [string]$parsed.error_class }
-            $errorCategory = if ([string]::IsNullOrWhiteSpace([string]$parsed.error_category)) { 'UNKNOWN' } else { [string]$parsed.error_category }
-            $errorCode = if ([string]::IsNullOrWhiteSpace([string]$parsed.error_code)) { 'UNKNOWN' } else { [string]$parsed.error_code }
-            $requestFailurePresent = if ($null -eq $parsed.request_failure_present) { $false } else { [bool]$parsed.request_failure_present }
-            $requestFailureCode = if ([string]::IsNullOrWhiteSpace([string]$parsed.request_failure_code)) { 'UNKNOWN' } else { [string]$parsed.request_failure_code }
-            Stop-MishU8GFinal 'CAMOUFOX_EXTERNAL_NAVIGATION_FAILED' ("Camoufox {0} failed at stage={1}; error_class={2}; error_category={3}; error_code={4}; request_failure_present={5}; request_failure_code={6}; exit_code={7}" -f
-                $WindowName, $stage, $errorClass, $errorCategory, $errorCode, $requestFailurePresent, $requestFailureCode, $pythonExitCode)
-        }
+        $parsed | Add-Member -NotePropertyName process_exit_code -NotePropertyValue $pythonExitCode -Force
         return $parsed
     }
     finally {
@@ -607,6 +756,43 @@ try {
     $beforeDnsUrl = Select-MishCleanDnsProofUrl
     $beforeWindow = Invoke-MishDnsWindow -Toolchain $toolchain -ProxyServer $proxyServer -Lease $lease -DnsProofUrl $beforeDnsUrl -WindowName 'before'
 
+    if ([string]$beforeWindow.Browser.result -cne 'PASS' -or -not [bool]$beforeWindow.Browser.navigation_pass) {
+        Write-MishU8GPreRotationFailureEvidence `
+            -Classification 'LAB_CAMOUFOX_EXTERNAL_NAVIGATION_FAILED' `
+            -Phase 'DNS_BEFORE_ROTATION_BROWSER' `
+            -Toolchain $toolchain `
+            -AuthNegative $authNegative `
+            -AuthPositiveAfterNegative $authPositiveAfterNegative `
+            -HttpsConnect $httpsConnect `
+            -DnsWindow $beforeWindow
+
+        $stage = if ([string]::IsNullOrWhiteSpace([string]$beforeWindow.Browser.stage)) { 'UNKNOWN' } else { [string]$beforeWindow.Browser.stage }
+        $errorClass = if ([string]::IsNullOrWhiteSpace([string]$beforeWindow.Browser.error_class)) { 'UNKNOWN' } else { [string]$beforeWindow.Browser.error_class }
+        $errorCategory = if ([string]::IsNullOrWhiteSpace([string]$beforeWindow.Browser.error_category)) { 'UNKNOWN' } else { [string]$beforeWindow.Browser.error_category }
+        $errorCode = if ([string]::IsNullOrWhiteSpace([string]$beforeWindow.Browser.error_code)) { 'UNKNOWN' } else { [string]$beforeWindow.Browser.error_code }
+        Stop-MishU8GFinal 'LAB_CAMOUFOX_EXTERNAL_NAVIGATION_FAILED' ("Camoufox before failed at stage={0}; error_class={1}; error_category={2}; error_code={3}; request_count={4}; response_count={5}; request_failure_present={6}; exit_code={7}; sanitized details persisted in targeted evidence." -f
+            $stage,
+            $errorClass,
+            $errorCategory,
+            $errorCode,
+            [int64]$beforeWindow.Browser.request_count,
+            [int64]$beforeWindow.Browser.response_count,
+            [bool]$beforeWindow.Browser.request_failure_present,
+            [int]$beforeWindow.Browser.process_exit_code)
+    }
+
+    if (-not [bool]$beforeWindow.ProductDnsAdvanced -or -not [bool]$beforeWindow.WindowsNoBypass) {
+        Write-MishU8GPreRotationFailureEvidence `
+            -Classification 'LAB_U8G_DNS_NO_BYPASS_NOT_PROVEN' `
+            -Phase 'DNS_BEFORE_ROTATION_VERIFICATION' `
+            -Toolchain $toolchain `
+            -AuthNegative $authNegative `
+            -AuthPositiveAfterNegative $authPositiveAfterNegative `
+            -HttpsConnect $httpsConnect `
+            -DnsWindow $beforeWindow
+        Stop-MishU8GFinal 'LAB_U8G_DNS_NO_BYPASS_NOT_PROVEN' 'Pre-rotation clean-client DNS no-bypass contract was not proven; exact DNS deltas were persisted in targeted evidence.'
+    }
+
     $beforeExpected = Invoke-MishPublicIpPair `
         -ProxyServer $proxyServer `
         -ProxyUserName ([string]$lease.ProxyUserName) `
@@ -625,7 +811,6 @@ try {
         -ExpectedProxyAddress ([string]$beforeExpected.First) `
         -HostDefaultAddress ([string]$beforeHostDefault.First)
 
-    if (-not [bool]$beforeWindow.ProductDnsAdvanced -or -not [bool]$beforeWindow.WindowsNoBypass) { Stop-MishU8GFinal 'DNS_NO_BYPASS_NOT_PROVEN' 'Pre-rotation clean-client DNS no-bypass contract was not proven.' }
     if (-not $beforeEgressConsensus) { Stop-MishU8GFinal 'EXTERNAL_EGRESS_CONSENSUS_FAILED' 'Independent browser egress observers disagreed before rotation.' }
     if ([string]$beforeClassification.Classification -cne 'EXPECTED_PROXY_EGRESS') {
         Stop-MishU8GFinal 'BROWSER_EGRESS_PATH_INVALID' ("Camoufox pre-rotation egress classification={0}." -f [string]$beforeClassification.Classification)
@@ -764,10 +949,7 @@ try {
         }
     }
 
-    $fullPath = [IO.Path]::GetFullPath($EvidencePath)
-    $parent = Split-Path -Parent $fullPath
-    if ($parent) { [IO.Directory]::CreateDirectory($parent) | Out-Null }
-    [IO.File]::WriteAllText($fullPath, (($evidence | ConvertTo-Json -Depth 16) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+    $fullPath = Write-MishU8GEvidenceFile -Evidence $evidence
 
     Write-Host 'MISH_U8G_FINAL_ACCEPTANCE=PASS'
     Write-Host 'MISH_U8G_FINAL_DNS_NO_BYPASS=PASS'
