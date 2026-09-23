@@ -17,6 +17,10 @@ foreach ($required in @(
     'mish.lab.u8g-final-clean-client/v1',
     'Microsoft-Windows-DNS-Client/Operational',
     'CredentialProvisioning.psm1',
+    'DiagnosticConnectProbe.psm1',
+    'Invoke-MishDiagnosticHttpRelayProbe',
+    '-ExpectAuthRejection',
+    "owner = 'DiagnosticConnectProbe.psm1'",
     'Invoke-MishExternalProxyCredentialProvisioning',
     'Open-MishExternalProxyCredentialLease',
     'u8g-camoufox-toolchain.json',
@@ -41,7 +45,6 @@ foreach ($required in @(
     'raw_private_ip_persisted = $false',
     'raw_dns_server_persisted = $false',
     'proxy_credentials_persisted = $false',
-    '$authNegativePass = ($wrongStatus -eq 407)',
     'MISH_U8G_FINAL_DNS_NO_BYPASS=PASS',
     'MISH_U8G_FINAL_RAW_ADDRESSES_PERSISTED=NO'
 )) {
@@ -70,7 +73,9 @@ foreach ($forbidden in @(
     'airplane-mode disable',
     'retry-until',
     'retry_until',
-    'FullControl'
+    'FullControl',
+    'function Invoke-MishHttpProxyRequest',
+    '[Net.Http.HttpClientHandler]::new()'
 )) {
     if ($probe.Contains($forbidden)) {
         throw "Final U8-G clean-client probe contains forbidden duplicate/workaround path: $forbidden"

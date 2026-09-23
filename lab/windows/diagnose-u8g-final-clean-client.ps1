@@ -173,35 +173,6 @@ function Get-MishDnsClientTargetObservation {
     return [ordered]@{ available = $true; reason = 'READY'; matching_event_count = $matching; queried_target_count = $targets.Count }
 }
 
-function Invoke-MishHttpProxyRequest {
-    param(
-        [Parameter(Mandatory)][string] $ProxyAddress,
-        [Parameter(Mandatory)][string] $UserName,
-        [Parameter(Mandatory)][string] $Password,
-        [Parameter(Mandatory)][string] $Url
-    )
-    $handler = [Net.Http.HttpClientHandler]::new()
-    $client = $null
-    $response = $null
-    try {
-        $proxy = [Net.WebProxy]::new($ProxyAddress)
-        $proxy.Credentials = [Net.NetworkCredential]::new($UserName, $Password)
-        $handler.UseProxy = $true
-        $handler.Proxy = $proxy
-        $client = [Net.Http.HttpClient]::new($handler, $true)
-        $handler = $null
-        $client.Timeout = [TimeSpan]::FromSeconds($NavigationTimeoutSeconds)
-        $response = $client.GetAsync($Url, [Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
-        return [int]$response.StatusCode
-    }
-    catch { return -1 }
-    finally {
-        if ($null -ne $response) { $response.Dispose() }
-        if ($null -ne $client) { $client.Dispose() }
-        if ($null -ne $handler) { $handler.Dispose() }
-    }
-}
-
 function Resolve-MishCamoufoxToolchain {
     $manifestPath = Join-Path $PSScriptRoot 'u8g-camoufox-toolchain.json'
     if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { Stop-MishU8GFinal 'CAMOUFOX_MANIFEST_MISSING' 'Canonical Camoufox toolchain manifest is unavailable.' }
@@ -368,6 +339,7 @@ $devices = @(& $AdbPath devices | Where-Object { $_ -match '^\S+\s+device\s*$' }
 if ($LASTEXITCODE -ne 0 -or $devices.Count -ne 1) { Stop-MishU8GFinal 'DEVICE_UNAVAILABLE' 'Exactly one authorized DEVICE-1 is required.' }
 
 Import-Module (Join-Path $PSScriptRoot 'CredentialProvisioning.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'DiagnosticConnectProbe.psm1') -Force
 
 $preSnapshot = Read-MishProductSnapshot
 if (-not (Test-MishProductReady -Snapshot $preSnapshot)) { Stop-MishU8GFinal 'PRODUCT_NOT_READY' 'PRODUCT baseline is not READY.' }
@@ -390,13 +362,32 @@ try {
     $lease = Open-MishExternalProxyCredentialLease -StorePath $credentialStore
     if ($null -eq $lease) { Stop-MishU8GFinal 'CREDENTIAL_UNAVAILABLE' 'Bounded external proxy credential lease is unavailable.' }
 
-    $plainPassword = [Net.NetworkCredential]::new('', [Security.SecureString]$lease.ProxyPassword).Password
-    $wrongStatus = Invoke-MishHttpProxyRequest -ProxyAddress $proxyServer -UserName ([string]$lease.ProxyUserName) -Password 'mish-u8g-intentionally-wrong' -Url 'https://example.com/'
-    $validAfterNegativeStatus = Invoke-MishHttpProxyRequest -ProxyAddress $proxyServer -UserName ([string]$lease.ProxyUserName) -Password $plainPassword -Url 'https://example.com/'
-    $plainPassword = $null
-    $authNegativePass = ($wrongStatus -eq 407)
-    $validAfterNegativePass = ($validAfterNegativeStatus -ge 200 -and $validAfterNegativeStatus -lt 400)
-    if (-not $authNegativePass -or -not $validAfterNegativePass) { Stop-MishU8GFinal 'AUTH_REGRESSION' 'Bounded HTTP proxy auth regression failed.' }
+    $authNegative = Invoke-MishDiagnosticHttpRelayProbe `
+        -ProxyHost $meshAddress `
+        -ProxyPort 3128 `
+        -ProxyUserName ([string]$lease.ProxyUserName) `
+        -ProxyPassword ([Security.SecureString]$lease.ProxyPassword) `
+        -TargetHost 'example.com' `
+        -TargetPort 80 `
+        -TimeoutMs 5000 `
+        -ExpectAuthRejection
+    $authPositiveAfterNegative = Invoke-MishDiagnosticHttpRelayProbe `
+        -ProxyHost $meshAddress `
+        -ProxyPort 3128 `
+        -ProxyUserName ([string]$lease.ProxyUserName) `
+        -ProxyPassword ([Security.SecureString]$lease.ProxyPassword) `
+        -TargetHost 'example.com' `
+        -TargetPort 80 `
+        -TimeoutMs 5000
+    $authNegativePass = [string]$authNegative.result -ceq 'PASS' -and [string]$authNegative.reason -ceq 'AUTH_REJECTED'
+    $validAfterNegativePass = [string]$authPositiveAfterNegative.result -ceq 'PASS'
+    if (-not $authNegativePass -or -not $validAfterNegativePass) {
+        Stop-MishU8GFinal 'AUTH_REGRESSION' ("Canonical HTTP relay auth probe failed: negative={0}/{1}; positive_after_negative={2}/{3}" -f
+            [string]$authNegative.result,
+            [string]$authNegative.reason,
+            [string]$authPositiveAfterNegative.result,
+            [string]$authPositiveAfterNegative.reason)
+    }
 
     $beforeWindow = Invoke-MishDnsWindow -Toolchain $toolchain -ProxyServer $proxyServer -Lease $lease -Urls $script:BeforeUrls -WindowName 'before'
     $beforeA = [string]$beforeWindow.Browser.egress_a
@@ -447,8 +438,11 @@ try {
             speculative_dns_disabled = $true
         }
         auth = [ordered]@{
+            owner = 'DiagnosticConnectProbe.psm1'
             wrong_auth_rejected = $authNegativePass
+            wrong_auth_reason = [string]$authNegative.reason
             valid_after_negative = $validAfterNegativePass
+            valid_after_negative_reason = [string]$authPositiveAfterNegative.reason
         }
         dns_before_rotation = [ordered]@{
             product_delta = $beforeWindow.DnsDelta
