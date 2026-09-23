@@ -526,7 +526,7 @@ impl ControlRuntimeCoordinator {
             if let Ok(mut state) = self.state.lock() {
                 mark_acceptance_delivery_failed(&mut state, &request_id, operation_id);
             }
-            return Err(error.into());
+            return Err(error);
         }
 
         if let Err(error) = self.rotation.activate_prepared(operation_id) {
