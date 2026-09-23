@@ -4,7 +4,7 @@ param(
     [string] $PackageName = 'com.mobileproxymish.app.debug',
     [string] $MeshCidr = '100.96.0.0/12',
     [ValidateRange(10, 30)][int] $NavigationTimeoutSeconds = 20,
-    [string] $EvidencePath = (Join-Path $env:RUNNER_TEMP 'mish-u8g-final-clean-client-v1.json')
+    [string] $EvidencePath = (Join-Path $env:TEMP 'mish-u8g-final-clean-client-v1.json')
 )
 
 Set-StrictMode -Version Latest
@@ -19,6 +19,10 @@ $script:DnsProofUrls = @(
 )
 $script:EgressUrls = @(
     'https://example.com/',
+    'https://checkip.amazonaws.com/',
+    'https://api.ipify.org/'
+)
+$script:PublicIpUrls = @(
     'https://checkip.amazonaws.com/',
     'https://api.ipify.org/'
 )
@@ -191,6 +195,110 @@ function Resolve-MishCamoufoxToolchain {
     return [pscustomobject]@{ PythonExe = $pythonExe; BrowserExe = $browserExe; BrowserVersion = [string]$manifest.browser.version }
 }
 
+
+function ConvertTo-MishPublicIp {
+    param([Parameter(Mandatory)][string] $Value)
+
+    $trimmed = $Value.Trim()
+    $parsed = $null
+    if (
+        [string]::IsNullOrWhiteSpace($trimmed) -or
+        $trimmed -match '\s' -or
+        -not [Net.IPAddress]::TryParse($trimmed, [ref]$parsed)
+    ) {
+        Stop-MishU8GFinal 'EXTERNAL_IP_RESPONSE_INVALID' 'External IP observer returned a non-IP body.'
+    }
+    return $parsed.ToString()
+}
+
+function Invoke-MishPublicIpPair {
+    param(
+        [string] $ProxyServer,
+        [string] $ProxyUserName,
+        [Security.SecureString] $ProxyPassword
+    )
+
+    $handler = [Net.Http.HttpClientHandler]::new()
+    $client = $null
+    $plainPassword = $null
+    try {
+        if (-not [string]::IsNullOrWhiteSpace($ProxyServer)) {
+            if ([string]::IsNullOrWhiteSpace($ProxyUserName) -or $null -eq $ProxyPassword) {
+                Stop-MishU8GFinal 'EXTERNAL_IP_PROXY_CREDENTIAL_MISSING' 'Proxy public-IP observation requires credentials.'
+            }
+            $plainPassword = [Net.NetworkCredential]::new('', $ProxyPassword).Password
+            $proxy = [Net.WebProxy]::new($ProxyServer)
+            $proxy.Credentials = [Net.NetworkCredential]::new($ProxyUserName, $plainPassword)
+            $handler.UseProxy = $true
+            $handler.Proxy = $proxy
+        }
+        else {
+            $handler.UseProxy = $false
+        }
+
+        $client = [Net.Http.HttpClient]::new($handler, $true)
+        $handler = $null
+        $client.Timeout = [TimeSpan]::FromSeconds($NavigationTimeoutSeconds)
+
+        $addresses = @()
+        foreach ($url in $script:PublicIpUrls) {
+            try {
+                $body = $client.GetStringAsync($url).GetAwaiter().GetResult()
+            }
+            catch [System.Threading.Tasks.TaskCanceledException] {
+                Stop-MishU8GFinal 'EXTERNAL_IP_TIMEOUT' 'External IP observation exceeded the bounded deadline.'
+            }
+            catch [System.Net.Http.HttpRequestException] {
+                Stop-MishU8GFinal 'EXTERNAL_IP_REQUEST_FAILED' 'External IP observation failed.'
+            }
+            $addresses += (ConvertTo-MishPublicIp -Value $body)
+        }
+
+        if ($addresses.Count -ne 2) {
+            Stop-MishU8GFinal 'EXTERNAL_IP_OBSERVER_COUNT' 'Exactly two external IP observers are required.'
+        }
+        return [pscustomobject]@{
+            First = [string]$addresses[0]
+            Second = [string]$addresses[1]
+            Consensus = ([string]$addresses[0] -ceq [string]$addresses[1])
+        }
+    }
+    finally {
+        $plainPassword = $null
+        if ($null -ne $client) { $client.Dispose() }
+        if ($null -ne $handler) { $handler.Dispose() }
+    }
+}
+
+function Get-MishBrowserEgressClassification {
+    param(
+        [Parameter(Mandatory)][string] $BrowserAddress,
+        [Parameter(Mandatory)][string] $ExpectedProxyAddress,
+        [Parameter(Mandatory)][string] $HostDefaultAddress
+    )
+
+    $matchesExpected = $BrowserAddress -ceq $ExpectedProxyAddress
+    $matchesHost = $BrowserAddress -ceq $HostDefaultAddress
+    $classification = if ($matchesExpected -and -not $matchesHost) {
+        'EXPECTED_PROXY_EGRESS'
+    }
+    elseif (-not $matchesExpected -and $matchesHost) {
+        'HOST_DEFAULT'
+    }
+    elseif ($matchesExpected -and $matchesHost) {
+        'AMBIGUOUS_PROXY_EQUALS_HOST'
+    }
+    else {
+        'UNKNOWN'
+    }
+
+    return [pscustomobject]@{
+        Classification = $classification
+        MatchesExpectedProxy = $matchesExpected
+        MatchesHostDefault = $matchesHost
+    }
+}
+
 function Invoke-MishCamoufoxWindow {
     param(
         [Parameter(Mandatory)] $Toolchain,
@@ -268,7 +376,7 @@ result = {
 }
 try:
     with Camoufox(
-        headless=True,
+        headless=False,
         executable_path=exe,
         ff_version=152,
         geoip=False,
@@ -419,7 +527,10 @@ function Invoke-MishDnsWindow {
 }
 if (-not (Test-Path -LiteralPath $AdbPath -PathType Leaf)) { Stop-MishU8GFinal 'LAB_ADB_MISSING' 'Canonical ADB executable is unavailable.' }
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-if ($identity -ine 'NT AUTHORITY\NETWORK SERVICE') { Stop-MishU8GFinal 'RUNNER_IDENTITY' 'Final U8-G acceptance must run under NetworkService.' }
+$sessionId = [Diagnostics.Process]::GetCurrentProcess().SessionId
+if (-not [Environment]::UserInteractive -or $sessionId -le 0) {
+    Stop-MishU8GFinal 'INTERACTIVE_CLIENT_REQUIRED' 'Final U8-G Camoufox acceptance requires an interactive Windows desktop session.'
+}
 $devices = @(& $AdbPath devices | Where-Object { $_ -match '^\S+\s+device\s*$' })
 if ($LASTEXITCODE -ne 0 -or $devices.Count -ne 1) { Stop-MishU8GFinal 'DEVICE_UNAVAILABLE' 'Exactly one authorized DEVICE-1 is required.' }
 
@@ -533,6 +644,8 @@ try {
         client_fixture = [ordered]@{
             browser = 'camoufox'
             browser_version = [string]$toolchain.BrowserVersion
+            browser_mode = 'headful'
+            interactive_session = $true
             profile = 'temporary_clean'
             proxy_mode = 'HTTP_CONNECT'
             proxy_port = 3128
