@@ -30,7 +30,9 @@ foreach ($required in @(
     'Invoke-MishExternalProxyCredentialProvisioning',
     'Open-MishExternalProxyCredentialLease',
     'u8g-camoufox-toolchain.json',
-    'headless=False',
+    'headless=True',
+    "browser_mode = 'headless'",
+    'interactive_session = $false',
     '$script:PublicIpUrls',
     'Invoke-MishPublicIpPair',
     'Get-MishBrowserEgressClassification',
@@ -122,7 +124,9 @@ foreach ($forbidden in @(
     'print(getattr(exc',
     'request.url',
     'error_message',
-    'headless=True',
+    'headless=False',
+    "browser_mode = 'headful'",
+    'interactive_session = $true',
     'INTERACTIVE_CLIENT_REQUIRED'
 )) {
     if ($probe.Contains($forbidden)) {
