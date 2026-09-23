@@ -54,6 +54,10 @@ foreach ($required in @(
     'error_class',
     'error_category',
     'error_code',
+    'request_failure_present',
+    'request_failure_code',
+    'page.on("requestfailed", on_request_failed)',
+    'request.failure',
     'stage',
     'def extract_error_code(exc):',
     'NS_ERROR',
@@ -109,6 +113,7 @@ foreach ($forbidden in @(
     'repr(exc)',
     'print(message)',
     'print(getattr(exc',
+    'request.url',
     'error_message'
 )) {
     if ($probe.Contains($forbidden)) {
