@@ -100,13 +100,16 @@ function Assert-Browser(
     if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
         Fail 'BROWSER_EXE_MISSING' 'LAB-owned Camoufox executable is missing.'
     }
+    if ([string]$marker.identity_source -ne 'official_archive_sha256') {
+        Fail 'BROWSER_IDENTITY_SOURCE' 'LAB-owned Camoufox browser marker has an unexpected identity source.'
+    }
+    $propertiesPath = Join-Path $BrowserRoot 'properties.json'
+    if (-not (Test-Path -LiteralPath $propertiesPath -PathType Leaf)) {
+        Fail 'BROWSER_PROPERTIES_MISSING' 'LAB-owned Camoufox bundle is missing properties.json beside the executable.'
+    }
     $exeSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant()
     if ($exeSha -ne [string]$marker.executable_sha256) {
         Fail 'BROWSER_EXE_DIGEST' 'LAB-owned Camoufox executable digest does not match its materialization marker.'
-    }
-    $versionText = (& $exe --version 2>&1 | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0 -or $versionText -notmatch [regex]::Escape($ExpectedVersion)) {
-        Fail 'BROWSER_VERSION' 'LAB-owned Camoufox executable version mismatch.'
     }
     return $exe
 }
@@ -296,14 +299,18 @@ try {
         $createdBrowser = $true
 
         $finalExe = Join-Path $browserRoot $relativeExe
-        $versionText = (& $finalExe --version 2>&1 | Out-String).Trim()
-        if ($LASTEXITCODE -ne 0 -or $versionText -notmatch [regex]::Escape([string]$manifest.browser.version)) {
-            Fail 'BROWSER_VERSION' 'Materialized Camoufox browser version mismatch.'
+        if (-not (Test-Path -LiteralPath $finalExe -PathType Leaf)) {
+            Fail 'BROWSER_EXE_MISSING' 'Materialized Camoufox executable is missing.'
+        }
+        $propertiesPath = Join-Path $browserRoot 'properties.json'
+        if (-not (Test-Path -LiteralPath $propertiesPath -PathType Leaf)) {
+            Fail 'BROWSER_PROPERTIES_MISSING' 'Pinned Camoufox archive is missing properties.json beside the executable.'
         }
         $exeSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $finalExe).Hash.ToLowerInvariant()
 
         $browserMarker = [ordered]@{
             schema = 'mish.lab.u8g-camoufox-browser/v1'
+            identity_source = 'official_archive_sha256'
             version = [string]$manifest.browser.version
             archive_asset = [string]$manifest.browser.asset
             archive_sha256 = [string]$manifest.browser.sha256
@@ -331,6 +338,7 @@ try {
     Write-Host ('MISH_U8G_CAMOUFOX_PACKAGE_COUNT=' + $expected.Count)
     Write-Host ('MISH_U8G_CAMOUFOX_LOCK_SHA256=' + $lockSha)
     Write-Host ('MISH_U8G_CAMOUFOX_BROWSER_ARCHIVE_SHA256=' + [string]$manifest.browser.sha256)
+    Write-Host 'MISH_U8G_CAMOUFOX_BROWSER_IDENTITY=OFFICIAL_ARCHIVE_SHA256'
     Write-Host 'MISH_U8G_CAMOUFOX_FETCH_USED=NO'
 }
 catch {
