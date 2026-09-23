@@ -1,0 +1,74 @@
+name: U8 External Privacy Preflight
+
+on:
+  workflow_dispatch:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: u8-external-privacy-preflight
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: U8-G clean-client privacy preflight
+    if: >-
+      \${{ github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'issue_comment' &&
+           github.actor == 'iamaman11' &&
+           github.event.issue.number == 315 &&
+           github.event.comment.body == '/mish-u8g-preflight') }}
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 20
+    env:
+      LAB_POWERSHELL_EXE: C:\mish-lab\tools\powershell-7.6.6\pwsh.exe
+      ADB_EXE: C:\mish-lab\tools\android-sdk\platform-tools\adb.exe
+      PACKAGE_NAME: com.mobileproxymish.app.debug
+    steps:
+      - name: Checkout protected main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+          clean: true
+
+      - name: Verify protected-main execution boundary
+        shell: cmd
+        run: |
+          if not exist "%LAB_POWERSHELL_EXE%" (
+            echo Pinned LAB PowerShell executable is absent.
+            exit /b 2
+          )
+          "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ^
+            "$ErrorActionPreference='Stop'; $current=(git rev-parse HEAD).Trim(); if ($current -ne '\${{ github.sha }}') { throw 'U8-G preflight checkout must equal the triggering protected-main SHA.' }; Write-Host ('U8G_CONTROL_SHA=' + $current)"
+          exit /b %ERRORLEVEL%
+
+      - name: Run read-only clean-client preflight
+        shell: cmd
+        run: |
+          "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".\lab\windows\diagnose-u8-external-privacy-preflight.ps1" -AdbPath "%ADB_EXE%" -PackageName "%PACKAGE_NAME%" -EvidencePath "%RUNNER_TEMP%\mish-u8g-clean-client-preflight-v1.json"
+          exit /b %ERRORLEVEL%
+
+      - name: Publish redacted preflight summary
+        if: \${{ always() }}
+        shell: cmd
+        run: |
+          if exist "%RUNNER_TEMP%\mish-u8g-clean-client-preflight-v1.json" (
+            "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ^
+              "$e=Get-Content -Raw -LiteralPath (Join-Path $env:RUNNER_TEMP 'mish-u8g-clean-client-preflight-v1.json') | ConvertFrom-Json; @('### U8-G clean-client privacy preflight',('- CONTROL: \${{ github.sha }}'),('- Classification: **'+[string]$e.classification+'**'),('- PRODUCT READY: **'+[string]$e.product.ready+'**'),('- Mesh 1080/1081/3128 reachable: **'+[string]$e.mesh.all_required_ports_reachable+'**'),('- Parallel sing-box/tunnel DNS path present: **'+[string]$e.parallel_dns_path.present+'**'),('- Camoufox fixture: **'+[string]$e.fixtures.camoufox_available+'**'),('- Kameleo Local API: **'+[string]$e.fixtures.kameleo_local_api_available+'**'),('- Firefox fixture: **'+[string]$e.fixtures.firefox_available+'**'),('- Mutations performed: **NO**'),('- Raw IP/DNS addresses persisted: **NO**')) | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_STEP_SUMMARY"
+          ) else (
+            >>"%GITHUB_STEP_SUMMARY%" echo ### U8-G clean-client privacy preflight
+            >>"%GITHUB_STEP_SUMMARY%" echo - Typed evidence: **not produced**
+          )
+
+      - name: Upload redacted preflight evidence
+        if: \${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mish-u8g-clean-client-preflight-\${{ github.sha }}
+          path: \${{ runner.temp }}\mish-u8g-clean-client-preflight-v1.json
+          if-no-files-found: error
+          retention-days: 30
