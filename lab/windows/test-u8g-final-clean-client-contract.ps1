@@ -41,6 +41,7 @@ foreach ($required in @(
     'raw_private_ip_persisted = $false',
     'raw_dns_server_persisted = $false',
     'proxy_credentials_persisted = $false',
+    '$authNegativePass = ($wrongStatus -eq 407)',
     'MISH_U8G_FINAL_DNS_NO_BYPASS=PASS',
     'MISH_U8G_FINAL_RAW_ADDRESSES_PERSISTED=NO'
 )) {
@@ -79,7 +80,7 @@ foreach ($forbidden in @(
 if (($probe.Split('diagnose-u5-rotation.ps1').Count - 1) -ne 1) {
     throw 'Final U8-G acceptance must invoke exactly one existing PRODUCT rotation owner.'
 }
-if (-not $probe.Contains("$proxyServer = 'http://' + $meshAddress + ':3128'")) {
+if (-not $probe.Contains('$proxyServer = ''http://'' + $meshAddress + '':3128''')) {
     throw 'Final U8-G acceptance must target the exact current Mesh HTTP CONNECT listener.'
 }
 if ($probe -match '(?i)(before_ip|after_ip|raw_ip)\s*=') {
