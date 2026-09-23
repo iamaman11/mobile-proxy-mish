@@ -2152,6 +2152,31 @@ def main() -> None:
             "diagnostics must never project proxy username/password",
         )
 
+    # U8-F task-growth evidence is owned by the sole process-wide RuntimeExecutor. The counter
+    # observes existing spawn/abort/completion only; it must not introduce another executor.
+    execution = "crates/runtime/src/execution.rs"
+    for required in (
+        "active_tasks: Arc<AtomicU64>",
+        "self.active_tasks.fetch_add(1, Ordering::AcqRel)",
+        "self.active_tasks.fetch_sub(1, Ordering::AcqRel)",
+        "pub fn active_task_count(&self) -> u64",
+    ):
+        require(
+            execution,
+            required,
+            "U8-F task telemetry must stay on the sole RuntimeExecutor",
+        )
+    require(
+        "crates/runtime/src/product_diagnostics.rs",
+        "pub runtime_active_tasks: u64",
+        "canonical PRODUCT diagnostics must expose the sole-executor task count",
+    )
+    require(
+        diagnostics_provider,
+        'put("active_tasks", snapshot.runtimeActiveTasks.toLong())',
+        "Kotlin diagnostics must only serialize the Rust-owned executor task count",
+    )
+
     # U8-F control-session observability stays inside the existing Rust owner and projects through
     # one DUMP-only single-owner snapshot. No polling loop, heartbeat policy or Kotlin control owner.
     control_runtime = "crates/runtime/src/control_runtime.rs"
