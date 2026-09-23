@@ -21,6 +21,7 @@ const DIAGNOSTIC_STABILITY_ATTEMPTS: usize = 3;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProductGenerationDiagnosticSnapshot {
     pub generation: u64,
+    pub runtime_active_tasks: u64,
     pub cellular_admission: CellularAdmissionSnapshot,
     pub cellular_reconcile: CellularReconcileDiagnostic,
     pub dns: CellularDnsDiagnosticSnapshot,
@@ -107,6 +108,7 @@ fn capture_generation(
     let readiness = generation.readiness();
     let executor = generation.executor();
 
+    let runtime_active_tasks = executor.active_task_count();
     let cellular_admission = cellular
         .admission_snapshot()
         .map_err(|_| RuntimeExecutionError::StateUnavailable)?;
@@ -129,6 +131,7 @@ fn capture_generation(
 
     Ok(ProductGenerationDiagnosticSnapshot {
         generation: generation.generation(),
+        runtime_active_tasks,
         cellular_admission,
         cellular_reconcile,
         dns,
