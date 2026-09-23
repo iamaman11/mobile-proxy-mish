@@ -464,6 +464,21 @@ try {
             [string]$authPositiveAfterNegative.reason)
     }
 
+    $httpsConnect = Invoke-MishDiagnosticProxyConnectProbe `
+        -ProxyHost $meshAddress `
+        -ProxyPort 3128 `
+        -ProxyUserName ([string]$lease.ProxyUserName) `
+        -ProxyPassword ([Security.SecureString]$lease.ProxyPassword) `
+        -TargetHost 'example.com' `
+        -TargetPort 443 `
+        -TimeoutMs 5000
+    $httpsConnectPass = [string]$httpsConnect.result -ceq 'PASS'
+    if (-not $httpsConnectPass) {
+        Stop-MishU8GFinal 'HTTPS_CONNECT_REGRESSION' ("Canonical HTTP CONNECT :443 probe failed: result={0}; reason={1}" -f
+            [string]$httpsConnect.result,
+            [string]$httpsConnect.reason)
+    }
+
     $beforeDnsUrl = Select-MishCleanDnsProofUrl
     $beforeWindow = Invoke-MishDnsWindow -Toolchain $toolchain -ProxyServer $proxyServer -Lease $lease -DnsProofUrl $beforeDnsUrl -WindowName 'before'
     $beforeEgress = Invoke-MishCamoufoxWindow -Toolchain $toolchain -ProxyServer $proxyServer -ProxyUserName ([string]$lease.ProxyUserName) -ProxyPassword ([Security.SecureString]$lease.ProxyPassword) -Urls $script:EgressUrls -WindowName 'before-egress'
@@ -523,6 +538,8 @@ try {
             wrong_auth_reason = [string]$authNegative.reason
             valid_after_negative = $validAfterNegativePass
             valid_after_negative_reason = [string]$authPositiveAfterNegative.reason
+            https_connect_443 = $httpsConnectPass
+            https_connect_443_reason = [string]$httpsConnect.reason
         }
         dns_before_rotation = [ordered]@{
             product_delta = $beforeWindow.DnsDelta
