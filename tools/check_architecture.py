@@ -2174,7 +2174,7 @@ def main() -> None:
         "CONTROL_HEARTBEAT_INTERVAL",
         "scheduleAtFixedRate",
         "setInterval(",
-        "write_text("PING")",
+        'write_text("PING")',
     ):
         forbid(
             control_runtime,
