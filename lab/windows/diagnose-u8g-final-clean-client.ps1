@@ -528,9 +528,8 @@ function Invoke-MishDnsWindow {
 }
 if (-not (Test-Path -LiteralPath $AdbPath -PathType Leaf)) { Stop-MishU8GFinal 'LAB_ADB_MISSING' 'Canonical ADB executable is unavailable.' }
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-$sessionId = [Diagnostics.Process]::GetCurrentProcess().SessionId
-if (-not [Environment]::UserInteractive -or $sessionId -le 0) {
-    Stop-MishU8GFinal 'INTERACTIVE_CLIENT_REQUIRED' 'Final U8-G Camoufox acceptance requires an interactive Windows desktop session.'
+if ($identity -ine 'NT AUTHORITY\NETWORK SERVICE') {
+    Stop-MishU8GFinal 'RUNNER_IDENTITY' 'Final U8-G acceptance must run under the canonical NetworkService Device Cycle runner.'
 }
 $devices = @(& $AdbPath devices | Where-Object { $_ -match '^\S+\s+device\s*$' })
 if ($LASTEXITCODE -ne 0 -or $devices.Count -ne 1) { Stop-MishU8GFinal 'DEVICE_UNAVAILABLE' 'Exactly one authorized DEVICE-1 is required.' }
