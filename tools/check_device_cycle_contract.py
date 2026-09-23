@@ -64,7 +64,7 @@ def main() -> None:
         "candidate build is not a completed successful PR preflight",
         "PR Validation + PRODUCT Candidate",
         "probe_only supports only the current-function loopback_connect probe",
-        "full accepts only none, capacity_resources, recovery_lifecycle, dns_lifetime_live, u5_rotation, u7_runtime_restart_resources, u7_512_lifecycle_stability, u8_reboot_install_durability, u8_public_egress_rotation, or u8_remote_control",
+        "full accepts only none, capacity_resources, recovery_lifecycle, dns_lifetime_live, u5_rotation, u7_runtime_restart_resources, u7_512_lifecycle_stability, u8_reboot_install_durability, u8_public_egress_rotation, u8_remote_control, or u8_durability_soak",
         "install_only/diagnose_only require probe=none",
         "capacity_resources",
         "recovery_lifecycle",
@@ -75,6 +75,7 @@ def main() -> None:
         "u8_reboot_install_durability",
         "u8_public_egress_rotation",
         "u8_remote_control",
+        "u8_durability_soak",
         "U8-E authenticated remote rotation",
         "diagnose-u8-remote-control.ps1",
         "environment: cloudflare-control",
@@ -83,6 +84,8 @@ def main() -> None:
         "Explicit U8 public Cellular egress rotation proof",
         "diagnose-u8-public-egress-rotation.ps1",
         "diagnose-u8-reboot-install-durability.ps1",
+        "Explicit U8-F bounded durability soak",
+        "diagnose-u8-durability-soak.ps1",
         "Explicit U3 DNS lifetime - live same-process observation",
         "diagnose-dns-lifetime-live.ps1",
         "Explicit U5 rotation - PRODUCT-owned airplane cycle acceptance",
@@ -138,6 +141,11 @@ def main() -> None:
         "lab/windows/test-device-cycle.ps1",
         "test-u8-remote-control-probe-contract.ps1",
         "U8 remote-control probe guard must run inside the existing Device Cycle Contracts job",
+    )
+    require(
+        "lab/windows/test-device-cycle.ps1",
+        "test-u8-durability-soak-probe-contract.ps1",
+        "U8-F durability soak guard must run inside the existing Device Cycle Contracts job",
     )
 
     for required in (
@@ -476,6 +484,43 @@ def main() -> None:
         "U8_REMOTE_CONTROL_PROBE_CONTRACT=PASS",
         "U8 remote-control hosted self-test drifted",
     )
+    u8_durability_probe = "lab/windows/diagnose-u8-durability-soak.ps1"
+    for required in (
+        "mish.lab.u8-durability-soak/v1",
+        "control_snapshot_v1",
+        "runtime.active_tasks",
+        "application_heartbeat_count",
+        "payload_tx_bytes",
+        "payload_rx_bytes",
+        "reconnect_count",
+        "ControlPayloadMonthlyBudgetBytes = 10MB",
+        "Open-MishLongLivedTunnel",
+        "Wait-MishQuiescence",
+        "shell am crash",
+        "Wait-MishFreshReadyProcess",
+        "U8_DURABILITY_SOAK_PASS",
+        "no_512_stress = $true",
+        "wire_bytes_claimed = $false",
+        "secrets_persisted_in_evidence = $false",
+    ):
+        require(u8_durability_probe, required, "U8-F durability acceptance contract drifted")
+    for forbidden in (
+        "Capacity512Cycles",
+        "MISH_MANAGER_TOKEN",
+        "ROTATE_IP",
+        "cmd connectivity airplane-mode",
+        "'shell', 'su'",
+        "start-device-app.ps1",
+    ):
+        forbid(u8_durability_probe, forbidden, "U8-F durability probe must stay bounded LAB observation/fault-injection only")
+
+    u8_durability_contract = "lab/windows/test-u8-durability-soak-probe-contract.ps1"
+    require(
+        u8_durability_contract,
+        "U8_DURABILITY_SOAK_PROBE_CONTRACT=PASS",
+        "U8-F durability hosted self-test drifted",
+    )
+
     rotation_probe = "lab/windows/diagnose-u5-rotation.ps1"
     for required in (
         "mish.lab.u5-rotation-acceptance/v1",
@@ -717,6 +762,8 @@ def main() -> None:
         "u5_rotation",
         "u7_runtime_restart_resources",
         "u7_512_lifecycle_stability",
+        "u8_durability_soak",
+        "FULL_BASELINE_PLUS_U8_DURABILITY_SOAK",
         "FULL_BASELINE_PLUS_DNS_LIFETIME_OBSERVATION",
         "FULL_BASELINE_PLUS_U5_ROTATION",
         "FULL_BASELINE_PLUS_U7_RUNTIME_RESTART_RESOURCES",
@@ -748,6 +795,9 @@ def main() -> None:
         "Observed U5 rotation PRODUCT failure must reject the exact candidate",
         "LAB U5 rotation collection failure must not reject the PRODUCT candidate",
         "U7 runtime restart resource PASS must accept the exact candidate only with baseline + targeted evidence",
+        "U8 durability soak PASS must require baseline + targeted physical evidence",
+        "Observed U8 durability PRODUCT failure must reject the exact candidate",
+        "U8 durability LAB fixture failure must not reject the PRODUCT candidate",
         "Observed U7 runtime restart resource PRODUCT failure must reject the exact candidate",
         "LAB U7 runtime restart collection failure must not reject the PRODUCT candidate",
         "Baseline PRODUCT failure must outrank absent capacity evidence",
