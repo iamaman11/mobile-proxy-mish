@@ -323,6 +323,7 @@ import json
 import os
 import re
 import sys
+import traceback
 from camoufox.sync_api import Camoufox
 
 exe = sys.argv[1]
@@ -340,6 +341,29 @@ prefs = {
     "network.http.speculative-parallel-limit": 0,
     "network.http.http3.enable": False,
 }
+def sanitize_text(value, limit=2048):
+    if value is None:
+        return None
+    text = value if isinstance(value, str) else ""
+    for secret in (
+        os.environ.get("MISH_U8G_PROXY_PASSWORD", ""),
+        os.environ.get("MISH_U8G_PROXY_USER", ""),
+        os.environ.get("MISH_U8G_PROXY_SERVER", ""),
+        os.environ.get("HOME", ""),
+        os.environ.get("USERPROFILE", ""),
+        os.environ.get("LOCALAPPDATA", ""),
+        os.environ.get("APPDATA", ""),
+    ):
+        if secret:
+            text = text.replace(secret, "<REDACTED>")
+    for url in urls:
+        text = text.replace(url, "<URL>")
+    text = re.sub(r"https?://[^\\s\\]\\[\\)\\(\\\"']+", "<URL>", text, flags=re.IGNORECASE)
+    text = re.sub(r"(?<!\\d)(?:\\d{1,3}\\.){3}\\d{1,3}(?!\\d)", "<IP>", text)
+    text = re.sub(r"(?i)[A-Z]:\\\\[^\\r\\n\\t]+", "<PATH>", text)
+    text = re.sub(r"[\\r\\n\\t]+", " | ", text)
+    return text[:limit]
+
 def extract_error_code(exc):
     message = getattr(exc, "message", "") or ""
     match = re.search(r"\b(?:NS_ERROR|SEC_ERROR|MOZILLA_PKIX_ERROR|ERR)_[A-Z0-9_]+\b", message.upper())
@@ -357,6 +381,7 @@ def classify_error(exc):
         ("certificate" in value or "ssl" in value or "tls" in value or "sec_error" in value, "TLS"),
         ("connection reset" in value or "net_reset" in value or "ns_error_net_reset" in value, "RESET"),
         ("connection refused" in value or "ns_error_connection_refused" in value, "REFUSED"),
+        ("targetclosed" in value or "target closed" in value, "TARGET_CLOSED"),
     ]
     for matched, label in rules:
         if matched:
@@ -368,13 +393,31 @@ result = {
     "error_class": None,
     "error_category": None,
     "error_code": None,
+    "error_message_sanitized": None,
+    "error_stack_sanitized": None,
+    "request_count": 0,
+    "response_count": 0,
+    "response_statuses": [],
     "request_failure_present": False,
     "request_failure_code": None,
+    "request_failure_message_sanitized": None,
+    "browser_connected_after_error": None,
+    "page_closed_after_error": None,
     "navigation_pass": False,
     "statuses": [],
     "egress_a": None,
     "egress_b": None,
 }
+def capture_error(exc):
+    result["error_class"] = type(exc).__name__
+    result["error_category"] = classify_error(exc)
+    result["error_code"] = extract_error_code(exc)
+    result["error_message_sanitized"] = sanitize_text(getattr(exc, "message", "") or "")
+    result["error_stack_sanitized"] = sanitize_text(
+        "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+        4096,
+    )
+
 try:
     with Camoufox(
         headless=True,
@@ -386,36 +429,55 @@ try:
         firefox_user_prefs=prefs,
         i_know_what_im_doing=True,
     ) as browser:
-        result["stage"] = "CONTEXT"
-        page = browser.new_page()
-        def on_request_failed(request):
-            failure = request.failure or ""
-            result["request_failure_present"] = True
-            match = re.search(r"\b(?:NS_ERROR|SEC_ERROR|MOZILLA_PKIX_ERROR|ERR)_[A-Z0-9_]+\b", failure.upper())
-            result["request_failure_code"] = None if match is None else match.group(0)
-        page.on("requestfailed", on_request_failed)
-        for index, url in enumerate(urls):
-            result["stage"] = f"NAVIGATION_{index}"
-            response = page.goto(url, wait_until="domcontentloaded", timeout=20000)
-            status = None if response is None else response.status
-            result["statuses"].append(status)
-            if response is None or status is None or status < 200 or status >= 400:
-                raise RuntimeError("navigation status outside accepted range")
-            if index in (1, 2):
-                result["stage"] = f"EGRESS_PARSE_{index}"
-                value = page.locator("body").inner_text().strip()
-                ipaddress.ip_address(value)
-                if index == 1:
-                    result["egress_a"] = value
-                else:
-                    result["egress_b"] = value
-        result["result"] = "PASS"
-        result["stage"] = "COMPLETE"
-        result["navigation_pass"] = True
+        page = None
+        try:
+            result["stage"] = "CONTEXT"
+            page = browser.new_page()
+            def on_request(request):
+                result["request_count"] += 1
+            def on_response(response):
+                result["response_count"] += 1
+                result["response_statuses"].append(response.status)
+            def on_request_failed(request):
+                failure = request.failure or ""
+                result["request_failure_present"] = True
+                result["request_failure_message_sanitized"] = sanitize_text(failure)
+                match = re.search(r"\b(?:NS_ERROR|SEC_ERROR|MOZILLA_PKIX_ERROR|ERR)_[A-Z0-9_]+\b", failure.upper())
+                result["request_failure_code"] = None if match is None else match.group(0)
+            page.on("request", on_request)
+            page.on("response", on_response)
+            page.on("requestfailed", on_request_failed)
+            for index, url in enumerate(urls):
+                result["stage"] = f"NAVIGATION_{index}"
+                response = page.goto(url, wait_until="domcontentloaded", timeout=20000)
+                status = None if response is None else response.status
+                result["statuses"].append(status)
+                if response is None or status is None or status < 200 or status >= 400:
+                    raise RuntimeError("navigation status outside accepted range")
+                if index in (1, 2):
+                    result["stage"] = f"EGRESS_PARSE_{index}"
+                    value = page.locator("body").inner_text().strip()
+                    ipaddress.ip_address(value)
+                    if index == 1:
+                        result["egress_a"] = value
+                    else:
+                        result["egress_b"] = value
+            result["result"] = "PASS"
+            result["stage"] = "COMPLETE"
+            result["navigation_pass"] = True
+        except BaseException as exc:
+            capture_error(exc)
+            try:
+                result["browser_connected_after_error"] = bool(browser.is_connected())
+            except BaseException:
+                result["browser_connected_after_error"] = None
+            try:
+                result["page_closed_after_error"] = None if page is None else bool(page.is_closed())
+            except BaseException:
+                result["page_closed_after_error"] = None
 except BaseException as exc:
-    result["error_class"] = type(exc).__name__
-    result["error_category"] = classify_error(exc)
-    result["error_code"] = extract_error_code(exc)
+    if result["error_class"] is None:
+        capture_error(exc)
 print(json.dumps(result, separators=(",", ":")))
 if result["result"] != "PASS":
     sys.exit(20)
@@ -445,16 +507,7 @@ if result["result"] != "PASS":
         if ($jsonLine.Count -ne 1) { Stop-MishU8GFinal 'CAMOUFOX_RESULT_INVALID' "Camoufox $WindowName emitted no unique JSON result." }
         try { $parsed = $jsonLine[0] | ConvertFrom-Json }
         catch { Stop-MishU8GFinal 'CAMOUFOX_RESULT_INVALID' "Camoufox $WindowName result was not valid JSON." }
-        if ($pythonExitCode -ne 0 -or [string]$parsed.result -cne 'PASS' -or -not [bool]$parsed.navigation_pass) {
-            $stage = if ([string]::IsNullOrWhiteSpace([string]$parsed.stage)) { 'UNKNOWN' } else { [string]$parsed.stage }
-            $errorClass = if ([string]::IsNullOrWhiteSpace([string]$parsed.error_class)) { 'UNKNOWN' } else { [string]$parsed.error_class }
-            $errorCategory = if ([string]::IsNullOrWhiteSpace([string]$parsed.error_category)) { 'UNKNOWN' } else { [string]$parsed.error_category }
-            $errorCode = if ([string]::IsNullOrWhiteSpace([string]$parsed.error_code)) { 'UNKNOWN' } else { [string]$parsed.error_code }
-            $requestFailurePresent = if ($null -eq $parsed.request_failure_present) { $false } else { [bool]$parsed.request_failure_present }
-            $requestFailureCode = if ([string]::IsNullOrWhiteSpace([string]$parsed.request_failure_code)) { 'UNKNOWN' } else { [string]$parsed.request_failure_code }
-            Stop-MishU8GFinal 'CAMOUFOX_EXTERNAL_NAVIGATION_FAILED' ("Camoufox {0} failed at stage={1}; error_class={2}; error_category={3}; error_code={4}; request_failure_present={5}; request_failure_code={6}; exit_code={7}" -f
-                $WindowName, $stage, $errorClass, $errorCategory, $errorCode, $requestFailurePresent, $requestFailureCode, $pythonExitCode)
-        }
+        $parsed | Add-Member -NotePropertyName python_exit_code -NotePropertyValue $pythonExitCode -Force
         return $parsed
     }
     finally {
