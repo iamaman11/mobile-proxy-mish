@@ -2150,6 +2150,65 @@ def main() -> None:
             "diagnostics must never project proxy username/password",
         )
 
+    # U8-F control-session observability stays inside the existing Rust owner and projects through
+    # one DUMP-only single-owner snapshot. No polling loop, heartbeat policy or Kotlin control owner.
+    control_runtime = "crates/runtime/src/control_runtime.rs"
+    for required in (
+        "pub reconnect_count: u64",
+        "pub session_age_ms: Option<u64>",
+        "pub application_heartbeat_count: u64",
+        "pub payload_tx_bytes: u64",
+        "pub payload_rx_bytes: u64",
+        "pub last_tx_age_ms: Option<u64>",
+        "pub last_rx_age_ms: Option<u64>",
+        "fn record_reconnect(&self)",
+        "async fn write_text_observed(",
+        "async fn read_message_observed(",
+    ):
+        require(
+            control_runtime,
+            required,
+            "U8-F control telemetry must remain owned by ControlRuntimeCoordinator",
+        )
+    for forbidden in (
+        "CONTROL_HEARTBEAT_INTERVAL",
+        "scheduleAtFixedRate",
+        "setInterval(",
+        "write_text("PING")",
+    ):
+        forbid(
+            control_runtime,
+            forbidden,
+            "U8-F observability must not introduce an application heartbeat or second scheduler",
+        )
+
+    for required in (
+        'MISH_CONTROL_DIAGNOSTICS_SCHEMA_V1 = "mish.control.diagnostics/v1"',
+        'MISH_DIAGNOSTICS_METHOD_CONTROL_SNAPSHOT_V1 = "control_snapshot_v1"',
+        "app.runtimeController.controlSnapshot()",
+        "renderMishControlDiagnosticSnapshotV1(",
+        'put("application_heartbeat_count"',
+        'put("payload_tx_bytes"',
+        'put("payload_rx_bytes"',
+    ):
+        require(
+            diagnostics_provider,
+            required,
+            "U8-F control telemetry must project through the existing DUMP-only diagnostics boundary",
+        )
+    for forbidden in (
+        "WebSocket(",
+        "OkHttp",
+        "CoroutineScope(",
+        "postDelayed(",
+        "scheduleAtFixedRate",
+    ):
+        forbid(
+            diagnostics_provider,
+            forbidden,
+            "Kotlin diagnostics must remain serialization-only and may not own control execution",
+        )
+
     # No second Android VPN/TUN ownership may appear in PRODUCT.
     manifest = read("android/app/src/main/AndroidManifest.xml")
     if "VpnService" in manifest or "android.net.VpnService" in manifest:
