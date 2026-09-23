@@ -1461,7 +1461,9 @@ def main() -> None:
         )
     for obsolete in (
         "MISH_DIAGNOSTICS_SCHEMA_V1",
-        "snapshot_v1",
+        "MISH_DIAGNOSTICS_METHOD_SNAPSHOT_V1",
+        'renderMishDiagnosticSnapshotV1(',
+        'method == "snapshot_v1"',
         'put("bridge"',
         "private_healthy",
         "privateBridge",
