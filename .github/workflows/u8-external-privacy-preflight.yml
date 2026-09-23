@@ -16,7 +16,9 @@ jobs:
   preflight:
     name: U8-G clean-client privacy preflight
     if: >-
-      \${{ github.event_name == 'workflow_dispatch' ||
+      ${{ (github.event_name == 'workflow_dispatch' &&
+            github.ref == 'refs/heads/main' &&
+            github.ref_protected == true) ||
           (github.event_name == 'issue_comment' &&
            github.actor == 'iamaman11' &&
            github.event.issue.number == 315 &&
@@ -31,7 +33,7 @@ jobs:
       - name: Checkout protected main
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: main
+          ref: ${{ github.sha }}
           persist-credentials: false
           clean: true
 
@@ -43,7 +45,7 @@ jobs:
             exit /b 2
           )
           "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ^
-            "$ErrorActionPreference='Stop'; $current=(git rev-parse HEAD).Trim(); if ($current -ne '\${{ github.sha }}') { throw 'U8-G preflight checkout must equal the triggering protected-main SHA.' }; Write-Host ('U8G_CONTROL_SHA=' + $current)"
+            "$ErrorActionPreference='Stop'; $current=(git rev-parse HEAD).Trim(); if ($current -ne '${{ github.sha }}') { throw 'U8-G preflight checkout must equal the triggering protected-main SHA.' }; Write-Host ('U8G_CONTROL_SHA=' + $current)"
           exit /b %ERRORLEVEL%
 
       - name: Run read-only clean-client preflight
@@ -53,22 +55,22 @@ jobs:
           exit /b %ERRORLEVEL%
 
       - name: Publish redacted preflight summary
-        if: \${{ always() }}
+        if: ${{ always() }}
         shell: cmd
         run: |
           if exist "%RUNNER_TEMP%\mish-u8g-clean-client-preflight-v1.json" (
             "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ^
-              "$e=Get-Content -Raw -LiteralPath (Join-Path $env:RUNNER_TEMP 'mish-u8g-clean-client-preflight-v1.json') | ConvertFrom-Json; @('### U8-G clean-client privacy preflight',('- CONTROL: \${{ github.sha }}'),('- Classification: **'+[string]$e.classification+'**'),('- PRODUCT READY: **'+[string]$e.product.ready+'**'),('- Mesh 1080/1081/3128 reachable: **'+[string]$e.mesh.all_required_ports_reachable+'**'),('- Parallel sing-box/tunnel DNS path present: **'+[string]$e.parallel_dns_path.present+'**'),('- Camoufox fixture: **'+[string]$e.fixtures.camoufox_available+'**'),('- Kameleo Local API: **'+[string]$e.fixtures.kameleo_local_api_available+'**'),('- Firefox fixture: **'+[string]$e.fixtures.firefox_available+'**'),('- Mutations performed: **NO**'),('- Raw IP/DNS addresses persisted: **NO**')) | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_STEP_SUMMARY"
+              "$e=Get-Content -Raw -LiteralPath (Join-Path $env:RUNNER_TEMP 'mish-u8g-clean-client-preflight-v1.json') | ConvertFrom-Json; @('### U8-G clean-client privacy preflight',('- CONTROL: ${{ github.sha }}'),('- Classification: **'+[string]$e.classification+'**'),('- PRODUCT READY: **'+[string]$e.product.ready+'**'),('- Mesh 1080/1081/3128 reachable: **'+[string]$e.mesh.all_required_ports_reachable+'**'),('- Parallel sing-box/tunnel DNS path present: **'+[string]$e.parallel_dns_path.present+'**'),('- Camoufox fixture: **'+[string]$e.fixtures.camoufox_available+'**'),('- Kameleo Local API: **'+[string]$e.fixtures.kameleo_local_api_available+'**'),('- Firefox fixture: **'+[string]$e.fixtures.firefox_available+'**'),('- Mutations performed: **NO**'),('- Raw IP/DNS addresses persisted: **NO**')) | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_STEP_SUMMARY"
           ) else (
             >>"%GITHUB_STEP_SUMMARY%" echo ### U8-G clean-client privacy preflight
             >>"%GITHUB_STEP_SUMMARY%" echo - Typed evidence: **not produced**
           )
 
       - name: Upload redacted preflight evidence
-        if: \${{ always() }}
+        if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: mish-u8g-clean-client-preflight-\${{ github.sha }}
-          path: \${{ runner.temp }}\mish-u8g-clean-client-preflight-v1.json
-          if-no-files-found: error
+          name: mish-u8g-clean-client-preflight-${{ github.sha }}
+          path: ${{ runner.temp }}\mish-u8g-clean-client-preflight-v1.json
+          if-no-files-found: warn
           retention-days: 30
