@@ -39,6 +39,7 @@ internal fun renderMishDiagnosticSnapshotV2(
     put("runtime", JSONObject().apply {
         put("running", snapshot.runtimeRunning)
         put("generation", snapshot.runtimeGeneration.toLong())
+        put("active_tasks", snapshot.runtimeActiveTasks.toLong())
     })
     put("cellular", JSONObject().apply {
         put("state", snapshot.cellularState)
