@@ -259,6 +259,8 @@ result = {
     "error_class": None,
     "error_category": None,
     "error_code": None,
+    "request_failure_present": False,
+    "request_failure_code": None,
     "navigation_pass": False,
     "statuses": [],
     "egress_a": None,
@@ -277,6 +279,12 @@ try:
     ) as browser:
         result["stage"] = "CONTEXT"
         page = browser.new_page()
+        def on_request_failed(request):
+            failure = request.failure or ""
+            result["request_failure_present"] = True
+            match = re.search(r"\b(?:NS_ERROR|SEC_ERROR|MOZILLA_PKIX_ERROR|ERR)_[A-Z0-9_]+\b", failure.upper())
+            result["request_failure_code"] = None if match is None else match.group(0)
+        page.on("requestfailed", on_request_failed)
         for index, url in enumerate(urls):
             result["stage"] = f"NAVIGATION_{index}"
             response = page.goto(url, wait_until="domcontentloaded", timeout=20000)
@@ -333,8 +341,10 @@ if result["result"] != "PASS":
             $errorClass = if ([string]::IsNullOrWhiteSpace([string]$parsed.error_class)) { 'UNKNOWN' } else { [string]$parsed.error_class }
             $errorCategory = if ([string]::IsNullOrWhiteSpace([string]$parsed.error_category)) { 'UNKNOWN' } else { [string]$parsed.error_category }
             $errorCode = if ([string]::IsNullOrWhiteSpace([string]$parsed.error_code)) { 'UNKNOWN' } else { [string]$parsed.error_code }
-            Stop-MishU8GFinal 'CAMOUFOX_EXTERNAL_NAVIGATION_FAILED' ("Camoufox {0} failed at stage={1}; error_class={2}; error_category={3}; error_code={4}; exit_code={5}" -f
-                $WindowName, $stage, $errorClass, $errorCategory, $errorCode, $pythonExitCode)
+            $requestFailurePresent = if ($null -eq $parsed.request_failure_present) { $false } else { [bool]$parsed.request_failure_present }
+            $requestFailureCode = if ([string]::IsNullOrWhiteSpace([string]$parsed.request_failure_code)) { 'UNKNOWN' } else { [string]$parsed.request_failure_code }
+            Stop-MishU8GFinal 'CAMOUFOX_EXTERNAL_NAVIGATION_FAILED' ("Camoufox {0} failed at stage={1}; error_class={2}; error_category={3}; error_code={4}; request_failure_present={5}; request_failure_code={6}; exit_code={7}" -f
+                $WindowName, $stage, $errorClass, $errorCategory, $errorCode, $requestFailurePresent, $requestFailureCode, $pythonExitCode)
         }
         return $parsed
     }
