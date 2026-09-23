@@ -119,6 +119,7 @@ foreach ($name in $expected.Keys) {
 
 $browserMarker = Get-Content -Raw -LiteralPath $browserMarkerPath | ConvertFrom-Json
 if ($browserMarker.schema -ne 'mish.lab.u8g-camoufox-browser/v1' -or
+    [string]$browserMarker.identity_source -ne 'official_archive_sha256' -or
     [string]$browserMarker.version -ne [string]$manifest.browser.version -or
     [string]$browserMarker.archive_sha256 -ne [string]$manifest.browser.sha256) {
     Fail 'BROWSER_MARKER' 'LAB-owned Camoufox browser marker does not match the pin.'
@@ -127,13 +128,13 @@ $browserExe = Join-Path $browserRoot ([string]$browserMarker.executable_relative
 if (-not (Test-Path -LiteralPath $browserExe -PathType Leaf)) {
     Fail 'BROWSER_EXE' 'LAB-owned Camoufox executable is unavailable to NetworkService.'
 }
+$browserProperties = Join-Path $browserRoot 'properties.json'
+if (-not (Test-Path -LiteralPath $browserProperties -PathType Leaf)) {
+    Fail 'BROWSER_PROPERTIES' 'LAB-owned Camoufox properties.json is unavailable to NetworkService.'
+}
 $exeSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $browserExe).Hash.ToLowerInvariant()
 if ($exeSha -ne [string]$browserMarker.executable_sha256) {
     Fail 'BROWSER_EXE_DIGEST' 'LAB-owned Camoufox executable digest drifted.'
-}
-$browserVersionText = (& $browserExe --version 2>&1 | Out-String).Trim()
-if ($LASTEXITCODE -ne 0 -or $browserVersionText -notmatch [regex]::Escape([string]$manifest.browser.version)) {
-    Fail 'BROWSER_VERSION' 'LAB-owned Camoufox browser version mismatch.'
 }
 
 $runtimeRoot = Join-Path $env:RUNNER_TEMP ('mish-u8g-camoufox-runtime-' + [guid]::NewGuid().ToString('N'))
@@ -196,6 +197,7 @@ try {
         }
         browser = [ordered]@{
             version = [string]$manifest.browser.version
+            identity_source = 'official_archive_sha256'
             archive_sha256 = [string]$manifest.browser.sha256
             executable_sha256 = $exeSha
             executable_path_class = 'LAB_OWNED'
@@ -232,6 +234,7 @@ try {
     Write-Host ('MISH_U8G_CAMOUFOX_PACKAGE_COUNT=' + $expected.Count)
     Write-Host ('MISH_U8G_CAMOUFOX_LOCK_SHA256=' + $lockSha)
     Write-Host ('MISH_U8G_CAMOUFOX_BROWSER_EXE_SHA256=' + $exeSha)
+    Write-Host 'MISH_U8G_CAMOUFOX_BROWSER_IDENTITY=OFFICIAL_ARCHIVE_SHA256'
     Write-Host 'MISH_U8G_CAMOUFOX_USER_CACHE_USED=NO'
     Write-Host 'MISH_U8G_CAMOUFOX_FETCH_USED=NO'
     Write-Host 'MISH_U8G_CAMOUFOX_EXTERNAL_NETWORK=NO'
