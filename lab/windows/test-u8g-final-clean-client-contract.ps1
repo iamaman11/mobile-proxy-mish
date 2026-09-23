@@ -51,7 +51,13 @@ foreach ($required in @(
     'stage',
     'result["error_class"] = type(exc).__name__',
     'result["error_category"] = classify_error(exc)',
+    'result["error_code"] = extract_error_code(exc)',
     'def classify_error(exc):',
+    'def extract_error_code(exc):',
+    'NS_ERROR',
+    'SEC_ERROR',
+    'MOZILLA_PKIX_ERROR',
+    'ERR',
     'PROXY_AUTH',
     'PROXY_CONNECT',
     'TIMEOUT',
@@ -97,7 +103,8 @@ foreach ($forbidden in @(
     'str(exc)',
     'repr(exc)',
     'print(message)',
-    'error_message'
+    'error_message',
+    'exception_text'
 )) {
     if ($probe.Contains($forbidden)) {
         throw "Final U8-G clean-client probe contains forbidden duplicate/workaround path: $forbidden"
