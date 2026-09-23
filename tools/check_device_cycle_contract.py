@@ -39,17 +39,6 @@ def main() -> None:
         "Device Cycle summary must remain valid PowerShell without a trailing array comma",
     )
 
-    forbid(
-        workflow,
-        "u8g_final_clean_client",
-        "external Camoufox acceptance must remain outside the Android Device Cycle boundary",
-    )
-    forbid(
-        workflow,
-        "diagnose-u8g-final-clean-client.ps1",
-        "external Camoufox acceptance must not execute inside Device Cycle",
-    )
-
     for required in (
         "workflow_dispatch:",
         "issue_comment:",
@@ -75,7 +64,7 @@ def main() -> None:
         "candidate build is not a completed successful PR preflight",
         "PR Validation + PRODUCT Candidate",
         "probe_only supports only the current-function loopback_connect probe",
-        "full accepts only none, capacity_resources, recovery_lifecycle, dns_lifetime_live, u5_rotation, u7_runtime_restart_resources, u7_512_lifecycle_stability, u8_reboot_install_durability, u8_public_egress_rotation, u8_remote_control, or u8_durability_soak",
+        "full accepts only none, capacity_resources, recovery_lifecycle, dns_lifetime_live, u5_rotation, u7_runtime_restart_resources, u7_512_lifecycle_stability, u8_reboot_install_durability, u8_public_egress_rotation, u8_remote_control, u8_durability_soak, or u8g_final_clean_client",
         "install_only/diagnose_only require probe=none",
         "capacity_resources",
         "recovery_lifecycle",
@@ -87,6 +76,9 @@ def main() -> None:
         "u8_public_egress_rotation",
         "u8_remote_control",
         "u8_durability_soak",
+        "u8g_final_clean_client",
+        "Explicit U8-G final clean-client privacy acceptance",
+        "diagnose-u8g-final-clean-client.ps1",
         "U8-E authenticated remote rotation",
         "diagnose-u8-remote-control.ps1",
         "environment: cloudflare-control",
@@ -774,7 +766,9 @@ def main() -> None:
         "u7_runtime_restart_resources",
         "u7_512_lifecycle_stability",
         "u8_durability_soak",
+        "u8g_final_clean_client",
         "FULL_BASELINE_PLUS_U8_DURABILITY_SOAK",
+        "FULL_BASELINE_PLUS_U8G_FINAL_CLEAN_CLIENT",
         "FULL_BASELINE_PLUS_DNS_LIFETIME_OBSERVATION",
         "FULL_BASELINE_PLUS_U5_ROTATION",
         "FULL_BASELINE_PLUS_U7_RUNTIME_RESTART_RESOURCES",

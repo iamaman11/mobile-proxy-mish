@@ -5,6 +5,7 @@ $probePath = Join-Path $PSScriptRoot 'diagnose-u8g-final-clean-client.ps1'
 $repositoryRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..')
 $deviceCyclePath = Join-Path $repositoryRoot '.github\workflows\device-cycle.yml'
 $retiredWorkflowPath = Join-Path $repositoryRoot '.github\workflows\u8g-final-clean-client.yml'
+$cycleReportPath = Join-Path $PSScriptRoot 'new-device-cycle-report.ps1'
 
 $tokens = $null
 $errors = $null
@@ -34,9 +35,6 @@ foreach ($required in @(
     'Open-MishExternalProxyCredentialLease',
     'u8g-camoufox-toolchain.json',
     'headless=False',
-    '[Environment]::UserInteractive',
-    '[Diagnostics.Process]::GetCurrentProcess().SessionId',
-    "browser_mode = 'headful'",
     '$script:PublicIpUrls',
     'Invoke-MishPublicIpPair',
     'Get-MishBrowserEgressClassification',
@@ -45,6 +43,7 @@ foreach ($required in @(
     'AMBIGUOUS_PROXY_EQUALS_HOST',
     'matches_expected_proxy_egress',
     'matches_host_default_egress',
+    'NT AUTHORITY\NETWORK SERVICE',
     'proxy_mode = ''HTTP_CONNECT''',
     'network.trr.mode',
     'network.dns.disablePrefetch',
@@ -128,8 +127,7 @@ foreach ($forbidden in @(
     'request.url',
     'error_message',
     'headless=True',
-    'NT AUTHORITY\NETWORK SERVICE',
-    'DESKTOP-0E1F6UQ\Bose'
+    'INTERACTIVE_CLIENT_REQUIRED'
 )) {
     if ($probe.Contains($forbidden)) {
         throw "Final U8-G clean-client probe contains forbidden duplicate/workaround path: $forbidden"
@@ -147,15 +145,37 @@ if ($probe -match '(?i)(before_ip|after_ip|raw_ip)\s*=') {
 }
 
 $deviceCycle = Get-Content -Raw -LiteralPath $deviceCyclePath
-if ($deviceCycle.Contains('u8g_final_clean_client') -or $deviceCycle.Contains('diagnose-u8g-final-clean-client.ps1')) {
-    throw 'U8-G Camoufox acceptance must remain outside the Android Device Cycle execution boundary.'
+foreach ($required in @(
+    'u8g_final_clean_client',
+    "needs.resolve.outputs.mode == 'full'",
+    "needs.resolve.outputs.probe == 'u8g_final_clean_client'",
+    'diagnose-u8g-final-clean-client.ps1',
+    '-EvidencePath "$env:RUNNER_TEMP\\mish-targeted-probe-v1.json"',
+    '/mish-cycle <PR> <PRODUCT_SHA> <mode> <probe>',
+    'runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]'
+)) {
+    if (-not $deviceCycle.Contains($required)) {
+        throw "Device Cycle lost U8-G final clean-client ownership contract: $required"
+    }
 }
+
 if (Test-Path -LiteralPath $retiredWorkflowPath -PathType Leaf) {
-    throw 'U8-G final clean-client acceptance must not recreate a standalone self-hosted physical workflow.'
+    throw 'U8-G final clean-client acceptance must not have a second standalone physical workflow.'
 }
 if ($deviceCycle.Contains('/mish-u8g-final-acceptance')) {
     throw 'Retired standalone U8-G trigger must not survive in Device Cycle.'
 }
+
+$cycleReport = Get-Content -Raw -LiteralPath $cycleReportPath
+foreach ($required in @(
+    "'u8g_final_clean_client'",
+    'FULL_BASELINE_PLUS_U8G_FINAL_CLEAN_CLIENT'
+)) {
+    if (-not $cycleReport.Contains($required)) {
+        throw "Device Cycle report lost U8-G probe classification contract: $required"
+    }
+}
+
 $preflight = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'diagnose-u8-external-privacy-preflight.ps1')
 foreach ($required in @(
     'u8g-camoufox-toolchain.json',
