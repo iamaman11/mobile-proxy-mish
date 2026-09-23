@@ -548,13 +548,13 @@ U8-B reboot + replacement-install                   COMPLETE
 U8-C root-shell death/replacement                    COMPLETE
 U8-D public Cellular egress IP rotation proof       COMPLETE
 U8-E authenticated remote IP-rotation command       COMPLETE / PASS
-U8-F low-impact durability soak
+U8-F low-impact durability soak                      COMPLETE / PASS
      + reverse-WSS reconnect/heartbeat/traffic/resource budget
      + Mesh peer liveness
      + one long-lived proxy CONNECT/WebSocket lifetime probe
      + controlled Android process/service-death recovery proof
      + bounded latency/error/resource evidence
-U8-G external privacy/path closure #315
+U8-G external privacy/path closure #315              CURRENT
      + clean intended Windows client profile
      + DNS no-bypass proof
      + short final external regression across rotation
@@ -714,6 +714,25 @@ Soak proves lifetime/leak behavior, not throughput:
 - the process-death proof must reuse the existing foreground-Service/platform lifecycle; no watchdog process, second scheduler, root daemon or alternate lifecycle owner;
 - summarized latency/error/resource evidence;
 - no repeated 512-session stress unless a concrete new durability failure requires it.
+
+### U8-F accepted evidence
+
+Canonical physical acceptance:
+- PRODUCT `94a9f4993b524b0388f0e2216e9e78183c8a3a4f`;
+- CONTROL `f5f3b84ba3754a5591950e26da67914d6cd799a6`;
+- Device Cycle #683 / run `35804498003` = `U8_DURABILITY_SOAK_PASS`;
+- exact candidate acceptance PASS with post-merge PRODUCT identity exact-match proof;
+- one authenticated Mesh HTTP CONNECT/TLS session remained application-live for 14 pulses over the bounded soak;
+- reverse control remained READY with reconnect delta 0 and application heartbeat count 0;
+- control application TEXT payload did not grow during the idle soak; evidence deliberately does not claim TLS/IP wire bytes;
+- sole Tokio executor tasks stayed at 2; threads stayed within 24-25;
+- FD count returned to baseline after the long-lived proxy session (125 -> 129 active -> 125);
+- RSS/PSS were recorded as observational only and were not converted into a leak claim from one bounded run;
+- controlled Android process death produced a fresh PID `32210 -> 5560`, recovered to READY in 11894 ms without explicit Activity launch or user recovery action, preserved credential version, restored control READY and passed loopback + Mesh proxy E2E;
+- no 512-session stress was repeated;
+- evidence artifact `10726874501`, digest `sha256:8ee59911499d0a1d1c2b786d29d98491021d7db82b461a9d79254ffd296bc69d`.
+
+U8-F is closed. Its lifetime/soak evidence is reused by U8-G and must not be duplicated.
 
 ### U8-G — external privacy/path closure
 
