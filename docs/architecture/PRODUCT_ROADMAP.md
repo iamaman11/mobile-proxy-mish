@@ -547,7 +547,7 @@ U8-A inventory                                      COMPLETE
 U8-B reboot + replacement-install                   COMPLETE
 U8-C root-shell death/replacement                    COMPLETE
 U8-D public Cellular egress IP rotation proof       COMPLETE
-U8-E authenticated remote IP-rotation command       IN FINAL ACCEPTANCE
+U8-E authenticated remote IP-rotation command       COMPLETE / PASS
 U8-F low-impact durability soak
      + reverse-WSS reconnect/heartbeat/traffic/resource budget
      + Mesh peer liveness
@@ -664,6 +664,30 @@ U8-E v1 concrete identity/transport decision:
 Hosted contracts cover authentication, expiry/tamper/replay, idempotency, BUSY/rejection, acceptance-before-mutation, WSS loss/reconnect, deterministic terminal result, redaction, no VPC/public-listener dependency and proof that the existing Rotation owner remains the sole mutation owner.
 
 Physical E2E: invalid command -> no mutation; valid command -> operation id; WSS may disappear during rotation; reconnect; terminal `CHANGED|UNCHANGED|FAILED|REJECTED`; READY/root/Proxy/Mesh recovery; before/after public egress result; short external proxy smoke.
+
+### U8-E accepted evidence
+
+U8-E closed on PR #322, squash-merged as `a093fb5293afa94cec821170f891bfb49630d02e`.
+
+Canonical physical acceptance used exact PRODUCT `8325994be5ab8727ccf238794ef8f729923ac7bb` with CONTROL `15feab66ba14c10ca3c056f6adffa3dbdbbd6264`:
+
+- Device Cycle #680 / run `35799515235` = `U8_REMOTE_CONTROL_ROTATION_PASS`;
+- exact candidate install/provenance and installed bytes/signing identity PASS;
+- baseline READY/root/Proxy/Mesh plus loopback+Mesh E2E PASS;
+- wrong manager auth -> HTTP 401 and zero Rotation mutation;
+- authenticated malformed request -> HTTP 400 and zero Rotation mutation;
+- exactly one valid remote `ROTATE_IP` -> exactly one logical rotation request;
+- one `operation_id`, terminal `CHANGED`;
+- replay of the same `request_id` returned the same terminal operation with no second rotation;
+- post-rotation READY/root/Proxy/Mesh and loopback+Mesh E2E PASS;
+- raw public IP, manager token, private key and proxy credentials were not persisted in durable evidence.
+
+Evidence artifact: `10725073120`, digest `sha256:6e8e3891682a4ff34fa9d5a3a87afa91494559c502fa9621d8df6e70188bc1fa`.
+
+Final hosted PR head `76f768b32e9acbef38a3b5f7f4dc96952ca61c29` passed PR Validation + PRODUCT Candidate #944 / run `35800002205` and U8 Control Static #6. Commits after the physically tested PRODUCT SHA were CONTROL/LAB/docs/guard only; PRODUCT source remained unchanged.
+
+U8-E must not be rerun merely for closure. U8-F is next and remains CONTROL/LAB-first.
+
 
 Control-session efficiency is part of U8 rather than an unmeasured background cost:
 
