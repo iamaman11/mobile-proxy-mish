@@ -2167,9 +2167,14 @@ def main() -> None:
             "U8-F task telemetry must stay on the sole RuntimeExecutor",
         )
     require(
-        "crates/runtime/src/product_diagnostics.rs",
-        "pub runtime_active_tasks: u64",
-        "canonical PRODUCT diagnostics must expose the sole-executor task count",
+        "crates/runtime/src/product_runtime.rs",
+        "pub active_tasks: u64",
+        "process-wide PRODUCT runtime snapshot must expose the sole-executor task count",
+    )
+    require(
+        "crates/android-ffi/src/product_runtime_ffi.rs",
+        "runtime_active_tasks: snapshot.runtime.active_tasks",
+        "typed FFI must project task count from the process-wide runtime owner",
     )
     require(
         diagnostics_provider,
