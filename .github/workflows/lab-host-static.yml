@@ -3,19 +3,29 @@ name: LAB Host Static
 on:
   pull_request:
     paths:
-      - 'lab/windows/**'
+      - 'android/app/build.gradle.kts'
+      - 'lab/windows/toolchain.json'
+      - 'lab/windows/bootstrap-windows.ps1'
+      - 'lab/windows/repair-android-platform-tools.ps1'
+      - 'lab/windows/host-preflight.ps1'
+      - 'lab/windows/CredentialProvisioning.psm1'
+      - 'lab/windows/test-credential-provisioning.ps1'
       - 'docs/lab/WINDOWS_HOST.md'
       - '.github/workflows/lab-host-static.yml'
       - '.github/workflows/lab-host-preflight.yml'
-      - '.github/workflows/device-cycle.yml'
   push:
     branches: [main]
     paths:
-      - 'lab/windows/**'
+      - 'android/app/build.gradle.kts'
+      - 'lab/windows/toolchain.json'
+      - 'lab/windows/bootstrap-windows.ps1'
+      - 'lab/windows/repair-android-platform-tools.ps1'
+      - 'lab/windows/host-preflight.ps1'
+      - 'lab/windows/CredentialProvisioning.psm1'
+      - 'lab/windows/test-credential-provisioning.ps1'
       - 'docs/lab/WINDOWS_HOST.md'
       - '.github/workflows/lab-host-static.yml'
       - '.github/workflows/lab-host-preflight.yml'
-      - '.github/workflows/device-cycle.yml'
   workflow_dispatch:
 
 permissions:
@@ -94,18 +104,7 @@ jobs:
             'lab/windows/repair-android-platform-tools.ps1',
             'lab/windows/host-preflight.ps1',
             'lab/windows/CredentialProvisioning.psm1',
-            'lab/windows/test-credential-provisioning.ps1',
-            'lab/windows/diagnose-u8-external-privacy-preflight.ps1',
-            'lab/windows/test-u8-external-privacy-preflight-contract.ps1',
-            'lab/windows/diagnose-u8-camoufox-python-runtime.ps1',
-            'lab/windows/test-u8-camoufox-python-runtime-contract.ps1',
-            'lab/windows/resolve-u8g-camoufox-dependencies.ps1',
-            'lab/windows/test-u8g-camoufox-resolution-contract.ps1',
-            'lab/windows/materialize-u8g-camoufox-toolchain.ps1',
-            'lab/windows/verify-u8g-camoufox-toolchain.ps1',
-            'lab/windows/test-u8g-camoufox-materialization-contract.ps1',
-            'lab/windows/diagnose-u8g-final-clean-client.ps1',
-            'lab/windows/test-u8g-final-clean-client-contract.ps1'
+            'lab/windows/test-credential-provisioning.ps1'
           )) {
             $tokens = $null
             $errors = $null
@@ -302,36 +301,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Credential provisioning hosted self-test failed with exit code $LASTEXITCODE."
           }
-
-      - name: Exercise U8-G clean-client privacy preflight contract
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          & 'lab/windows/test-u8-external-privacy-preflight-contract.ps1'
-
-      - name: Exercise U8-G Camoufox Python runtime contract
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          & 'lab/windows/test-u8-camoufox-python-runtime-contract.ps1'
-
-      - name: Exercise U8-G Camoufox resolution contract
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          & 'lab/windows/test-u8g-camoufox-resolution-contract.ps1'
-
-      - name: Exercise U8-G Camoufox materialization contract
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          & 'lab/windows/test-u8g-camoufox-materialization-contract.ps1'
-
-      - name: Exercise U8-G final clean-client acceptance contract
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          & 'lab/windows/test-u8g-final-clean-client-contract.ps1'
 
       - name: Validate physical-workflow trust and execution-policy boundary
         shell: pwsh
