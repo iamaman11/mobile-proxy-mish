@@ -212,15 +212,30 @@ $edgeAvailable = Find-MishExecutable -Candidates @(
 $kameleoApiAvailable = Test-MishLocalPort -Port 5050
 
 $camoufoxAvailable = $false
-foreach ($root in @(
-    'C:\mish-lab\runner\.state',
-    (Join-Path $localAppData 'camoufox')
-)) {
-    if (-not $root -or -not (Test-Path -LiteralPath $root)) { continue }
-    $match = Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -match '(?i)camoufox' } |
-        Select-Object -First 1
-    if ($match) { $camoufoxAvailable = $true; break }
+$camoufoxManifestPath = Join-Path $PSScriptRoot 'u8g-camoufox-toolchain.json'
+if (Test-Path -LiteralPath $camoufoxManifestPath -PathType Leaf) {
+    try {
+        $camoufoxManifest = Get-Content -Raw -LiteralPath $camoufoxManifestPath | ConvertFrom-Json
+        $camoufoxRoot = [IO.Path]::GetFullPath([string]$camoufoxManifest.browser.install_root)
+        $camoufoxMarkerPath = Join-Path $camoufoxRoot '.mish-u8g-browser.json'
+        $camoufoxPropertiesPath = Join-Path $camoufoxRoot 'properties.json'
+        if (
+            (Test-Path -LiteralPath $camoufoxMarkerPath -PathType Leaf) -and
+            (Test-Path -LiteralPath $camoufoxPropertiesPath -PathType Leaf)
+        ) {
+            $camoufoxMarker = Get-Content -Raw -LiteralPath $camoufoxMarkerPath | ConvertFrom-Json
+            $camoufoxExe = Join-Path $camoufoxRoot ([string]$camoufoxMarker.executable_relative_path)
+            $camoufoxAvailable = (
+                [string]$camoufoxMarker.schema -ceq 'mish.lab.u8g-camoufox-browser/v1' -and
+                [string]$camoufoxMarker.identity_source -ceq 'official_archive_sha256' -and
+                [string]$camoufoxMarker.version -ceq [string]$camoufoxManifest.browser.version -and
+                (Test-Path -LiteralPath $camoufoxExe -PathType Leaf)
+            )
+        }
+    }
+    catch {
+        $camoufoxAvailable = $false
+    }
 }
 
 $browserFixtureAvailable = (
