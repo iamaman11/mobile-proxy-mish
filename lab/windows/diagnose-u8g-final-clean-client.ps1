@@ -552,6 +552,10 @@ $beforeA = $null
 $beforeB = $null
 $afterA = $null
 $afterB = $null
+$beforeExpected = $null
+$beforeHostDefault = $null
+$afterExpected = $null
+$afterHostDefault = $null
 
 try {
     [void](Invoke-MishExternalProxyCredentialProvisioning -AdbPath $AdbPath -PackageName $PackageName -StorePath $credentialStore)
@@ -602,12 +606,30 @@ try {
 
     $beforeDnsUrl = Select-MishCleanDnsProofUrl
     $beforeWindow = Invoke-MishDnsWindow -Toolchain $toolchain -ProxyServer $proxyServer -Lease $lease -DnsProofUrl $beforeDnsUrl -WindowName 'before'
+
+    $beforeExpected = Invoke-MishPublicIpPair `
+        -ProxyServer $proxyServer `
+        -ProxyUserName ([string]$lease.ProxyUserName) `
+        -ProxyPassword ([Security.SecureString]$lease.ProxyPassword)
+    $beforeHostDefault = Invoke-MishPublicIpPair
+    if (-not [bool]$beforeExpected.Consensus -or -not [bool]$beforeHostDefault.Consensus) {
+        Stop-MishU8GFinal 'EXTERNAL_EGRESS_REFERENCE_CONSENSUS_FAILED' 'Canonical proxy or host-default IP observers disagreed before rotation.'
+    }
+
     $beforeEgress = Invoke-MishCamoufoxWindow -Toolchain $toolchain -ProxyServer $proxyServer -ProxyUserName ([string]$lease.ProxyUserName) -ProxyPassword ([Security.SecureString]$lease.ProxyPassword) -Urls $script:EgressUrls -WindowName 'before-egress'
     $beforeA = [string]$beforeEgress.egress_a
     $beforeB = [string]$beforeEgress.egress_b
     $beforeEgressConsensus = (-not [string]::IsNullOrWhiteSpace($beforeA) -and $beforeA -ceq $beforeB)
+    $beforeClassification = Get-MishBrowserEgressClassification `
+        -BrowserAddress $beforeA `
+        -ExpectedProxyAddress ([string]$beforeExpected.First) `
+        -HostDefaultAddress ([string]$beforeHostDefault.First)
+
     if (-not [bool]$beforeWindow.ProductDnsAdvanced -or -not [bool]$beforeWindow.WindowsNoBypass) { Stop-MishU8GFinal 'DNS_NO_BYPASS_NOT_PROVEN' 'Pre-rotation clean-client DNS no-bypass contract was not proven.' }
     if (-not $beforeEgressConsensus) { Stop-MishU8GFinal 'EXTERNAL_EGRESS_CONSENSUS_FAILED' 'Independent browser egress observers disagreed before rotation.' }
+    if ([string]$beforeClassification.Classification -cne 'EXPECTED_PROXY_EGRESS') {
+        Stop-MishU8GFinal 'BROWSER_EGRESS_PATH_INVALID' ("Camoufox pre-rotation egress classification={0}." -f [string]$beforeClassification.Classification)
+    }
 
     & (Join-Path $PSScriptRoot 'diagnose-u5-rotation.ps1') -AdbPath $AdbPath -PackageName $PackageName -SuccessfulOperations 1 -SkipShutdownRestoreAfterOn -EvidencePath $rotationEvidencePath
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $rotationEvidencePath -PathType Leaf)) { Stop-MishU8GFinal 'ROTATION_FAILED' 'Existing PRODUCT rotation owner did not produce bounded evidence.' }
@@ -621,16 +643,35 @@ try {
     $beforeDnsHost = ([Uri]$beforeDnsUrl).DnsSafeHost
     $afterDnsUrl = Select-MishCleanDnsProofUrl -ExcludeHost $beforeDnsHost
     $afterWindow = Invoke-MishDnsWindow -Toolchain $toolchain -ProxyServer $proxyServer -Lease $lease -DnsProofUrl $afterDnsUrl -WindowName 'after'
+
+    $afterExpected = Invoke-MishPublicIpPair `
+        -ProxyServer $proxyServer `
+        -ProxyUserName ([string]$lease.ProxyUserName) `
+        -ProxyPassword ([Security.SecureString]$lease.ProxyPassword)
+    $afterHostDefault = Invoke-MishPublicIpPair
+    if (-not [bool]$afterExpected.Consensus -or -not [bool]$afterHostDefault.Consensus) {
+        Stop-MishU8GFinal 'EXTERNAL_EGRESS_REFERENCE_CONSENSUS_FAILED' 'Canonical proxy or host-default IP observers disagreed after rotation.'
+    }
+
     $afterEgress = Invoke-MishCamoufoxWindow -Toolchain $toolchain -ProxyServer $proxyServer -ProxyUserName ([string]$lease.ProxyUserName) -ProxyPassword ([Security.SecureString]$lease.ProxyPassword) -Urls $script:EgressUrls -WindowName 'after-egress'
     $afterA = [string]$afterEgress.egress_a
     $afterB = [string]$afterEgress.egress_b
     $afterEgressConsensus = (-not [string]::IsNullOrWhiteSpace($afterA) -and $afterA -ceq $afterB)
+    $afterClassification = Get-MishBrowserEgressClassification `
+        -BrowserAddress $afterA `
+        -ExpectedProxyAddress ([string]$afterExpected.First) `
+        -HostDefaultAddress ([string]$afterHostDefault.First)
+
     if (-not [bool]$afterWindow.ProductDnsAdvanced -or -not [bool]$afterWindow.WindowsNoBypass) { Stop-MishU8GFinal 'DNS_NO_BYPASS_NOT_PROVEN' 'Post-rotation clean-client DNS no-bypass contract was not proven.' }
     if (-not $afterEgressConsensus) { Stop-MishU8GFinal 'EXTERNAL_EGRESS_CONSENSUS_FAILED' 'Independent browser egress observers disagreed after rotation.' }
+    if ([string]$afterClassification.Classification -cne 'EXPECTED_PROXY_EGRESS') {
+        Stop-MishU8GFinal 'BROWSER_EGRESS_PATH_INVALID' ("Camoufox post-rotation egress classification={0}." -f [string]$afterClassification.Classification)
+    }
 
-    $externalOutcome = if ($beforeA -cne $afterA) { 'CHANGED' } else { 'UNCHANGED' }
-    $rotationConsensus = $terminal -ceq $externalOutcome
-    if (-not $rotationConsensus) { Stop-MishU8GFinal 'ROTATION_EXTERNAL_EGRESS_MISMATCH' 'Browser-observed egress disagreed with PRODUCT rotation terminal result.' }
+    $externalOutcome = if ([string]$beforeExpected.First -cne [string]$afterExpected.First) { 'CHANGED' } else { 'UNCHANGED' }
+    $browserExternalOutcome = if ($beforeA -cne $afterA) { 'CHANGED' } else { 'UNCHANGED' }
+    $rotationConsensus = ($terminal -ceq $externalOutcome -and $terminal -ceq $browserExternalOutcome)
+    if (-not $rotationConsensus) { Stop-MishU8GFinal 'ROTATION_EXTERNAL_EGRESS_MISMATCH' 'Canonical proxy and Camoufox egress outcomes disagree with PRODUCT rotation terminal result.' }
 
     $postSnapshot = Read-MishProductSnapshot
     if (-not (Test-MishProductReady -Snapshot $postSnapshot)) { Stop-MishU8GFinal 'PRODUCT_NOT_READY' 'PRODUCT did not finish final U8-G acceptance in READY state.' }
@@ -673,13 +714,18 @@ try {
             no_bypass = [bool]$beforeWindow.WindowsNoBypass
         }
         egress_before_rotation = [ordered]@{
-            independent_observers_agree = $beforeEgressConsensus
-            classification = 'EXPECTED_PROXY_EGRESS'
+            browser_observers_agree = $beforeEgressConsensus
+            canonical_proxy_observers_agree = [bool]$beforeExpected.Consensus
+            host_default_observers_agree = [bool]$beforeHostDefault.Consensus
+            matches_expected_proxy_egress = [bool]$beforeClassification.MatchesExpectedProxy
+            matches_host_default_egress = [bool]$beforeClassification.MatchesHostDefault
+            classification = [string]$beforeClassification.Classification
         }
         rotation = [ordered]@{
             operation_id = [int64]$operation.operation_id
             terminal_result = $terminal
-            external_outcome = $externalOutcome
+            canonical_proxy_external_outcome = $externalOutcome
+            browser_external_outcome = $browserExternalOutcome
             observer_consensus = $rotationConsensus
             requests = 1
         }
@@ -692,8 +738,12 @@ try {
             no_bypass = [bool]$afterWindow.WindowsNoBypass
         }
         egress_after_rotation = [ordered]@{
-            independent_observers_agree = $afterEgressConsensus
-            classification = 'EXPECTED_PROXY_EGRESS'
+            browser_observers_agree = $afterEgressConsensus
+            canonical_proxy_observers_agree = [bool]$afterExpected.Consensus
+            host_default_observers_agree = [bool]$afterHostDefault.Consensus
+            matches_expected_proxy_egress = [bool]$afterClassification.MatchesExpectedProxy
+            matches_host_default_egress = [bool]$afterClassification.MatchesHostDefault
+            classification = [string]$afterClassification.Classification
         }
         post_state = [ordered]@{
             ready = $true
@@ -732,6 +782,10 @@ finally {
     $beforeB = $null
     $afterA = $null
     $afterB = $null
+    $beforeExpected = $null
+    $beforeHostDefault = $null
+    $afterExpected = $null
+    $afterHostDefault = $null
     $lease = $null
     if (Test-Path -LiteralPath $credentialStore -PathType Leaf) { Remove-Item -LiteralPath $credentialStore -Force -ErrorAction SilentlyContinue }
     if (Test-Path -LiteralPath $rotationEvidencePath -PathType Leaf) { Remove-Item -LiteralPath $rotationEvidencePath -Force -ErrorAction SilentlyContinue }
