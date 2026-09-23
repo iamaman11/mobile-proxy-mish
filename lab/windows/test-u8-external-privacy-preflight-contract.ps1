@@ -33,6 +33,9 @@ foreach ($required in @(
     'non_warp_tunnel_adapter_count',
     'raw_dns_servers_persisted = $false',
     'camoufox_available',
+    'u8g-camoufox-toolchain.json',
+    '.mish-u8g-browser.json',
+    'official_archive_sha256',
     'kameleo_local_api_available',
     'firefox_available',
     'browser_profile_changed = $false',
@@ -45,6 +48,7 @@ foreach ($required in @(
 }
 
 foreach ($forbidden in @(
+    "'C:\\mish-lab\\runner\\.state'",
     'Stop-Process',
     'taskkill',
     'Disable-NetAdapter',

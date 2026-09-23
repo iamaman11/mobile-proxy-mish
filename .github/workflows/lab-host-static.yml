@@ -101,7 +101,9 @@ jobs:
             'lab/windows/test-u8g-camoufox-resolution-contract.ps1',
             'lab/windows/materialize-u8g-camoufox-toolchain.ps1',
             'lab/windows/verify-u8g-camoufox-toolchain.ps1',
-            'lab/windows/test-u8g-camoufox-materialization-contract.ps1'
+            'lab/windows/test-u8g-camoufox-materialization-contract.ps1',
+            'lab/windows/diagnose-u8g-final-clean-client.ps1',
+            'lab/windows/test-u8g-final-clean-client-contract.ps1'
           )) {
             $tokens = $null
             $errors = $null
@@ -322,6 +324,12 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           & 'lab/windows/test-u8g-camoufox-materialization-contract.ps1'
+
+      - name: Exercise U8-G final clean-client acceptance contract
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & 'lab/windows/test-u8g-final-clean-client-contract.ps1'
 
       - name: Validate physical-workflow trust and execution-policy boundary
         shell: pwsh

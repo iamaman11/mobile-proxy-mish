@@ -1,0 +1,72 @@
+name: U8-G Final Clean Client Acceptance
+
+on:
+  workflow_dispatch:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: u8g-final-clean-client
+  cancel-in-progress: false
+
+jobs:
+  acceptance:
+    name: U8-G final DNS no-bypass acceptance
+    if: >-
+      ${{ (github.event_name == 'workflow_dispatch' &&
+            github.ref == 'refs/heads/main' &&
+            github.ref_protected == true) ||
+          (github.event_name == 'issue_comment' &&
+           github.actor == 'iamaman11' &&
+           github.event.issue.number == 315 &&
+           github.event.comment.body == '/mish-u8g-final-acceptance') }}
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 30
+    env:
+      LAB_POWERSHELL_EXE: C:\mish-lab\tools\powershell-7.6.6\pwsh.exe
+      ADB_EXE: C:\mish-lab\tools\android-sdk\platform-tools\adb.exe
+      PACKAGE_NAME: com.mobileproxymish.app.debug
+    steps:
+      - name: Checkout exact protected-main event SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          clean: true
+
+      - name: Verify protected-main execution boundary
+        shell: cmd
+        run: |
+          "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ^
+            "$ErrorActionPreference='Stop'; if ($env:GITHUB_REPOSITORY -ne 'iamaman11/mobile-proxy-mish') { throw 'repository identity mismatch' }; if ($env:GITHUB_REF -ne 'refs/heads/main' -or $env:GITHUB_REF_PROTECTED -ne 'true') { throw 'protected main required' }; $current=(git rev-parse HEAD).Trim(); if ($current -ne '${{ github.sha }}') { throw 'checkout SHA mismatch' }; Write-Host ('U8G_FINAL_CONTROL_SHA=' + $current)"
+          exit /b %ERRORLEVEL%
+
+      - name: Run bounded final U8-G acceptance
+        shell: cmd
+        run: |
+          "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".\lab\windows\diagnose-u8g-final-clean-client.ps1" -AdbPath "%ADB_EXE%" -PackageName "%PACKAGE_NAME%" -EvidencePath "%RUNNER_TEMP%\mish-u8g-final-clean-client-v1.json"
+          exit /b %ERRORLEVEL%
+
+      - name: Publish redacted final summary
+        if: ${{ always() }}
+        shell: cmd
+        run: |
+          if exist "%RUNNER_TEMP%\mish-u8g-final-clean-client-v1.json" (
+            "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ^
+              "$e=Get-Content -Raw -LiteralPath (Join-Path $env:RUNNER_TEMP 'mish-u8g-final-clean-client-v1.json') | ConvertFrom-Json; @('### U8-G final clean-client acceptance',('- CONTROL: ${{ github.sha }}'),('- Result: **'+[string]$e.acceptance_result+'**'),('- DNS before rotation: **'+[string]$e.dns_before_rotation.no_bypass+'**'),('- DNS after rotation: **'+[string]$e.dns_after_rotation.no_bypass+'**'),('- Wrong auth rejected: **'+[string]$e.auth.wrong_auth_rejected+'**'),('- Valid after negative: **'+[string]$e.auth.valid_after_negative+'**'),('- Rotation: **'+[string]$e.rotation.terminal_result+'** / external='+[string]$e.rotation.external_outcome),('- Egress consensus before/after: **'+[string]$e.egress_before_rotation.independent_observers_agree+' / '+[string]$e.egress_after_rotation.independent_observers_agree+'**'),('- Raw addresses persisted: **NO**')) | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_STEP_SUMMARY"
+          ) else (
+            >>"%GITHUB_STEP_SUMMARY%" echo ### U8-G final clean-client acceptance
+            >>"%GITHUB_STEP_SUMMARY%" echo - Typed evidence: **not produced**
+          )
+
+      - name: Upload redacted final evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mish-u8g-final-clean-client-${{ github.sha }}
+          path: ${{ runner.temp }}\mish-u8g-final-clean-client-v1.json
+          if-no-files-found: warn
+          retention-days: 30
