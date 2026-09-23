@@ -297,9 +297,6 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           & 'lab/windows/test-u8-external-privacy-preflight-contract.ps1'
-          if ($LASTEXITCODE -ne 0) {
-            throw "U8-G privacy preflight hosted contract failed with exit code $LASTEXITCODE."
-          }
 
       - name: Validate physical-workflow trust and execution-policy boundary
         shell: pwsh
