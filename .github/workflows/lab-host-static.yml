@@ -92,7 +92,9 @@ jobs:
             'lab/windows/repair-android-platform-tools.ps1',
             'lab/windows/host-preflight.ps1',
             'lab/windows/CredentialProvisioning.psm1',
-            'lab/windows/test-credential-provisioning.ps1'
+            'lab/windows/test-credential-provisioning.ps1',
+            'lab/windows/diagnose-u8-external-privacy-preflight.ps1',
+            'lab/windows/test-u8-external-privacy-preflight-contract.ps1'
           )) {
             $tokens = $null
             $errors = $null
@@ -288,6 +290,15 @@ jobs:
           & 'lab/windows/test-credential-provisioning.ps1'
           if ($LASTEXITCODE -ne 0) {
             throw "Credential provisioning hosted self-test failed with exit code $LASTEXITCODE."
+          }
+
+      - name: Exercise U8-G clean-client privacy preflight contract
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & 'lab/windows/test-u8-external-privacy-preflight-contract.ps1'
+          if ($LASTEXITCODE -ne 0) {
+            throw "U8-G privacy preflight hosted contract failed with exit code $LASTEXITCODE."
           }
 
       - name: Validate physical-workflow trust and execution-policy boundary
