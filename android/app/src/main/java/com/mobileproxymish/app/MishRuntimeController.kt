@@ -4,8 +4,10 @@ import android.content.Context
 import android.content.pm.ApplicationInfo
 import com.mobileproxymish.app.cellular.CellularRuntimeBridge
 import com.mobileproxymish.app.cellular.CellularRuntimeSnapshot
+import com.mobileproxymish.ffi.ControlRuntimeSnapshotView
 import com.mobileproxymish.ffi.MeshAdmissionView
 import com.mobileproxymish.ffi.NativeCellularRequestRearmEffect
+import com.mobileproxymish.ffi.NativeControlAuthSigner
 import com.mobileproxymish.ffi.NativeMeshRuntimeObserver
 import com.mobileproxymish.ffi.NativeProductRuntime
 import com.mobileproxymish.ffi.ProductDiagnosticSnapshotView
@@ -42,6 +44,17 @@ class MishRuntimeController internal constructor(
     private val cellularRuntime = CellularRuntimeBridge(appContext, productRuntime)
     private val proxyRuntime = ProxyRuntimeSupervisor(productRuntime)
     private val meshRuntime = MeshIngressRuntimeBridge(appContext, productRuntime)
+    private val controlIdentity = AndroidControlIdentity()
+    private val cellularRequestRearmEffect = object : NativeCellularRequestRearmEffect {
+        override fun rearmCellularRequest(): Boolean = cellularRuntime.rearmNetworkRequest()
+    }
+    private val controlAuthSigner = object : NativeControlAuthSigner {
+        override fun signControlAuth(payload: ByteArray): ByteArray =
+            runCatching { controlIdentity.sign(payload) }.getOrElse { byteArrayOf() }
+    }
+
+    @Volatile
+    private var controlDeviceId: String? = null
     private val mutableReadiness = MutableStateFlow(productRuntime.readinessSnapshot())
     private val mutableMesh = MutableStateFlow(
         runCatching { productRuntime.meshAdmissionSnapshot() }.getOrNull(),
@@ -101,6 +114,15 @@ class MishRuntimeController internal constructor(
     internal fun currentExternalCredentialProvisioningSnapshot(): ExternalProxyCredentialSnapshot? =
         externalCredentialStore.currentProvisioningSnapshot()
 
+    /** DUMP-only public identity projection for one-time control-backend enrollment. */
+    internal fun currentControlIdentityProvisioningSnapshot(): ControlIdentityProvisioningSnapshot? {
+        val deviceId = controlDeviceId ?: return null
+        val spki = runCatching { controlIdentity.publicKeySpki() }.getOrNull() ?: return null
+        return ControlIdentityProvisioningSnapshot(deviceId, spki)
+    }
+
+    internal fun controlSnapshot(): ControlRuntimeSnapshotView = productRuntime.controlSnapshot()
+
     /** Explicit sensitive user read. It never rotates, provisions or restarts the runtime. */
     internal fun revealCurrentExternalCredential(): ExternalProxyCredentialSnapshot? =
         externalCredentialStore.revealCurrentCredential()
@@ -114,12 +136,7 @@ class MishRuntimeController internal constructor(
 
     /** Thin PRODUCT command seam. Rust owns the operation, sequencing, effects and result. */
     internal fun startPublicIpRotation(): ULong =
-        productRuntime.startPublicIpRotation(
-            object : NativeCellularRequestRearmEffect {
-                override fun rearmCellularRequest(): Boolean =
-                    cellularRuntime.rearmNetworkRequest()
-            },
-        )
+        productRuntime.startPublicIpRotation(cellularRequestRearmEffect)
 
     val isRunning: Boolean
         get() = productRuntime.runtimeLifecycleSnapshot().state != RuntimeLifecycleState.STOPPED
@@ -138,6 +155,7 @@ class MishRuntimeController internal constructor(
         try {
             cellularRuntime.start()
             meshRuntime.start()
+            startRemoteControlBestEffort()
             true
         } catch (_: Exception) {
             runCatching(meshRuntime::stop)
@@ -145,6 +163,18 @@ class MishRuntimeController internal constructor(
             runCatching { productRuntime.stopRuntime() }
             false
         }
+    }
+
+    private fun startRemoteControlBestEffort() {
+        val spki = runCatching { controlIdentity.publicKeySpki() }.getOrNull() ?: return
+        val deviceId = runCatching {
+            productRuntime.startRemoteControl(
+                spki,
+                controlAuthSigner,
+                cellularRequestRearmEffect,
+            )
+        }.getOrNull() ?: return
+        controlDeviceId = deviceId
     }
 
     fun stop(): Boolean = synchronized(platformEffectsLock) {

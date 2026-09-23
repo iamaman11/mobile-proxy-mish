@@ -66,6 +66,7 @@ struct RotationRuntimeState {
     cancel: Option<Arc<Notify>>,
     tasks: Vec<JoinHandle<()>>,
     observer: Option<RotationObserver>,
+    internal_observers: Vec<RotationObserver>,
     closed: bool,
 }
 
@@ -100,6 +101,7 @@ impl RotationRuntimeCoordinator {
                 cancel: None,
                 tasks: Vec::new(),
                 observer: None,
+                internal_observers: Vec::new(),
                 closed: false,
             }),
         });
@@ -144,7 +146,36 @@ impl RotationRuntimeCoordinator {
         notify(Some((observer, snapshot)));
     }
 
+    /// Internal native composition subscribers do not displace the Android projection observer.
+    pub fn add_internal_observer(&self, observer: RotationObserver) {
+        let snapshot = {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            state.internal_observers.push(Arc::clone(&observer));
+            state.machine.snapshot()
+        };
+        notify(Some((observer, snapshot)));
+    }
+
     pub fn start(
+        self: &Arc<Self>,
+        cellular_request_rearm: Arc<dyn CellularRequestRearmEffect>,
+    ) -> Result<u64, RotationRuntimeStartError> {
+        let operation_id = self.prepare(cellular_request_rearm)?;
+        if let Err(error) = self.activate_prepared(operation_id) {
+            self.fail_prepared_before_mutation(operation_id);
+            return Err(error);
+        }
+        Ok(operation_id)
+    }
+
+    /// Reserves exactly one operation id after all PRODUCT preconditions have been validated.
+    ///
+    /// No timer, public-IP probe, airplane mutation or recovery task is started here. This narrow
+    /// two-phase seam exists so a remote controller can durably observe ACCEPTED(operation_id)
+    /// before the existing Rotation owner is allowed to begin the disruptive operation.
+    pub fn prepare(
         self: &Arc<Self>,
         cellular_request_rearm: Arc<dyn CellularRequestRearmEffect>,
     ) -> Result<u64, RotationRuntimeStartError> {
@@ -171,34 +202,95 @@ impl RotationRuntimeCoordinator {
             .credential_guard()
             .ok_or(RotationRuntimeStartError::CredentialUnavailable)?;
 
-        let (operation_id, snapshot, cancel, deadline) = {
+        let mut state = self
+            .state_mut()
+            .map_err(|_| RotationRuntimeStartError::StateUnavailable)?;
+        if state.closed {
+            return Err(RotationRuntimeStartError::StateUnavailable);
+        }
+        let operation_id = state
+            .machine
+            .start(before_generation)
+            .map_err(map_start_error)?;
+        state.deadline = None;
+        state.credential_guard = Some(credential_guard);
+        state.cellular_request_rearm = Some((operation_id, cellular_request_rearm));
+        state.claimed.clear();
+        state.cancel = None;
+        state.tasks.retain(|task| !task.is_finished());
+        Ok(operation_id)
+    }
+
+    /// Activates one exact prepared operation. The caller must have completed any external
+    /// acceptance handshake before entering this method.
+    pub fn activate_prepared(
+        self: &Arc<Self>,
+        operation_id: u64,
+    ) -> Result<(), RotationRuntimeStartError> {
+        let (snapshot, cancel, deadline) = {
             let mut state = self
                 .state_mut()
                 .map_err(|_| RotationRuntimeStartError::StateUnavailable)?;
-            if state.closed {
+            if state.closed
+                || state.deadline.is_some()
+                || state.cancel.is_some()
+                || state.machine.snapshot().operation_id != Some(operation_id)
+                || state.machine.snapshot().phase != RotationPhase::Preparing
+            {
                 return Err(RotationRuntimeStartError::StateUnavailable);
             }
-            let operation_id = state
-                .machine
-                .start(before_generation)
-                .map_err(map_start_error)?;
             let deadline = Instant::now()
                 .checked_add(ROTATION_SAFETY_DEADLINE)
                 .ok_or(RotationRuntimeStartError::StateUnavailable)?;
             let cancel = Arc::new(Notify::new());
             state.deadline = Some((operation_id, deadline));
-            state.credential_guard = Some(credential_guard);
-            state.cellular_request_rearm = Some((operation_id, cellular_request_rearm));
-            state.claimed.clear();
             state.cancel = Some(Arc::clone(&cancel));
-            state.tasks.retain(|task| !task.is_finished());
-            (operation_id, state.machine.snapshot(), cancel, deadline)
+            (state.machine.snapshot(), cancel, deadline)
         };
 
         self.publish(snapshot);
-        self.spawn_deadline(operation_id, deadline, cancel)?;
-        self.schedule_for(snapshot)?;
-        Ok(operation_id)
+        if let Err(error) = self.spawn_deadline(operation_id, deadline, Arc::clone(&cancel)) {
+            self.fail_prepared_before_mutation(operation_id);
+            return Err(error);
+        }
+        if let Err(error) = self.schedule_for(snapshot) {
+            self.fail_prepared_before_mutation(operation_id);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Fails one reserved-but-not-yet-mutating operation. This never replays or starts a radio
+    /// effect and is safe after a failed remote ACCEPTED write.
+    pub fn fail_prepared_before_mutation(&self, operation_id: u64) -> bool {
+        let (cancel, snapshot) = {
+            let Ok(mut state) = self.state.lock() else {
+                return false;
+            };
+            let current = state.machine.snapshot();
+            if current.operation_id != Some(operation_id)
+                || current.phase != RotationPhase::Preparing
+            {
+                return false;
+            }
+            let snapshot = match state
+                .machine
+                .fail(operation_id, RotationFailure::StateUnavailable)
+            {
+                Ok(snapshot) => snapshot,
+                Err(_) => return false,
+            };
+            state.deadline = None;
+            state.credential_guard = None;
+            state.cellular_request_rearm = None;
+            state.claimed.clear();
+            (state.cancel.take(), snapshot)
+        };
+        if let Some(cancel) = cancel {
+            cancel.notify_waiters();
+        }
+        self.publish(snapshot);
+        true
     }
 
     pub fn observe_cellular(self: &Arc<Self>, admission: CellularAdmissionSnapshot) {
@@ -791,12 +883,15 @@ impl RotationRuntimeCoordinator {
     }
 
     fn publish(&self, snapshot: RotationSnapshot) {
-        let observer = self
+        let (observer, internal) = self
             .state
             .lock()
-            .ok()
-            .and_then(|state| state.observer.clone());
+            .map(|state| (state.observer.clone(), state.internal_observers.clone()))
+            .unwrap_or((None, Vec::new()));
         notify(observer.map(|observer| (observer, snapshot)));
+        for observer in internal {
+            notify(Some((observer, snapshot)));
+        }
     }
 
     fn state(&self) -> Result<MutexGuard<'_, RotationRuntimeState>, ()> {
@@ -925,6 +1020,7 @@ mod tests {
                 cancel: None,
                 tasks: Vec::new(),
                 observer: None,
+                internal_observers: Vec::new(),
                 closed: false,
             },
             operation_id,
