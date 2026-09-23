@@ -49,7 +49,7 @@ foreach ($required in @(
     'proxy_credentials_persisted = $false',
     'error_class',
     'stage',
-    "result[\"error_class\"] = type(exc).__name__",
+    'result["error_class"] = type(exc).__name__',
     'MISH_U8G_FINAL_DNS_NO_BYPASS=PASS',
     'MISH_U8G_FINAL_RAW_ADDRESSES_PERSISTED=NO'
 )) {
