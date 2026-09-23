@@ -1,0 +1,46 @@
+name: U8 Camoufox Toolchain Verify
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: u8-camoufox-toolchain-verify
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: U8-G LAB-owned Camoufox toolchain verify
+    if: >-
+      ${{ github.actor == 'iamaman11' &&
+          github.event.issue.number == 315 &&
+          github.event.comment.body == '/mish-u8g-camoufox-verify' }}
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 20
+    env:
+      LAB_POWERSHELL_EXE: C:\mish-lab\tools\powershell-7.6.6\pwsh.exe
+    steps:
+      - name: Checkout exact protected-main event SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          clean: true
+
+      - name: Verify LAB-owned Camoufox under NetworkService
+        shell: cmd
+        run: |
+          "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".\lab\windows\verify-u8g-camoufox-toolchain.ps1" -RepositoryRoot "%GITHUB_WORKSPACE%" -EvidencePath "%RUNNER_TEMP%\mish-u8g-camoufox-toolchain-verify-v1.json"
+          exit /b %ERRORLEVEL%
+
+      - name: Upload redacted verification evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mish-u8g-camoufox-toolchain-verify-${{ github.sha }}
+          path: ${{ runner.temp }}\mish-u8g-camoufox-toolchain-verify-v1.json
+          if-no-files-found: warn
+          retention-days: 30
