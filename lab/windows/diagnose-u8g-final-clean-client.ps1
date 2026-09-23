@@ -212,6 +212,7 @@ function Invoke-MishCamoufoxWindow {
 import ipaddress
 import json
 import os
+import re
 import sys
 from camoufox.sync_api import Camoufox
 
@@ -230,10 +231,22 @@ prefs = {
     "network.http.speculative-parallel-limit": 0,
     "network.http.http3.enable": False,
 }
+def classify_error(exc):
+    text = str(exc)
+    match = re.search(r"\b(?:NS_ERROR|SEC_ERROR|MOZILLA_PKIX_ERROR|ERR)_[A-Z0-9_]+\b", text)
+    if match:
+        return match.group(0)
+    if "Timeout" in type(exc).__name__ or "timeout" in text.lower():
+        return "TIMEOUT"
+    if "Target page, context or browser has been closed" in text:
+        return "BROWSER_CLOSED"
+    return "UNCLASSIFIED"
+
 result = {
     "result": "FAIL",
     "stage": "LAUNCH",
     "error_class": None,
+    "error_code": None,
     "navigation_pass": False,
     "statuses": [],
     "egress_a": None,
@@ -272,6 +285,7 @@ try:
         result["navigation_pass"] = True
 except BaseException as exc:
     result["error_class"] = type(exc).__name__
+    result["error_code"] = classify_error(exc)
 print(json.dumps(result, separators=(",", ":")))
 if result["result"] != "PASS":
     sys.exit(20)
@@ -304,8 +318,9 @@ if result["result"] != "PASS":
         if ($pythonExitCode -ne 0 -or [string]$parsed.result -cne 'PASS' -or -not [bool]$parsed.navigation_pass) {
             $stage = if ([string]::IsNullOrWhiteSpace([string]$parsed.stage)) { 'UNKNOWN' } else { [string]$parsed.stage }
             $errorClass = if ([string]::IsNullOrWhiteSpace([string]$parsed.error_class)) { 'UNKNOWN' } else { [string]$parsed.error_class }
-            Stop-MishU8GFinal 'CAMOUFOX_EXTERNAL_NAVIGATION_FAILED' ("Camoufox {0} failed at stage={1}; error_class={2}; exit_code={3}" -f
-                $WindowName, $stage, $errorClass, $pythonExitCode)
+            $errorCode = if ([string]::IsNullOrWhiteSpace([string]$parsed.error_code)) { 'UNKNOWN' } else { [string]$parsed.error_code }
+            Stop-MishU8GFinal 'CAMOUFOX_EXTERNAL_NAVIGATION_FAILED' ("Camoufox {0} failed at stage={1}; error_class={2}; error_code={3}; exit_code={4}" -f
+                $WindowName, $stage, $errorClass, $errorCode, $pythonExitCode)
         }
         return $parsed
     }
