@@ -49,6 +49,9 @@ foreach ($required in @(
     'MISH_U8G_CAMOUFOX_FETCH_USED=NO',
     'VENV_PREEXISTING_UNTRUSTED',
     'BROWSER_MARKER_MISSING',
+    'BROWSER_PROPERTIES_MISSING',
+    "identity_source = 'official_archive_sha256'",
+    'MISH_U8G_CAMOUFOX_BROWSER_IDENTITY=OFFICIAL_ARCHIVE_SHA256',
     'AreAccessRulesProtected'
 )) {
     if (-not $materialize.Contains($required)) { throw "Camoufox materializer lost safety marker: $required" }
@@ -78,6 +81,8 @@ foreach ($required in @(
     'ff_version=152',
     'geoip=False',
     'data:text/plain,U8G',
+    "identity_source -ne 'official_archive_sha256'",
+    'MISH_U8G_CAMOUFOX_BROWSER_IDENTITY=OFFICIAL_ARCHIVE_SHA256',
     'MISH_U8G_CAMOUFOX_USER_CACHE_USED=NO',
     'MISH_U8G_CAMOUFOX_EXTERNAL_NETWORK=NO'
 )) {
@@ -98,6 +103,13 @@ foreach ($forbidden in @(
     'MISH_MANAGER_TOKEN'
 )) {
     if ($verify.Contains($forbidden)) { throw "Camoufox runner verify must remain read-only: $forbidden" }
+}
+
+if ($materialize.Contains('$finalExe --version')) {
+    throw 'Camoufox release identity must not depend on executable --version output.'
+}
+if ($verify.Contains('$browserExe --version')) {
+    throw 'Camoufox runner verification must not depend on executable --version output.'
 }
 
 Write-Host 'U8_G_CAMOUFOX_MATERIALIZATION_CONTRACT=PASS'
