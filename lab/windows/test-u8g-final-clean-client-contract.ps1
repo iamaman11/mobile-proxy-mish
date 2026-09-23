@@ -177,5 +177,14 @@ if ($preflight.Contains("'C:\mish-lab\runner\.state'")) {
     throw 'U8-G preflight must not use the retired runner-state Camoufox discovery path.'
 }
 
+$singleUrlJson = ConvertTo-Json -InputObject @('https://example.com/') -Compress
+if ($singleUrlJson -cne '["https://example.com/"]') {
+    throw "Single U8-G URL must remain a JSON array; observed: $singleUrlJson"
+}
+$singleUrlRoundTrip = $singleUrlJson | ConvertFrom-Json
+if ([string]$singleUrlRoundTrip -cne 'https://example.com/') {
+    throw 'Single U8-G URL JSON array round-trip drifted.'
+}
+
 Write-Host 'U8_G_FINAL_CLEAN_CLIENT_CONTRACT=PASS'
 exit 0
