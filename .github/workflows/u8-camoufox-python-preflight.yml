@@ -1,0 +1,46 @@
+name: U8 Camoufox Python Preflight
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: u8-camoufox-python-preflight
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: U8-G Camoufox Python runtime preflight
+    if: >-
+      ${{ github.actor == 'iamaman11' &&
+          github.event.issue.number == 315 &&
+          github.event.comment.body == '/mish-u8g-python-preflight' }}
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 15
+    env:
+      LAB_POWERSHELL_EXE: C:\mish-lab\tools\powershell-7.6.6\pwsh.exe
+    steps:
+      - name: Checkout exact protected-main event SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          clean: true
+
+      - name: Run Python runtime preflight
+        shell: cmd
+        run: |
+          "%LAB_POWERSHELL_EXE%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".\lab\windows\diagnose-u8-camoufox-python-runtime.ps1" -EvidencePath "%RUNNER_TEMP%\mish-u8g-python-runtime-preflight-v1.json"
+          exit /b %ERRORLEVEL%
+
+      - name: Upload redacted evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mish-u8g-python-runtime-preflight-${{ github.sha }}
+          path: ${{ runner.temp }}\mish-u8g-python-runtime-preflight-v1.json
+          if-no-files-found: warn
+          retention-days: 30
