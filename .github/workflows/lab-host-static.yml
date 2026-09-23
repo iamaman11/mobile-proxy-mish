@@ -97,7 +97,6 @@ jobs:
             'lab/windows/test-u8-external-privacy-preflight-contract.ps1',
             'lab/windows/diagnose-u8-camoufox-python-runtime.ps1',
             'lab/windows/test-u8-camoufox-python-runtime-contract.ps1',
-            'lab/windows/u8g-camoufox-toolchain.json',
             'lab/windows/resolve-u8g-camoufox-dependencies.ps1',
             'lab/windows/test-u8g-camoufox-resolution-contract.ps1'
           )) {
