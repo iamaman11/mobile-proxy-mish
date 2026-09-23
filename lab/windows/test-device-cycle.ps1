@@ -595,6 +595,53 @@ try {
         throw 'U8 external public-egress LAB collection failure must not reject the PRODUCT candidate.'
     }
 
+
+    $u8DurabilityPassPath = Join-Path $root 'u8-durability-soak-pass.json'
+    [ordered]@{
+        schema = 'mish.lab.u8-durability-soak/v1'
+        acceptance_result = 'PASS'
+        classification = 'U8_DURABILITY_SOAK_PASS'
+        secrets_persisted_in_evidence = $false
+        raw_public_ip_persisted = $false
+    } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 -LiteralPath $u8DurabilityPassPath
+    $u8DurabilityPass = & $reportScript -Mode full -PrNumber 331 -SourceSha ('4' * 40) -ControlSha $controlSha -DiagnosticEvidencePath $passDiagnostic -RequestedProbe u8_durability_soak -TargetedEvidencePath $u8DurabilityPassPath -OutputPath (Join-Path $root 'u8-durability-soak-pass-report.json') | Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$u8DurabilityPass.cycle_result -cne 'PASS' -or
+        [string]$u8DurabilityPass.classification -cne 'U8_DURABILITY_SOAK_PASS' -or
+        [string]$u8DurabilityPass.acceptance_scope -cne 'FULL_BASELINE_PLUS_U8_DURABILITY_SOAK' -or
+        [string]$u8DurabilityPass.exact_candidate_acceptance -cne 'PASS'
+    ) {
+        throw 'U8 durability soak PASS must require baseline + targeted physical evidence.'
+    }
+
+    $u8DurabilityProductPath = Join-Path $root 'u8-durability-soak-product-fail.json'
+    [ordered]@{
+        schema = 'mish.lab.u8-durability-soak/v1'
+        acceptance_result = 'FAIL'
+        classification = 'PRODUCT_PROCESS_DEATH_RECOVERY_TIMEOUT'
+    } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $u8DurabilityProductPath
+    $u8DurabilityProduct = & $reportScript -Mode full -PrNumber 331 -SourceSha ('5' * 40) -ControlSha $controlSha -DiagnosticEvidencePath $passDiagnostic -RequestedProbe u8_durability_soak -TargetedEvidencePath $u8DurabilityProductPath -OutputPath (Join-Path $root 'u8-durability-soak-product-report.json') | Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$u8DurabilityProduct.cycle_result -cne 'PRODUCT_FAIL' -or
+        [string]$u8DurabilityProduct.exact_candidate_acceptance -cne 'FAIL'
+    ) {
+        throw 'Observed U8 durability PRODUCT failure must reject the exact candidate.'
+    }
+
+    $u8DurabilityLabPath = Join-Path $root 'u8-durability-soak-lab-fail.json'
+    [ordered]@{
+        schema = 'mish.lab.u8-durability-soak/v1'
+        acceptance_result = 'FAIL'
+        classification = 'LAB_LONG_LIVED_FIXTURE_CLOSED'
+    } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $u8DurabilityLabPath
+    $u8DurabilityLab = & $reportScript -Mode full -PrNumber 331 -SourceSha ('6' * 40) -ControlSha $controlSha -DiagnosticEvidencePath $passDiagnostic -RequestedProbe u8_durability_soak -TargetedEvidencePath $u8DurabilityLabPath -OutputPath (Join-Path $root 'u8-durability-soak-lab-report.json') | Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$u8DurabilityLab.cycle_result -cne 'LAB_FAIL' -or
+        [string]$u8DurabilityLab.exact_candidate_acceptance -cne 'NOT_EVALUATED'
+    ) {
+        throw 'U8 durability LAB fixture failure must not reject the PRODUCT candidate.'
+    }
+
     Write-Host 'DEVICE_CYCLE_CONTRACT=PASS'
 }
 finally {
