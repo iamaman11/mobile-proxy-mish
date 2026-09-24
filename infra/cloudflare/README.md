@@ -61,6 +61,25 @@ timing.duration_ms
 
 `UNKNOWN` is reserved for transport/timeout uncertainty after the system may have accepted the command. It is deliberately non-retryable so a remote client cannot accidentally create a second rotation.
 
+The Durable Object also owns a bounded fail-closed lease for an active manager operation:
+
+```text
+DISPATCHED
+  -> RESULT                         -> terminal / release BUSY
+  -> ACCEPTED -> RESULT             -> terminal / release BUSY
+  -> no ACCEPTED for 180 s
+       -> FENCED                    # stop redelivery + close old authenticated WSS
+       -> 120 s PRODUCT drain
+       -> UNKNOWN/TIMEOUT           # release BUSY safely
+
+ACCEPTED
+  -> no RESULT for 120 s
+       -> UNKNOWN/TIMEOUT           # PRODUCT's 90 s mutation deadline has elapsed
+```
+
+The 120 s drain/result lease is the existing PRODUCT 90 s rotation safety deadline plus a 30 s control-delivery margin. A fenced request is never redelivered. A late real PRODUCT `RESULT` for a bounded `UNKNOWN` correlation is accepted, upgrades the recent correlation and receives `RESULT_ACK`. Durable Object Alarms own these deadlines so hibernation/restart cannot turn a lost terminal message into permanent `BUSY`.
+
+
 The device-side protocol is unchanged:
 
 ```text
