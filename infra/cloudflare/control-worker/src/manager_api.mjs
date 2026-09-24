@@ -101,7 +101,7 @@ export function terminalOperationPayload(operation, deviceOnline = true) {
     reason: mapped[1],
     operationId: operation.operation_id || null,
     deviceOnline,
-    dispatched: operation.operation_id !== null || operation.result !== "REJECTED",
+    dispatched: true,
     startedAtMs: operation.created_at_ms,
     completedAtMs: operation.completed_at_ms,
   });
