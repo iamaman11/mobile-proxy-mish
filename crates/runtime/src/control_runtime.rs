@@ -24,13 +24,17 @@ use tokio::sync::{Notify, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{MissedTickBehavior, interval, sleep, timeout};
 
-const CONTROL_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
-const CONTROL_AUTH_TIMEOUT: Duration = Duration::from_secs(10);
+const CONTROL_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+const CONTROL_AUTH_TIMEOUT: Duration = Duration::from_secs(3);
+const CONTROL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+// A reconnect attempt must never monopolize the public 18 s manager budget. CONTROL retries
+// continuously, so small per-attempt bounds are both safer and faster across the intentional
+// cellular outage caused by Rotation.
 const CONTROL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTROL_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(4);
 const CONTROL_HEARTBEAT_REQUEST: &str = "MISH_CONTROL_HEARTBEAT_V1";
 const CONTROL_HEARTBEAT_RESPONSE: &str = "MISH_CONTROL_HEARTBEAT_ACK_V1";
-const CONTROL_RECONNECT_DELAYS_MS: [u64; 5] = [1_000, 5_000, 15_000, 30_000, 60_000];
+const CONTROL_RECONNECT_DELAYS_MS: [u64; 5] = [500, 1_000, 2_000, 3_000, 5_000];
 const CONTROL_RECENT_TERMINAL_REQUESTS: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -857,12 +861,12 @@ mod tests {
 
     #[test]
     fn reconnect_backoff_is_bounded() {
-        assert_eq!(reconnect_delay_ms(1), 1_000);
-        assert_eq!(reconnect_delay_ms(2), 5_000);
-        assert_eq!(reconnect_delay_ms(3), 15_000);
-        assert_eq!(reconnect_delay_ms(4), 30_000);
-        assert_eq!(reconnect_delay_ms(5), 60_000);
-        assert_eq!(reconnect_delay_ms(u32::MAX), 60_000);
+        assert_eq!(reconnect_delay_ms(1), 500);
+        assert_eq!(reconnect_delay_ms(2), 1_000);
+        assert_eq!(reconnect_delay_ms(3), 2_000);
+        assert_eq!(reconnect_delay_ms(4), 3_000);
+        assert_eq!(reconnect_delay_ms(5), 5_000);
+        assert_eq!(reconnect_delay_ms(u32::MAX), 5_000);
     }
 
     #[test]
