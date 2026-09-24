@@ -320,7 +320,6 @@ def main() -> None:
     for forbidden in (
         "Instant.now(",
         "System.nanoTime(",
-        "SystemClock.elapsedRealtime(",
         "Timer(",
         "TimerTask",
         "ScheduledExecutorService",
@@ -331,6 +330,14 @@ def main() -> None:
             diagnostics_provider,
             forbidden,
             "DUMP projection must not acquire an independent operation clock, scheduler or timing model",
+        )
+    diagnostics_text = read(diagnostics_provider)
+    if diagnostics_text.count("SystemClock.elapsedRealtime()") != 1 or (
+        "val capturedElapsedMs = SystemClock.elapsedRealtime()" not in diagnostics_text
+    ):
+        raise SystemExit(
+            "architecture guard: diagnostics may use Android elapsedRealtime exactly once "
+            "for snapshot capture metadata only; operation timings must remain Rust-owned"
         )
 
     # U5 production-Kotlin boundary is global, not filename-based. New Kotlin files may not
