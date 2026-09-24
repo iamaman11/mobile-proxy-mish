@@ -131,11 +131,11 @@ jobs:
           gh api \
             "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$SOURCE_SHA&event=pull_request&status=completed&per_page=100" \
             > "$root/runs.json"
-          python3 - "$root/runs.json" "$PR_NUMBER" "$SOURCE_SHA" > "$root/gates.env" <<'PY'
+          python3 - "$root/runs.json" "$SOURCE_SHA" > "$root/gates.env" <<'PY'
           import json
           import sys
 
-          path, requested_pr, source_sha = sys.argv[1:]
+          path, source_sha = sys.argv[1:]
           payload = json.load(open(path, encoding="utf-8"))
           required = {
               "PR Validation + PRODUCT Candidate": "HOSTED_RUN_ID",
@@ -146,10 +146,9 @@ jobs:
               name = run.get("name")
               if name not in required:
                   continue
-              if run.get("head_sha") != source_sha or run.get("conclusion") != "success":
+              if run.get("event") != "pull_request":
                   continue
-              prs = {str(item.get("number")) for item in run.get("pull_requests", [])}
-              if requested_pr not in prs:
+              if run.get("head_sha") != source_sha or run.get("conclusion") != "success":
                   continue
               previous = selected.get(name)
               if previous is None or run.get("id", 0) > previous.get("id", 0):
