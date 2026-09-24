@@ -28,6 +28,15 @@ const DEVICE_CONNECT = "/v1/device/connect";
 const MANAGER_ROTATE = "/v1/rotate";
 const PRIMARY_DEVICE_OBJECT = "primary";
 
+// PRODUCT owns mutation timing. Its canonical rotation safety deadline is 90 s.
+// CONTROL adds margin for terminal delivery, and fences an unaccepted dispatch before
+// ever releasing BUSY so an old in-flight command cannot overlap a newer mutation.
+const PRODUCT_ROTATION_SAFETY_MS = 90_000;
+const CONTROL_DELIVERY_MARGIN_MS = 30_000;
+const ACCEPTED_RESULT_LEASE_MS = PRODUCT_ROTATION_SAFETY_MS + CONTROL_DELIVERY_MARGIN_MS;
+const DISPATCH_FENCE_MS = MANAGER_ROTATE_WAIT_TIMEOUT_MS;
+const FENCED_DRAIN_MS = PRODUCT_ROTATION_SAFETY_MS + CONTROL_DELIVERY_MARGIN_MS;
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -250,6 +259,11 @@ export class DeviceControl {
         authenticated: true,
         device_id: attachment.device_id,
       });
+
+      // A reconnect is also a recovery boundary for legacy/stale broker state. Do not close
+      // the newly authenticated socket while fencing: the previously authenticated socket
+      // has already been replaced above.
+      await this.reconcileActiveOperation(Date.now(), { fenceSockets: false });
       ws.send(readyMessage());
 
       const active = await this.ctx.storage.get("active_operation");
@@ -272,9 +286,28 @@ export class DeviceControl {
         ws.close(1008, "operation id changed");
         return;
       }
+
       active.operation_id = parsed.operation_id;
-      active.status = "ACCEPTED";
-      await this.ctx.storage.put("active_operation", active);
+      if (active.status === "DISPATCHED") {
+        active.status = "ACCEPTED";
+        active.accepted_at_ms = Date.now();
+        await this.ctx.storage.put("active_operation", active);
+        await this.ctx.storage.setAlarm(active.accepted_at_ms + ACCEPTED_RESULT_LEASE_MS);
+        return;
+      }
+      if (active.status === "ACCEPTED") {
+        // Duplicate ACCEPTED is idempotent and must never extend the lease.
+        await this.ctx.storage.put("active_operation", active);
+        return;
+      }
+      if (active.status === "FENCED") {
+        // The command may have crossed the wire just before fencing. Preserve its operation id
+        // but never reactivate/redeliver it; the existing drain deadline remains authoritative.
+        await this.ctx.storage.put("active_operation", active);
+        return;
+      }
+
+      ws.close(1008, "invalid active operation state");
       return;
     }
 
@@ -299,10 +332,7 @@ export class DeviceControl {
     const dispatch = await this.dispatchRotation(command.request_id);
 
     if (dispatch.kind === "TERMINAL") {
-      return managerJson(terminalOperationPayload(
-        dispatch.operation,
-        this.authenticatedSocket() !== null,
-      ));
+      return this.operationResponse(dispatch.operation);
     }
     if (dispatch.kind === "BUSY") {
       return managerJson(managerRotatePayload({
@@ -331,6 +361,8 @@ export class DeviceControl {
   }
 
   async dispatchRotation(requestId) {
+    await this.reconcileActiveOperation(Date.now(), { fenceSockets: true });
+
     const recent = (await this.ctx.storage.get("recent_operations")) || [];
     const known = recent.find((item) => item.request_id === requestId);
     if (known) return { kind: "TERMINAL", operation: known };
@@ -352,13 +384,25 @@ export class DeviceControl {
       operation_id: null,
       result: null,
       created_at_ms: Date.now(),
+      accepted_at_ms: null,
+      fenced_at_ms: null,
+      release_at_ms: null,
       completed_at_ms: null,
     };
-    await this.ctx.storage.put("active_operation", operation);
+    try {
+      await this.ctx.storage.put("active_operation", operation);
+      await this.ctx.storage.setAlarm(operation.created_at_ms + DISPATCH_FENCE_MS);
+    } catch (error) {
+      await this.ctx.storage.delete("active_operation").catch(() => {});
+      await this.ctx.storage.deleteAlarm().catch(() => {});
+      throw error;
+    }
+
     try {
       socket.send(rotateMessage(requestId));
     } catch {
       await this.ctx.storage.delete("active_operation");
+      await this.ctx.storage.deleteAlarm();
       return { kind: "DEVICE_OFFLINE" };
     }
     return { kind: "DISPATCHED", operation };
@@ -380,10 +424,7 @@ export class DeviceControl {
     const alreadyTerminal = recent.find((item) => item.request_id === requestId);
     if (alreadyTerminal) {
       this.resolveWaiters(requestId, alreadyTerminal);
-      return managerJson(terminalOperationPayload(
-        alreadyTerminal,
-        this.authenticatedSocket() !== null,
-      ));
+      return this.operationResponse(alreadyTerminal);
     }
 
     const timeoutController = new AbortController();
@@ -404,19 +445,17 @@ export class DeviceControl {
     }
 
     if (terminal) {
-      return managerJson(terminalOperationPayload(
-        terminal,
-        this.authenticatedSocket() !== null,
-      ));
+      return this.operationResponse(terminal);
     }
+
+    // The HTTP wait and the DISPATCHED fence share the same 180 s boundary. Reconcile here
+    // as well as in alarm() so a runtime-delayed alarm cannot leave an unfenced command.
+    await this.reconcileActiveOperation(Date.now(), { fenceSockets: true });
 
     const finalRecent = (await this.ctx.storage.get("recent_operations")) || [];
     const finalTerminal = finalRecent.find((item) => item.request_id === requestId);
     if (finalTerminal) {
-      return managerJson(terminalOperationPayload(
-        finalTerminal,
-        this.authenticatedSocket() !== null,
-      ));
+      return this.operationResponse(finalTerminal);
     }
 
     const active = await this.ctx.storage.get("active_operation");
@@ -436,6 +475,23 @@ export class DeviceControl {
     if (!active || active.request_id !== parsed.request_id) {
       const recent = (await this.ctx.storage.get("recent_operations")) || [];
       const known = recent.find((item) => item.request_id === parsed.request_id);
+      if (known?.result === "UNKNOWN") {
+        if (known.operation_id && parsed.operation_id &&
+            known.operation_id !== parsed.operation_id) {
+          ws.close(1008, "late operation id mismatch");
+          return;
+        }
+        const upgraded = {
+          ...known,
+          operation_id: parsed.operation_id || known.operation_id || null,
+          result: parsed.result,
+          reason: null,
+          completed_at_ms: Date.now(),
+        };
+        await this.storeRecentTerminal(upgraded);
+        ws.send(resultAckMessage(parsed.request_id));
+        return;
+      }
       if (known && known.result === parsed.result &&
           (known.operation_id || null) === (parsed.operation_id || null)) {
         ws.send(resultAckMessage(parsed.request_id));
@@ -460,16 +516,125 @@ export class DeviceControl {
       operation_id: parsed.operation_id || active.operation_id || null,
       status: "TERMINAL",
       result: parsed.result,
+      reason: null,
       completed_at_ms: Date.now(),
     };
+    await this.storeRecentTerminal(terminal);
+    await this.ctx.storage.delete("active_operation");
+    await this.ctx.storage.deleteAlarm();
+    this.resolveWaiters(parsed.request_id, terminal);
+    ws.send(resultAckMessage(parsed.request_id));
+  }
+
+  operationResponse(operation) {
+    const status = operation.result === "UNKNOWN" ? 504 : 200;
+    return managerJson(
+      terminalOperationPayload(operation, this.authenticatedSocket() !== null),
+      status,
+    );
+  }
+
+  async alarm() {
+    await this.reconcileActiveOperation(Date.now(), { fenceSockets: true });
+  }
+
+  async reconcileActiveOperation(nowMs, { fenceSockets }) {
+    const active = await this.ctx.storage.get("active_operation");
+    if (!active) {
+      await this.ctx.storage.deleteAlarm();
+      return null;
+    }
+
+    if (active.status === "DISPATCHED") {
+      const fenceAtMs = active.created_at_ms + DISPATCH_FENCE_MS;
+      if (nowMs < fenceAtMs) {
+        await this.ctx.storage.setAlarm(fenceAtMs);
+        return active;
+      }
+
+      const fenced = {
+        ...active,
+        status: "FENCED",
+        fenced_at_ms: nowMs,
+        release_at_ms: nowMs + FENCED_DRAIN_MS,
+      };
+      await this.ctx.storage.put("active_operation", fenced);
+      await this.ctx.storage.setAlarm(fenced.release_at_ms);
+      if (fenceSockets) this.fenceAuthenticatedSockets();
+      return fenced;
+    }
+
+    if (active.status === "ACCEPTED") {
+      // Pre-fix records have no accepted_at_ms. Start a fresh conservative lease on first
+      // observation rather than guessing when the historical acceptance happened.
+      if (!Number.isSafeInteger(active.accepted_at_ms)) {
+        const migrated = { ...active, accepted_at_ms: nowMs };
+        await this.ctx.storage.put("active_operation", migrated);
+        await this.ctx.storage.setAlarm(nowMs + ACCEPTED_RESULT_LEASE_MS);
+        return migrated;
+      }
+
+      const releaseAtMs = active.accepted_at_ms + ACCEPTED_RESULT_LEASE_MS;
+      if (nowMs < releaseAtMs) {
+        await this.ctx.storage.setAlarm(releaseAtMs);
+        return active;
+      }
+      return this.finalizeUnknown(active, nowMs);
+    }
+
+    if (active.status === "FENCED") {
+      const releaseAtMs = Number.isSafeInteger(active.release_at_ms)
+        ? active.release_at_ms
+        : nowMs + FENCED_DRAIN_MS;
+      if (!Number.isSafeInteger(active.release_at_ms)) {
+        const migrated = {
+          ...active,
+          fenced_at_ms: Number.isSafeInteger(active.fenced_at_ms)
+            ? active.fenced_at_ms
+            : nowMs,
+          release_at_ms: releaseAtMs,
+        };
+        await this.ctx.storage.put("active_operation", migrated);
+      }
+      if (nowMs < releaseAtMs) {
+        await this.ctx.storage.setAlarm(releaseAtMs);
+        return active;
+      }
+      return this.finalizeUnknown(active, nowMs);
+    }
+
+    throw new Error("invalid persisted active operation state");
+  }
+
+  async finalizeUnknown(active, nowMs) {
+    const terminal = {
+      ...active,
+      status: "TERMINAL",
+      result: "UNKNOWN",
+      reason: "TIMEOUT",
+      completed_at_ms: nowMs,
+    };
+    await this.storeRecentTerminal(terminal);
+    await this.ctx.storage.delete("active_operation");
+    await this.ctx.storage.deleteAlarm();
+    this.resolveWaiters(active.request_id, terminal);
+    return terminal;
+  }
+
+  async storeRecentTerminal(terminal) {
     const recent = (await this.ctx.storage.get("recent_operations")) || [];
     const bounded = [terminal, ...recent.filter((item) => item.request_id !== terminal.request_id)]
       .slice(0, MAX_RECENT_OPERATIONS);
-
     await this.ctx.storage.put("recent_operations", bounded);
-    await this.ctx.storage.delete("active_operation");
-    this.resolveWaiters(parsed.request_id, terminal);
-    ws.send(resultAckMessage(parsed.request_id));
+  }
+
+  fenceAuthenticatedSockets() {
+    for (const socket of this.ctx.getWebSockets()) {
+      const attachment = socket.deserializeAttachment();
+      if (attachment?.kind !== "device" || attachment.authenticated !== true) continue;
+      socket.serializeAttachment({ ...attachment, authenticated: false });
+      socket.close(1000, "operation fenced");
+    }
   }
 
   resolveWaiters(requestId, terminal) {

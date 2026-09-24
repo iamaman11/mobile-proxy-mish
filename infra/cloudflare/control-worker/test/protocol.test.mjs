@@ -377,6 +377,7 @@ test("durable broker is idempotent, busy-bounded and has no offline queue", asyn
   assert.equal(dispatch.kind, "DISPATCHED");
   assert.equal(socket.sent.length, 1);
   assert.equal(activeWasStoredBeforeSend, true);
+  assert.ok(Number.isSafeInteger(storage.alarm));
 
   dispatch = await control.dispatchRotation("req_1");
   assert.equal(dispatch.kind, "ACTIVE_SAME");
@@ -397,6 +398,7 @@ test("durable broker is idempotent, busy-bounded and has no offline queue", asyn
     '{"v":1,"type":"RESULT","request_id":"req_1","result":"CHANGED","operation_id":7}',
   );
   assert.equal(await storage.get("active_operation"), undefined);
+  assert.equal(storage.alarm, null);
   assert.equal((await storage.get("recent_operations"))[0].result, "CHANGED");
 
   dispatch = await control.dispatchRotation("req_1");
@@ -408,6 +410,168 @@ test("durable broker is idempotent, busy-bounded and has no offline queue", asyn
   dispatch = await offline.dispatchRotation("offline_1");
   assert.equal(dispatch.kind, "DEVICE_OFFLINE");
   assert.equal(await offlineStorage.get("active_operation"), undefined);
+});
+
+test("accepted operation with permanently lost RESULT expires and releases BUSY", async () => {
+  const storage = new MemoryStorage();
+  await storage.put("active_operation", {
+    request_id: "req_accepted_stale",
+    status: "ACCEPTED",
+    operation_id: 71,
+    result: null,
+    created_at_ms: 1,
+    accepted_at_ms: 10,
+    fenced_at_ms: null,
+    release_at_ms: null,
+    completed_at_ms: null,
+  });
+  const socket = new FakeSocket({
+    kind: "device", authenticated: true, device_id: "a".repeat(64),
+  });
+  const control = new DeviceControl(new FakeContext(storage, [socket]), {});
+
+  const terminal = await control.reconcileActiveOperation(120_011, { fenceSockets: true });
+  assert.equal(terminal.status, "TERMINAL");
+  assert.equal(terminal.result, "UNKNOWN");
+  assert.equal(terminal.reason, "TIMEOUT");
+  assert.equal(terminal.operation_id, 71);
+  assert.equal(await storage.get("active_operation"), undefined);
+  assert.equal(storage.alarm, null);
+  assert.equal((await storage.get("recent_operations"))[0].request_id, "req_accepted_stale");
+
+  const dispatch = await control.dispatchRotation("req_after_stale");
+  assert.equal(dispatch.kind, "DISPATCHED");
+  assert.equal(JSON.parse(socket.sent.at(-1)).request_id, "req_after_stale");
+});
+
+test("unaccepted dispatch is fenced before BUSY can be released", async () => {
+  const now = Date.now();
+  const storage = new MemoryStorage();
+  await storage.put("active_operation", {
+    request_id: "req_unaccepted",
+    status: "DISPATCHED",
+    operation_id: null,
+    result: null,
+    created_at_ms: now - 180_001,
+    accepted_at_ms: null,
+    fenced_at_ms: null,
+    release_at_ms: null,
+    completed_at_ms: null,
+  });
+  const socket = new FakeSocket({
+    kind: "device", authenticated: true, device_id: "a".repeat(64),
+  });
+  const control = new DeviceControl(new FakeContext(storage, [socket]), {});
+
+  let active = await control.reconcileActiveOperation(now, { fenceSockets: true });
+  assert.equal(active.status, "FENCED");
+  assert.equal(active.request_id, "req_unaccepted");
+  assert.equal(active.release_at_ms, now + 120_000);
+  assert.equal(socket.attachment.authenticated, false);
+  assert.equal(socket.closed.at(-1)?.reason, "operation fenced");
+  assert.equal((await storage.get("recent_operations")) || null, null);
+
+  const replacement = new FakeSocket({
+    kind: "device", authenticated: true, device_id: "a".repeat(64),
+  });
+  const replacementControl = new DeviceControl(new FakeContext(storage, [replacement]), {});
+  const busy = await replacementControl.dispatchRotation("req_new_too_early");
+  assert.equal(busy.kind, "BUSY");
+  assert.equal(replacement.sent.length, 0);
+
+  active = await replacementControl.reconcileActiveOperation(
+    now + 120_001,
+    { fenceSockets: true },
+  );
+  assert.equal(active.result, "UNKNOWN");
+  assert.equal(await storage.get("active_operation"), undefined);
+
+  const next = await replacementControl.dispatchRotation("req_new_after_drain");
+  assert.equal(next.kind, "DISPATCHED");
+  assert.equal(JSON.parse(replacement.sent.at(-1)).request_id, "req_new_after_drain");
+});
+
+test("late real RESULT upgrades stale UNKNOWN correlation and is acknowledged", async () => {
+  const storage = new MemoryStorage();
+  await storage.put("recent_operations", [{
+    request_id: "req_late_result",
+    status: "TERMINAL",
+    operation_id: 81,
+    result: "UNKNOWN",
+    reason: "TIMEOUT",
+    created_at_ms: 1,
+    completed_at_ms: 200,
+  }]);
+  const socket = new FakeSocket({
+    kind: "device", authenticated: true, device_id: "a".repeat(64),
+  });
+  const control = new DeviceControl(new FakeContext(storage, [socket]), {});
+
+  await control.acceptResult(socket, {
+    type: "RESULT",
+    request_id: "req_late_result",
+    result: "CHANGED",
+    operation_id: 81,
+  });
+
+  const recent = await storage.get("recent_operations");
+  assert.equal(recent[0].result, "CHANGED");
+  assert.equal(recent[0].operation_id, 81);
+  assert.equal(recent[0].reason, null);
+  assert.equal(JSON.parse(socket.sent.at(-1)).type, "RESULT_ACK");
+  assert.equal(socket.closed.length, 0);
+});
+
+test("legacy ACCEPTED state gets a fresh conservative lease instead of guessed expiry", async () => {
+  const storage = new MemoryStorage();
+  await storage.put("active_operation", {
+    request_id: "req_legacy_accepted",
+    status: "ACCEPTED",
+    operation_id: 91,
+    result: null,
+    created_at_ms: 1,
+    completed_at_ms: null,
+  });
+  const control = new DeviceControl(new FakeContext(storage, []), {});
+
+  const migrated = await control.reconcileActiveOperation(1_000_000, { fenceSockets: true });
+  assert.equal(migrated.status, "ACCEPTED");
+  assert.equal(migrated.accepted_at_ms, 1_000_000);
+  assert.equal(storage.alarm, 1_120_000);
+  assert.notEqual(await storage.get("active_operation"), undefined);
+
+  const terminal = await control.reconcileActiveOperation(1_120_001, { fenceSockets: true });
+  assert.equal(terminal.result, "UNKNOWN");
+  assert.equal(await storage.get("active_operation"), undefined);
+});
+
+test("alarm recovery is idempotent after stale correlation is finalized", async () => {
+  const storage = new MemoryStorage();
+  await storage.put("active_operation", {
+    request_id: "req_alarm_once",
+    status: "ACCEPTED",
+    operation_id: 101,
+    result: null,
+    created_at_ms: 1,
+    accepted_at_ms: 1,
+    completed_at_ms: null,
+  });
+  const control = new DeviceControl(new FakeContext(storage, []), {});
+
+  const originalNow = Date.now;
+  Date.now = () => 120_002;
+  try {
+    await control.alarm();
+    await control.alarm();
+  } finally {
+    Date.now = originalNow;
+  }
+
+  assert.equal(await storage.get("active_operation"), undefined);
+  assert.equal(storage.alarm, null);
+  const recent = await storage.get("recent_operations");
+  assert.equal(recent.length, 1);
+  assert.equal(recent[0].result, "UNKNOWN");
 });
 
 test("manager wait is event-driven and returns one typed terminal result", async () => {
@@ -525,6 +689,7 @@ test("durable broker bounds recent terminal correlation and re-acks duplicates",
 class MemoryStorage {
   constructor() {
     this.data = new Map();
+    this.alarm = null;
   }
 
   async get(key) {
@@ -537,6 +702,18 @@ class MemoryStorage {
 
   async delete(key) {
     this.data.delete(key);
+  }
+
+  async getAlarm() {
+    return this.alarm;
+  }
+
+  async setAlarm(timestamp) {
+    this.alarm = timestamp;
+  }
+
+  async deleteAlarm() {
+    this.alarm = null;
   }
 }
 

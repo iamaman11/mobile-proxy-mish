@@ -152,6 +152,7 @@ def main() -> None:
         "pub fn activate_prepared(",
         "fail_prepared_before_mutation",
         "RotationPhase::Preparing",
+        "const ROTATION_SAFETY_DEADLINE: Duration = Duration::from_secs(90);",
     ):
         require(rotation, needle, "Rotation owner must retain acceptance-before-mutation seam")
     forbid(rotation, "retry_until_changed", "Rotation must never retry until public IP changes")
@@ -251,6 +252,17 @@ def main() -> None:
         "dispatchRotation",
         "waitForTerminal",
         "scheduler",
+        "PRODUCT_ROTATION_SAFETY_MS = 90_000",
+        "ACCEPTED_RESULT_LEASE_MS",
+        "DISPATCH_FENCE_MS = MANAGER_ROTATE_WAIT_TIMEOUT_MS",
+        "FENCED_DRAIN_MS",
+        '"FENCED"',
+        "this.ctx.storage.setAlarm(",
+        "this.ctx.storage.deleteAlarm()",
+        "async alarm()",
+        "reconcileActiveOperation",
+        "finalizeUnknown",
+        "fenceAuthenticatedSockets",
     ):
         require(worker, needle, "Durable Object broker/hibernation contract drifted")
     for forbidden in (
