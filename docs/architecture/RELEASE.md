@@ -70,9 +70,14 @@ hosted artifact digest
 
 ## Distribution
 
-Stable external distribution, store publication, or production signing may be defined later when the
-roadmap reaches deployment closure. That future distribution task must not introduce a second
-development/physical-acceptance authority and must not require an RC lineage.
+U8 closes the current PRODUCT development/physical-acceptance roadmap. That closure does **not**
+manufacture a release-candidate lineage and does not relabel the accepted debug candidate as a
+production-distribution artifact.
 
-Until then, exact hosted device-candidate artifacts plus canonical Device Cycle evidence are the only
-Android build/physical-acceptance identity used by the project.
+Stable external distribution, store publication, or production signing may be defined later as a
+separate delivery concern. It must derive from an explicitly selected accepted source/artifact and
+must not introduce a second development/physical-acceptance authority, retroactively replace the
+accepted DEVICE-1 evidence, or require a competing RC acceptance lineage.
+
+Exact hosted device-candidate artifacts plus canonical Device Cycle evidence remain the authoritative
+development/physical-acceptance identity.
