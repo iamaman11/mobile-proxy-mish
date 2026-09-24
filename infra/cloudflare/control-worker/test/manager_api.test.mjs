@@ -13,7 +13,7 @@ import {
 const TOKEN = "m".repeat(40);
 
 test("manager HTTP wait stays below Durable Object inactive-eviction territory", () => {
-  assert.equal(MANAGER_ROTATE_WAIT_TIMEOUT_MS, 55_000);
+  assert.equal(MANAGER_ROTATE_WAIT_TIMEOUT_MS, 18_000);
 });
 
 test("manager response schema is stable and typed", () => {

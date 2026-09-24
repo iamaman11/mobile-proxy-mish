@@ -40,6 +40,8 @@ def main() -> None:
     manager_api = "infra/cloudflare/control-worker/src/manager_api.mjs"
     protocol = "infra/cloudflare/control-worker/src/protocol.mjs"
     wrangler = "infra/cloudflare/control-worker/wrangler.jsonc"
+    lab_remote = "lab/windows/diagnose-u8-remote-control.ps1"
+    device_cycle = ".github/workflows/device-cycle.yml"
 
     for needle in (
         'CONTROL_PROTOCOL_VERSION: u8 = 1',
@@ -63,9 +65,16 @@ def main() -> None:
     for needle in (
         "RuntimeExecutor",
         "ControlTransport",
-        "const CONTROL_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);",
-        "const CONTROL_AUTH_TIMEOUT: Duration = Duration::from_secs(10);",
-        "const CONTROL_RECONNECT_DELAYS_MS: [u64; 5] = [1_000, 5_000, 15_000, 30_000, 60_000];",
+        "const CONTROL_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);",
+        "const CONTROL_AUTH_TIMEOUT: Duration = Duration::from_secs(3);",
+        "const CONTROL_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(4);",
+        'const CONTROL_HEARTBEAT_REQUEST: &str = "MISH_CONTROL_HEARTBEAT_V1";',
+        'const CONTROL_HEARTBEAT_RESPONSE: &str = "MISH_CONTROL_HEARTBEAT_ACK_V1";',
+        "MissedTickBehavior::Delay",
+        "heartbeat_outstanding",
+        "record_heartbeat",
+        "// A reconnect attempt must never monopolize the public 18 s manager budget.",
+        "const CONTROL_RECONNECT_DELAYS_MS: [u64; 5] = [500, 1_000, 2_000, 3_000, 5_000];",
         "CONTROL_RECENT_TERMINAL_REQUESTS: usize = 32",
         "rotation.prepare(",
         "encode_accepted_message(&request_id, operation_id)",
@@ -80,8 +89,6 @@ def main() -> None:
     for forbidden in (
         ".outbound_connector(",
         "ProxyConnectTarget",
-        "const CONTROL_HEARTBEAT_INTERVAL",
-        'write_text("PING")',
         "tokio::runtime::Builder",
         "retry_until_changed",
         "retry-until-changed",
@@ -256,10 +263,16 @@ def main() -> None:
         "scheduler",
         "PRODUCT_ROTATION_SAFETY_MS = 90_000",
         "ACCEPTED_RESULT_LEASE_MS",
-        "INITIAL_DELIVERY_ACK_MS = 10_000",
-        "RECOVERY_DELIVERY_ACK_MS = 40_000",
-        "recoverAuthenticatedSockets",
+        "DELIVERY_ACK_MS = 2_000",
         "FENCED_DRAIN_MS",
+        'CONTROL_HEARTBEAT_REQUEST = "MISH_CONTROL_HEARTBEAT_V1"',
+        'CONTROL_HEARTBEAT_RESPONSE = "MISH_CONTROL_HEARTBEAT_ACK_V1"',
+        "CONTROL_SESSION_FRESHNESS_MS = 10_000",
+        "setWebSocketAutoResponse",
+        "getWebSocketAutoResponseTimestamp",
+        "authenticated_at_ms",
+        "freshAuthenticatedSocket",
+        "closeStaleAuthenticatedSockets",
         '"FENCED"',
         "this.ctx.storage.setAlarm(",
         "this.ctx.storage.deleteAlarm()",
@@ -269,14 +282,16 @@ def main() -> None:
         "fenceAuthenticatedSockets",
     ):
         require(worker, needle, "Durable Object broker/hibernation contract drifted")
-    # Cross-layer delivery recovery budget is intentional, not an arbitrary Worker timeout:
-    # PRODUCT first reconnect after READY may use 1 s backoff + 15 s connect +
-    # 10 s challenge + 10 s READY = 36 s. Worker retains 4 s scheduling/wire margin
-    # while 10 s initial + 40 s recovery remains below the 55 s manager HTTP bound.
+    # Continuous liveness is native-owned. Manager requests never become reconnect owners.
+    require(
+        runtime,
+        "CONTROL_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(4)",
+        "Rust/Tokio control owner must continuously prove WSS liveness",
+    )
     require(
         worker,
-        "RECOVERY_DELIVERY_ACK_MS = 40_000",
-        "Worker recovery ACK must cover the pinned 36 s PRODUCT reconnect/auth budget",
+        "CONTROL_SESSION_FRESHNESS_MS = 10_000",
+        "Worker must dispatch only to a recently proven control session",
     )
 
     for forbidden in (
@@ -287,6 +302,10 @@ def main() -> None:
         "offline_queue",
         "setInterval(",
         "setTimeout(",
+        "INITIAL_DELIVERY_ACK_MS",
+        "RECOVERY_DELIVERY_ACK_MS",
+        "recoverAuthenticatedSockets",
+        "delivery_recovery_count",
         "/manager/operation",
         'match[2] === "rotate"',
     ):
@@ -294,7 +313,7 @@ def main() -> None:
 
     for needle in (
         'MANAGER_ROTATE_SCHEMA = "mish.control.rotate/v1"',
-        'MANAGER_ROTATE_WAIT_TIMEOUT_MS = 55_000',
+        'MANAGER_ROTATE_WAIT_TIMEOUT_MS = 18_000',
         '"CHANGED"',
         '"UNCHANGED"',
         '"FAILED"',
@@ -334,6 +353,37 @@ def main() -> None:
         "parseEnrollmentBody",
     ):
         require(protocol, needle, "Worker authentication protocol drifted")
+
+    for needle in (
+        "[ValidateRange(20, 120)][int] $TerminalTimeoutSeconds = 20",
+        "'control_snapshot_v1'",
+        "$idleProofSeconds = 12",
+        "CONTROL_HEARTBEAT_NOT_ADVANCING",
+        "CONTROL_RECONNECTED_DURING_IDLE",
+        "CONTROL_SESSION_NOT_LONG_LIVED",
+        "$managerDurationMs -gt 18000",
+        "idle_liveness_proof = $true",
+        "heartbeat_delta = $heartbeatDelta",
+        "client_bound_seconds = $TerminalTimeoutSeconds",
+    ):
+        require(
+            lab_remote,
+            needle,
+            "LAB/WSL acceptance must prove long-lived heartbeat freshness within the 20 second response ceiling",
+        )
+    for needle in (
+        "idle_liveness_proof",
+        "heartbeat_delta",
+        "reconnect_count_after_idle",
+        "long_lived_session_age_ms",
+        "manager_duration_ms",
+        "client_bound_seconds",
+    ):
+        require(
+            device_cycle,
+            needle,
+            "Device Cycle must enforce the long-lived CONTROL acceptance evidence",
+        )
 
     config = json.loads(
         "\n".join(

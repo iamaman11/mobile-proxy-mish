@@ -4,7 +4,7 @@ param(
     [string] $PackageName = 'com.mobileproxymish.app.debug',
     [string] $ComponentName = 'com.mobileproxymish.app.debug/com.mobileproxymish.app.MainActivity',
     [string] $ControlHost = 'api.alegria.by',
-    [ValidateRange(30, 120)][int] $TerminalTimeoutSeconds = 65,
+    [ValidateRange(20, 120)][int] $TerminalTimeoutSeconds = 20,
     [string] $EvidencePath = (Join-Path $env:TEMP 'mish-u8-remote-control-v1.json'),
     [string] $BaselineDiagnosticPath = (Join-Path $env:TEMP 'mish-u8-remote-control-baseline-v2.json'),
     [string] $PostDiagnosticPath = (Join-Path $env:TEMP 'mish-u8-remote-control-post-v2.json')
@@ -80,6 +80,38 @@ function Invoke-MishDiagnostic {
     return $diagnostic
 }
 
+function Invoke-MishControlSnapshot {
+    $capture = Invoke-MishAdbCapture -Arguments @(
+        'shell', 'content', 'call',
+        '--uri', "content://$PackageName.diagnostics",
+        '--method', 'control_snapshot_v1'
+    )
+    if ($capture.ExitCode -ne 0) {
+        Stop-MishRemoteControl 'CONTROL_SNAPSHOT_FAILED' 'DUMP-only control snapshot call failed.'
+    }
+    $payloadMatch = [regex]::Match($capture.Text, 'payload_b64=(?<payload>[A-Za-z0-9+/=]+)')
+    if (-not $payloadMatch.Success) {
+        Stop-MishRemoteControl 'CONTROL_SNAPSHOT_INVALID' 'Control diagnostics bridge returned no payload.'
+    }
+
+    $bytes = $null
+    try {
+        $bytes = [Convert]::FromBase64String($payloadMatch.Groups['payload'].Value)
+        $snapshot = ([Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json)
+    }
+    catch {
+        Stop-MishRemoteControl 'CONTROL_SNAPSHOT_INVALID' 'Control diagnostics payload is malformed.'
+    }
+    finally {
+        if ($null -ne $bytes) { [Array]::Clear($bytes, 0, $bytes.Length) }
+    }
+    if ([string]$snapshot.schema -cne 'mish.control.diagnostics/v1' -or
+        [string]$snapshot.application_id -cne $PackageName) {
+        Stop-MishRemoteControl 'CONTROL_SNAPSHOT_IDENTITY_MISMATCH' 'Control diagnostics schema/package identity mismatch.'
+    }
+    return $snapshot
+}
+
 if (-not (Test-Path -LiteralPath $AdbPath -PathType Leaf)) { Stop-MishRemoteControl 'ADB_MISSING' 'Canonical ADB executable is missing.' }
 if ([string]::IsNullOrWhiteSpace($env:MISH_MANAGER_TOKEN) -or $env:MISH_MANAGER_TOKEN.Length -lt 32) { Stop-MishRemoteControl 'MANAGER_TOKEN_MISSING' 'Protected MISH_MANAGER_TOKEN is unavailable.' }
 if ($ControlHost -cne 'api.alegria.by') { Stop-MishRemoteControl 'CONTROL_HOST_MISMATCH' 'Physical U8-E acceptance is pinned to api.alegria.by.' }
@@ -108,6 +140,34 @@ $baseline = Invoke-MishDiagnostic -Path $BaselineDiagnosticPath
 $baselineRotationId = $baseline.android.rotation.operation_id
 $baselineRotationState = [string]$baseline.android.rotation.state
 $baselineTerminal = $baseline.android.rotation.terminal_result
+
+# Prove the control session is not merely fresh from the restart above. Wait beyond the Worker's
+# 10 s authentication grace and require native heartbeats to advance without any reconnect.
+$controlBeforeIdle = Invoke-MishControlSnapshot
+if ([string]$controlBeforeIdle.control.state -cne 'READY') {
+    Stop-MishRemoteControl 'CONTROL_NOT_READY_BEFORE_IDLE' "Control state is $([string]$controlBeforeIdle.control.state)."
+}
+$heartbeatBeforeIdle = [int64]$controlBeforeIdle.control.application_heartbeat_count
+$reconnectBeforeIdle = [int64]$controlBeforeIdle.control.reconnect_count
+$idleProofSeconds = 12
+Start-Sleep -Seconds $idleProofSeconds
+$controlAfterIdle = Invoke-MishControlSnapshot
+if ([string]$controlAfterIdle.control.state -cne 'READY') {
+    Stop-MishRemoteControl 'CONTROL_NOT_READY_AFTER_IDLE' "Control state is $([string]$controlAfterIdle.control.state)."
+}
+$heartbeatAfterIdle = [int64]$controlAfterIdle.control.application_heartbeat_count
+$reconnectAfterIdle = [int64]$controlAfterIdle.control.reconnect_count
+$heartbeatDelta = $heartbeatAfterIdle - $heartbeatBeforeIdle
+if ($heartbeatDelta -lt 2) {
+    Stop-MishRemoteControl 'CONTROL_HEARTBEAT_NOT_ADVANCING' "Expected at least two heartbeat ACKs during idle proof; observed delta=$heartbeatDelta."
+}
+if ($reconnectAfterIdle -ne $reconnectBeforeIdle) {
+    Stop-MishRemoteControl 'CONTROL_RECONNECTED_DURING_IDLE' "Control reconnect count changed during idle proof: $reconnectBeforeIdle -> $reconnectAfterIdle."
+}
+if ($null -eq $controlAfterIdle.control.session_age_ms -or
+    [int64]$controlAfterIdle.control.session_age_ms -lt 10000) {
+    Stop-MishRemoteControl 'CONTROL_SESSION_NOT_LONG_LIVED' 'Control session did not remain READY beyond the Worker authentication freshness grace.'
+}
 
 # Wrong manager authentication must be rejected before Durable Object/device mutation.
 $wrongAuth = Invoke-MishManagerRequest -Method POST -Path '/v1/rotate' -BearerToken 'definitely-wrong-manager-token-not-a-secret' -Body $null
@@ -149,6 +209,10 @@ if (-not [bool]$remote.Json.dispatched -or [bool]$remote.Json.retryable) { Stop-
 if ([string]$remote.Json.result -ceq 'CHANGED' -and [bool]$remote.Json.changed -ne $true) { Stop-MishRemoteControl 'REMOTE_CHANGED_FLAG_INVALID' 'CHANGED result must report changed=true.' }
 if ([string]$remote.Json.result -ceq 'UNCHANGED' -and [bool]$remote.Json.changed -ne $false) { Stop-MishRemoteControl 'REMOTE_CHANGED_FLAG_INVALID' 'UNCHANGED result must report changed=false.' }
 if ($null -eq $remote.Json.timing -or [int64]$remote.Json.timing.duration_ms -lt 0) { Stop-MishRemoteControl 'REMOTE_TIMING_INVALID' 'Typed remote timing is absent or invalid.' }
+$managerDurationMs = [int64]$remote.Json.timing.duration_ms
+if ($managerDurationMs -gt 18000) {
+    Stop-MishRemoteControl 'REMOTE_RESPONSE_TOO_SLOW' "Manager response exceeded the 18 second server bound: $managerDurationMs ms."
+}
 
 $requestId = [string]$remote.Json.request_id
 $operationId = [int64]$remote.Json.operation_id
@@ -185,6 +249,17 @@ $evidence = [ordered]@{
     client_request_id_generated = $false
     client_device_id_required_for_rotation = $false
     hosted_idempotency_contract = $true
+    idle_liveness_proof = $true
+    idle_seconds = $idleProofSeconds
+    heartbeat_count_before_idle = $heartbeatBeforeIdle
+    heartbeat_count_after_idle = $heartbeatAfterIdle
+    heartbeat_delta = $heartbeatDelta
+    reconnect_count_before_idle = $reconnectBeforeIdle
+    reconnect_count_after_idle = $reconnectAfterIdle
+    long_lived_session_age_ms = [int64]$controlAfterIdle.control.session_age_ms
+    manager_duration_ms = $managerDurationMs
+    manager_server_bound_ms = 18000
+    client_bound_seconds = $TerminalTimeoutSeconds
     post_product_diagnostic = [string]$post.classification
     post_readiness = [string]$post.android.readiness.state
     post_root_authorized = [bool]$post.android.root.policy_authorized
@@ -214,6 +289,8 @@ Write-Host 'MISH_U8_REMOTE_CONTROL_LOGICAL_ROTATION_REQUESTS=1'
 Write-Host 'MISH_U8_REMOTE_CONTROL_PUBLIC_COMMANDS=1'
 Write-Host 'MISH_U8_REMOTE_CONTROL_SERVER_REQUEST_ID=PASS'
 Write-Host 'MISH_U8_REMOTE_CONTROL_MANAGER_POLLING=0'
+Write-Host "MISH_U8_REMOTE_CONTROL_IDLE_LIVENESS=PASS/heartbeat_delta=$heartbeatDelta/reconnect_delta=$($reconnectAfterIdle - $reconnectBeforeIdle)"
+Write-Host "MISH_U8_REMOTE_CONTROL_MANAGER_DURATION_MS=$managerDurationMs"
 Write-Host 'MISH_U8_REMOTE_CONTROL_RAW_IP_PERSISTED=false'
 Write-Host 'MISH_U8_REMOTE_CONTROL_SECRETS_PERSISTED=false'
 Write-Host "MISH_U8_REMOTE_CONTROL_EVIDENCE=$fullPath"
