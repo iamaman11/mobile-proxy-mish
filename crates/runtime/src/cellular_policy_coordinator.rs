@@ -417,7 +417,8 @@ impl CellularPolicyCoordinator {
                 }
                 match state.latest.take() {
                     Some(request) => {
-                        let enqueued_at = state.latest_enqueued_at.take().unwrap_or_else(Instant::now);
+                        let enqueued_at =
+                            state.latest_enqueued_at.take().unwrap_or_else(Instant::now);
                         (request, enqueued_at)
                     }
                     None => {
