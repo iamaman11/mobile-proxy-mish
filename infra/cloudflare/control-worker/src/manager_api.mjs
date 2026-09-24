@@ -1,5 +1,5 @@
 export const MANAGER_ROTATE_SCHEMA = "mish.control.rotate/v1";
-export const MANAGER_ROTATE_WAIT_TIMEOUT_MS = 180_000;
+export const MANAGER_ROTATE_WAIT_TIMEOUT_MS = 55_000;
 
 const RESULTS = new Set(["CHANGED", "UNCHANGED", "FAILED", "REJECTED", "UNKNOWN"]);
 const REASONS = new Set([
