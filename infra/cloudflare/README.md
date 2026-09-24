@@ -61,23 +61,36 @@ timing.duration_ms
 
 `UNKNOWN` is reserved for transport/timeout uncertainty after the system may have accepted the command. It is deliberately non-retryable so a remote client cannot accidentally create a second rotation.
 
-The Durable Object also owns a bounded fail-closed lease for an active manager operation:
+The Durable Object owns a delivery-acknowledged, fail-closed lifecycle for an active manager operation:
 
 ```text
-DISPATCHED
-  -> RESULT                         -> terminal / release BUSY
-  -> ACCEPTED -> RESULT             -> terminal / release BUSY
-  -> no ACCEPTED for 180 s
-       -> FENCED                    # stop redelivery + close old authenticated WSS
-       -> 120 s PRODUCT drain
-       -> UNKNOWN/TIMEOUT           # release BUSY safely
+send ROTATE_IP(request_id)
+  -> wait 10 s for ACCEPTED or RESULT
+  -> no ACCEPTED:
+       close only the current authenticated WSS
+       keep DISPATCHED and the same request_id
+       Rust reconnects with its existing bounded backoff
+       re-deliver exactly the same request_id once
+       wait 15 s for ACCEPTED
+  -> still no ACCEPTED:
+       FENCED
+       stop redelivery
+       return UNKNOWN/TIMEOUT to the manager
+       keep 120 s PRODUCT drain before BUSY release
 
 ACCEPTED
+  -> PRODUCT may mutate
+  -> RESULT                         -> terminal / release BUSY
+  -> manager HTTP is capped at 55 s total
+       -> if RESULT is still pending: UNKNOWN/TIMEOUT to manager
+       -> server correlation continues independently
   -> no RESULT for 120 s
-       -> UNKNOWN/TIMEOUT           # PRODUCT's 90 s mutation deadline has elapsed
+       -> UNKNOWN/TIMEOUT           # PRODUCT's 90 s mutation deadline + 30 s margin
 ```
 
-The 120 s drain/result lease is the existing PRODUCT 90 s rotation safety deadline plus a 30 s control-delivery margin. A fenced request is never redelivered. A late real PRODUCT `RESULT` for a bounded `UNKNOWN` correlation is accepted, upgrades the recent correlation and receives `RESULT_ACK`. Durable Object Alarms own these deadlines so hibernation/restart cannot turn a lost terminal message into permanent `BUSY`.
+`socket.send()` is only server-side dispatch and is never treated as proof that PRODUCT received the command. `ACCEPTED` is the authoritative delivery/mutation-start boundary because Rust flushes it before `rotation.activate_prepared()`. Reconnect recovery reuses the same request id, so PRODUCT idempotency returns the known operation rather than creating a second mutation.
+
+The 55 s manager wait is deliberately shorter than the Durable Object inactive-eviction window and is not the PRODUCT safety deadline. Durable Object Alarms continue the operation correlation after the manager HTTP response. The 120 s drain/result lease remains the existing PRODUCT 90 s rotation safety deadline plus a 30 s control-delivery margin. A late real PRODUCT `RESULT` for a bounded `UNKNOWN` correlation is accepted, upgrades the recent correlation and receives `RESULT_ACK`.
 
 
 The device-side protocol is unchanged:
