@@ -20,14 +20,16 @@ use mish_rotation::{
 };
 use mish_runtime::{
     CellularPolicyObserver, CellularPolicyPublication, CellularReconcileDiagnostic,
-    CellularRequestRearmEffect, ControlAuthSignError, ControlAuthSigner, ControlRuntimeSnapshot,
-    ControlRuntimeStartError, ControlSessionState, MeshRuntimeObserver, ProductDiagnosticSnapshot,
+    CellularRequestRearmEffect, ControlAuthSignError, ControlAuthSigner,
+    ControlOperationTimingSnapshot, ControlRuntimeSnapshot, ControlRuntimeStartError,
+    ControlSessionState, MeshRuntimeObserver, ProductDiagnosticSnapshot,
     ProductRuntimeCoordinator, ProductRuntimeSnapshot, ProxyRuntimeObserver,
     ProxyRuntimePublication, ProxyServingState as OwnerProxyServingState,
     ReadinessDiagnosticSnapshot, ReadinessObserver,
     RootAuthorityStatus as OwnerRootAuthorityStatus, RootPolicyFailure as OwnerRootPolicyFailure,
     RootPolicyReconcileDiagnostic, RootPolicyResult as OwnerRootPolicyResult,
-    RootRecoveryDiagnostic, RotationObserver, RotationRuntimeStartError, RuntimeExecutionError,
+    RootRecoveryDiagnostic, RotationObserver, RotationRuntimeStartError,
+    RotationRuntimeTimingSnapshot, RuntimeExecutionError,
 };
 use mish_transport::MeshVpnObservation;
 use std::fmt;
@@ -349,6 +351,44 @@ pub enum RemoteRotationResultView {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct ControlOperationTimingView {
+    pub operation_id: Option<u64>,
+    pub operation_age_ms: Option<u64>,
+    pub operation_reserved_ms: Option<u64>,
+    pub accepted_sent_ms: Option<u64>,
+    pub reconnect_started_ms: Option<u64>,
+    pub reconnect_ready_ms: Option<u64>,
+    pub rotation_terminal_ms: Option<u64>,
+    pub result_sent_ms: Option<u64>,
+    pub result_ack_ms: Option<u64>,
+    pub rotation_origin_from_command_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct RotationRuntimeTimingView {
+    pub operation_id: Option<u64>,
+    pub operation_age_ms: Option<u64>,
+    pub activated_ms: Option<u64>,
+    pub before_ip_started_ms: Option<u64>,
+    pub before_ip_completed_ms: Option<u64>,
+    pub airplane_enable_started_ms: Option<u64>,
+    pub airplane_enable_effect_completed_ms: Option<u64>,
+    pub airplane_on_observed_ms: Option<u64>,
+    pub cellular_loss_observed_ms: Option<u64>,
+    pub airplane_disable_started_ms: Option<u64>,
+    pub airplane_disable_effect_completed_ms: Option<u64>,
+    pub airplane_off_observed_ms: Option<u64>,
+    pub fresh_cellular_observed_ms: Option<u64>,
+    pub fresh_cellular_generation: Option<u64>,
+    pub root_authorized_ms: Option<u64>,
+    pub root_authorized_generation: Option<u64>,
+    pub after_ip_started_ms: Option<u64>,
+    pub after_ip_completed_ms: Option<u64>,
+    pub terminal_ms: Option<u64>,
+    pub restore_completed_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
 pub struct ControlRuntimeSnapshotView {
     pub state: ControlSessionStateView,
     pub reconnect_attempts: u32,
@@ -363,6 +403,8 @@ pub struct ControlRuntimeSnapshotView {
     pub pending_operation: bool,
     pub pending_operation_id: Option<u64>,
     pub last_terminal_result: Option<RemoteRotationResultView>,
+    pub operation_timing: ControlOperationTimingView,
+    pub rotation_timing: RotationRuntimeTimingView,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
@@ -1013,6 +1055,52 @@ fn map_control_snapshot(snapshot: ControlRuntimeSnapshot) -> ControlRuntimeSnaps
             RemoteRotationResult::Failed => RemoteRotationResultView::Failed,
             RemoteRotationResult::Rejected => RemoteRotationResultView::Rejected,
         }),
+        operation_timing: map_control_operation_timing(snapshot.operation_timing),
+        rotation_timing: map_rotation_runtime_timing(snapshot.rotation_timing),
+    }
+}
+
+fn map_control_operation_timing(
+    timing: ControlOperationTimingSnapshot,
+) -> ControlOperationTimingView {
+    ControlOperationTimingView {
+        operation_id: timing.operation_id,
+        operation_age_ms: timing.operation_age_ms,
+        operation_reserved_ms: timing.operation_reserved_ms,
+        accepted_sent_ms: timing.accepted_sent_ms,
+        reconnect_started_ms: timing.reconnect_started_ms,
+        reconnect_ready_ms: timing.reconnect_ready_ms,
+        rotation_terminal_ms: timing.rotation_terminal_ms,
+        result_sent_ms: timing.result_sent_ms,
+        result_ack_ms: timing.result_ack_ms,
+        rotation_origin_from_command_ms: timing.rotation_origin_from_command_ms,
+    }
+}
+
+fn map_rotation_runtime_timing(
+    timing: RotationRuntimeTimingSnapshot,
+) -> RotationRuntimeTimingView {
+    RotationRuntimeTimingView {
+        operation_id: timing.operation_id,
+        operation_age_ms: timing.operation_age_ms,
+        activated_ms: timing.activated_ms,
+        before_ip_started_ms: timing.before_ip_started_ms,
+        before_ip_completed_ms: timing.before_ip_completed_ms,
+        airplane_enable_started_ms: timing.airplane_enable_started_ms,
+        airplane_enable_effect_completed_ms: timing.airplane_enable_effect_completed_ms,
+        airplane_on_observed_ms: timing.airplane_on_observed_ms,
+        cellular_loss_observed_ms: timing.cellular_loss_observed_ms,
+        airplane_disable_started_ms: timing.airplane_disable_started_ms,
+        airplane_disable_effect_completed_ms: timing.airplane_disable_effect_completed_ms,
+        airplane_off_observed_ms: timing.airplane_off_observed_ms,
+        fresh_cellular_observed_ms: timing.fresh_cellular_observed_ms,
+        fresh_cellular_generation: timing.fresh_cellular_generation,
+        root_authorized_ms: timing.root_authorized_ms,
+        root_authorized_generation: timing.root_authorized_generation,
+        after_ip_started_ms: timing.after_ip_started_ms,
+        after_ip_completed_ms: timing.after_ip_completed_ms,
+        terminal_ms: timing.terminal_ms,
+        restore_completed_ms: timing.restore_completed_ms,
     }
 }
 
