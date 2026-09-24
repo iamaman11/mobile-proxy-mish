@@ -807,7 +807,7 @@ External distribution/store signing may derive later from the accepted source/ar
 
 Exit: **U8 CLOSED / PASS.** B-H are accepted on exact provenance. U8 is the final stage in the current PRODUCT roadmap; no further PRODUCT stage is implied by this closure.
 
-## Post-U8 explicit CONTROL refinement — issue #366
+## Post-U8 explicit CONTROL refinement — issue #366 — COMPLETE / PASS
 
 This is **not** a new PRODUCT stage and does not reopen U8. It is an explicitly requested manager-API simplification over the already accepted U8-E control plane.
 
@@ -822,20 +822,36 @@ body: empty
 one typed mish.control.rotate/v1 response
 ```
 
-Required boundary:
+Accepted boundary:
 
 - the remote application knows only the manager token; host/path are application constants;
-- `device_id`, `request_id`, `operation_id`, polling and WebSocket correlation are control-plane internals;
-- Worker generates `request_id` cryptographically;
-- one fixed-name existing `DeviceControl("primary")` Durable Object is used for the single-device deployment; do not add KV/D1/device registry/a second Durable Object state owner;
+- `device_id`, caller-owned `request_id`, polling and WebSocket correlation are not part of the public application API;
+- Worker generates the internal `request_id` cryptographically and returns it only as typed support/correlation metadata;
+- one fixed-name existing `DeviceControl("primary")` Durable Object is used for the single-device deployment; no KV/D1/device registry/second Durable Object state owner was added;
 - the existing Android Keystore identity, Rust/Tokio control runtime, WSS authentication, `ROTATE_IP -> ACCEPTED -> RESULT` wire protocol and Rotation owner remain unchanged;
 - one public POST maps to at most one PRODUCT rotation;
-- manager wait is event-driven, not polling;
-- transport uncertainty is represented explicitly as typed `UNKNOWN` and is non-retryable; never imply that an uncertain command was not dispatched;
-- old manager `/devices/{device_id}/rotate` and `/operations/{request_id}` paths are not public application APIs after this refinement;
+- manager wait is event-driven and manager polling is zero;
+- transport uncertainty is represented explicitly as typed `UNKNOWN` and is non-retryable;
+- old manager `/devices/{device_id}/rotate` and `/operations/{request_id}` paths are not public application APIs;
 - privileged enrollment remains an explicit operator/LAB provisioning seam.
 
-Acceptance is CONTROL/LAB-first: hosted schema/auth/idempotency/BUSY/offline/timeout guards, exact Worker deploy, then one physical remote POST proving one PRODUCT rotation and post-rotation READY/proxy E2E. No PRODUCT rebuild unless evidence exposes a PRODUCT defect.
+Accepted implementation/evidence:
+
+- implementation PR #367, head `d8e09d04970df00382c3edc1c12eb2ae17a20fa6`, merged;
+- post-merge exact-head deployment-gate fix PR #368, merge `b043231de7f65ce5c4a6edf3d4bc72d77f892737`; no Worker runtime/API or PRODUCT behavior change;
+- PR Validation run `35940720497` = PASS;
+- U8 Control Static run `35940720510` = PASS;
+- exact Worker deployment run `35941127306` = PASS;
+- deployed Worker version `a9c58bd4-bb1f-49af-941a-155196f42a7b` on `api.alegria.by`;
+- deployment smoke: unauthenticated POST = 401, wrong manager token = 401, authorized caller-supplied body = 400 before dispatch;
+- physical Device Cycle #741 / run `35941217166` on CONTROL `b043231de7f65ce5c4a6edf3d4bc72d77f892737` with accepted PRODUCT `94a9f4993b524b0388f0e2216e9e78183c8a3a4f` = `U8_REMOTE_CONTROL_ROTATION_PASS`;
+- physical result: exactly one public manager command, exactly one logical rotation request, server-generated request id PASS, manager polling = 0, operation_id = 1, terminal result `CHANGED`;
+- post-rotation runtime/Cellular/root/Proxy/Mesh/readiness returned healthy/READY and loopback + Mesh proxy E2E passed;
+- physical evidence artifact `10784683552`, digest `sha256:3d6823ef81c8d2abb7598fbf7fe91fd96626878b1e55288ac81f917ee1ac137f`;
+- raw public IP and secrets were not persisted;
+- no PRODUCT rebuild or PRODUCT source change was required.
+
+Disposition: **issue #366 = COMPLETE / PASS.** The remote application contract is now one manager token, one POST command and one typed `mish.control.rotate/v1` response.
 
 
 ---
