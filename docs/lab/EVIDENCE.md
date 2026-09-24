@@ -20,7 +20,7 @@ DEVICE_CYCLE_RUN_ID
   immutable physical execution/evidence identity
 ```
 
-Formal RC/release evidence additionally binds exact tag/version, release manifest, APK digest and non-secret signing-certificate identity under `RELEASE.md`.
+There is no current RC/prerelease evidence lineage. If a future external distribution identity is introduced, its exact immutable fields are defined only by `RELEASE.md` and must reuse the existing source/build/physical authority.
 
 A local working-tree path, process PID by itself, branch nickname or “latest” is never durable artifact/product identity.
 
@@ -87,7 +87,26 @@ E4 Windows -> Mesh -> Android -> cellular -> real external path
 
 A development `full` Device Cycle can establish exact stage-specific physical facts when provenance and the required topology are exercised. `diagnose_only` / read-only `probe_only` evidence does not establish exact installed-candidate acceptance unless the corresponding installation identity was independently and explicitly bound by the acceptance contract.
 
-Development debug evidence is not formal RC/release identity and cannot be promoted.
+Development debug evidence is not external-distribution identity and cannot be silently relabeled as one.
+
+## Support reconstruction packet
+
+U8 support/provenance closure does not create another evidence producer. When support needs a durable
+identity packet, compose existing immutable records:
+
+```text
+accepted protected-main SHA
+exact PRODUCT_SHA / CONTROL_SHA for the relevant evidence
+hosted producer run + artifact id/digest when applicable
+Device Cycle run id
+installed digest/signing proof when applicable
+typed result/classification
+smallest relevant typed observations
+```
+
+This composition may be written into an issue/checkpoint or referenced directly by immutable GitHub
+run/artifact ids. Do not create a mutable support database, duplicate status file, broad environment
+dump or second current-stage pointer merely for convenience.
 
 ## Secrets and privacy
 
