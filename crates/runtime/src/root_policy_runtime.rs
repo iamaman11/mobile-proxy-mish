@@ -221,13 +221,12 @@ impl RootPolicyRuntime {
     ) -> RootPolicyResult {
         let phase_started = Instant::now();
         let phase_before = window.diagnostic();
-        let initial_result = self.read_snapshot(window).await;
-        phases.initial_snapshot =
-            phase_diagnostic(phase_started, phase_before, window.diagnostic());
-        let initial = match initial_result {
+        let initial = match self.read_snapshot(window).await {
             Ok(snapshot) => snapshot,
             Err(failure) => return RootPolicyResult::FailClosed(Some(failure)),
         };
+        phases.initial_snapshot =
+            phase_diagnostic(phase_started, phase_before, window.diagnostic());
 
         match contract.resolve_identity(&initial) {
             PolicyIdentityResolution::Selected(_) => {}
@@ -248,51 +247,61 @@ impl RootPolicyRuntime {
 
         let phase_started = Instant::now();
         let phase_before = window.diagnostic();
-        let prepare_result: Result<(), RootPolicyFailure> = async {
-            self.ensure_guard(contract, true, window).await?;
-            self.ensure_guard(contract, false, window).await?;
-            self.remove_owned_ipv4_lookups(contract, window).await?;
-            self.ensure_mangle_family(contract, IPTABLES, true, window)
-                .await?;
-            self.ensure_mangle_family(contract, IP6TABLES, false, window)
-                .await?;
-            self.remove_exact_rule(
+        if let Err(failure) = self.ensure_guard(contract, true, window).await {
+            return RootPolicyResult::FailClosed(Some(failure));
+        }
+        if let Err(failure) = self.ensure_guard(contract, false, window).await {
+            return RootPolicyResult::FailClosed(Some(failure));
+        }
+        if let Err(failure) = self.remove_owned_ipv4_lookups(contract, window).await {
+            return RootPolicyResult::FailClosed(Some(failure));
+        }
+        if let Err(failure) = self
+            .ensure_mangle_family(contract, IPTABLES, true, window)
+            .await
+        {
+            return RootPolicyResult::FailClosed(Some(failure));
+        }
+        if let Err(failure) = self
+            .ensure_mangle_family(contract, IP6TABLES, false, window)
+            .await
+        {
+            return RootPolicyResult::FailClosed(Some(failure));
+        }
+        if let Err(failure) = self
+            .remove_exact_rule(
                 &contract.legacy_selector_check(IPTABLES),
                 &contract.legacy_selector_delete(IPTABLES),
                 window,
             )
-            .await?;
-            self.remove_exact_rule(
+            .await
+        {
+            return RootPolicyResult::FailClosed(Some(failure));
+        }
+        if let Err(failure) = self
+            .remove_exact_rule(
                 &contract.legacy_selector_check(IP6TABLES),
                 &contract.legacy_selector_delete(IP6TABLES),
                 window,
             )
-            .await?;
-            Ok(())
-        }
-        .await;
-        phases.fail_closed_prepare =
-            phase_diagnostic(phase_started, phase_before, window.diagnostic());
-        if let Err(failure) = prepare_result {
+            .await
+        {
             return RootPolicyResult::FailClosed(Some(failure));
         }
+        phases.fail_closed_prepare =
+            phase_diagnostic(phase_started, phase_before, window.diagnostic());
 
         let phase_started = Instant::now();
         let phase_before = window.diagnostic();
-        let fail_closed_result: Result<RootPolicySnapshot, RootPolicyFailure> = async {
-            let snapshot = self.read_snapshot(window).await?;
-            contract
-                .verify_fail_closed_base(&snapshot)
-                .map_err(|_| RootPolicyFailure::StructuralMismatch)?;
-            Ok(snapshot)
-        }
-        .await;
-        phases.fail_closed_verify =
-            phase_diagnostic(phase_started, phase_before, window.diagnostic());
-        let fail_closed = match fail_closed_result {
+        let fail_closed = match self.read_snapshot(window).await {
             Ok(snapshot) => snapshot,
             Err(failure) => return RootPolicyResult::FailClosed(Some(failure)),
         };
+        if contract.verify_fail_closed_base(&fail_closed).is_err() {
+            return RootPolicyResult::FailClosed(Some(RootPolicyFailure::StructuralMismatch));
+        }
+        phases.fail_closed_verify =
+            phase_diagnostic(phase_started, phase_before, window.diagnostic());
 
         if !admitted {
             return RootPolicyResult::FailClosed(None);
@@ -303,43 +312,40 @@ impl RootPolicyRuntime {
         };
         let phase_started = Instant::now();
         let phase_before = window.diagnostic();
-        let table_result = self
+        let table = match self
             .discover_validated_ipv4_table(&fail_closed.ipv4_rules, interface, window)
-            .await;
-        phases.table_discovery =
-            phase_diagnostic(phase_started, phase_before, window.diagnostic());
-        let table = match table_result {
+            .await
+        {
             Ok(table) => table,
             Err(failure) => return RootPolicyResult::FailClosed(Some(failure)),
         };
+        phases.table_discovery =
+            phase_diagnostic(phase_started, phase_before, window.diagnostic());
 
         let phase_started = Instant::now();
         let phase_before = window.diagnostic();
-        let apply_result: Result<(), RootPolicyFailure> = async {
-            self.replace_ipv4_lookup(contract, &table, window).await?;
-
-            let Some(identity) = contract.active_identity() else {
-                return Err(RootPolicyFailure::StructuralMismatch);
-            };
-            let route_command = format!("ip -4 route get 1.1.1.1 mark {}", identity.mark_hex());
-            let route = self
-                .io
-                .observe(&route_command, window)
-                .await
-                .map_err(map_effect_failure)?;
-            if route.exit_code != 0 || !route_get_uses_interface(&route.stdout, interface) {
-                let _ = self.remove_owned_ipv4_lookups(contract, window).await;
-                return Err(RootPolicyFailure::RouteLookupVerificationFailed);
-            }
-            Ok(())
+        if let Err(failure) = self.replace_ipv4_lookup(contract, &table, window).await {
+            return RootPolicyResult::FailClosed(Some(failure));
         }
-        .await;
+
+        let Some(identity) = contract.active_identity() else {
+            return RootPolicyResult::FailClosed(Some(RootPolicyFailure::StructuralMismatch));
+        };
+        let route_command = format!("ip -4 route get 1.1.1.1 mark {}", identity.mark_hex());
+        let route = match self.io.observe(&route_command, window).await {
+            Ok(result) => result,
+            Err(error) => return RootPolicyResult::FailClosed(Some(map_effect_failure(error))),
+        };
+        if route.exit_code != 0 || !route_get_uses_interface(&route.stdout, interface) {
+            let _ = self.remove_owned_ipv4_lookups(contract, window).await;
+            return RootPolicyResult::FailClosed(Some(
+                RootPolicyFailure::RouteLookupVerificationFailed,
+            ));
+        }
         phases.admitted_apply_verify =
             phase_diagnostic(phase_started, phase_before, window.diagnostic());
-        match apply_result {
-            Ok(()) => RootPolicyResult::Enforced,
-            Err(failure) => RootPolicyResult::FailClosed(Some(failure)),
-        }
+
+        RootPolicyResult::Enforced
     }
 
     async fn probe_authority(&self, state: &mut RootPolicyState) -> RootAuthorityStatus {
