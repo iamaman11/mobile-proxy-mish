@@ -24,9 +24,9 @@ E4  Windows -> Cloudflare Mesh -> Android -> cellular -> external client full pa
 
 `NO_EVIDENCE_ESCALATION`: weaker evidence cannot close a stronger claim.
 
-## Development physical evidence vs formal release evidence
+## Development physical evidence and future distribution evidence
 
-Two physical paths exist and must not be conflated.
+The current development/physical path and any future external-distribution path must not be conflated.
 
 ### Stage-specific development DEVICE-1 evidence
 
@@ -46,17 +46,23 @@ A `full` Device Cycle may establish exact-candidate stage acceptance facts for t
 
 Once accepted, the candidate change merges to `main`; the PRODUCT_SHA/CONTROL_SHA split remains evidence provenance, not a second accepted source.
 
-Development debug evidence never becomes RC/release identity and cannot authorize release promotion.
+Development debug evidence is not an external-distribution identity and cannot be relabeled as one.
 
-### Formal E3/E4 release acceptance
+### External distribution acceptance — future only
 
-Formal release/promotion uses immutable RC/release bytes under `RELEASE.md`:
+There is no current RC/prerelease/promotion path. U8 closes on the exact hosted-candidate -> LAB-sign
+-> installed-byte -> Device Cycle lineage defined by `RELEASE.md`.
 
-```text
-PIN -> BUILD ONCE -> HASH -> SIGN -> ATTEST -> TEST EXACT BYTES -> PROMOTE EXACT BYTES
-```
+If a future external/store distribution requirement appears, it must define one exact immutable
+distribution identity and preserve the existing source/build/physical authorities. A debug candidate
+cannot be silently relabeled as a production distribution artifact, and a parallel RC hierarchy must
+not be introduced without a demonstrated requirement.
 
-No debug candidate may be relabeled as a release artifact or satisfy release-signing/promotion claims.
+For U8 support/provenance reconstruction, use existing immutable GitHub identities only:
+`ACCEPTED_MAIN_SHA`, exact `PRODUCT_SHA`/`CONTROL_SHA` when they intentionally differ during
+candidate evidence, hosted run/artifact identity, Device Cycle run, installed byte/signing proof when
+applicable, and the typed result/classification. No new physical run is required merely to assemble
+that support packet.
 
 ## Current-product physical rules
 
