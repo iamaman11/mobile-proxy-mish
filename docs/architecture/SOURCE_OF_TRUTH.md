@@ -124,7 +124,24 @@ The Windows LAB is an exact-artifact consumer/evidence executor, not a normal An
 
 `Device Cycle` is the executable authority for supported modes/probes. If prose disagrees with executable workflow, correct the prose or workflow immediately rather than carrying an unwritten exception.
 
-Development debug candidates may establish exact stage-specific physical facts, but they are not formal RC/release identity. Formal promotion remains governed by `RELEASE.md` and immutable build-once/hash/sign/attest/test/promote semantics.
+Development debug candidates may establish exact stage-specific physical facts, but they are not external-distribution identity. There is no current RC/prerelease/promotion path. If a future distribution requirement is introduced, `RELEASE.md` remains the single authority for that identity and must reuse the existing exact source/build/physical lineage rather than create a parallel development authority.
+
+## U8 support/provenance reconstruction
+
+Support reconstruction is evidence composition, not a new runtime or database. Start from fresh
+protected `main` and Issue #135, then bind only the immutable identities needed by the claim:
+
+```text
+ACCEPTED_MAIN_SHA
+PRODUCT_SHA / CONTROL_SHA when candidate evidence intentionally differs
+HOSTED_RUN_ID + artifact id/digest when bytes were consumed
+DEVICE_CYCLE_RUN_ID
+installed digest/signing identity when installation is part of the claim
+typed result/classification + the smallest relevant observations
+```
+
+Existing GitHub checks/artifacts plus typed PRODUCT diagnostics are the support packet. Do not add a
+mutable support registry, duplicate readiness store, unbounded log bundle or second release pointer.
 
 ## Local-agent rule
 
