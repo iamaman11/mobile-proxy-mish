@@ -68,6 +68,33 @@ hosted artifact digest
   -> installed base.apk digest + installed certificate
 ```
 
+## Accepted U8 development provenance closure
+
+The final current-roadmap U8 acceptance is bound to one exact development lineage:
+
+```text
+PRODUCT source       94a9f4993b524b0388f0e2216e9e78183c8a3a4f
+PRODUCT tree         d4f467c8a5c7d793835448eddd7cb0d6753b877e
+hosted producer run  35803074208
+candidate artifact   10726024554
+candidate digest     sha256:a60bf25bc02413e4f93aad8bf62abedbf8db0e7a097806e261df3dd2428b336b
+physical CONTROL     16a843cca4890b5d777b11cccb0ebeb9cb26924a
+Device Cycle         35936074767 / #728 / PASS
+install evidence     10782918236
+install digest       sha256:ca6e37ac6be74ab8cec438038b92c2c36f9e098a0c1b3736aec11c94d93be4a3
+cycle evidence       10783028195
+cycle digest         sha256:b1a3bedd309748cf337e591c1eb9de922cef2e973ec856dcc72edc900662d544
+```
+
+The install evidence proves exact installed bytes and LAB signing identity. The physical evidence bundle
+contains the bounded typed device diagnostic, targeted U8-G evidence, launch receipt and cycle report.
+Those records are support/acceptance evidence only; they do not form a mutable status database.
+
+Later CONTROL/docs-only commits do not create a new PRODUCT identity when the canonical PRODUCT paths
+remain byte/tree-identical to the accepted source. A future externally distributed build may use a
+different production signing/distribution mechanism, but its lineage must start from an explicitly
+selected exact source/artifact and must not retroactively redefine this development acceptance.
+
 ## Distribution
 
 Stable external distribution, store publication, or production signing may be defined later when the
