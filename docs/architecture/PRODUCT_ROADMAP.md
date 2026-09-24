@@ -924,6 +924,51 @@ Accepted implementation/evidence:
 
 Disposition: **issue #373 = COMPLETE / PASS.** Remote rotation is now delivery-acknowledged, performs one safe same-request reconnect recovery, and cannot hold one manager HTTP request for three minutes.
 
+## Post-U8 CONTROL reconnect-budget alignment — issue #376 — COMPLETE / PASS
+
+A real external WSL request exposed one remaining cross-layer timing mismatch after #373: Worker had already dispatched the command to an authenticated device WSS, but no PRODUCT `ACCEPTED` arrived before the 10 s initial + 15 s recovery windows expired. The manager received typed `UNKNOWN/TIMEOUT` after 25 s with `dispatched=true`, `operation_id=null` and `device_online=false`.
+
+The failure was not on the Manager -> Worker path. The mismatch was between the server recovery fence and the already-accepted PRODUCT reconnect budget:
+
+- first PRODUCT reconnect backoff after a READY session = **1 s**;
+- control transport connect timeout = **15 s**;
+- challenge wait = **10 s**;
+- READY wait = **10 s**;
+- therefore one valid reconnect/auth path may consume up to **36 s**;
+- old Worker recovery ACK window = **15 s**, which could fence a slow but contract-valid reconnect.
+
+Accepted correction:
+
+- initial delivery ACK remains **10 s**;
+- exactly one same-request reconnect/redelivery remains the only recovery;
+- recovery delivery ACK window = **40 s** = 36 s PRODUCT reconnect/auth budget + 4 s CONTROL/wire margin;
+- total unaccepted delivery fence is therefore about **50 s**, still below the **55 s** manager HTTP bound;
+- operator/LAB client bound remains **65 s**;
+- PRODUCT rotation safety remains **90 s**;
+- accepted-result and FENCED drain remain **120 s**;
+- `ACCEPTED` remains the authoritative delivery/mutation-start boundary;
+- no heartbeat, polling endpoint, queue, KV/D1, second scheduler, second state owner or second rotation owner was added.
+
+The architecture guard now pins the PRODUCT connect/auth/reconnect constants together with the Worker 40 s recovery envelope so the layers cannot silently drift back into an impossible timing contract.
+
+Accepted implementation/evidence:
+
+- issue #376 = CLOSED / PASS;
+- implementation PR #377 merged as `9fc1370c1d543012beaa32d492f9a17f77a8bee0`;
+- U8 Control Static #35 / run `36015428459` = PASS;
+- PR Validation + PRODUCT Candidate #1016 / run `36015428517` = PASS;
+- exact Worker deploy #90 / run `36015588008` = PASS;
+- deployed Worker version `655f2c2c-fb74-4bfd-ac3a-cb0fd38cd5c6`;
+- physical Device Cycle #748 / run `36015839535` = `U8_REMOTE_CONTROL_ROTATION_PASS`;
+- physical result: exactly one public command, exactly one logical rotation request, server-generated request id PASS, manager polling = 0, operation_id = 1, terminal result `CHANGED`;
+- after rotation runtime/Cellular/root/Proxy/Mesh/readiness = healthy/READY, loopback proxy E2E = PASS, Mesh proxy E2E = PASS;
+- interval from completed authenticated-invalid-request diagnostic to completed post-rotation diagnostic was under 18 s, including the real manager request, rotation and post-diagnostic collection, proving the 40/55 s values are upper bounds rather than fixed waits;
+- evidence artifact `10814567741`, digest `sha256:0aa825f17776a6a06c0782e5ea45e71de336a243fe245692c30c26aaed3040bd`;
+- raw public IP and secrets were not persisted;
+- accepted PRODUCT remains `94a9f4993b524b0388f0e2216e9e78183c8a3a4f`; no PRODUCT source change or rebuild was required.
+
+Disposition: **issue #376 = COMPLETE / PASS.** CONTROL recovery timing now covers the PRODUCT reconnect/auth contract while remaining bounded below the manager HTTP deadline.
+
 
 ---
 
