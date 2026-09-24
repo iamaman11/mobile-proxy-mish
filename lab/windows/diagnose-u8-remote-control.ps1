@@ -5,6 +5,7 @@ param(
     [string] $ComponentName = 'com.mobileproxymish.app.debug/com.mobileproxymish.app.MainActivity',
     [string] $ControlHost = 'api.alegria.by',
     [ValidateRange(20, 120)][int] $TerminalTimeoutSeconds = 20,
+    [ValidateRange(5, 30)][int] $ExternalProbeTimeoutSeconds = 15,
     [string] $EvidencePath = (Join-Path $env:TEMP 'mish-u8-remote-control-v1.json'),
     [string] $BaselineDiagnosticPath = (Join-Path $env:TEMP 'mish-u8-remote-control-baseline-v2.json'),
     [string] $PostDiagnosticPath = (Join-Path $env:TEMP 'mish-u8-remote-control-post-v2.json')
@@ -15,6 +16,8 @@ $ErrorActionPreference = 'Stop'
 $schema = 'mish.lab.u8-remote-control/v1'
 $identityAction = 'com.mobileproxymish.app.action.READ_CONTROL_IDENTITY_V1'
 $identityComponent = "$PackageName/com.mobileproxymish.app.ControlIdentityProvisioningReceiver"
+
+Import-Module (Join-Path $PSScriptRoot 'PublicEgressObservation.psm1') -Force
 
 function Stop-MishRemoteControl {
     param([Parameter(Mandatory)][string] $Category, [Parameter(Mandatory)][string] $Message)
@@ -193,6 +196,21 @@ if ([string]$afterInvalidRequest.android.rotation.state -cne $baselineRotationSt
     Stop-MishRemoteControl 'INVALID_AUTHENTICATED_REQUEST_MUTATED_ROTATION' 'Authenticated invalid manager request changed Rotation-owner state.'
 }
 
+# Independent observer uses the already-serving PRODUCT HTTP CONNECT listener. It does not
+# trigger Rotation and never persists the raw addresses; it exists only to cross-check the native
+# CHANGED/UNCHANGED terminal result from outside the Rotation owner.
+$observationContext = $null
+$beforeAddress = $null
+$afterAddress = $null
+try {
+    $observationContext = New-MishPublicEgressObservationContext `
+        -AdbPath $AdbPath `
+        -PackageName $PackageName
+    $externalBefore = Invoke-MishExternalPublicIpObservation `
+        -Context $observationContext `
+        -TimeoutSeconds $ExternalProbeTimeoutSeconds
+    $beforeAddress = [string]$externalBefore.Address
+
 # Exactly one public manager command. Worker owns device routing, request_id generation and terminal wait.
 $remote = Invoke-MishManagerRequest -Method POST -Path '/v1/rotate' -BearerToken $env:MISH_MANAGER_TOKEN -Body $null -TimeoutSeconds $TerminalTimeoutSeconds
 if ($remote.Status -ne 200 -or $null -eq $remote.Json) {
@@ -221,6 +239,21 @@ $post = Invoke-MishDiagnostic -Path $PostDiagnosticPath
 if ([int64]$post.android.rotation.operation_id -ne $operationId) { Stop-MishRemoteControl 'PRODUCT_OPERATION_ID_MISMATCH' 'PRODUCT Rotation owner and broker disagree on operation_id.' }
 if ([string]$post.android.rotation.terminal_result -cne $terminalResult) { Stop-MishRemoteControl 'PRODUCT_TERMINAL_MISMATCH' 'PRODUCT Rotation owner and broker disagree on terminal result.' }
 if ([string]$post.external.adb_loopback_proxy_e2e.result -cne 'PASS' -or [string]$post.external.mesh_proxy_e2e.result -cne 'PASS') { Stop-MishRemoteControl 'POST_ROTATION_PROXY_E2E_FAILED' 'Post-rotation proxy E2E did not pass.' }
+
+$externalAfter = Invoke-MishExternalPublicIpObservation `
+    -Context $observationContext `
+    -TimeoutSeconds $ExternalProbeTimeoutSeconds
+$afterAddress = [string]$externalAfter.Address
+$externalPublicIpChanged = $beforeAddress -cne $afterAddress
+$externalPublicIpOutcome = if ($externalPublicIpChanged) { 'CHANGED' } else { 'UNCHANGED' }
+$externalPublicIpConsensus = $externalPublicIpOutcome -ceq $terminalResult
+$externalBeforeMs = [int64]$externalBefore.ElapsedMs
+$externalAfterMs = [int64]$externalAfter.ElapsedMs
+$beforeAddress = $null
+$afterAddress = $null
+if (-not $externalPublicIpConsensus) {
+    Stop-MishRemoteControl 'EXTERNAL_PUBLIC_IP_RESULT_MISMATCH' 'Independent PRODUCT-proxy public-IP observation disagrees with the native Rotation terminal result.'
+}
 
 # Read one bounded timing record from the same real remote operation. This is observation only:
 # no second trigger, local Rotation call, polling loop, radio mutation or public-IP probe is added.
@@ -346,6 +379,12 @@ $evidence = [ordered]@{
     manager_duration_ms = $managerDurationMs
     manager_server_bound_ms = 18000
     client_bound_seconds = $TerminalTimeoutSeconds
+    external_public_ip_observer_proof = $true
+    external_public_ip_outcome = $externalPublicIpOutcome
+    external_public_ip_changed = [bool]$externalPublicIpChanged
+    external_public_ip_consensus = [bool]$externalPublicIpConsensus
+    external_public_ip_before_observation_ms = $externalBeforeMs
+    external_public_ip_after_observation_ms = $externalAfterMs
     device_timeline_proof = $true
     device_timeline = [ordered]@{
         origin = 'REMOTE_COMMAND_RECEIVED'
@@ -398,7 +437,6 @@ $parent = Split-Path -Parent $fullPath
 if ($parent) { [IO.Directory]::CreateDirectory($parent) | Out-Null }
 [IO.File]::WriteAllText($fullPath, (($evidence | ConvertTo-Json -Depth 8) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
 $publicSpki = $null
-$env:MISH_MANAGER_TOKEN = $null
 
 Write-Host 'MISH_U8_REMOTE_CONTROL=PASS'
 Write-Host 'MISH_U8_REMOTE_CONTROL_CLASSIFICATION=U8_REMOTE_CONTROL_ROTATION_PASS'
@@ -412,6 +450,16 @@ Write-Host 'MISH_U8_REMOTE_CONTROL_MANAGER_POLLING=0'
 Write-Host "MISH_U8_REMOTE_CONTROL_IDLE_LIVENESS=PASS/heartbeat_delta=$heartbeatDelta/reconnect_delta=$($reconnectAfterIdle - $reconnectBeforeIdle)"
 Write-Host "MISH_U8_REMOTE_CONTROL_MANAGER_DURATION_MS=$managerDurationMs"
 Write-Host "MISH_U8_REMOTE_CONTROL_DEVICE_TIMELINE=PASS/terminal_from_command_ms=$rotationTerminalFromCommandMs/result_ack_ms=$([int64]$operationTiming.result_ack_ms)"
+Write-Host "MISH_U8_REMOTE_CONTROL_EXTERNAL_PUBLIC_IP=PASS/outcome=$externalPublicIpOutcome/consensus=$externalPublicIpConsensus"
 Write-Host 'MISH_U8_REMOTE_CONTROL_RAW_IP_PERSISTED=false'
 Write-Host 'MISH_U8_REMOTE_CONTROL_SECRETS_PERSISTED=false'
 Write-Host "MISH_U8_REMOTE_CONTROL_EVIDENCE=$fullPath"
+}
+finally {
+    $beforeAddress = $null
+    $afterAddress = $null
+    Close-MishPublicEgressObservationContext -Context $observationContext
+    $observationContext = $null
+    $publicSpki = $null
+    $env:MISH_MANAGER_TOKEN = $null
+}

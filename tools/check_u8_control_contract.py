@@ -42,6 +42,7 @@ def main() -> None:
     protocol = "infra/cloudflare/control-worker/src/protocol.mjs"
     wrangler = "infra/cloudflare/control-worker/wrangler.jsonc"
     lab_remote = "lab/windows/diagnose-u8-remote-control.ps1"
+    public_egress_observer = "lab/windows/PublicEgressObservation.psm1"
     device_cycle = ".github/workflows/device-cycle.yml"
 
     for needle in (
@@ -375,6 +376,11 @@ def main() -> None:
         "result_ack_ms",
         "fresh_cellular_generation",
         "root_authorized_generation",
+        "PublicEgressObservation.psm1",
+        "external_public_ip_observer_proof = $true",
+        "external_public_ip_consensus",
+        "EXTERNAL_PUBLIC_IP_RESULT_MISMATCH",
+        "MISH_U8_REMOTE_CONTROL_EXTERNAL_PUBLIC_IP=PASS",
         "client_bound_seconds = $TerminalTimeoutSeconds",
     ):
         require(
@@ -388,6 +394,8 @@ def main() -> None:
         "reconnect_count_after_idle",
         "long_lived_session_age_ms",
         "manager_duration_ms",
+        "external_public_ip_observer_proof",
+        "external_public_ip_consensus",
         "device_timeline_proof",
         "device_timeline.rotation_terminal_from_command_ms",
         "client_bound_seconds",
@@ -396,6 +404,37 @@ def main() -> None:
             device_cycle,
             needle,
             "Device Cycle must enforce the long-lived CONTROL acceptance evidence",
+        )
+
+    for needle in (
+        "https://checkip.amazonaws.com/",
+        "CredentialProvisioning.psm1",
+        "Invoke-MishExternalProxyCredentialProvisioning",
+        "Open-MishExternalProxyCredentialLease",
+        "New-MishPublicEgressObservationContext",
+        "Invoke-MishExternalPublicIpObservation",
+        "Close-MishPublicEgressObservationContext",
+        "'forward', 'tcp:0', 'tcp:3128'",
+        "'forward', '--remove'",
+    ):
+        require(
+            public_egress_observer,
+            needle,
+            "shared LAB public-egress observer drifted",
+        )
+    for forbidden in (
+        "diagnose-u5-rotation.ps1",
+        "start_public_ip_rotation",
+        "MISH_MANAGER_TOKEN",
+        "ROTATE_IP",
+        "/v1/rotate",
+        "airplane-mode enable",
+        "airplane-mode disable",
+    ):
+        forbid(
+            public_egress_observer,
+            forbidden,
+            "shared LAB public-egress observer must stay read-only and CONTROL-independent",
         )
 
     for needle in (
