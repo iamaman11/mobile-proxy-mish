@@ -401,7 +401,8 @@ impl RootPolicyRuntime {
             Ok(table) => table,
             Err(failure) => return RootPolicyResult::FailClosed(Some(failure)),
         };
-        trace.phases.table_discovery = phase_diagnostic(phase_started, phase_before, window.diagnostic());
+        trace.phases.table_discovery =
+            phase_diagnostic(phase_started, phase_before, window.diagnostic());
         // Route-table discovery is observation-only. This is the final safe point before the
         // admitted lookup mutation begins.
         if !is_current() {
