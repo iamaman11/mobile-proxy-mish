@@ -77,7 +77,8 @@ foreach ($forbidden in @(
     if ($source.Contains($forbidden)) { throw "U8 remote-control probe contains forbidden second-owner/secret path: $forbidden" }
 }
 
-$validCommandPattern = [regex]::Escape("$remote = Invoke-MishManagerRequest -Method POST -Path '/v1/rotate' -BearerToken $env:MISH_MANAGER_TOKEN -Body $null")
+$validCommandLiteral = '$remote = Invoke-MishManagerRequest -Method POST -Path ''/v1/rotate'' -BearerToken $env:MISH_MANAGER_TOKEN -Body $null'
+$validCommandPattern = [regex]::Escape($validCommandLiteral)
 if (([regex]::Matches($source, $validCommandPattern)).Count -ne 1) {
     throw 'U8 remote-control acceptance must contain exactly one valid public POST /v1/rotate command.'
 }
