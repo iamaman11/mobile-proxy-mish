@@ -833,14 +833,6 @@ mod tests {
     }
 
     #[test]
-    fn control_reconnect_has_no_application_heartbeat_policy() {
-        // RFC6455 Ping/Pong is owned by tungstenite. PRODUCT does not generate an application
-        // heartbeat until U8-F physical evidence demonstrates that one is required.
-        let forbidden = ["CONTROL_HEARTBEAT", "_INTERVAL"].concat();
-        assert!(!include_str!("control_runtime.rs").contains(&forbidden));
-    }
-
-    #[test]
     fn control_liveness_is_owned_by_the_existing_native_session_task() {
         assert_eq!(CONTROL_HEARTBEAT_INTERVAL, Duration::from_secs(4));
         assert_eq!(CONTROL_HEARTBEAT_REQUEST, "MISH_CONTROL_HEARTBEAT_V1");
