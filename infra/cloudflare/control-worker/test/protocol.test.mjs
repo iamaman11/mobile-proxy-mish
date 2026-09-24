@@ -348,13 +348,16 @@ test("manager wait is event-driven and returns one typed terminal result", async
   globalThis.scheduler = { wait: () => new Promise(() => {}) };
   try {
     const storage = new MemoryStorage();
-    const socket = new FakeSocket({
-      kind: "device", authenticated: true, device_id: "a".repeat(64),
-    });
+    let sentResolve;
+    const sent = new Promise((resolve) => { sentResolve = resolve; });
+    const socket = new FakeSocket(
+      { kind: "device", authenticated: true, device_id: "a".repeat(64) },
+      () => sentResolve(),
+    );
     const control = new DeviceControl(new FakeContext(storage, [socket]), {});
 
     const responsePromise = control.rotateAndWait(rotateRequest("req_wait"));
-    await Promise.resolve();
+    await sent;
     assert.equal(JSON.parse(socket.sent[0]).request_id, "req_wait");
 
     await control.webSocketMessage(
