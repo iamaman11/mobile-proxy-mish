@@ -24,9 +24,9 @@ E4  Windows -> Cloudflare Mesh -> Android -> cellular -> external client full pa
 
 `NO_EVIDENCE_ESCALATION`: weaker evidence cannot close a stronger claim.
 
-## Development physical evidence vs formal release evidence
+## Development physical evidence and future distribution evidence
 
-Two physical paths exist and must not be conflated.
+The current development/physical path and any future external-distribution path must not be conflated.
 
 ### Stage-specific development DEVICE-1 evidence
 
@@ -46,17 +46,30 @@ A `full` Device Cycle may establish exact-candidate stage acceptance facts for t
 
 Once accepted, the candidate change merges to `main`; the PRODUCT_SHA/CONTROL_SHA split remains evidence provenance, not a second accepted source.
 
-Development debug evidence never becomes RC/release identity and cannot authorize release promotion.
+Development debug evidence is not an external-distribution identity and cannot be silently relabeled as one.
 
-### Formal E3/E4 release acceptance
+### External distribution acceptance — future only
 
-Formal release/promotion uses immutable RC/release bytes under `RELEASE.md`:
+There is no current RC/prerelease/promotion path. U8 closes on the exact hosted-candidate -> LAB-sign
+-> installed-byte -> Device Cycle lineage defined by `RELEASE.md`.
+
+If a future external/store distribution requirement appears, it must define one exact immutable
+distribution identity while preserving the existing source/build/physical authorities. A debug
+candidate cannot be silently relabeled as a production distribution artifact, and a parallel RC
+hierarchy must not be introduced without a demonstrated requirement.
+
+For support/provenance reconstruction, use existing immutable GitHub identities only:
 
 ```text
-PIN -> BUILD ONCE -> HASH -> SIGN -> ATTEST -> TEST EXACT BYTES -> PROMOTE EXACT BYTES
+ACCEPTED_MAIN_SHA
+PRODUCT_SHA / CONTROL_SHA when candidate evidence intentionally differs
+HOSTED_RUN_ID + artifact id/digest when bytes were consumed
+DEVICE_CYCLE_RUN_ID
+installed digest/signing identity when installation is part of the claim
+typed result/classification + smallest relevant observations
 ```
 
-No debug candidate may be relabeled as a release artifact or satisfy release-signing/promotion claims.
+Assembling that packet is evidence composition only; it does not require a new physical run.
 
 ## Current-product physical rules
 
@@ -142,6 +155,6 @@ Lab evidence is immutable per-run evidence only. It is not a mutable runtime rea
 - stage order and exit criteria: `PRODUCT_ROADMAP.md`;
 - live stage/open PR/evidence ids: Issue #135;
 - development candidate/DEVICE-1 mechanics: `DEVELOPMENT_PIPELINE.md` + executable workflows;
-- formal release acceptance: `RELEASE.md`;
+- artifact/distribution identity rules: `RELEASE.md`;
 - physical execution boundary: `docs/lab/PLAN.md`;
 - architecture: `SYSTEM.md`, `DEPENDENCIES.md`, `OWNERSHIP.md`.
