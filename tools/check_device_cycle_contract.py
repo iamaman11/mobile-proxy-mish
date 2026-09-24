@@ -516,6 +516,10 @@ def main() -> None:
         "external_public_ip_consensus",
         "EXTERNAL_PUBLIC_IP_RESULT_MISMATCH",
         "MISH_U8_REMOTE_CONTROL_EXTERNAL_PUBLIC_IP=PASS",
+        "U8_REMOTE_CONTROL_MANAGER_TIMEOUT_DIAGNOSTIC",
+        "MISH_U8_REMOTE_CONTROL_TIMEOUT_DIAGNOSTIC=CAPTURED",
+        "operation_polls = 0",
+        "no retry was issued",
     ):
         require(u8_remote_probe, required, "U8 remote-control acceptance contract drifted")
     for forbidden in (

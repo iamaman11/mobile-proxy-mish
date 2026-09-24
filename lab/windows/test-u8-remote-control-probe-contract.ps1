@@ -66,7 +66,11 @@ foreach ($required in @(
     "external_public_ip_observer_proof = `$true",
     "external_public_ip_consensus",
     "EXTERNAL_PUBLIC_IP_RESULT_MISMATCH",
-    "MISH_U8_REMOTE_CONTROL_EXTERNAL_PUBLIC_IP=PASS"
+    "MISH_U8_REMOTE_CONTROL_EXTERNAL_PUBLIC_IP=PASS",
+    "U8_REMOTE_CONTROL_MANAGER_TIMEOUT_DIAGNOSTIC",
+    "MISH_U8_REMOTE_CONTROL_TIMEOUT_DIAGNOSTIC=CAPTURED",
+    "operation_polls = 0",
+    "no retry was issued"
 )) {
     if (-not $source.Contains($required)) { throw "U8 remote-control probe contract drifted: $required" }
 }
