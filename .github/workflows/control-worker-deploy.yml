@@ -42,6 +42,7 @@ jobs:
       pr_number: ${{ steps.resolve.outputs.pr_number }}
       source_sha: ${{ steps.resolve.outputs.source_sha }}
       hosted_run_id: ${{ steps.resolve.outputs.hosted_run_id }}
+      control_static_run_id: ${{ steps.resolve.outputs.control_static_run_id }}
     steps:
       - name: Normalize explicit owner request
         id: request
@@ -108,8 +109,16 @@ jobs:
           pr = json.load(open(path, encoding="utf-8"))
           if str(pr.get("number")) != requested_pr:
               raise SystemExit("PR identity mismatch")
-          if pr.get("state") != "open" or pr.get("draft") is not False:
-              raise SystemExit("deploy requires one open ready PR")
+          state = pr.get("state")
+          merged = pr.get("merged_at") is not None
+          if state == "open":
+              if pr.get("draft") is not False:
+                  raise SystemExit("deploy requires a ready PR")
+          elif state == "closed":
+              if not merged:
+                  raise SystemExit("closed unmerged PR cannot be deployed")
+          else:
+              raise SystemExit("unexpected PR state")
           if ((pr.get("base") or {}).get("ref")) != "main":
               raise SystemExit("deploy requires base main")
           head = pr.get("head") or {}
@@ -119,50 +128,48 @@ jobs:
               raise SystemExit("requested SHA is not the current PR head")
           PY
 
-          gh api             "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$SOURCE_SHA&event=pull_request&status=completed&per_page=100"             > "$root/runs.json"
-          HOSTED_RUN_ID="$(python3 - "$root/runs.json" "$PR_NUMBER" "$SOURCE_SHA" <<'PY'
+          gh api \
+            "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$SOURCE_SHA&event=pull_request&status=completed&per_page=100" \
+            > "$root/runs.json"
+          python3 - "$root/runs.json" "$PR_NUMBER" "$SOURCE_SHA" > "$root/gates.env" <<'PY'
           import json
           import sys
 
           path, requested_pr, source_sha = sys.argv[1:]
           payload = json.load(open(path, encoding="utf-8"))
-          candidates = []
+          required = {
+              "PR Validation + PRODUCT Candidate": "HOSTED_RUN_ID",
+              "U8 Control Static": "CONTROL_STATIC_RUN_ID",
+          }
+          selected = {}
           for run in payload.get("workflow_runs", []):
-              if run.get("name") != "PR Validation + PRODUCT Candidate":
+              name = run.get("name")
+              if name not in required:
                   continue
               if run.get("head_sha") != source_sha or run.get("conclusion") != "success":
                   continue
               prs = {str(item.get("number")) for item in run.get("pull_requests", [])}
               if requested_pr not in prs:
                   continue
-              candidates.append(run)
-          if not candidates:
-              raise SystemExit("exact PR head has no successful PR Validation + PRODUCT Candidate run")
-          candidates.sort(key=lambda item: item.get("id", 0), reverse=True)
-          print(candidates[0]["id"])
+              previous = selected.get(name)
+              if previous is None or run.get("id", 0) > previous.get("id", 0):
+                  selected[name] = run
+          missing = [name for name in required if name not in selected]
+          if missing:
+              raise SystemExit(
+                  "exact PR head lacks successful hosted gate(s): " + ", ".join(missing)
+              )
+          for name, variable in required.items():
+              print(f"{variable}={selected[name]['id']}")
           PY
-          )"
-
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$HOSTED_RUN_ID/artifacts?per_page=100"             > "$root/artifacts.json"
-          python3 - "$root/artifacts.json" "$PR_NUMBER" "$SOURCE_SHA" <<'PY'
-          import json
-          import sys
-
-          path, pr, sha = sys.argv[1:]
-          payload = json.load(open(path, encoding="utf-8"))
-          expected = f"device-candidate-pr-{pr}-{sha}"
-          matches = [
-              item for item in payload.get("artifacts", [])
-              if item.get("name") == expected and item.get("expired") is False
-          ]
-          if len(matches) != 1:
-              raise SystemExit("exact hosted run must expose exactly one non-expired canonical candidate")
-          PY
+          # Values are numeric GitHub run IDs emitted by the bounded parser above.
+          source "$root/gates.env"
 
           {
             echo "pr_number=$PR_NUMBER"
             echo "source_sha=$SOURCE_SHA"
             echo "hosted_run_id=$HOSTED_RUN_ID"
+            echo "control_static_run_id=$CONTROL_STATIC_RUN_ID"
           } >> "$GITHUB_OUTPUT"
 
   validate:
@@ -177,7 +184,7 @@ jobs:
           ref: ${{ needs.resolve.outputs.source_sha }}
           persist-credentials: false
 
-      - name: Verify exact U8-E Worker configuration before any secret is exposed
+      - name: Verify exact Worker configuration before any secret is exposed
         shell: bash
         run: |
           set -euo pipefail
@@ -314,7 +321,8 @@ jobs:
             echo '### Control Worker deployment: PASS'
             echo '- Source PR: #${{ needs.resolve.outputs.pr_number }}'
             echo '- Source SHA: `${{ needs.resolve.outputs.source_sha }}`'
-            echo '- Hosted gate run: `${{ needs.resolve.outputs.hosted_run_id }}`'
+            echo '- PR Validation run: `${{ needs.resolve.outputs.hosted_run_id }}`'
+            echo '- U8 Control Static run: `${{ needs.resolve.outputs.control_static_run_id }}`'
             echo '- Wrangler: `4.135.0`'
             echo '- Host: `api.alegria.by`'
             echo '- workers.dev: **disabled**'
