@@ -370,6 +370,9 @@ impl ProductRuntimeCoordinator {
             }
             Arc::clone(&state.generation)
         };
+        generation
+            .rotation()
+            .observe_platform_cellular_observation();
         let admission =
             generation
                 .policy()

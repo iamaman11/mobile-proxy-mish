@@ -382,6 +382,22 @@ internal fun renderMishControlDiagnosticSnapshotV1(
                     snapshot.rotationTiming.airplaneOffObservedMs,
                 )
                 putNullableLong(
+                    "cellular_request_rearm_started_ms",
+                    snapshot.rotationTiming.cellularRequestRearmStartedMs,
+                )
+                putNullableLong(
+                    "cellular_request_rearm_completed_ms",
+                    snapshot.rotationTiming.cellularRequestRearmCompletedMs,
+                )
+                putNullableLong(
+                    "first_platform_cellular_observation_ms",
+                    snapshot.rotationTiming.firstPlatformCellularObservationMs,
+                )
+                put(
+                    "platform_cellular_observations_after_rearm",
+                    snapshot.rotationTiming.platformCellularObservationsAfterRearm.toLong(),
+                )
+                putNullableLong(
                     "fresh_cellular_observed_ms",
                     snapshot.rotationTiming.freshCellularObservedMs,
                 )

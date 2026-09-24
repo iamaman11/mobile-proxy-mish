@@ -433,6 +433,9 @@ foreach ($field in @(
     'airplane_disable_started_ms',
     'airplane_disable_effect_completed_ms',
     'airplane_off_observed_ms',
+    'cellular_request_rearm_started_ms',
+    'cellular_request_rearm_completed_ms',
+    'first_platform_cellular_observation_ms',
     'fresh_cellular_observed_ms',
     'fresh_cellular_generation',
     'root_authorized_ms',
@@ -444,6 +447,10 @@ foreach ($field in @(
     if ($null -eq $rotationTiming.$field -or [int64]$rotationTiming.$field -lt 0) {
         Stop-MishRemoteControl 'DEVICE_TIMELINE_INCOMPLETE' "Missing/invalid Rotation timing field: $field."
     }
+}
+if ($null -eq $rotationTiming.platform_cellular_observations_after_rearm -or
+    [int64]$rotationTiming.platform_cellular_observations_after_rearm -lt 1) {
+    Stop-MishRemoteControl 'DEVICE_TIMELINE_INCOMPLETE' 'No Android Cellular observation entered Rust after request rearm.'
 }
 if ([bool]$controlTimeline.control.pending_operation) {
     Stop-MishRemoteControl 'DEVICE_TIMELINE_NOT_ACKED' 'RESULT correlation is still pending after the manager returned and post diagnostics completed.'
@@ -469,6 +476,10 @@ if ([int64]$operationTiming.operation_reserved_ms -gt [int64]$operationTiming.ac
     [int64]$rotationTiming.cellular_loss_observed_ms -gt [int64]$rotationTiming.airplane_disable_started_ms -or
     [int64]$rotationTiming.airplane_disable_started_ms -gt [int64]$rotationTiming.airplane_disable_effect_completed_ms -or
     [int64]$rotationTiming.airplane_disable_effect_completed_ms -gt [int64]$rotationTiming.airplane_off_observed_ms -or
+    [int64]$rotationTiming.airplane_off_observed_ms -gt [int64]$rotationTiming.cellular_request_rearm_started_ms -or
+    [int64]$rotationTiming.cellular_request_rearm_started_ms -gt [int64]$rotationTiming.cellular_request_rearm_completed_ms -or
+    [int64]$rotationTiming.cellular_request_rearm_started_ms -gt [int64]$rotationTiming.first_platform_cellular_observation_ms -or
+    [int64]$rotationTiming.first_platform_cellular_observation_ms -gt [int64]$rotationTiming.fresh_cellular_observed_ms -or
     [int64]$rotationTiming.airplane_off_observed_ms -gt [int64]$rotationTiming.post_rotation_probe_started_ms -or
     [int64]$rotationTiming.fresh_cellular_observed_ms -gt [int64]$rotationTiming.post_rotation_probe_started_ms -or
     [int64]$rotationTiming.root_authorized_ms -gt [int64]$rotationTiming.post_rotation_probe_started_ms -or
@@ -549,6 +560,10 @@ $evidence = [ordered]@{
             airplane_disable_started_ms = [int64]$rotationTiming.airplane_disable_started_ms
             airplane_disable_effect_completed_ms = [int64]$rotationTiming.airplane_disable_effect_completed_ms
             airplane_off_observed_ms = [int64]$rotationTiming.airplane_off_observed_ms
+            cellular_request_rearm_started_ms = [int64]$rotationTiming.cellular_request_rearm_started_ms
+            cellular_request_rearm_completed_ms = [int64]$rotationTiming.cellular_request_rearm_completed_ms
+            first_platform_cellular_observation_ms = [int64]$rotationTiming.first_platform_cellular_observation_ms
+            platform_cellular_observations_after_rearm = [int64]$rotationTiming.platform_cellular_observations_after_rearm
             fresh_cellular_observed_ms = [int64]$rotationTiming.fresh_cellular_observed_ms
             fresh_cellular_generation = [int64]$rotationTiming.fresh_cellular_generation
             root_authorized_ms = [int64]$rotationTiming.root_authorized_ms
