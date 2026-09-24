@@ -419,6 +419,14 @@ impl ControlRuntimeCoordinator {
                         break;
                     }
                 }
+                // Rotation terminal is a concrete owner event after the intentional radio outage.
+                // Do not spend the remaining public response budget sleeping on a backoff that was
+                // accumulated while the network was intentionally unavailable. The same CONTROL
+                // task immediately retries; if that retry still fails, the normal bounded sequence
+                // restarts at 500 ms. No Rotation retry or second scheduler is introduced.
+                _ = self.result_changed.notified() => {
+                    failures = 0;
+                }
                 _ = sleep(Duration::from_millis(delay_ms)) => {}
             }
         }

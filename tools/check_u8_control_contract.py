@@ -89,6 +89,9 @@ def main() -> None:
         "recent_terminal",
         "ServerControlMessage::ResultAck",
         "result_changed.notify_one()",
+        "_ = self.result_changed.notified() => {",
+        "// Rotation terminal is a concrete owner event after the intentional radio outage.",
+        "failures = 0;",
     ):
         require(runtime, needle, "native control lifecycle/idempotency contract drifted")
     for forbidden in (
