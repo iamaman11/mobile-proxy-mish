@@ -365,7 +365,9 @@ export class DeviceControl {
   }
 
   async waitForTerminal(requestId, operation) {
+    let resolveTerminal;
     const terminalPromise = new Promise((resolve) => {
+      resolveTerminal = resolve;
       let waiters = this.waiters.get(requestId);
       if (!waiters) {
         waiters = new Set();
@@ -398,7 +400,7 @@ export class DeviceControl {
       terminal = await Promise.race([terminalPromise, timeoutPromise]);
     } finally {
       timeoutController.abort();
-      this.removeWaiter(requestId);
+      this.removeWaiter(requestId, resolveTerminal);
     }
 
     if (terminal) {
@@ -477,8 +479,11 @@ export class DeviceControl {
     for (const resolve of waiters) resolve(terminal);
   }
 
-  removeWaiter(requestId) {
-    this.waiters.delete(requestId);
+  removeWaiter(requestId, resolve) {
+    const waiters = this.waiters.get(requestId);
+    if (!waiters) return;
+    waiters.delete(resolve);
+    if (waiters.size === 0) this.waiters.delete(requestId);
   }
 
   authenticatedSocket() {
