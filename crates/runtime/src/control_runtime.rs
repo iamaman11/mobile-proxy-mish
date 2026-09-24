@@ -238,7 +238,9 @@ impl ControlRuntimeCoordinator {
 
     pub fn snapshot(&self) -> ControlRuntimeSnapshot {
         let now = Instant::now();
-        let rotation_timing = self.rotation.timing_snapshot_at(now);
+        // Tokio Instant and std Instant share the same monotonic clock; convert explicitly
+        // so both owner snapshots are sampled against one observation instant.
+        let rotation_timing = self.rotation.timing_snapshot_at(now.into());
         self.state()
             .map(|state| {
                 let operation_timing = state
