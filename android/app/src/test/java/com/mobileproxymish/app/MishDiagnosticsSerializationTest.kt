@@ -41,6 +41,7 @@ class MishDiagnosticsSerializationTest {
                 lastQuiesceWaitMs = 17uL,
                 maxQuiesceWaitMs = 42uL,
                 staleAfterReconcile = 2uL,
+                supersededDuringReconcile = 3uL,
             ),
             dns = CellularDnsDiagnosticView(
                 slowThresholdMs = 1_000uL,
@@ -152,6 +153,7 @@ class MishDiagnosticsSerializationTest {
         assertEquals(17L, reconcile.getLong("last_quiesce_wait_ms"))
         assertEquals(42L, reconcile.getLong("max_quiesce_wait_ms"))
         assertEquals(2L, reconcile.getLong("stale_after_reconcile"))
+        assertEquals(3L, reconcile.getLong("superseded_during_reconcile"))
 
         val root = json.getJSONObject("root")
         assertTrue(root.getBoolean("policy_authorized"))
