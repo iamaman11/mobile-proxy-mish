@@ -554,12 +554,12 @@ U8-F low-impact durability soak                      COMPLETE / PASS
      + one long-lived proxy CONNECT/WebSocket lifetime probe
      + controlled Android process/service-death recovery proof
      + bounded latency/error/resource evidence
-U8-G external privacy/path closure #315              CURRENT
+U8-G external privacy/path closure #315              COMPLETE / PASS
      + clean intended Windows client profile
      + DNS no-bypass proof
      + short final external regression across rotation
-U8-H support + exact provenance closure
-U8 FINAL PASS
+U8-H support + exact provenance closure              COMPLETE / PASS
+U8 FINAL PASS                                        COMPLETE / PASS
 ```
 
 Already accepted U2-U7 evidence is reused. Do not repeat process restart, ordinary cellular loss/recovery, accepted rotation lifecycle, 512/513 capacity or repeated 512 cleanup merely because U8 names durability again.
@@ -577,6 +577,24 @@ U8-F soak                 -> CONTROL/LAB first
 U8-G privacy/path         -> client/LAB first
 U8-H provenance           -> docs/evidence only
 ```
+
+### U8-G / U8-H final closure
+
+U8-G closed on the exact accepted PRODUCT without a PRODUCT change:
+
+- exact accepted PRODUCT source: `94a9f4993b524b0388f0e2216e9e78183c8a3a4f`;
+- final U8-G control: `16a843cca4890b5d777b11cccb0ebeb9cb26924a`;
+- Device Cycle #728 / run `35936074767` = `U8_G_FINAL_CLEAN_CLIENT_PASS`;
+- exact-candidate acceptance and baseline both PASS;
+- clean-client DNS no-bypass PASS before and after one explicit rotation;
+- browser egress matched the expected MISH proxy path and did not match host-default before/after;
+- one PRODUCT-owned rotation = `CHANGED` with canonical-proxy/browser external-outcome consensus;
+- PRODUCT finished READY;
+- raw public/private IPs, DNS resolver literals and credentials were not persisted.
+
+The prior headless `NAVIGATION_0` blocker was CONTROL/LAB-only: one URL was serialized as a JSON string rather than a one-element JSON array. #360 corrected the serializer and #361 added a deterministic regression proof. No MISH DNS/TLS/proxy defect was demonstrated.
+
+U8-H is docs/evidence-only. It adds no runtime support bundle, status database, daemon, scheduler, second build/release authority or physical rerun. Support/provenance reconstruction is a logical composition of existing immutable GitHub source/run/artifact/evidence identities under `RELEASE.md`, `ACCEPTANCE.md`, `SOURCE_OF_TRUTH.md` and `docs/lab/EVIDENCE.md`.
 
 U8-E v1 is intentionally narrow: device session authentication/registration, `ROTATE_IP`, operation-result retrieval and only the liveness protocol required for those operations. No generic status RPC, arbitrary commands, remote proxy-credential retrieval, fleet scheduler, offline command queue, persistent device-state mirror or proxy data tunneling is part of U8.
 
