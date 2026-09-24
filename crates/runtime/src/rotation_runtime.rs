@@ -890,20 +890,14 @@ impl RotationRuntimeCoordinator {
             Err(()) => return false,
         };
         self.mark_timing(operation_id, |timing, elapsed_ms| {
-            set_once(
-                &mut timing.cellular_request_rearm_started_ms,
-                elapsed_ms,
-            );
+            set_once(&mut timing.cellular_request_rearm_started_ms, elapsed_ms);
         });
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             effect.rearm_cellular_request()
         }))
         .unwrap_or(false);
         self.mark_timing(operation_id, |timing, elapsed_ms| {
-            set_once(
-                &mut timing.cellular_request_rearm_completed_ms,
-                elapsed_ms,
-            );
+            set_once(&mut timing.cellular_request_rearm_completed_ms, elapsed_ms);
         });
         result
     }
