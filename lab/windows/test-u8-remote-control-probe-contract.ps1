@@ -69,8 +69,10 @@ foreach ($required in @(
     "MISH_U8_REMOTE_CONTROL_EXTERNAL_PUBLIC_IP=PASS",
     "U8_REMOTE_CONTROL_MANAGER_TIMEOUT_DIAGNOSTIC",
     "MISH_U8_REMOTE_CONTROL_TIMEOUT_DIAGNOSTIC=CAPTURED",
+    "device_timeline_at_timeout",
+    "product_snapshot_capture",
     "operation_polls = 0",
-    "no retry was issued"
+    "no retry or polling was issued"
 )) {
     if (-not $source.Contains($required)) { throw "U8 remote-control probe contract drifted: $required" }
 }
@@ -130,6 +132,20 @@ foreach ($forbidden in @(
 )) {
     if ($source.Contains($forbidden) -or $moduleSource.Contains($forbidden)) {
         throw "Remote public-IP consensus must never persist or print raw addresses: $forbidden"
+    }
+}
+
+if (([regex]::Matches($source, [regex]::Escape('Invoke-MishControlSnapshot'))).Count -lt 3) {
+    throw 'U8 remote-control acceptance must retain baseline/success/timeout read-only CONTROL snapshots.'
+}
+foreach ($forbidden in @(
+    'Start-Sleep -Seconds 18',
+    'Start-Sleep -Milliseconds 18000',
+    'operation_polls = 1',
+    'retry manager timeout'
+)) {
+    if ($source.Contains($forbidden)) {
+        throw "Manager-timeout diagnostics must remain immediate, one-shot and non-polling: $forbidden"
     }
 }
 

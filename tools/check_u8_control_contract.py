@@ -383,8 +383,10 @@ def main() -> None:
         "MISH_U8_REMOTE_CONTROL_EXTERNAL_PUBLIC_IP=PASS",
         "U8_REMOTE_CONTROL_MANAGER_TIMEOUT_DIAGNOSTIC",
         "MISH_U8_REMOTE_CONTROL_TIMEOUT_DIAGNOSTIC=CAPTURED",
+        "device_timeline_at_timeout",
+        "product_snapshot_capture",
         "operation_polls = 0",
-        "no retry was issued",
+        "no retry or polling was issued",
         "client_bound_seconds = $TerminalTimeoutSeconds",
     ):
         require(
