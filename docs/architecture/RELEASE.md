@@ -68,11 +68,31 @@ hosted artifact digest
   -> installed base.apk digest + installed certificate
 ```
 
+## U8-H support and exact provenance closure
+
+U8 closes without adding an RC/prerelease/promotion pipeline. The accepted development and physical
+identity remains the exact lineage already used by the project:
+
+```text
+protected main
+  + exact PRODUCT source SHA when a candidate was physically exercised
+  + exact CONTROL SHA
+  + hosted producer run + artifact id/digest
+  + LAB-signed APK digest + signing certificate when installation is part of the claim
+  + exact Device Cycle run + typed evidence classification
+```
+
+For operator/support work, this is a logical provenance packet assembled from existing immutable
+GitHub records. It is not a new generated support artifact, mutable status database or second release
+authority. Runtime facts remain owned by PRODUCT/provider/device owners and are observed through the
+existing typed diagnostics.
+
 ## Distribution
 
-Stable external distribution, store publication, or production signing may be defined later when the
-roadmap reaches deployment closure. That future distribution task must not introduce a second
-development/physical-acceptance authority and must not require an RC lineage.
+Stable external distribution, store publication or production signing is a separate future product
+requirement, not a U8 acceptance prerequisite. If introduced later, it must define one exact immutable
+distribution identity while reusing the current source/build/physical authorities; it must not relabel
+a debug candidate, introduce a mutable `latest` pointer, or require an RC lineage merely as ceremony.
 
-Until then, exact hosted device-candidate artifacts plus canonical Device Cycle evidence are the only
-Android build/physical-acceptance identity used by the project.
+Until such a distribution requirement exists, exact hosted device-candidate artifacts plus canonical
+Device Cycle evidence remain the Android build/physical-acceptance identity used by the project.
