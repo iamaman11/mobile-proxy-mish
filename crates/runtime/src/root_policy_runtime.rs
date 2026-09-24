@@ -62,9 +62,11 @@ pub enum RootPolicyResult {
     Enforced,
     FailClosed(Option<RootPolicyFailure>),
     AuthorityUnavailable(RootAuthorityStatus),
-    /// The Cellular owner generation changed at a cancellation-safe boundary.
-    ///
-    /// This is an internal coordination outcome: it must never be published as policy authority.
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RootPolicyReconcileOutcome {
+    Completed(RootPolicyResult),
     Superseded,
 }
 
@@ -146,8 +148,15 @@ impl RootPolicyRuntime {
         admitted: bool,
         interface_name: Option<&str>,
     ) -> RootPolicyResult {
-        self.reconcile_if_current(admitted, interface_name, || true)
+        match self
+            .reconcile_if_current(admitted, interface_name, || true)
             .await
+        {
+            RootPolicyReconcileOutcome::Completed(result) => result,
+            RootPolicyReconcileOutcome::Superseded => {
+                unreachable!("an always-current root reconcile cannot be superseded")
+            }
+        }
     }
 
     /// Reconciles one Cellular owner generation while allowing its natural owner to invalidate
@@ -161,7 +170,7 @@ impl RootPolicyRuntime {
         admitted: bool,
         interface_name: Option<&str>,
         is_current: F,
-    ) -> RootPolicyResult
+    ) -> RootPolicyReconcileOutcome
     where
         F: Fn() -> bool + Sync,
     {
@@ -175,7 +184,7 @@ impl RootPolicyRuntime {
                 Duration::ZERO,
                 RootPolicyCommandWindowDiagnostic::default(),
             );
-            return RootPolicyResult::Superseded;
+            return RootPolicyReconcileOutcome::Superseded;
         }
 
         let authority = self.probe_authority(&mut state).await;
@@ -186,7 +195,9 @@ impl RootPolicyRuntime {
                 Duration::ZERO,
                 RootPolicyCommandWindowDiagnostic::default(),
             );
-            return RootPolicyResult::AuthorityUnavailable(authority);
+            return RootPolicyReconcileOutcome::Completed(
+                RootPolicyResult::AuthorityUnavailable(authority),
+            );
         }
         if !is_current() {
             record_reconcile(
@@ -195,11 +206,12 @@ impl RootPolicyRuntime {
                 Duration::ZERO,
                 RootPolicyCommandWindowDiagnostic::default(),
             );
-            return RootPolicyResult::Superseded;
+            return RootPolicyReconcileOutcome::Superseded;
         }
 
         let policy_started = Instant::now();
         let mut window = RootPolicyCommandWindow::default();
+        let mut superseded = false;
         let result = self
             .reconcile_authorized(
                 &mut state.contract,
@@ -207,6 +219,7 @@ impl RootPolicyRuntime {
                 interface_name,
                 &mut window,
                 &is_current,
+                &mut superseded,
             )
             .await;
         record_reconcile(
@@ -215,7 +228,11 @@ impl RootPolicyRuntime {
             policy_started.elapsed(),
             window.diagnostic(),
         );
-        result
+        if superseded {
+            RootPolicyReconcileOutcome::Superseded
+        } else {
+            RootPolicyReconcileOutcome::Completed(result)
+        }
     }
 
     pub async fn diagnostic(&self) -> RootPolicyReconcileDiagnostic {
@@ -238,6 +255,7 @@ impl RootPolicyRuntime {
         interface_name: Option<&str>,
         window: &mut RootPolicyCommandWindow,
         is_current: &F,
+        superseded: &mut bool,
     ) -> RootPolicyResult
     where
         F: Fn() -> bool + Sync,
@@ -249,7 +267,8 @@ impl RootPolicyRuntime {
         // No policy mutation has happened yet. A superseded generation can be abandoned without
         // changing kernel state.
         if !is_current() {
-            return RootPolicyResult::Superseded;
+            *superseded = true;
+            return RootPolicyResult::FailClosed(None);
         }
 
         match contract.resolve_identity(&initial) {
@@ -321,7 +340,8 @@ impl RootPolicyRuntime {
         // Everything before this point is the fail-closed base. If owner generation changed while
         // constructing it, stop here rather than starting admitted-generation work.
         if !is_current() {
-            return RootPolicyResult::Superseded;
+            *superseded = true;
+            return RootPolicyResult::FailClosed(None);
         }
 
         if !admitted {
@@ -341,7 +361,8 @@ impl RootPolicyRuntime {
         // Route-table discovery is observation-only. This is the final safe point before the
         // admitted lookup mutation begins.
         if !is_current() {
-            return RootPolicyResult::Superseded;
+            *superseded = true;
+            return RootPolicyResult::FailClosed(None);
         }
 
         if let Err(failure) = self.replace_ipv4_lookup(contract, &table, window).await {
@@ -1120,7 +1141,6 @@ mod tests {
         assert!(
             !RootPolicyResult::FailClosed(Some(RootPolicyFailure::MutationRejected)).retryable()
         );
-        assert!(!RootPolicyResult::Superseded.retryable());
     }
 
     struct SupersedingIo {
@@ -1252,7 +1272,7 @@ mod tests {
             })
             .await;
 
-        assert_eq!(result, RootPolicyResult::Superseded);
+        assert_eq!(result, RootPolicyReconcileOutcome::Superseded);
         assert_eq!(
             io.line_calls.load(std::sync::atomic::Ordering::SeqCst),
             4
