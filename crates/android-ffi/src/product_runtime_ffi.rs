@@ -26,9 +26,9 @@ use mish_runtime::{
     ProductRuntimeSnapshot, ProxyRuntimeObserver, ProxyRuntimePublication,
     ProxyServingState as OwnerProxyServingState, ReadinessDiagnosticSnapshot, ReadinessObserver,
     RootAuthorityStatus as OwnerRootAuthorityStatus, RootPolicyFailure as OwnerRootPolicyFailure,
-    RootPolicyReconcileDiagnostic, RootPolicyResult as OwnerRootPolicyResult,
-    RootRecoveryDiagnostic, RotationObserver, RotationRuntimeStartError,
-    RotationRuntimeTimingSnapshot, RuntimeExecutionError,
+    RootPolicyPhaseDiagnostic, RootPolicyPhaseDiagnostics, RootPolicyReconcileDiagnostic,
+    RootPolicyResult as OwnerRootPolicyResult, RootRecoveryDiagnostic, RotationObserver,
+    RotationRuntimeStartError, RotationRuntimeTimingSnapshot, RuntimeExecutionError,
 };
 use mish_transport::MeshVpnObservation;
 use std::fmt;
@@ -214,6 +214,24 @@ pub struct RootRecoveryDiagnosticView {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct RootPolicyPhaseDiagnosticView {
+    pub elapsed_ms: u64,
+    pub commands: u64,
+    pub observation_commands: u64,
+    pub mutation_commands: u64,
+    pub duplicate_observations: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct RootPolicyPhaseDiagnosticsView {
+    pub initial_snapshot: RootPolicyPhaseDiagnosticView,
+    pub fail_closed_prepare: RootPolicyPhaseDiagnosticView,
+    pub fail_closed_verify: RootPolicyPhaseDiagnosticView,
+    pub table_discovery: RootPolicyPhaseDiagnosticView,
+    pub admitted_apply_verify: RootPolicyPhaseDiagnosticView,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
 pub struct RootPolicyReconcileDiagnosticView {
     pub attempts: u64,
     pub total_executor_commands: u64,
@@ -230,6 +248,7 @@ pub struct RootPolicyReconcileDiagnosticView {
     pub last_duplicate_observations: u64,
     pub last_incomplete_or_timed_out_commands: u64,
     pub last_mutation_failures: u64,
+    pub last_phases: RootPolicyPhaseDiagnosticsView,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
@@ -1517,6 +1536,28 @@ fn map_recovery_diagnostic(diagnostic: RootRecoveryDiagnostic) -> RootRecoveryDi
     }
 }
 
+fn map_root_policy_phase_diagnostic(
+    diagnostic: RootPolicyPhaseDiagnostic,
+) -> RootPolicyPhaseDiagnosticView {
+    RootPolicyPhaseDiagnosticView {
+        elapsed_ms: diagnostic.elapsed_ms,
+        commands: diagnostic.commands,
+        observation_commands: diagnostic.observation_commands,
+        mutation_commands: diagnostic.mutation_commands,
+        duplicate_observations: diagnostic.duplicate_observations,
+    }
+}
+
+fn map_root_policy_phases(phases: RootPolicyPhaseDiagnostics) -> RootPolicyPhaseDiagnosticsView {
+    RootPolicyPhaseDiagnosticsView {
+        initial_snapshot: map_root_policy_phase_diagnostic(phases.initial_snapshot),
+        fail_closed_prepare: map_root_policy_phase_diagnostic(phases.fail_closed_prepare),
+        fail_closed_verify: map_root_policy_phase_diagnostic(phases.fail_closed_verify),
+        table_discovery: map_root_policy_phase_diagnostic(phases.table_discovery),
+        admitted_apply_verify: map_root_policy_phase_diagnostic(phases.admitted_apply_verify),
+    }
+}
+
 fn map_root_policy_diagnostic(
     diagnostic: RootPolicyReconcileDiagnostic,
 ) -> RootPolicyReconcileDiagnosticView {
@@ -1536,6 +1577,7 @@ fn map_root_policy_diagnostic(
         last_duplicate_observations: diagnostic.last_duplicate_observations,
         last_incomplete_or_timed_out_commands: diagnostic.last_incomplete_or_timed_out_commands,
         last_mutation_failures: diagnostic.last_mutation_failures,
+        last_phases: map_root_policy_phases(diagnostic.last_phases),
     }
 }
 

@@ -80,6 +80,24 @@ impl RootPolicyResult {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RootPolicyPhaseDiagnostic {
+    pub elapsed_ms: u64,
+    pub commands: u64,
+    pub observation_commands: u64,
+    pub mutation_commands: u64,
+    pub duplicate_observations: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RootPolicyPhaseDiagnostics {
+    pub initial_snapshot: RootPolicyPhaseDiagnostic,
+    pub fail_closed_prepare: RootPolicyPhaseDiagnostic,
+    pub fail_closed_verify: RootPolicyPhaseDiagnostic,
+    pub table_discovery: RootPolicyPhaseDiagnostic,
+    pub admitted_apply_verify: RootPolicyPhaseDiagnostic,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RootPolicyReconcileDiagnostic {
     pub attempts: u64,
     pub total_executor_commands: u64,
@@ -96,6 +114,7 @@ pub struct RootPolicyReconcileDiagnostic {
     pub last_duplicate_observations: u64,
     pub last_incomplete_or_timed_out_commands: u64,
     pub last_mutation_failures: u64,
+    pub last_phases: RootPolicyPhaseDiagnostics,
 }
 
 struct RootPolicyState {
@@ -152,20 +171,29 @@ impl RootPolicyRuntime {
                 reconcile_started,
                 Duration::ZERO,
                 RootPolicyCommandWindowDiagnostic::default(),
+                RootPolicyPhaseDiagnostics::default(),
             );
             return RootPolicyResult::AuthorityUnavailable(authority);
         }
 
         let policy_started = Instant::now();
         let mut window = RootPolicyCommandWindow::default();
+        let mut phases = RootPolicyPhaseDiagnostics::default();
         let result = self
-            .reconcile_authorized(&mut state.contract, admitted, interface_name, &mut window)
+            .reconcile_authorized(
+                &mut state.contract,
+                admitted,
+                interface_name,
+                &mut window,
+                &mut phases,
+            )
             .await;
         record_reconcile(
             &mut state.diagnostic,
             reconcile_started,
             policy_started.elapsed(),
             window.diagnostic(),
+            phases,
         );
         result
     }
@@ -189,11 +217,16 @@ impl RootPolicyRuntime {
         admitted: bool,
         interface_name: Option<&str>,
         window: &mut RootPolicyCommandWindow,
+        phases: &mut RootPolicyPhaseDiagnostics,
     ) -> RootPolicyResult {
+        let phase_started = Instant::now();
+        let phase_before = window.diagnostic();
         let initial = match self.read_snapshot(window).await {
             Ok(snapshot) => snapshot,
             Err(failure) => return RootPolicyResult::FailClosed(Some(failure)),
         };
+        phases.initial_snapshot =
+            phase_diagnostic(phase_started, phase_before, window.diagnostic());
 
         match contract.resolve_identity(&initial) {
             PolicyIdentityResolution::Selected(_) => {}
@@ -212,6 +245,8 @@ impl RootPolicyRuntime {
             }
         }
 
+        let phase_started = Instant::now();
+        let phase_before = window.diagnostic();
         if let Err(failure) = self.ensure_guard(contract, true, window).await {
             return RootPolicyResult::FailClosed(Some(failure));
         }
@@ -253,7 +288,11 @@ impl RootPolicyRuntime {
         {
             return RootPolicyResult::FailClosed(Some(failure));
         }
+        phases.fail_closed_prepare =
+            phase_diagnostic(phase_started, phase_before, window.diagnostic());
 
+        let phase_started = Instant::now();
+        let phase_before = window.diagnostic();
         let fail_closed = match self.read_snapshot(window).await {
             Ok(snapshot) => snapshot,
             Err(failure) => return RootPolicyResult::FailClosed(Some(failure)),
@@ -261,6 +300,8 @@ impl RootPolicyRuntime {
         if contract.verify_fail_closed_base(&fail_closed).is_err() {
             return RootPolicyResult::FailClosed(Some(RootPolicyFailure::StructuralMismatch));
         }
+        phases.fail_closed_verify =
+            phase_diagnostic(phase_started, phase_before, window.diagnostic());
 
         if !admitted {
             return RootPolicyResult::FailClosed(None);
@@ -269,6 +310,8 @@ impl RootPolicyRuntime {
         let Some(interface) = interface_name.filter(|value| is_safe_interface_name(value)) else {
             return RootPolicyResult::FailClosed(Some(RootPolicyFailure::InvalidInterface));
         };
+        let phase_started = Instant::now();
+        let phase_before = window.diagnostic();
         let table = match self
             .discover_validated_ipv4_table(&fail_closed.ipv4_rules, interface, window)
             .await
@@ -276,7 +319,10 @@ impl RootPolicyRuntime {
             Ok(table) => table,
             Err(failure) => return RootPolicyResult::FailClosed(Some(failure)),
         };
+        phases.table_discovery = phase_diagnostic(phase_started, phase_before, window.diagnostic());
 
+        let phase_started = Instant::now();
+        let phase_before = window.diagnostic();
         if let Err(failure) = self.replace_ipv4_lookup(contract, &table, window).await {
             return RootPolicyResult::FailClosed(Some(failure));
         }
@@ -295,6 +341,8 @@ impl RootPolicyRuntime {
                 RootPolicyFailure::RouteLookupVerificationFailed,
             ));
         }
+        phases.admitted_apply_verify =
+            phase_diagnostic(phase_started, phase_before, window.diagnostic());
 
         RootPolicyResult::Enforced
     }
@@ -988,11 +1036,32 @@ fn parse_lines(stdout: &str) -> Vec<String> {
         .collect()
 }
 
+fn phase_diagnostic(
+    started: Instant,
+    before: RootPolicyCommandWindowDiagnostic,
+    after: RootPolicyCommandWindowDiagnostic,
+) -> RootPolicyPhaseDiagnostic {
+    RootPolicyPhaseDiagnostic {
+        elapsed_ms: duration_ms(started.elapsed()),
+        commands: after.commands.saturating_sub(before.commands),
+        observation_commands: after
+            .observation_commands
+            .saturating_sub(before.observation_commands),
+        mutation_commands: after
+            .mutation_commands
+            .saturating_sub(before.mutation_commands),
+        duplicate_observations: after
+            .duplicate_observations
+            .saturating_sub(before.duplicate_observations),
+    }
+}
+
 fn record_reconcile(
     diagnostic: &mut RootPolicyReconcileDiagnostic,
     started: Instant,
     policy_elapsed: Duration,
     window: RootPolicyCommandWindowDiagnostic,
+    phases: RootPolicyPhaseDiagnostics,
 ) {
     let reconcile_ms = duration_ms(started.elapsed());
     let policy_ms = duration_ms(policy_elapsed);
@@ -1020,6 +1089,7 @@ fn record_reconcile(
     diagnostic.last_duplicate_observations = window.duplicate_observations;
     diagnostic.last_incomplete_or_timed_out_commands = window.incomplete_or_timed_out_commands;
     diagnostic.last_mutation_failures = window.mutation_failures;
+    diagnostic.last_phases = phases;
 }
 
 fn duration_ms(duration: Duration) -> u64 {

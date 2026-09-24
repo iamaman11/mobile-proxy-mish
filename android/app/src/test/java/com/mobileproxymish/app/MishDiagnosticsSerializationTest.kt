@@ -6,6 +6,8 @@ import com.mobileproxymish.ffi.ControlOperationTimingView
 import com.mobileproxymish.ffi.ControlRuntimeSnapshotView
 import com.mobileproxymish.ffi.ControlSessionStateView
 import com.mobileproxymish.ffi.ProductDiagnosticSnapshotView
+import com.mobileproxymish.ffi.RootPolicyPhaseDiagnosticView
+import com.mobileproxymish.ffi.RootPolicyPhaseDiagnosticsView
 import com.mobileproxymish.ffi.RootPolicyReconcileDiagnosticView
 import com.mobileproxymish.ffi.RootRecoveryDiagnosticView
 import com.mobileproxymish.ffi.RemoteRotationResultView
@@ -82,6 +84,43 @@ class MishDiagnosticsSerializationTest {
                 lastDuplicateObservations = 0uL,
                 lastIncompleteOrTimedOutCommands = 0uL,
                 lastMutationFailures = 0uL,
+                lastPhases = RootPolicyPhaseDiagnosticsView(
+                    initialSnapshot = RootPolicyPhaseDiagnosticView(
+                        elapsedMs = 5uL,
+                        commands = 4uL,
+                        observationCommands = 4uL,
+                        mutationCommands = 0uL,
+                        duplicateObservations = 0uL,
+                    ),
+                    failClosedPrepare = RootPolicyPhaseDiagnosticView(
+                        elapsedMs = 7uL,
+                        commands = 8uL,
+                        observationCommands = 7uL,
+                        mutationCommands = 1uL,
+                        duplicateObservations = 2uL,
+                    ),
+                    failClosedVerify = RootPolicyPhaseDiagnosticView(
+                        elapsedMs = 4uL,
+                        commands = 4uL,
+                        observationCommands = 4uL,
+                        mutationCommands = 0uL,
+                        duplicateObservations = 4uL,
+                    ),
+                    tableDiscovery = RootPolicyPhaseDiagnosticView(
+                        elapsedMs = 3uL,
+                        commands = 2uL,
+                        observationCommands = 2uL,
+                        mutationCommands = 0uL,
+                        duplicateObservations = 0uL,
+                    ),
+                    admittedApplyVerify = RootPolicyPhaseDiagnosticView(
+                        elapsedMs = 6uL,
+                        commands = 3uL,
+                        observationCommands = 2uL,
+                        mutationCommands = 1uL,
+                        duplicateObservations = 1uL,
+                    ),
+                ),
             ),
             rootRecovery = RootRecoveryDiagnosticView(
                 pending = false,
@@ -158,6 +197,23 @@ class MishDiagnosticsSerializationTest {
         assertEquals(3L, root.getLong("session_generation"))
         assertEquals(41L, root.getLong("policy_authorized_generation"))
         assertTrue(root.isNull("last_failure_class"))
+        val rootPhases = root.getJSONObject("reconcile").getJSONObject("phases")
+        val initialSnapshot = rootPhases.getJSONObject("initial_snapshot")
+        assertEquals(5L, initialSnapshot.getLong("elapsed_ms"))
+        assertEquals(4L, initialSnapshot.getLong("commands"))
+        assertEquals(4L, initialSnapshot.getLong("observation_commands"))
+        assertEquals(0L, initialSnapshot.getLong("mutation_commands"))
+        val failClosedPrepare = rootPhases.getJSONObject("fail_closed_prepare")
+        assertEquals(7L, failClosedPrepare.getLong("elapsed_ms"))
+        assertEquals(8L, failClosedPrepare.getLong("commands"))
+        assertEquals(1L, failClosedPrepare.getLong("mutation_commands"))
+        val failClosedVerify = rootPhases.getJSONObject("fail_closed_verify")
+        assertEquals(4L, failClosedVerify.getLong("duplicate_observations"))
+        val tableDiscovery = rootPhases.getJSONObject("table_discovery")
+        assertEquals(2L, tableDiscovery.getLong("observation_commands"))
+        val admittedApplyVerify = rootPhases.getJSONObject("admitted_apply_verify")
+        assertEquals(6L, admittedApplyVerify.getLong("elapsed_ms"))
+        assertEquals(1L, admittedApplyVerify.getLong("mutation_commands"))
 
         val proxyRecovery = json.getJSONObject("proxy").getJSONObject("recovery")
         assertEquals(7L, proxyRecovery.getLong("operation_id"))
