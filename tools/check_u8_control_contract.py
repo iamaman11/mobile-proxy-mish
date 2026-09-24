@@ -37,6 +37,7 @@ def main() -> None:
     receiver = "android/app/src/main/java/com/mobileproxymish/app/ControlIdentityProvisioningReceiver.kt"
     manifest = "android/app/src/main/AndroidManifest.xml"
     worker = "infra/cloudflare/control-worker/src/index.mjs"
+    manager_api = "infra/cloudflare/control-worker/src/manager_api.mjs"
     protocol = "infra/cloudflare/control-worker/src/protocol.mjs"
     wrangler = "infra/cloudflare/control-worker/wrangler.jsonc"
 
@@ -242,6 +243,14 @@ def main() -> None:
         '"recent_operations"',
         "MAX_RECENT_OPERATIONS",
         "resultAckMessage",
+        'const MANAGER_ROTATE = "/v1/rotate"',
+        'const PRIMARY_DEVICE_OBJECT = "primary"',
+        '"https://control.internal/manager/rotate-and-wait"',
+        "newManagerRequestId()",
+        "rotateAndWait",
+        "dispatchRotation",
+        "waitForTerminal",
+        "scheduler",
     ):
         require(worker, needle, "Durable Object broker/hibernation contract drifted")
     for forbidden in (
@@ -252,8 +261,38 @@ def main() -> None:
         "offline_queue",
         "setInterval(",
         "setTimeout(",
+        "/manager/operation",
+        'match[2] === "rotate"',
     ):
         forbid(worker, forbidden, "Worker/DO must remain a narrow broker with no proxy secret/VPC/polling loop")
+
+    for needle in (
+        'MANAGER_ROTATE_SCHEMA = "mish.control.rotate/v1"',
+        'MANAGER_ROTATE_WAIT_TIMEOUT_MS = 180_000',
+        '"CHANGED"',
+        '"UNCHANGED"',
+        '"FAILED"',
+        '"REJECTED"',
+        '"UNKNOWN"',
+        '"UNAUTHORIZED"',
+        '"DEVICE_OFFLINE"',
+        '"BUSY"',
+        '"TIMEOUT"',
+        '"INTERNAL_ERROR"',
+        "retryable",
+        "dispatched",
+        "device_online",
+        "operation_id",
+        "timing",
+    ):
+        require(manager_api, needle, "public manager response contract drifted")
+    for forbidden in (
+        "device_id",
+        "MISH_MANAGER_TOKEN",
+        "setInterval(",
+        "setTimeout(",
+    ):
+        forbid(manager_api, forbidden, "manager API schema must not acquire device routing, secrets or polling")
 
     for needle in (
         'AUTH_DOMAIN = "MISH_CONTROL_AUTH_V1"',
@@ -301,6 +340,7 @@ def main() -> None:
         controller,
         receiver,
         worker,
+        manager_api,
         protocol,
         wrangler,
     ):
