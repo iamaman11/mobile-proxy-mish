@@ -2182,8 +2182,9 @@ def main() -> None:
         "Kotlin diagnostics must only serialize the Rust-owned executor task count",
     )
 
-    # U8-F control-session observability stays inside the existing Rust owner and projects through
-    # one DUMP-only single-owner snapshot. No polling loop, heartbeat policy or Kotlin control owner.
+    # CONTROL liveness and observability stay inside the existing Rust owner and project through
+    # one DUMP-only single-owner snapshot. The heartbeat is one timer branch inside the existing
+    # ControlRuntimeCoordinator task; no second runtime/thread/scheduler or Kotlin control owner.
     control_runtime = "crates/runtime/src/control_runtime.rs"
     for required in (
         "pub reconnect_count: u64",
@@ -2194,24 +2195,34 @@ def main() -> None:
         "pub last_tx_age_ms: Option<u64>",
         "pub last_rx_age_ms: Option<u64>",
         "fn record_reconnect(&self)",
+        "fn record_heartbeat(&self)",
+        "const CONTROL_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(4);",
+        "MissedTickBehavior::Delay",
+        "heartbeat_outstanding",
         "async fn write_text_observed(",
         "async fn read_message_observed(",
     ):
         require(
             control_runtime,
             required,
-            "U8-F control telemetry must remain owned by ControlRuntimeCoordinator",
+            "CONTROL liveness/telemetry must remain owned by ControlRuntimeCoordinator",
         )
     for forbidden in (
-        "CONTROL_HEARTBEAT_INTERVAL",
         "scheduleAtFixedRate",
         "setInterval(",
         'write_text("PING")',
+        "tokio::runtime::Builder",
+        "std::thread",
     ):
         forbid(
             control_runtime,
             forbidden,
-            "U8-F observability must not introduce an application heartbeat or second scheduler",
+            "CONTROL heartbeat must stay on the sole existing Rust/Tokio session task",
+        )
+    control_runtime_text = read(control_runtime)
+    if control_runtime_text.count("interval(CONTROL_HEARTBEAT_INTERVAL)") != 1:
+        raise SystemExit(
+            "architecture guard: CONTROL must have exactly one heartbeat interval on the existing session task"
         )
 
     for required in (
