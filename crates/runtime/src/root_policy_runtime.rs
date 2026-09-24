@@ -1351,7 +1351,6 @@ mod tests {
         }
     }
 
-
     struct PreparedFailClosedIo {
         snapshot: RootPolicySnapshot,
         line_calls: std::sync::atomic::AtomicUsize,
@@ -1360,7 +1359,10 @@ mod tests {
     }
 
     impl PreparedFailClosedIo {
-        fn result(exit_code: i32, stdout: impl Into<String>) -> crate::root_session::RootCommandResult {
+        fn result(
+            exit_code: i32,
+            stdout: impl Into<String>,
+        ) -> crate::root_session::RootCommandResult {
             crate::root_session::RootCommandResult {
                 exit_code,
                 stdout: stdout.into(),
