@@ -35,7 +35,10 @@ const PRODUCT_ROTATION_SAFETY_MS = 90_000;
 const CONTROL_DELIVERY_MARGIN_MS = 30_000;
 const ACCEPTED_RESULT_LEASE_MS = PRODUCT_ROTATION_SAFETY_MS + CONTROL_DELIVERY_MARGIN_MS;
 const INITIAL_DELIVERY_ACK_MS = 10_000;
-const RECOVERY_DELIVERY_ACK_MS = 15_000;
+// Recovery must cover the PRODUCT client's allowed first reconnect path after a READY session:
+// 1 s backoff + 15 s connect + 10 s challenge + 10 s READY, plus 4 s CONTROL/wire margin.
+// Keep the resulting 10 s initial + 40 s recovery fence below the 55 s manager HTTP bound.
+const RECOVERY_DELIVERY_ACK_MS = 40_000;
 const FENCED_DRAIN_MS = PRODUCT_ROTATION_SAFETY_MS + CONTROL_DELIVERY_MARGIN_MS;
 
 export default {
