@@ -306,6 +306,19 @@ impl RootPolicyContract {
         Ok(())
     }
 
+    /// Returns true only when every fail-closed preparation effect is already a no-op.
+    ///
+    /// This is a pure snapshot predicate. Runtime callers may use it only before they perform
+    /// any mutation and must still execute their authoritative post-prepare verification read.
+    pub fn fail_closed_prepare_is_noop(&self, snapshot: &RootPolicySnapshot) -> bool {
+        if self.verify_fail_closed_base(snapshot).is_err() {
+            return false;
+        }
+        let legacy = self.legacy_selector_line();
+        !snapshot.ipv4_mangle.iter().any(|line| line == &legacy)
+            && !snapshot.ipv6_mangle.iter().any(|line| line == &legacy)
+    }
+
     pub fn verify_exact_cleanup(&self, snapshot: &RootPolicySnapshot) -> bool {
         let chain = self.chain_name();
         self.owned_ipv4_lookup_tables(&snapshot.ipv4_rules)
@@ -1359,6 +1372,15 @@ mod tests {
         );
 
         assert_eq!(contract.verify_fail_closed_base(&snapshot), Ok(()));
+        assert!(contract.fail_closed_prepare_is_noop(&snapshot));
+
+        snapshot.ipv4_mangle.push(contract.legacy_selector_line());
+        assert!(
+            !contract.fail_closed_prepare_is_noop(&snapshot),
+            "legacy selector still requires preparation even when fail-closed base is exact"
+        );
+        snapshot.ipv4_mangle.pop();
+        assert!(contract.fail_closed_prepare_is_noop(&snapshot));
 
         snapshot.ipv4_rules.push(format!(
             "{}: from all fwmark {}/{} lookup 1052",
@@ -1370,6 +1392,7 @@ mod tests {
             contract.verify_fail_closed_base(&snapshot),
             Err(RootPolicyStructuralFailure::LookupStillPresent)
         );
+        assert!(!contract.fail_closed_prepare_is_noop(&snapshot));
     }
 
     #[test]
