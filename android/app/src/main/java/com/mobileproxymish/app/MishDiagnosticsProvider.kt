@@ -73,6 +73,10 @@ internal fun renderMishDiagnosticSnapshotV2(
             put("last_quiesce_wait_ms", snapshot.cellularReconcile.lastQuiesceWaitMs.toLong())
             put("max_quiesce_wait_ms", snapshot.cellularReconcile.maxQuiesceWaitMs.toLong())
             put("stale_after_reconcile", snapshot.cellularReconcile.staleAfterReconcile.toLong())
+            put(
+                "superseded_during_reconcile",
+                snapshot.cellularReconcile.supersededDuringReconcile.toLong(),
+            )
         })
         put("dns", JSONObject().apply {
             val dns = snapshot.dns

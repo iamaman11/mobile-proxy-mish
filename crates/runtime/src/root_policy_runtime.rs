@@ -64,6 +64,12 @@ pub enum RootPolicyResult {
     AuthorityUnavailable(RootAuthorityStatus),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RootPolicyReconcileOutcome {
+    Completed(RootPolicyResult),
+    Superseded,
+}
+
 impl RootPolicyResult {
     pub const fn retryable(self) -> bool {
         matches!(
@@ -161,8 +167,45 @@ impl RootPolicyRuntime {
         admitted: bool,
         interface_name: Option<&str>,
     ) -> RootPolicyResult {
+        match self
+            .reconcile_if_current(admitted, interface_name, || true)
+            .await
+        {
+            RootPolicyReconcileOutcome::Completed(result) => result,
+            RootPolicyReconcileOutcome::Superseded => {
+                unreachable!("an always-current root reconcile cannot be superseded")
+            }
+        }
+    }
+
+    /// Reconciles one Cellular owner generation while allowing its natural owner to invalidate
+    /// stale work only at transaction boundaries that are safe to abandon.
+    ///
+    /// The predicate is read-only. RootPolicyRuntime does not own Cellular generation state and
+    /// does not cancel an in-flight mutation. Once fail-closed construction starts it runs through
+    /// authoritative fail-closed verification before currentness is checked again.
+    pub(crate) async fn reconcile_if_current<F>(
+        &self,
+        admitted: bool,
+        interface_name: Option<&str>,
+        is_current: F,
+    ) -> RootPolicyReconcileOutcome
+    where
+        F: Fn() -> bool + Sync,
+    {
         let reconcile_started = Instant::now();
         let mut state = self.state.lock().await;
+
+        if !is_current() {
+            record_reconcile(
+                &mut state.diagnostic,
+                reconcile_started,
+                Duration::ZERO,
+                RootPolicyCommandWindowDiagnostic::default(),
+                RootPolicyPhaseDiagnostics::default(),
+            );
+            return RootPolicyReconcileOutcome::Superseded;
+        }
 
         let authority = self.probe_authority(&mut state).await;
         if authority != RootAuthorityStatus::Ready {
@@ -173,12 +216,25 @@ impl RootPolicyRuntime {
                 RootPolicyCommandWindowDiagnostic::default(),
                 RootPolicyPhaseDiagnostics::default(),
             );
-            return RootPolicyResult::AuthorityUnavailable(authority);
+            return RootPolicyReconcileOutcome::Completed(RootPolicyResult::AuthorityUnavailable(
+                authority,
+            ));
+        }
+        if !is_current() {
+            record_reconcile(
+                &mut state.diagnostic,
+                reconcile_started,
+                Duration::ZERO,
+                RootPolicyCommandWindowDiagnostic::default(),
+                RootPolicyPhaseDiagnostics::default(),
+            );
+            return RootPolicyReconcileOutcome::Superseded;
         }
 
         let policy_started = Instant::now();
         let mut window = RootPolicyCommandWindow::default();
         let mut phases = RootPolicyPhaseDiagnostics::default();
+        let mut superseded = false;
         let result = self
             .reconcile_authorized(
                 &mut state.contract,
@@ -186,6 +242,8 @@ impl RootPolicyRuntime {
                 interface_name,
                 &mut window,
                 &mut phases,
+                &is_current,
+                &mut superseded,
             )
             .await;
         record_reconcile(
@@ -195,7 +253,11 @@ impl RootPolicyRuntime {
             window.diagnostic(),
             phases,
         );
-        result
+        if superseded {
+            RootPolicyReconcileOutcome::Superseded
+        } else {
+            RootPolicyReconcileOutcome::Completed(result)
+        }
     }
 
     pub async fn diagnostic(&self) -> RootPolicyReconcileDiagnostic {
@@ -211,14 +273,19 @@ impl RootPolicyRuntime {
             .map(|identity| identity.mark_value())
     }
 
-    async fn reconcile_authorized(
+    async fn reconcile_authorized<F>(
         &self,
         contract: &mut RootPolicyContract,
         admitted: bool,
         interface_name: Option<&str>,
         window: &mut RootPolicyCommandWindow,
         phases: &mut RootPolicyPhaseDiagnostics,
-    ) -> RootPolicyResult {
+        is_current: &F,
+        superseded: &mut bool,
+    ) -> RootPolicyResult
+    where
+        F: Fn() -> bool + Sync,
+    {
         let phase_started = Instant::now();
         let phase_before = window.diagnostic();
         let initial = match self.read_snapshot(window).await {
@@ -227,6 +294,12 @@ impl RootPolicyRuntime {
         };
         phases.initial_snapshot =
             phase_diagnostic(phase_started, phase_before, window.diagnostic());
+        // No policy mutation has happened yet. A superseded generation can be abandoned without
+        // changing kernel state.
+        if !is_current() {
+            *superseded = true;
+            return RootPolicyResult::FailClosed(None);
+        }
 
         match contract.resolve_identity(&initial) {
             PolicyIdentityResolution::Selected(_) => {}
@@ -302,6 +375,12 @@ impl RootPolicyRuntime {
         }
         phases.fail_closed_verify =
             phase_diagnostic(phase_started, phase_before, window.diagnostic());
+        // Everything before this point is the fail-closed base. If owner generation changed while
+        // constructing it, stop here rather than starting admitted-generation work.
+        if !is_current() {
+            *superseded = true;
+            return RootPolicyResult::FailClosed(None);
+        }
 
         if !admitted {
             return RootPolicyResult::FailClosed(None);
@@ -320,6 +399,12 @@ impl RootPolicyRuntime {
             Err(failure) => return RootPolicyResult::FailClosed(Some(failure)),
         };
         phases.table_discovery = phase_diagnostic(phase_started, phase_before, window.diagnostic());
+        // Route-table discovery is observation-only. This is the final safe point before the
+        // admitted lookup mutation begins.
+        if !is_current() {
+            *superseded = true;
+            return RootPolicyResult::FailClosed(None);
+        }
 
         let phase_started = Instant::now();
         let phase_before = window.diagnostic();
@@ -1122,6 +1207,151 @@ mod tests {
         );
         assert!(
             !RootPolicyResult::FailClosed(Some(RootPolicyFailure::MutationRejected)).retryable()
+        );
+    }
+
+    struct SupersedingIo {
+        current: Arc<std::sync::atomic::AtomicBool>,
+        line_calls: std::sync::atomic::AtomicUsize,
+        mutation_calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl SupersedingIo {
+        fn result(stdout: impl Into<String>) -> crate::root_session::RootCommandResult {
+            crate::root_session::RootCommandResult {
+                exit_code: 0,
+                stdout: stdout.into(),
+                timed_out: false,
+                output_complete: true,
+                session_generation: 1,
+            }
+        }
+    }
+
+    impl RootPolicyIo for SupersedingIo {
+        fn session_generation<'a>(
+            &'a self,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<u64>> + Send + 'a>> {
+            Box::pin(async { Some(1) })
+        }
+
+        fn raw_observation<'a>(
+            &'a self,
+            command: &'a str,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            crate::root_session::RootCommandResult,
+                            crate::root_session::RootSessionError,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move {
+                let stdout = match command {
+                    "id -u" => "0".to_owned(),
+                    IPV4_RULE_SHOW => {
+                        "0: from all lookup local\n32766: from all lookup main".to_owned()
+                    }
+                    _ => String::new(),
+                };
+                Ok(Self::result(stdout))
+            })
+        }
+
+        fn observe<'a>(
+            &'a self,
+            _command: &'a str,
+            _window: &'a mut RootPolicyCommandWindow,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            crate::root_session::RootCommandResult,
+                            RootPolicyEffectFailure,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { panic!("observation after initial snapshot is not allowed") })
+        }
+
+        fn lines<'a>(
+            &'a self,
+            command: &'a str,
+            _window: &'a mut RootPolicyCommandWindow,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Vec<String>, RootPolicyEffectFailure>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move {
+                let lines = match command {
+                    IPV4_RULE_SHOW | IPV6_RULE_SHOW => vec![
+                        "0: from all lookup local".to_owned(),
+                        "32766: from all lookup main".to_owned(),
+                    ],
+                    _ => Vec::new(),
+                };
+                let call = self
+                    .line_calls
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    + 1;
+                if call == 4 {
+                    self.current
+                        .store(false, std::sync::atomic::Ordering::SeqCst);
+                }
+                Ok(lines)
+            })
+        }
+
+        fn mutate<'a>(
+            &'a self,
+            _command: &'a str,
+            _window: &'a mut RootPolicyCommandWindow,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), RootPolicyEffectFailure>> + Send + 'a>,
+        > {
+            Box::pin(async move {
+                self.mutation_calls
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn superseded_after_initial_snapshot_stops_before_first_policy_mutation() {
+        let current = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let io = Arc::new(SupersedingIo {
+            current: Arc::clone(&current),
+            line_calls: std::sync::atomic::AtomicUsize::new(0),
+            mutation_calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let runtime = RootPolicyRuntime::with_io(
+            Arc::clone(&io) as Arc<dyn RootPolicyIo>,
+            10_123,
+            RootPolicyNamespace::Release,
+        )
+        .expect("root policy runtime");
+        let current_for_check = Arc::clone(&current);
+
+        let result = runtime
+            .reconcile_if_current(true, Some("rmnet_data0"), move || {
+                current_for_check.load(std::sync::atomic::Ordering::SeqCst)
+            })
+            .await;
+
+        assert_eq!(result, RootPolicyReconcileOutcome::Superseded);
+        assert_eq!(io.line_calls.load(std::sync::atomic::Ordering::SeqCst), 4);
+        assert_eq!(
+            io.mutation_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0
         );
     }
 }

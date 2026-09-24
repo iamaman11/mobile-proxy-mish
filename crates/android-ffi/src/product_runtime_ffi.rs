@@ -204,6 +204,7 @@ pub struct CellularReconcileDiagnosticView {
     pub last_quiesce_wait_ms: u64,
     pub max_quiesce_wait_ms: u64,
     pub stale_after_reconcile: u64,
+    pub superseded_during_reconcile: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
@@ -1525,6 +1526,7 @@ fn map_reconcile_diagnostic(
         last_quiesce_wait_ms: diagnostic.last_quiesce_wait_ms,
         max_quiesce_wait_ms: diagnostic.max_quiesce_wait_ms,
         stale_after_reconcile: diagnostic.stale_after_reconcile,
+        superseded_during_reconcile: diagnostic.superseded_during_reconcile,
     }
 }
 
