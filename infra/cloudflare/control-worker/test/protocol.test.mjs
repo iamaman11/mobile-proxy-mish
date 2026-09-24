@@ -468,10 +468,10 @@ test("unaccepted dispatch gets one reconnect recovery before fencing and BUSY re
   let active = await control.reconcileActiveOperation(now, { fenceSockets: true });
   assert.equal(active.status, "DISPATCHED");
   assert.equal(active.delivery_recovery_count, 1);
-  assert.equal(active.delivery_deadline_ms, now + 15_000);
+  assert.equal(active.delivery_deadline_ms, now + 40_000);
   assert.equal(socket.attachment.authenticated, false);
   assert.equal(socket.closed.at(-1)?.reason, "delivery recovery");
-  assert.equal(storage.alarm, now + 15_000);
+  assert.equal(storage.alarm, now + 40_000);
 
   const replacement = new FakeSocket({
     kind: "device", authenticated: true, device_id: "a".repeat(64),
@@ -482,16 +482,16 @@ test("unaccepted dispatch gets one reconnect recovery before fencing and BUSY re
   assert.equal(replacement.sent.length, 0);
 
   active = await replacementControl.reconcileActiveOperation(
-    now + 15_001,
+    now + 40_001,
     { fenceSockets: true },
   );
   assert.equal(active.status, "FENCED");
-  assert.equal(active.release_at_ms, now + 135_001);
+  assert.equal(active.release_at_ms, now + 160_001);
   assert.equal(replacement.attachment.authenticated, false);
   assert.equal(replacement.closed.at(-1)?.reason, "operation fenced");
 
   active = await replacementControl.reconcileActiveOperation(
-    now + 135_002,
+    now + 160_002,
     { fenceSockets: true },
   );
   assert.equal(active.result, "UNKNOWN");
