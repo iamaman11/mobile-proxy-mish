@@ -41,6 +41,7 @@ def main() -> None:
     protocol = "infra/cloudflare/control-worker/src/protocol.mjs"
     wrangler = "infra/cloudflare/control-worker/wrangler.jsonc"
     lab_remote = "lab/windows/diagnose-u8-remote-control.ps1"
+    device_cycle = ".github/workflows/device-cycle.yml"
 
     for needle in (
         'CONTROL_PROTOCOL_VERSION: u8 = 1',
@@ -352,11 +353,36 @@ def main() -> None:
     ):
         require(protocol, needle, "Worker authentication protocol drifted")
 
-    require(
-        lab_remote,
+    for needle in (
         "[ValidateRange(20, 120)][int] $TerminalTimeoutSeconds = 20",
-        "LAB/WSL acceptance must enforce the 20 second public response ceiling",
-    )
+        "'control_snapshot_v1'",
+        "$idleProofSeconds = 12",
+        "CONTROL_HEARTBEAT_NOT_ADVANCING",
+        "CONTROL_RECONNECTED_DURING_IDLE",
+        "CONTROL_SESSION_NOT_LONG_LIVED",
+        "$managerDurationMs -gt 18000",
+        "idle_liveness_proof = $true",
+        "heartbeat_delta = $heartbeatDelta",
+        "client_bound_seconds = $TerminalTimeoutSeconds",
+    ):
+        require(
+            lab_remote,
+            needle,
+            "LAB/WSL acceptance must prove long-lived heartbeat freshness within the 20 second response ceiling",
+        )
+    for needle in (
+        "idle_liveness_proof",
+        "heartbeat_delta",
+        "reconnect_count_after_idle",
+        "long_lived_session_age_ms",
+        "manager_duration_ms",
+        "client_bound_seconds",
+    ):
+        require(
+            device_cycle,
+            needle,
+            "Device Cycle must enforce the long-lived CONTROL acceptance evidence",
+        )
 
     config = json.loads(
         "\n".join(
