@@ -259,6 +259,87 @@ def main() -> None:
             "Android VPN observer must remain raw platform observation, never a PRODUCT scheduler/owner",
         )
 
+    # Permanent Kotlin/Rust-Tokio ownership constitution. The documentation and source topology
+    # must move together: PRODUCT semantic owners/timers live natively; Android remains a platform
+    # effects + read-only projection boundary.
+    ownership_doc = "docs/architecture/OWNERSHIP.md"
+    for required in (
+        "## Android / Rust-Tokio ownership invariant",
+        "Kotlin must never become a second Rotation, CONTROL, lifecycle, recovery, readiness, proxy or Mesh owner.",
+        "Kotlin must never decide PRODUCT retries, backoff, deadlines, event ordering, generation acceptance, terminal results or remote-operation correlation.",
+        "Kotlin diagnostics may serialize an immutable native snapshot, but must not derive a second authoritative PRODUCT state or timing model.",
+    ):
+        require(
+            ownership_doc,
+            required,
+            "canonical ownership documentation must retain the Kotlin/Rust-Tokio boundary",
+        )
+    for required in (
+        "pub struct RotationRuntimeTimingSnapshot",
+        "struct RotationRuntimeTiming",
+        "deadline: Option<(u64, Instant)>",
+        "RotationStateMachine",
+    ):
+        require_product(
+            "crates/runtime/src/rotation_runtime.rs",
+            required,
+            "Rotation state/timing/deadline ownership must remain in Rust/Tokio",
+        )
+    for required in (
+        "pub struct ControlOperationTimingSnapshot",
+        "struct ControlOperationTiming",
+        "CONTROL_RECONNECT_DELAYS_MS",
+        "CONTROL_HEARTBEAT_INTERVAL",
+        "PendingRemoteOperation",
+    ):
+        require_product(
+            "crates/runtime/src/control_runtime.rs",
+            required,
+            "CONTROL correlation/liveness/timing ownership must remain in Rust/Tokio",
+        )
+    for forbidden in (
+        "RotationStateMachine",
+        "RotationRuntimeCoordinator",
+        "ControlRuntimeCoordinator",
+        "PendingRemoteOperation",
+        "ControlOperationTiming",
+        "RotationRuntimeTiming",
+        "retryUntilChanged",
+        "retry_until_changed",
+        "rotationDeadline",
+        "controlReconnectDelay",
+        "resultAckDeadline",
+    ):
+        for kotlin_file in sorted((ROOT / "android/app/src/main").rglob("*.kt")):
+            kotlin_relative = kotlin_file.relative_to(ROOT).as_posix()
+            if forbidden in kotlin_file.read_text(encoding="utf-8"):
+                raise SystemExit(
+                    "architecture guard: Kotlin/Rust-Tokio ownership invariant violated; "
+                    f"{kotlin_relative} contains native PRODUCT-owner token {forbidden!r}"
+                )
+    for forbidden in (
+        "Instant.now(",
+        "System.nanoTime(",
+        "Timer(",
+        "TimerTask",
+        "ScheduledExecutorService",
+        "CoroutineScope(",
+        "kotlinx.coroutines.delay",
+    ):
+        forbid(
+            diagnostics_provider,
+            forbidden,
+            "DUMP projection must not acquire an independent operation clock, scheduler or timing model",
+        )
+    diagnostics_text = read(diagnostics_provider)
+    if diagnostics_text.count("SystemClock.elapsedRealtime()") != 1 or (
+        "val capturedElapsedMs = SystemClock.elapsedRealtime()" not in diagnostics_text
+    ):
+        raise SystemExit(
+            "architecture guard: diagnostics may use Android elapsedRealtime exactly once "
+            "for snapshot capture metadata only; operation timings must remain Rust-owned"
+        )
+
     # U5 production-Kotlin boundary is global, not filename-based. New Kotlin files may not
     # silently reintroduce PRODUCT scheduling/control under a new class name. The one intentional
     # executor is AndroidVpnObserver's Android callback serializer.

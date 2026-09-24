@@ -57,8 +57,78 @@ enum RotationAction {
     RestoreOff,
 }
 
+/// Read-only monotonic timing evidence for the single current/recent Rotation operation.
+///
+/// These values are observations only. They never drive state transitions, retries or deadlines.
+/// Every phase timestamp is elapsed milliseconds from the successful prepare origin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RotationRuntimeTimingSnapshot {
+    pub operation_id: Option<u64>,
+    pub operation_age_ms: Option<u64>,
+    pub activated_ms: Option<u64>,
+    pub pre_rotation_probe_started_ms: Option<u64>,
+    pub pre_rotation_probe_completed_ms: Option<u64>,
+    pub airplane_enable_started_ms: Option<u64>,
+    pub airplane_enable_effect_completed_ms: Option<u64>,
+    pub airplane_on_observed_ms: Option<u64>,
+    pub cellular_loss_observed_ms: Option<u64>,
+    pub airplane_disable_started_ms: Option<u64>,
+    pub airplane_disable_effect_completed_ms: Option<u64>,
+    pub airplane_off_observed_ms: Option<u64>,
+    pub fresh_cellular_observed_ms: Option<u64>,
+    pub fresh_cellular_generation: Option<u64>,
+    pub root_authorized_ms: Option<u64>,
+    pub root_authorized_generation: Option<u64>,
+    pub post_rotation_probe_started_ms: Option<u64>,
+    pub post_rotation_probe_completed_ms: Option<u64>,
+    pub terminal_ms: Option<u64>,
+    pub restore_completed_ms: Option<u64>,
+}
+
+struct RotationRuntimeTiming {
+    origin: Instant,
+    snapshot: RotationRuntimeTimingSnapshot,
+}
+
+impl RotationRuntimeTiming {
+    fn new(operation_id: u64) -> Self {
+        Self {
+            origin: Instant::now(),
+            snapshot: RotationRuntimeTimingSnapshot {
+                operation_id: Some(operation_id),
+                ..RotationRuntimeTimingSnapshot::default()
+            },
+        }
+    }
+
+    fn snapshot_at(&self, now: Instant) -> RotationRuntimeTimingSnapshot {
+        let mut snapshot = self.snapshot;
+        snapshot.operation_age_ms = Some(elapsed_ms_since(now, self.origin));
+        snapshot
+    }
+
+    fn mark<F>(&mut self, operation_id: u64, mark: F) -> bool
+    where
+        F: FnOnce(&mut RotationRuntimeTimingSnapshot, u64),
+    {
+        if self.snapshot.operation_id != Some(operation_id) {
+            return false;
+        }
+        let elapsed_ms = elapsed_ms_since(Instant::now(), self.origin);
+        mark(&mut self.snapshot, elapsed_ms);
+        true
+    }
+}
+
+fn set_once(slot: &mut Option<u64>, elapsed_ms: u64) {
+    if slot.is_none() {
+        *slot = Some(elapsed_ms);
+    }
+}
+
 struct RotationRuntimeState {
     machine: RotationStateMachine,
+    timing: Option<RotationRuntimeTiming>,
     deadline: Option<(u64, Instant)>,
     credential_guard: Option<ProxyCredentialGuard>,
     cellular_request_rearm: Option<(u64, Arc<dyn CellularRequestRearmEffect>)>,
@@ -94,6 +164,7 @@ impl RotationRuntimeCoordinator {
             proxy,
             state: Mutex::new(RotationRuntimeState {
                 machine: RotationStateMachine::new(),
+                timing: None,
                 deadline: None,
                 credential_guard: None,
                 cellular_request_rearm: None,
@@ -120,6 +191,28 @@ impl RotationRuntimeCoordinator {
         self.state()
             .map(|state| state.machine.snapshot())
             .unwrap_or_else(|_| RotationSnapshot::idle())
+    }
+
+    pub fn timing_snapshot(&self) -> RotationRuntimeTimingSnapshot {
+        self.timing_snapshot_at(Instant::now())
+    }
+
+    pub(crate) fn timing_snapshot_at(&self, now: Instant) -> RotationRuntimeTimingSnapshot {
+        self.state()
+            .ok()
+            .and_then(|state| state.timing.as_ref().map(|timing| timing.snapshot_at(now)))
+            .unwrap_or_default()
+    }
+
+    fn mark_timing<F>(&self, operation_id: u64, mark: F)
+    where
+        F: FnOnce(&mut RotationRuntimeTimingSnapshot, u64),
+    {
+        if let Ok(mut state) = self.state.lock()
+            && let Some(timing) = state.timing.as_mut()
+        {
+            let _ = timing.mark(operation_id, mark);
+        }
     }
 
     pub fn active_task_count(&self) -> u32 {
@@ -212,6 +305,7 @@ impl RotationRuntimeCoordinator {
             .machine
             .start(before_generation)
             .map_err(map_start_error)?;
+        state.timing = Some(RotationRuntimeTiming::new(operation_id));
         state.deadline = None;
         state.credential_guard = Some(credential_guard);
         state.cellular_request_rearm = Some((operation_id, cellular_request_rearm));
@@ -245,6 +339,11 @@ impl RotationRuntimeCoordinator {
             let cancel = Arc::new(Notify::new());
             state.deadline = Some((operation_id, deadline));
             state.cancel = Some(Arc::clone(&cancel));
+            if let Some(timing) = state.timing.as_mut() {
+                let _ = timing.mark(operation_id, |snapshot, elapsed_ms| {
+                    set_once(&mut snapshot.activated_ms, elapsed_ms);
+                });
+            }
             (state.machine.snapshot(), cancel, deadline)
         };
 
@@ -289,6 +388,9 @@ impl RotationRuntimeCoordinator {
         if let Some(cancel) = cancel {
             cancel.notify_waiters();
         }
+        self.mark_timing(operation_id, |timing, elapsed_ms| {
+            set_once(&mut timing.terminal_ms, elapsed_ms);
+        });
         self.publish(snapshot);
         true
     }
@@ -312,13 +414,49 @@ impl RotationRuntimeCoordinator {
             if current.phase.terminal() {
                 return;
             }
-            match state
+            let snapshot = match state
                 .machine
                 .observe_cellular(operation_id, generation, admitted)
             {
                 Ok(snapshot) => snapshot,
                 Err(_) => return,
+            };
+            let is_fresh = current
+                .before_generation
+                .is_some_and(|before_generation| generation > before_generation);
+            if is_fresh
+                && !admitted
+                && matches!(
+                    current.phase,
+                    RotationPhase::AirplaneEnabling | RotationPhase::WaitingRadioDown
+                )
+                && let Some(timing) = state.timing.as_mut()
+            {
+                let _ = timing.mark(operation_id, |timing, elapsed_ms| {
+                    set_once(&mut timing.cellular_loss_observed_ms, elapsed_ms);
+                });
             }
+            if is_fresh
+                && admitted
+                && matches!(
+                    current.phase,
+                    RotationPhase::AirplaneDisabling
+                        | RotationPhase::WaitingCellularRecovery
+                        | RotationPhase::WaitingRootPolicy
+                )
+                && let Some(timing) = state.timing.as_mut()
+            {
+                let _ = timing.mark(operation_id, |timing, elapsed_ms| {
+                    if timing
+                        .fresh_cellular_generation
+                        .is_none_or(|known| generation >= known)
+                    {
+                        timing.fresh_cellular_generation = Some(generation);
+                        timing.fresh_cellular_observed_ms = Some(elapsed_ms);
+                    }
+                });
+            }
+            snapshot
         };
         self.after_transition(snapshot);
     }
@@ -398,13 +536,38 @@ impl RotationRuntimeCoordinator {
             if current.phase.terminal() {
                 return;
             }
-            match state
-                .machine
-                .observe_root_policy(operation_id, generation, authorized)
+            let snapshot =
+                match state
+                    .machine
+                    .observe_root_policy(operation_id, generation, authorized)
+                {
+                    Ok(snapshot) => snapshot,
+                    Err(_) => return,
+                };
+            let is_fresh = current
+                .before_generation
+                .is_some_and(|before_generation| generation > before_generation);
+            if is_fresh
+                && authorized
+                && matches!(
+                    current.phase,
+                    RotationPhase::AirplaneDisabling
+                        | RotationPhase::WaitingCellularRecovery
+                        | RotationPhase::WaitingRootPolicy
+                )
+                && let Some(timing) = state.timing.as_mut()
             {
-                Ok(snapshot) => snapshot,
-                Err(_) => return,
+                let _ = timing.mark(operation_id, |timing, elapsed_ms| {
+                    if timing
+                        .root_authorized_generation
+                        .is_none_or(|known| generation >= known)
+                    {
+                        timing.root_authorized_generation = Some(generation);
+                        timing.root_authorized_ms = Some(elapsed_ms);
+                    }
+                });
             }
+            snapshot
         };
         self.after_transition(snapshot);
     }
@@ -497,14 +660,20 @@ impl RotationRuntimeCoordinator {
         else {
             return;
         };
+        self.mark_timing(operation_id, |timing, elapsed_ms| {
+            set_once(&mut timing.pre_rotation_probe_started_ms, elapsed_ms);
+        });
         let timeout_duration = remaining(deadline).min(PUBLIC_IP_EFFECT_TIMEOUT);
-        let observation = match timeout_at(
+        let observation_result = timeout_at(
             deadline,
             self.cellular
                 .observe_public_egress_ip_async(timeout_duration),
         )
-        .await
-        {
+        .await;
+        self.mark_timing(operation_id, |timing, elapsed_ms| {
+            set_once(&mut timing.pre_rotation_probe_completed_ms, elapsed_ms);
+        });
+        let observation = match observation_result {
             Ok(Ok(observation)) if observation.generation() == before_generation => observation,
             Ok(Ok(_)) | Ok(Err(_)) => {
                 self.fail(operation_id, RotationFailure::BeforeIpFailed);
@@ -543,9 +712,15 @@ impl RotationRuntimeCoordinator {
         let Some(deadline) = self.operation_deadline(operation_id) else {
             return;
         };
-        let outcome = match timeout_at(deadline, self.airplane.set(AirplaneModeState::Enabled))
-            .await
-        {
+        self.mark_timing(operation_id, |timing, elapsed_ms| {
+            set_once(&mut timing.airplane_enable_started_ms, elapsed_ms);
+        });
+        let effect_result =
+            timeout_at(deadline, self.airplane.set(AirplaneModeState::Enabled)).await;
+        self.mark_timing(operation_id, |timing, elapsed_ms| {
+            set_once(&mut timing.airplane_enable_effect_completed_ms, elapsed_ms);
+        });
+        let outcome = match effect_result {
             Err(_) => {
                 self.fail(operation_id, RotationFailure::DeadlineExceeded);
                 return;
@@ -597,9 +772,15 @@ impl RotationRuntimeCoordinator {
         let Some(deadline) = self.operation_deadline(operation_id) else {
             return;
         };
-        let outcome = match timeout_at(deadline, self.airplane.set(AirplaneModeState::Disabled))
-            .await
-        {
+        self.mark_timing(operation_id, |timing, elapsed_ms| {
+            set_once(&mut timing.airplane_disable_started_ms, elapsed_ms);
+        });
+        let effect_result =
+            timeout_at(deadline, self.airplane.set(AirplaneModeState::Disabled)).await;
+        self.mark_timing(operation_id, |timing, elapsed_ms| {
+            set_once(&mut timing.airplane_disable_effect_completed_ms, elapsed_ms);
+        });
+        let outcome = match effect_result {
             Err(_) => {
                 self.fail(operation_id, RotationFailure::DeadlineExceeded);
                 return;
@@ -677,14 +858,20 @@ impl RotationRuntimeCoordinator {
         else {
             return;
         };
+        self.mark_timing(operation_id, |timing, elapsed_ms| {
+            set_once(&mut timing.post_rotation_probe_started_ms, elapsed_ms);
+        });
         let timeout_duration = remaining(deadline).min(PUBLIC_IP_EFFECT_TIMEOUT);
-        let observation = match timeout_at(
+        let observation_result = timeout_at(
             deadline,
             self.cellular
                 .observe_public_egress_ip_async(timeout_duration),
         )
-        .await
-        {
+        .await;
+        self.mark_timing(operation_id, |timing, elapsed_ms| {
+            set_once(&mut timing.post_rotation_probe_completed_ms, elapsed_ms);
+        });
+        let observation = match observation_result {
             Ok(Ok(observation)) if observation.generation() == after_generation => observation,
             Ok(Ok(_)) | Ok(Err(_)) => {
                 self.fail(operation_id, RotationFailure::AfterIpFailed);
@@ -736,13 +923,28 @@ impl RotationRuntimeCoordinator {
             if !operation_current(&state, operation_id) {
                 return;
             }
-            match state
+            let phase_before = state.machine.snapshot().phase;
+            let snapshot = match state
                 .machine
                 .observe_airplane(operation_id, observed == AirplaneModeState::Enabled)
             {
                 Ok(snapshot) => snapshot,
                 Err(_) => return,
+            };
+            if let Some(timing) = state.timing.as_mut() {
+                let _ = timing.mark(operation_id, |timing, elapsed_ms| match observed {
+                    AirplaneModeState::Enabled => {
+                        set_once(&mut timing.airplane_on_observed_ms, elapsed_ms);
+                    }
+                    AirplaneModeState::Disabled
+                        if phase_before != RotationPhase::WaitingRadioDown =>
+                    {
+                        set_once(&mut timing.airplane_off_observed_ms, elapsed_ms);
+                    }
+                    AirplaneModeState::Disabled => {}
+                });
             }
+            snapshot
         };
         self.after_transition(snapshot);
     }
@@ -770,6 +972,11 @@ impl RotationRuntimeCoordinator {
 
     fn after_transition(self: &Arc<Self>, snapshot: RotationSnapshot) {
         if snapshot.phase.terminal() {
+            if let Some(operation_id) = snapshot.operation_id {
+                self.mark_timing(operation_id, |timing, elapsed_ms| {
+                    set_once(&mut timing.terminal_ms, elapsed_ms);
+                });
+            }
             let cancel = self.state.lock().ok().and_then(|mut state| {
                 state.cellular_request_rearm = None;
                 state.cancel.as_ref().map(Arc::clone)
@@ -817,10 +1024,16 @@ impl RotationRuntimeCoordinator {
             {
                 return;
             }
-            match state.machine.record_restore(operation_id, restore) {
+            let snapshot = match state.machine.record_restore(operation_id, restore) {
                 Ok(snapshot) => snapshot,
                 Err(_) => return,
+            };
+            if let Some(timing) = state.timing.as_mut() {
+                let _ = timing.mark(operation_id, |timing, elapsed_ms| {
+                    set_once(&mut timing.restore_completed_ms, elapsed_ms);
+                });
             }
+            snapshot
         };
         self.publish(snapshot);
     }
@@ -949,6 +1162,10 @@ fn credential_guard_matches(
             .is_some_and(|guard| proxy.credential_guard_matches(guard))
 }
 
+fn elapsed_ms_since(now: Instant, then: Instant) -> u64 {
+    u64::try_from(now.saturating_duration_since(then).as_millis()).unwrap_or(u64::MAX)
+}
+
 fn remaining(deadline: Instant) -> Duration {
     deadline
         .saturating_duration_since(Instant::now())
@@ -1013,6 +1230,7 @@ mod tests {
         (
             RotationRuntimeState {
                 machine,
+                timing: None,
                 deadline: None,
                 credential_guard: None,
                 cellular_request_rearm: Some((operation_id, Arc::new(TestRearmEffect))),
@@ -1059,6 +1277,24 @@ mod tests {
             select_cellular_request_rearm(&state, operation_id),
             Err(())
         ));
+    }
+
+    #[test]
+    fn operation_timing_is_observation_only_and_rejects_stale_operation_updates() {
+        let mut timing = RotationRuntimeTiming::new(7);
+        assert!(!timing.mark(8, |snapshot, elapsed_ms| {
+            snapshot.pre_rotation_probe_started_ms = Some(elapsed_ms);
+        }));
+        assert!(timing.snapshot.pre_rotation_probe_started_ms.is_none());
+
+        assert!(timing.mark(7, |snapshot, elapsed_ms| {
+            set_once(&mut snapshot.pre_rotation_probe_started_ms, elapsed_ms);
+        }));
+        assert!(timing.snapshot.pre_rotation_probe_started_ms.is_some());
+
+        let replacement = RotationRuntimeTiming::new(8);
+        assert_eq!(replacement.snapshot.operation_id, Some(8));
+        assert!(replacement.snapshot.pre_rotation_probe_started_ms.is_none());
     }
 
     #[test]

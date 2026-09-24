@@ -261,11 +261,110 @@ internal fun renderMishControlDiagnosticSnapshotV1(
             "last_terminal_result",
             snapshot.lastTerminalResult?.name ?: JSONObject.NULL,
         )
+        put("operation_timing", JSONObject().apply {
+            put("origin", "REMOTE_COMMAND_RECEIVED")
+            put("operation_id", snapshot.operationTiming.operationId?.toLong() ?: JSONObject.NULL)
+            put("operation_age_ms", snapshot.operationTiming.operationAgeMs?.toLong() ?: JSONObject.NULL)
+            put(
+                "operation_reserved_ms",
+                snapshot.operationTiming.operationReservedMs?.toLong() ?: JSONObject.NULL,
+            )
+            put(
+                "accepted_sent_ms",
+                snapshot.operationTiming.acceptedSentMs?.toLong() ?: JSONObject.NULL,
+            )
+            put(
+                "reconnect_started_ms",
+                snapshot.operationTiming.reconnectStartedMs?.toLong() ?: JSONObject.NULL,
+            )
+            put(
+                "reconnect_ready_ms",
+                snapshot.operationTiming.reconnectReadyMs?.toLong() ?: JSONObject.NULL,
+            )
+            put(
+                "rotation_terminal_ms",
+                snapshot.operationTiming.rotationTerminalMs?.toLong() ?: JSONObject.NULL,
+            )
+            put(
+                "result_sent_ms",
+                snapshot.operationTiming.resultSentMs?.toLong() ?: JSONObject.NULL,
+            )
+            put(
+                "result_ack_ms",
+                snapshot.operationTiming.resultAckMs?.toLong() ?: JSONObject.NULL,
+            )
+            put(
+                "rotation_origin_from_command_ms",
+                snapshot.operationTiming.rotationOriginFromCommandMs?.toLong() ?: JSONObject.NULL,
+            )
+            put("rotation", JSONObject().apply {
+                put("operation_id", snapshot.rotationTiming.operationId?.toLong() ?: JSONObject.NULL)
+                put(
+                    "operation_age_ms",
+                    snapshot.rotationTiming.operationAgeMs?.toLong() ?: JSONObject.NULL,
+                )
+                putNullableLong("activated_ms", snapshot.rotationTiming.activatedMs)
+                putNullableLong("pre_rotation_probe_started_ms", snapshot.rotationTiming.preRotationProbeStartedMs)
+                putNullableLong("pre_rotation_probe_completed_ms", snapshot.rotationTiming.preRotationProbeCompletedMs)
+                putNullableLong(
+                    "airplane_enable_started_ms",
+                    snapshot.rotationTiming.airplaneEnableStartedMs,
+                )
+                putNullableLong(
+                    "airplane_enable_effect_completed_ms",
+                    snapshot.rotationTiming.airplaneEnableEffectCompletedMs,
+                )
+                putNullableLong(
+                    "airplane_on_observed_ms",
+                    snapshot.rotationTiming.airplaneOnObservedMs,
+                )
+                putNullableLong(
+                    "cellular_loss_observed_ms",
+                    snapshot.rotationTiming.cellularLossObservedMs,
+                )
+                putNullableLong(
+                    "airplane_disable_started_ms",
+                    snapshot.rotationTiming.airplaneDisableStartedMs,
+                )
+                putNullableLong(
+                    "airplane_disable_effect_completed_ms",
+                    snapshot.rotationTiming.airplaneDisableEffectCompletedMs,
+                )
+                putNullableLong(
+                    "airplane_off_observed_ms",
+                    snapshot.rotationTiming.airplaneOffObservedMs,
+                )
+                putNullableLong(
+                    "fresh_cellular_observed_ms",
+                    snapshot.rotationTiming.freshCellularObservedMs,
+                )
+                putNullableLong(
+                    "fresh_cellular_generation",
+                    snapshot.rotationTiming.freshCellularGeneration,
+                )
+                putNullableLong("root_authorized_ms", snapshot.rotationTiming.rootAuthorizedMs)
+                putNullableLong(
+                    "root_authorized_generation",
+                    snapshot.rotationTiming.rootAuthorizedGeneration,
+                )
+                putNullableLong("post_rotation_probe_started_ms", snapshot.rotationTiming.postRotationProbeStartedMs)
+                putNullableLong("post_rotation_probe_completed_ms", snapshot.rotationTiming.postRotationProbeCompletedMs)
+                putNullableLong("terminal_ms", snapshot.rotationTiming.terminalMs)
+                putNullableLong(
+                    "restore_completed_ms",
+                    snapshot.rotationTiming.restoreCompletedMs,
+                )
+            })
+        })
     })
 }.toString()
 
 private fun JSONObject.putNullable(name: String, value: String?) {
     put(name, value ?: JSONObject.NULL)
+}
+
+private fun JSONObject.putNullableLong(name: String, value: ULong?) {
+    put(name, value?.toLong() ?: JSONObject.NULL)
 }
 
 /**

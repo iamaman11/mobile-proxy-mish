@@ -339,6 +339,8 @@ impl ProductRuntimeCoordinator {
                 pending_operation: false,
                 pending_operation_id: None,
                 last_terminal_result: None,
+                operation_timing: crate::ControlOperationTimingSnapshot::default(),
+                rotation_timing: crate::RotationRuntimeTimingSnapshot::default(),
             })
     }
 

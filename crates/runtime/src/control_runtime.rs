@@ -8,7 +8,7 @@
 use crate::control_transport::{ControlTransport, ControlTransportError, ControlTransportMessage};
 use crate::{
     CellularRequestRearmEffect, RotationRuntimeCoordinator, RotationRuntimeStartError,
-    RuntimeExecutionError, RuntimeExecutor,
+    RotationRuntimeTimingSnapshot, RuntimeExecutionError, RuntimeExecutor,
 };
 use mish_configuration::ControlEndpoint;
 use mish_control::{
@@ -45,6 +45,80 @@ pub enum ControlSessionState {
     Backoff,
 }
 
+/// Read-only monotonic timing evidence for one remote command correlated to one Rotation id.
+///
+/// The origin is receipt of the first ROTATE_IP command for this request. The record lives inside
+/// the already-bounded pending/recent correlation ledger and never drives reconnect or mutation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ControlOperationTimingSnapshot {
+    pub operation_id: Option<u64>,
+    pub operation_age_ms: Option<u64>,
+    pub operation_reserved_ms: Option<u64>,
+    pub accepted_sent_ms: Option<u64>,
+    pub reconnect_started_ms: Option<u64>,
+    pub reconnect_ready_ms: Option<u64>,
+    pub rotation_terminal_ms: Option<u64>,
+    pub result_sent_ms: Option<u64>,
+    pub result_ack_ms: Option<u64>,
+    pub rotation_origin_from_command_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct ControlOperationTiming {
+    origin: Instant,
+    snapshot: ControlOperationTimingSnapshot,
+}
+
+impl ControlOperationTiming {
+    fn new(operation_id: u64, origin: Instant) -> Self {
+        let mut timing = Self {
+            origin,
+            snapshot: ControlOperationTimingSnapshot {
+                operation_id: Some(operation_id),
+                ..ControlOperationTimingSnapshot::default()
+            },
+        };
+        let _ = timing.mark(operation_id, |snapshot, elapsed_ms| {
+            set_timing_once(&mut snapshot.operation_reserved_ms, elapsed_ms);
+        });
+        timing
+    }
+
+    fn snapshot_at(
+        &self,
+        now: Instant,
+        rotation: RotationRuntimeTimingSnapshot,
+    ) -> ControlOperationTimingSnapshot {
+        let mut snapshot = self.snapshot;
+        snapshot.operation_age_ms = Some(elapsed_ms_since(now, self.origin));
+        if snapshot.operation_id == rotation.operation_id {
+            snapshot.rotation_origin_from_command_ms = snapshot
+                .operation_age_ms
+                .zip(rotation.operation_age_ms)
+                .and_then(|(command_age, rotation_age)| command_age.checked_sub(rotation_age));
+        }
+        snapshot
+    }
+
+    fn mark<F>(&mut self, operation_id: u64, mark: F) -> bool
+    where
+        F: FnOnce(&mut ControlOperationTimingSnapshot, u64),
+    {
+        if self.snapshot.operation_id != Some(operation_id) {
+            return false;
+        }
+        let elapsed_ms = elapsed_ms_since(Instant::now(), self.origin);
+        mark(&mut self.snapshot, elapsed_ms);
+        true
+    }
+}
+
+fn set_timing_once(slot: &mut Option<u64>, elapsed_ms: u64) {
+    if slot.is_none() {
+        *slot = Some(elapsed_ms);
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ControlRuntimeSnapshot {
     pub state: ControlSessionState,
@@ -60,6 +134,8 @@ pub struct ControlRuntimeSnapshot {
     pub pending_operation: bool,
     pub pending_operation_id: Option<u64>,
     pub last_terminal_result: Option<RemoteRotationResult>,
+    pub operation_timing: ControlOperationTimingSnapshot,
+    pub rotation_timing: RotationRuntimeTimingSnapshot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +163,7 @@ struct PendingRemoteOperation {
     request_id: String,
     operation_id: Option<u64>,
     result: Option<RemoteRotationResult>,
+    timing: ControlOperationTiming,
 }
 
 struct ControlState {
@@ -161,24 +238,37 @@ impl ControlRuntimeCoordinator {
 
     pub fn snapshot(&self) -> ControlRuntimeSnapshot {
         let now = Instant::now();
+        // Tokio Instant and std Instant share the same monotonic clock; convert explicitly
+        // so both owner snapshots are sampled against one observation instant.
+        let rotation_timing = self.rotation.timing_snapshot_at(now.into());
         self.state()
-            .map(|state| ControlRuntimeSnapshot {
-                state: state.session_state,
-                reconnect_attempts: state.reconnect_attempts,
-                reconnect_count: state.reconnect_count,
-                next_delay_ms: state.next_delay_ms,
-                session_age_ms: state.session_ready_at.map(|at| elapsed_ms_since(now, at)),
-                application_heartbeat_count: state.application_heartbeat_count,
-                payload_tx_bytes: state.payload_tx_bytes,
-                payload_rx_bytes: state.payload_rx_bytes,
-                last_tx_age_ms: state.last_tx_at.map(|at| elapsed_ms_since(now, at)),
-                last_rx_age_ms: state.last_rx_at.map(|at| elapsed_ms_since(now, at)),
-                pending_operation: state.pending.is_some(),
-                pending_operation_id: state
+            .map(|state| {
+                let operation_timing = state
                     .pending
                     .as_ref()
-                    .and_then(|pending| pending.operation_id),
-                last_terminal_result: state.last_terminal_result,
+                    .or_else(|| state.recent_terminal.front())
+                    .map(|operation| operation.timing.snapshot_at(now, rotation_timing))
+                    .unwrap_or_default();
+                ControlRuntimeSnapshot {
+                    state: state.session_state,
+                    reconnect_attempts: state.reconnect_attempts,
+                    reconnect_count: state.reconnect_count,
+                    next_delay_ms: state.next_delay_ms,
+                    session_age_ms: state.session_ready_at.map(|at| elapsed_ms_since(now, at)),
+                    application_heartbeat_count: state.application_heartbeat_count,
+                    payload_tx_bytes: state.payload_tx_bytes,
+                    payload_rx_bytes: state.payload_rx_bytes,
+                    last_tx_age_ms: state.last_tx_at.map(|at| elapsed_ms_since(now, at)),
+                    last_rx_age_ms: state.last_rx_at.map(|at| elapsed_ms_since(now, at)),
+                    pending_operation: state.pending.is_some(),
+                    pending_operation_id: state
+                        .pending
+                        .as_ref()
+                        .and_then(|pending| pending.operation_id),
+                    last_terminal_result: state.last_terminal_result,
+                    operation_timing,
+                    rotation_timing,
+                }
             })
             .unwrap_or(ControlRuntimeSnapshot {
                 state: ControlSessionState::Stopped,
@@ -194,6 +284,8 @@ impl ControlRuntimeCoordinator {
                 pending_operation: false,
                 pending_operation_id: None,
                 last_terminal_result: None,
+                operation_timing: ControlOperationTimingSnapshot::default(),
+                rotation_timing,
             })
     }
 
@@ -486,6 +578,7 @@ impl ControlRuntimeCoordinator {
         request_id: String,
         cellular_request_rearm: Arc<dyn CellularRequestRearmEffect>,
     ) -> Result<(), ControlRunError> {
+        let command_received_at = Instant::now();
         let (active, recent) = self
             .state()
             .map(|state| {
@@ -542,6 +635,7 @@ impl ControlRuntimeCoordinator {
                 request_id: request_id.clone(),
                 operation_id: Some(operation_id),
                 result: None,
+                timing: ControlOperationTiming::new(operation_id, command_received_at),
             });
         }
 
@@ -556,6 +650,9 @@ impl ControlRuntimeCoordinator {
             }
             return Err(error);
         }
+        self.mark_pending_timing(operation_id, |timing, elapsed_ms| {
+            set_timing_once(&mut timing.accepted_sent_ms, elapsed_ms);
+        });
 
         if let Err(error) = self.rotation.activate_prepared(operation_id) {
             self.rotation.fail_prepared_before_mutation(operation_id);
@@ -583,10 +680,16 @@ impl ControlRuntimeCoordinator {
         let accepted = encode_accepted_message(&operation.request_id, operation_id)
             .map_err(|_| ControlRunError::Protocol)?;
         self.write_text_observed(transport, &accepted).await?;
+        self.mark_pending_timing(operation_id, |timing, elapsed_ms| {
+            set_timing_once(&mut timing.accepted_sent_ms, elapsed_ms);
+        });
         if let Some(result) = operation.result {
             let message = encode_result_message(&operation.request_id, result, Some(operation_id))
                 .map_err(|_| ControlRunError::Protocol)?;
             self.write_text_observed(transport, &message).await?;
+            self.mark_pending_timing(operation_id, |timing, elapsed_ms| {
+                set_timing_once(&mut timing.result_sent_ms, elapsed_ms);
+            });
         }
         Ok(())
     }
@@ -604,7 +707,13 @@ impl ControlRuntimeCoordinator {
         };
         let message = encode_result_message(&pending.request_id, result, pending.operation_id)
             .map_err(|_| ControlRunError::Protocol)?;
-        self.write_text_observed(transport, &message).await
+        self.write_text_observed(transport, &message).await?;
+        if let Some(operation_id) = pending.operation_id {
+            self.mark_pending_timing(operation_id, |timing, elapsed_ms| {
+                set_timing_once(&mut timing.result_sent_ms, elapsed_ms);
+            });
+        }
+        Ok(())
     }
 
     fn ack_result(&self, request_id: &str) {
@@ -614,8 +723,13 @@ impl ControlRuntimeCoordinator {
                     && pending.operation_id.is_some()
                     && pending.result.is_some()
             })
-            && let Some(completed) = state.pending.take()
+            && let Some(mut completed) = state.pending.take()
         {
+            if let Some(operation_id) = completed.operation_id {
+                let _ = completed.timing.mark(operation_id, |timing, elapsed_ms| {
+                    set_timing_once(&mut timing.result_ack_ms, elapsed_ms);
+                });
+            }
             state
                 .recent_terminal
                 .retain(|item| item.request_id != request_id);
@@ -644,6 +758,11 @@ impl ControlRuntimeCoordinator {
             && pending.result.is_none()
         {
             pending.result = Some(result);
+            if let Some(operation_id) = pending.operation_id {
+                let _ = pending.timing.mark(operation_id, |timing, elapsed_ms| {
+                    set_timing_once(&mut timing.rotation_terminal_ms, elapsed_ms);
+                });
+            }
             state.last_terminal_result = Some(result);
             true
         } else {
@@ -690,6 +809,13 @@ impl ControlRuntimeCoordinator {
     fn record_reconnect(&self) {
         if let Ok(mut state) = self.state.lock() {
             state.reconnect_count = state.reconnect_count.saturating_add(1);
+            if let Some(pending) = state.pending.as_mut()
+                && let Some(operation_id) = pending.operation_id
+            {
+                let _ = pending.timing.mark(operation_id, |timing, elapsed_ms| {
+                    set_timing_once(&mut timing.reconnect_started_ms, elapsed_ms);
+                });
+            }
         }
     }
 
@@ -707,12 +833,32 @@ impl ControlRuntimeCoordinator {
                 && state.session_state != ControlSessionState::Ready
             {
                 state.session_ready_at = Some(Instant::now());
+                if let Some(pending) = state.pending.as_mut()
+                    && let Some(operation_id) = pending.operation_id
+                    && pending.timing.snapshot.reconnect_started_ms.is_some()
+                {
+                    let _ = pending.timing.mark(operation_id, |timing, elapsed_ms| {
+                        set_timing_once(&mut timing.reconnect_ready_ms, elapsed_ms);
+                    });
+                }
             } else if session_state != ControlSessionState::Ready {
                 state.session_ready_at = None;
             }
             state.session_state = session_state;
             state.reconnect_attempts = reconnect_attempts;
             state.next_delay_ms = next_delay_ms;
+        }
+    }
+
+    fn mark_pending_timing<F>(&self, operation_id: u64, mark: F)
+    where
+        F: FnOnce(&mut ControlOperationTimingSnapshot, u64),
+    {
+        if let Ok(mut state) = self.state.lock()
+            && let Some(pending) = state.pending.as_mut()
+            && pending.operation_id == Some(operation_id)
+        {
+            let _ = pending.timing.mark(operation_id, mark);
         }
     }
 
@@ -816,6 +962,7 @@ mod tests {
                 request_id: "req_1".to_owned(),
                 operation_id: Some(7),
                 result: None,
+                timing: ControlOperationTiming::new(7, Instant::now()),
             }),
             recent_terminal: VecDeque::new(),
             last_terminal_result: None,
@@ -833,6 +980,22 @@ mod tests {
             state.last_terminal_result,
             Some(RemoteRotationResult::Rejected)
         );
+    }
+
+    #[test]
+    fn operation_timing_is_bounded_and_rejects_stale_operation_updates() {
+        let origin = Instant::now();
+        let mut timing = ControlOperationTiming::new(7, origin);
+        assert!(!timing.mark(8, |snapshot, elapsed_ms| {
+            snapshot.accepted_sent_ms = Some(elapsed_ms);
+        }));
+        assert!(timing.snapshot.accepted_sent_ms.is_none());
+
+        assert!(timing.mark(7, |snapshot, elapsed_ms| {
+            set_timing_once(&mut snapshot.accepted_sent_ms, elapsed_ms);
+        }));
+        assert!(timing.snapshot.accepted_sent_ms.is_some());
+        assert_eq!(timing.snapshot.operation_id, Some(7));
     }
 
     #[test]

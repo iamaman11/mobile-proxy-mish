@@ -2,12 +2,14 @@ package com.mobileproxymish.app
 
 import com.mobileproxymish.ffi.CellularDnsDiagnosticView
 import com.mobileproxymish.ffi.CellularReconcileDiagnosticView
+import com.mobileproxymish.ffi.ControlOperationTimingView
 import com.mobileproxymish.ffi.ControlRuntimeSnapshotView
 import com.mobileproxymish.ffi.ControlSessionStateView
 import com.mobileproxymish.ffi.ProductDiagnosticSnapshotView
 import com.mobileproxymish.ffi.RootPolicyReconcileDiagnosticView
 import com.mobileproxymish.ffi.RootRecoveryDiagnosticView
 import com.mobileproxymish.ffi.RemoteRotationResultView
+import com.mobileproxymish.ffi.RotationRuntimeTimingView
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -192,6 +194,40 @@ class MishDiagnosticsSerializationTest {
             pendingOperation = false,
             pendingOperationId = null,
             lastTerminalResult = RemoteRotationResultView.CHANGED,
+            operationTiming = ControlOperationTimingView(
+                operationId = 9uL,
+                operationAgeMs = 17_500uL,
+                operationReservedMs = 2uL,
+                acceptedSentMs = 7uL,
+                reconnectStartedMs = 7_200uL,
+                reconnectReadyMs = 13_900uL,
+                rotationTerminalMs = 14_100uL,
+                resultSentMs = 14_150uL,
+                resultAckMs = 14_180uL,
+                rotationOriginFromCommandMs = 1uL,
+            ),
+            rotationTiming = RotationRuntimeTimingView(
+                operationId = 9uL,
+                operationAgeMs = 17_499uL,
+                activatedMs = 7uL,
+                preRotationProbeStartedMs = 8uL,
+                preRotationProbeCompletedMs = 610uL,
+                airplaneEnableStartedMs = 611uL,
+                airplaneEnableEffectCompletedMs = 720uL,
+                airplaneOnObservedMs = 880uL,
+                cellularLossObservedMs = 900uL,
+                airplaneDisableStartedMs = 901uL,
+                airplaneDisableEffectCompletedMs = 1_020uL,
+                airplaneOffObservedMs = 1_150uL,
+                freshCellularObservedMs = 5_900uL,
+                freshCellularGeneration = 44uL,
+                rootAuthorizedMs = 6_300uL,
+                rootAuthorizedGeneration = 44uL,
+                postRotationProbeStartedMs = 6_301uL,
+                postRotationProbeCompletedMs = 7_900uL,
+                terminalMs = 7_901uL,
+                restoreCompletedMs = null,
+            ),
         )
 
         val rendered = renderMishControlDiagnosticSnapshotV1(
@@ -217,6 +253,19 @@ class MishDiagnosticsSerializationTest {
         assertFalse(control.getBoolean("pending_operation"))
         assertTrue(control.isNull("pending_operation_id"))
         assertEquals("CHANGED", control.getString("last_terminal_result"))
+        val timing = control.getJSONObject("operation_timing")
+        assertEquals("REMOTE_COMMAND_RECEIVED", timing.getString("origin"))
+        assertEquals(9L, timing.getLong("operation_id"))
+        assertEquals(7L, timing.getLong("accepted_sent_ms"))
+        assertEquals(14_180L, timing.getLong("result_ack_ms"))
+        assertEquals(1L, timing.getLong("rotation_origin_from_command_ms"))
+        val rotationTiming = timing.getJSONObject("rotation")
+        assertEquals(9L, rotationTiming.getLong("operation_id"))
+        assertEquals(44L, rotationTiming.getLong("fresh_cellular_generation"))
+        assertEquals(44L, rotationTiming.getLong("root_authorized_generation"))
+        assertEquals(7_901L, rotationTiming.getLong("terminal_ms"))
+        assertTrue(rotationTiming.isNull("restore_completed_ms"))
+        assertFalse(rendered.contains("request_id", ignoreCase = true))
         assertFalse(rendered.contains("username", ignoreCase = true))
         assertFalse(rendered.contains("password", ignoreCase = true))
     }
