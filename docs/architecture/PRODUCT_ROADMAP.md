@@ -554,12 +554,12 @@ U8-F low-impact durability soak                      COMPLETE / PASS
      + one long-lived proxy CONNECT/WebSocket lifetime probe
      + controlled Android process/service-death recovery proof
      + bounded latency/error/resource evidence
-U8-G external privacy/path closure #315              CURRENT
+U8-G external privacy/path closure #315              COMPLETE / PASS
      + clean intended Windows client profile
      + DNS no-bypass proof
      + short final external regression across rotation
-U8-H support + exact provenance closure
-U8 FINAL PASS
+U8-H support + exact provenance closure              COMPLETE / PASS
+U8 FINAL PASS                                        COMPLETE
 ```
 
 Already accepted U2-U7 evidence is reused. Do not repeat process restart, ordinary cellular loss/recovery, accepted rotation lifecycle, 512/513 capacity or repeated 512 cleanup merely because U8 names durability again.
@@ -734,26 +734,65 @@ Canonical physical acceptance:
 
 U8-F is closed. Its lifetime/soak evidence is reused by U8-G and must not be duplicated.
 
-### U8-G — external privacy/path closure
+### U8-G — external privacy/path closure — COMPLETE / PASS
 
-Issue #315 remains the specialized external-client/browser evidence owner rather than duplicating its full matrix here.
+Issue #315 is closed `completed`. It remains the specialized external-client/browser evidence ledger rather than duplicating its full historical matrix here.
 
-Final U8 regression must use the intended clean Windows client path and prove:
+Canonical final physical acceptance:
 
-- proxy egress remains the expected Cellular egress across explicit rotation;
-- auth fail-closed and valid-after-negative remain healthy;
-- no HOST_DEFAULT/WARP public fallback;
-- DNS no-bypass contract for the intended client profile;
-- no unexpected IPv6/WebRTC/identity-header leak under the accepted policy;
-- long-lived lifetime evidence is referenced from U8-F rather than duplicated as another stress harness.
+- accepted PRODUCT source: `94a9f4993b524b0388f0e2216e9e78183c8a3a4f`;
+- Device Cycle #728 / run `35936074767`;
+- physical CONTROL: `16a843cca4890b5d777b11cccb0ebeb9cb26924a`;
+- cycle result/classification: `PASS / U8_G_FINAL_CLEAN_CLIENT_PASS`;
+- exact-candidate acceptance: PASS;
+- evidence artifact: `10783028195`;
+- evidence digest: `sha256:b1a3bedd309748cf337e591c1eb9de922cef2e973ec856dcc72edc900662d544`.
+
+Accepted clean-client facts:
+
+- wrong auth fails closed; the next valid authenticated request succeeds;
+- canonical HTTPS CONNECT :443 passes;
+- before and after the one explicit rotation, PRODUCT DNS counters advance exactly once for the clean target while the Windows DNS cache remains free of that target, proving the intended DNS no-bypass path;
+- browser public-egress observers agree with the canonical authenticated MISH proxy observation and do not match host-default egress;
+- exactly one PRODUCT-owned rotation returns `CHANGED`; canonical proxy and browser external observations also return `CHANGED`;
+- post-rotation PRODUCT returns READY;
+- raw public/private/DNS addresses and proxy credentials are not persisted.
+
+The earlier `NAVIGATION_0` failures were CONTROL/LAB serialization defects, not PRODUCT failures: a one-element PowerShell URL array had been serialized as a JSON string. The accepted harness preserves one URL as a JSON array and has a deterministic static regression guard.
+
+Previously accepted #315 evidence remains in force for the four intended ingress modes, bounded reliability, WebRTC, IPv6 and identity-header behavior. Long-lived lifetime evidence is reused from U8-F and was not duplicated.
 
 Population-level fingerprint anonymity and cosmetic anti-detect scores are not PRODUCT blockers.
 
-### U8-H — support and provenance closure
+### U8-H — support and provenance closure — COMPLETE / PASS
 
-This is deliberately last.
+U8-H is docs/evidence-only. No new runtime, release candidate, support daemon, mutable support database or second acceptance lineage is introduced.
 
-Record exact source/tree, CONTROL, immutable hosted candidate, physical evidence and bounded redacted support evidence. External distribution/signing may derive from the accepted source/artifact later, but must not create a competing RC acceptance lineage.
+Final exact provenance:
+
+- protected main at U8-H entry: `a2036eaeb60f0e766d9593bb62bb25e6d302091c`;
+- protected-main Git tree: `aab9c797f65cda7f1df3c4e1b52c73a6e527b50f`;
+- accepted final PRODUCT source: `94a9f4993b524b0388f0e2216e9e78183c8a3a4f`;
+- accepted PRODUCT source tree: `d4f467c8a5c7d793835448eddd7cb0d6753b877e`;
+- current protected main and the accepted PRODUCT source are blob-identical for `android/`, `crates/`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `config/` and `contracts/`;
+- immutable hosted candidate producer: PR Validation run `35803074208`;
+- canonical candidate artifact: `10726024554`;
+- candidate digest: `sha256:a60bf25bc02413e4f93aad8bf62abedbf8db0e7a097806e261df3dd2428b336b`.
+
+U8 evidence ledger:
+
+| Slice | Accepted evidence |
+|---|---|
+| U8-B reboot/install | PRODUCT `2323d6fad678213805d0dc589c150a835016573f`; CONTROL `772316d364ad9358dd864ed1be23edff7c6f084e`; Device Cycle #649 / `35760950837`; artifact `10710425908`, digest `sha256:ddecb250e2afda118c54daccec093a39fe5781f1e163d7e1a70a579b9e47e0c1`; `U8_REBOOT_INSTALL_DURABILITY_PASS`. |
+| U8-C root-shell replacement | PR #319 head `aea2fc7ad90adf5b68680aefd60e71b3e82bcb9e`; merge `78655109d75235f7d767550af15a0b8f47d36522`; hosted run `35764084003`; uncertain mutation not replayed and shell generation strictly replaced. |
+| U8-D public egress rotation | PRODUCT `aea2fc7ad90adf5b68680aefd60e71b3e82bcb9e`; CONTROL `c348f8f03180452b37d1f273a5855a5b4b29f047`; Device Cycle #650 / `35769781964`; artifact `10713642471`, digest `sha256:8a09e2cb65f8c00c6fa55d563e510729746c269b0e573558d3a41d971fdeaca0`; `U8_PUBLIC_EGRESS_ROTATION_PASS`. |
+| U8-E authenticated remote rotation | PRODUCT `8325994be5ab8727ccf238794ef8f729923ac7bb`; CONTROL `15feab66ba14c10ca3c056f6adffa3dbdbbd6264`; Device Cycle #680 / `35799515235`; artifact `10725073120`, digest `sha256:6e8e3891682a4ff34fa9d5a3a87afa91494559c502fa9621d8df6e70188bc1fa`; `U8_REMOTE_CONTROL_ROTATION_PASS`. |
+| U8-F durability soak | PRODUCT `94a9f4993b524b0388f0e2216e9e78183c8a3a4f`; CONTROL `f5f3b84ba3754a5591950e26da67914d6cd799a6`; Device Cycle #683 / `35804498003`; artifact `10726874501`, digest `sha256:8ee59911499d0a1d1c2b786d29d98491021d7db82b461a9d79254ffd296bc69d`; `U8_DURABILITY_SOAK_PASS`. |
+| U8-G external privacy/path | PRODUCT `94a9f4993b524b0388f0e2216e9e78183c8a3a4f`; CONTROL `16a843cca4890b5d777b11cccb0ebeb9cb26924a`; Device Cycle #728 / `35936074767`; artifact `10783028195`, digest `sha256:b1a3bedd309748cf337e591c1eb9de922cef2e973ec856dcc72edc900662d544`; `U8_G_FINAL_CLEAN_CLIENT_PASS`. |
+
+Bounded support evidence is the already accepted typed observation surface: `mish.diagnostics/v2`, immutable Device Cycle reports/artifacts, and stage-specific redacted evidence. This is sufficient for U8 support/provenance closure; adding a second support bundle state store would duplicate accepted owners and is prohibited.
+
+External distribution/store signing may derive later from the accepted source/artifact, but it is a delivery concern and must not retroactively create a competing RC/development acceptance lineage.
 
 ## U8 architecture invariants
 
@@ -766,7 +805,7 @@ Record exact source/tree, CONTROL, immutable hosted candidate, physical evidence
 - no Wi-Fi/default/WARP fallback for PRODUCT public egress;
 - physical Device Cycle remains explicit owner-controlled only; no automatic physical trigger.
 
-Exit: U8 closes only when B-H are accepted on exact provenance. U8 is the final stage in the current PRODUCT roadmap.
+Exit: **U8 CLOSED / PASS.** B-H are accepted on exact provenance. U8 is the final stage in the current PRODUCT roadmap; no further PRODUCT stage is implied by this closure.
 
 
 ---
