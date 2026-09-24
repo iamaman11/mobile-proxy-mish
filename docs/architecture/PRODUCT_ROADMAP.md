@@ -741,12 +741,12 @@ Issue #315 is closed `completed`. It remains the specialized external-client/bro
 Canonical final physical acceptance:
 
 - accepted PRODUCT source: `94a9f4993b524b0388f0e2216e9e78183c8a3a4f`;
-- Device Cycle #728 / run `35936074767`;
-- physical CONTROL: `16a843cca4890b5d777b11cccb0ebeb9cb26924a`;
+- Device Cycle #731 / run `35936228660`;
+- physical CONTROL: `a2036eaeb60f0e766d9593bb62bb25e6d302091c`;
 - cycle result/classification: `PASS / U8_G_FINAL_CLEAN_CLIENT_PASS`;
 - exact-candidate acceptance: PASS;
-- evidence artifact: `10783028195`;
-- evidence digest: `sha256:b1a3bedd309748cf337e591c1eb9de922cef2e973ec856dcc72edc900662d544`.
+- evidence artifact: `10783212513`;
+- evidence digest: `sha256:b1df63bb6b15a7afc91e993d253ffd94cf9412471da26c18d8dadae868cd11ca`.
 
 Accepted clean-client facts:
 
@@ -788,7 +788,7 @@ U8 evidence ledger:
 | U8-D public egress rotation | PRODUCT `aea2fc7ad90adf5b68680aefd60e71b3e82bcb9e`; CONTROL `c348f8f03180452b37d1f273a5855a5b4b29f047`; Device Cycle #650 / `35769781964`; artifact `10713642471`, digest `sha256:8a09e2cb65f8c00c6fa55d563e510729746c269b0e573558d3a41d971fdeaca0`; `U8_PUBLIC_EGRESS_ROTATION_PASS`. |
 | U8-E authenticated remote rotation | PRODUCT `8325994be5ab8727ccf238794ef8f729923ac7bb`; CONTROL `15feab66ba14c10ca3c056f6adffa3dbdbbd6264`; Device Cycle #680 / `35799515235`; artifact `10725073120`, digest `sha256:6e8e3891682a4ff34fa9d5a3a87afa91494559c502fa9621d8df6e70188bc1fa`; `U8_REMOTE_CONTROL_ROTATION_PASS`. |
 | U8-F durability soak | PRODUCT `94a9f4993b524b0388f0e2216e9e78183c8a3a4f`; CONTROL `f5f3b84ba3754a5591950e26da67914d6cd799a6`; Device Cycle #683 / `35804498003`; artifact `10726874501`, digest `sha256:8ee59911499d0a1d1c2b786d29d98491021d7db82b461a9d79254ffd296bc69d`; `U8_DURABILITY_SOAK_PASS`. |
-| U8-G external privacy/path | PRODUCT `94a9f4993b524b0388f0e2216e9e78183c8a3a4f`; CONTROL `16a843cca4890b5d777b11cccb0ebeb9cb26924a`; Device Cycle #728 / `35936074767`; artifact `10783028195`, digest `sha256:b1a3bedd309748cf337e591c1eb9de922cef2e973ec856dcc72edc900662d544`; `U8_G_FINAL_CLEAN_CLIENT_PASS`. |
+| U8-G external privacy/path | PRODUCT `94a9f4993b524b0388f0e2216e9e78183c8a3a4f`; CONTROL `a2036eaeb60f0e766d9593bb62bb25e6d302091c`; Device Cycle #731 / `35936228660`; artifact `10783212513`, digest `sha256:b1df63bb6b15a7afc91e993d253ffd94cf9412471da26c18d8dadae868cd11ca`; `U8_G_FINAL_CLEAN_CLIENT_PASS`. |
 
 Bounded support evidence is the already accepted typed observation surface: `mish.diagnostics/v2`, immutable Device Cycle reports/artifacts, and stage-specific redacted evidence. This is sufficient for U8 support/provenance closure; adding a second support bundle state store would duplicate accepted owners and is prohibited.
 
