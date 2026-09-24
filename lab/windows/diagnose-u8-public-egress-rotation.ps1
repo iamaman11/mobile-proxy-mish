@@ -20,134 +20,6 @@ function Stop-MishU8PublicEgress {
     throw "MISH_U8_PUBLIC_EGRESS_FAILURE|$Classification|$Message"
 }
 
-function Invoke-MishAdbCapture {
-    param([Parameter(Mandatory)][string[]] $Arguments)
-
-    $start = [Diagnostics.ProcessStartInfo]::new()
-    $start.FileName = $AdbPath
-    $start.UseShellExecute = $false
-    $start.CreateNoWindow = $true
-    $start.RedirectStandardOutput = $true
-    $start.RedirectStandardError = $true
-    foreach ($argument in $Arguments) {
-        [void]$start.ArgumentList.Add($argument)
-    }
-
-    $process = [Diagnostics.Process]::new()
-    $process.StartInfo = $start
-    try {
-        if (-not $process.Start()) {
-            Stop-MishU8PublicEgress 'LAB_ADB_FAILED' 'ADB did not start.'
-        }
-        $stdout = $process.StandardOutput.ReadToEndAsync()
-        $stderr = $process.StandardError.ReadToEndAsync()
-        if (-not $process.WaitForExit(10000)) {
-            try { $process.Kill($true) } catch {}
-            Stop-MishU8PublicEgress 'LAB_ADB_TIMEOUT' 'ADB exceeded the bounded transport deadline.'
-        }
-        return [pscustomobject]@{
-            ExitCode = [int]$process.ExitCode
-            Text = (($stdout.GetAwaiter().GetResult(), $stderr.GetAwaiter().GetResult()) |
-                Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join "`n"
-        }
-    }
-    finally {
-        $process.Dispose()
-    }
-}
-
-function New-MishAdbForward {
-    $result = Invoke-MishAdbCapture -Arguments @('forward', 'tcp:0', 'tcp:3128')
-    $text = [string]$result.Text
-    if ($result.ExitCode -ne 0 -or $text.Trim() -notmatch '^\d+$') {
-        Stop-MishU8PublicEgress 'LAB_ADB_FORWARD_FAILED' 'Could not expose the existing PRODUCT HTTP CONNECT listener through bounded ADB forwarding.'
-    }
-    return [int]$text.Trim()
-}
-
-function Remove-MishAdbForward {
-    param([Parameter(Mandatory)][int] $Port)
-    [void](Invoke-MishAdbCapture -Arguments @('forward', '--remove', "tcp:$Port"))
-}
-
-function Invoke-MishExternalPublicIpObservation {
-    param(
-        [Parameter(Mandatory)][int] $ProxyPort,
-        [Parameter(Mandatory)][string] $ProxyUserName,
-        [Parameter(Mandatory)][Security.SecureString] $ProxyPassword
-    )
-
-    $watch = [Diagnostics.Stopwatch]::StartNew()
-    $plainPassword = $null
-    $handler = $null
-    $client = $null
-    $response = $null
-    $stream = $null
-    try {
-        $plainPassword = [Net.NetworkCredential]::new('', $ProxyPassword).Password
-        $proxy = [Net.WebProxy]::new("http://127.0.0.1:$ProxyPort")
-        $proxy.Credentials = [Net.NetworkCredential]::new($ProxyUserName, $plainPassword)
-
-        $handler = [Net.Http.HttpClientHandler]::new()
-        $handler.UseProxy = $true
-        $handler.Proxy = $proxy
-
-        $client = [Net.Http.HttpClient]::new($handler, $true)
-        $handler = $null
-        $client.Timeout = [TimeSpan]::FromSeconds($ExternalProbeTimeoutSeconds)
-
-        $response = $client.GetAsync(
-            $script:Endpoint,
-            [Net.Http.HttpCompletionOption]::ResponseHeadersRead
-        ).GetAwaiter().GetResult()
-        if ([int]$response.StatusCode -ne 200) {
-            Stop-MishU8PublicEgress 'LAB_EXTERNAL_IP_HTTP_FAILED' 'External IP endpoint did not return HTTP 200 through the authenticated PRODUCT proxy.'
-        }
-
-        $stream = $response.Content.ReadAsStream()
-        $buffer = [byte[]]::new(65)
-        $count = 0
-        while ($count -lt $buffer.Length) {
-            $read = $stream.Read($buffer, $count, $buffer.Length - $count)
-            if ($read -le 0) { break }
-            $count += $read
-        }
-        if ($count -eq 0 -or $count -gt 64) {
-            Stop-MishU8PublicEgress 'LAB_EXTERNAL_IP_RESPONSE_INVALID' 'External IP response was empty or exceeded the bounded body size.'
-        }
-
-        $raw = [Text.Encoding]::ASCII.GetString($buffer, 0, $count)
-        $value = $raw.Trim()
-        $parsed = $null
-        if (
-            [string]::IsNullOrWhiteSpace($value) -or
-            $value -match '\s' -or
-            -not [Net.IPAddress]::TryParse($value, [ref]$parsed)
-        ) {
-            Stop-MishU8PublicEgress 'LAB_EXTERNAL_IP_RESPONSE_INVALID' 'External IP endpoint returned a non-IP body.'
-        }
-
-        return [pscustomobject]@{
-            Address = $parsed.ToString()
-            ElapsedMs = [int64]$watch.ElapsedMilliseconds
-        }
-    }
-    catch [System.Net.Http.HttpRequestException] {
-        Stop-MishU8PublicEgress 'LAB_EXTERNAL_IP_REQUEST_FAILED' 'External IP request failed through the authenticated PRODUCT proxy.'
-    }
-    catch [System.Threading.Tasks.TaskCanceledException] {
-        Stop-MishU8PublicEgress 'LAB_EXTERNAL_IP_TIMEOUT' 'External IP request exceeded the bounded deadline.'
-    }
-    finally {
-        $plainPassword = $null
-        if ($null -ne $stream) { $stream.Dispose() }
-        if ($null -ne $response) { $response.Dispose() }
-        if ($null -ne $client) { $client.Dispose() }
-        if ($null -ne $handler) { $handler.Dispose() }
-        $watch.Stop()
-    }
-}
-
 function Write-MishEvidence {
     param([Parameter(Mandatory)] $Evidence)
     $full = [IO.Path]::GetFullPath($EvidencePath)
@@ -165,13 +37,11 @@ if (-not (Test-Path -LiteralPath $AdbPath -PathType Leaf)) {
     Stop-MishU8PublicEgress 'LAB_ADB_MISSING' 'Canonical ADB executable is unavailable.'
 }
 
-Import-Module (Join-Path $PSScriptRoot 'CredentialProvisioning.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'PublicEgressObservation.psm1') -Force
 
 $tempRoot = if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) { $env:RUNNER_TEMP } else { $env:TEMP }
-$credentialStore = Join-Path $tempRoot ('mish-u8-egress-credential-' + [Guid]::NewGuid().ToString('N') + '.dpapi')
 $rotationEvidencePath = Join-Path $tempRoot ('mish-u8-egress-inner-rotation-' + [Guid]::NewGuid().ToString('N') + '.json')
-$forwardPort = $null
-$lease = $null
+$observationContext = $null
 $beforeAddress = $null
 $afterAddress = $null
 $evidence = [ordered]@{
@@ -194,17 +64,12 @@ $evidence = [ordered]@{
 }
 
 try {
-    [void](Invoke-MishExternalProxyCredentialProvisioning -AdbPath $AdbPath -PackageName $PackageName -StorePath $credentialStore)
-    $lease = Open-MishExternalProxyCredentialLease -StorePath $credentialStore
-    if ($null -eq $lease) {
-        Stop-MishU8PublicEgress 'LAB_CREDENTIAL_LEASE_UNAVAILABLE' 'Bounded proxy credential lease is unavailable.'
-    }
-
-    $forwardPort = New-MishAdbForward
+    $observationContext = New-MishPublicEgressObservationContext `
+        -AdbPath $AdbPath `
+        -PackageName $PackageName
     $before = Invoke-MishExternalPublicIpObservation `
-        -ProxyPort $forwardPort `
-        -ProxyUserName ([string]$lease.ProxyUserName) `
-        -ProxyPassword ([Security.SecureString]$lease.ProxyPassword)
+        -Context $observationContext `
+        -TimeoutSeconds $ExternalProbeTimeoutSeconds
     $beforeAddress = [string]$before.Address
 
     $rotationError = $null
@@ -247,9 +112,8 @@ try {
     }
 
     $after = Invoke-MishExternalPublicIpObservation `
-        -ProxyPort $forwardPort `
-        -ProxyUserName ([string]$lease.ProxyUserName) `
-        -ProxyPassword ([Security.SecureString]$lease.ProxyPassword)
+        -Context $observationContext `
+        -TimeoutSeconds $ExternalProbeTimeoutSeconds
     $afterAddress = [string]$after.Address
     $externalChanged = $beforeAddress -cne $afterAddress
     $externalOutcome = if ($externalChanged) { 'CHANGED' } else { 'UNCHANGED' }
@@ -290,13 +154,8 @@ try {
 finally {
     $beforeAddress = $null
     $afterAddress = $null
-    $lease = $null
-    if ($null -ne $forwardPort) {
-        try { Remove-MishAdbForward -Port ([int]$forwardPort) } catch {}
-    }
-    if (Test-Path -LiteralPath $credentialStore -PathType Leaf) {
-        Remove-Item -LiteralPath $credentialStore -Force -ErrorAction SilentlyContinue
-    }
+    Close-MishPublicEgressObservationContext -Context $observationContext
+    $observationContext = $null
     if (Test-Path -LiteralPath $rotationEvidencePath -PathType Leaf) {
         Remove-Item -LiteralPath $rotationEvidencePath -Force -ErrorAction SilentlyContinue
     }

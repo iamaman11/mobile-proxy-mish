@@ -55,6 +55,36 @@ The canonical external limit of 512 is **not** a Tokio/runtime business rule. `m
 
 Android/Kotlin does not become a second transport/proxy/runtime lifecycle owner. It executes platform effects and projects typed owner state.
 
+## Android / Rust-Tokio ownership invariant
+
+This boundary is a permanent PRODUCT invariant, not a stage-local implementation preference:
+
+```text
+Kotlin / Android
+  = Android framework lifecycle anchor
+  + raw platform observations/effects that require Android APIs
+  + Android Keystore signing effect
+  + typed FFI calls
+  + read-only UI / DUMP projection
+
+Rust natural owners + mish-runtime / Tokio
+  = PRODUCT state machines and semantic state
+  + lifecycle / generation / reconciliation / recovery decisions
+  + Rotation operation identity, ordering, deadlines, cancellation and restore semantics
+  + CONTROL WSS lifecycle, reconnect/backoff, heartbeat/liveness, correlation and idempotency
+  + operation-scoped monotonic timing evidence
+  + readiness / proxy / Mesh execution decisions
+```
+
+Consequences:
+
+- Kotlin must never become a second Rotation, CONTROL, lifecycle, recovery, readiness, proxy or Mesh owner.
+- Kotlin must never decide PRODUCT retries, backoff, deadlines, event ordering, generation acceptance, terminal results or remote-operation correlation.
+- Kotlin may invoke a narrow typed platform effect only when Rust owns the semantic decision to invoke it.
+- Kotlin diagnostics may serialize an immutable native snapshot, but must not derive a second authoritative PRODUCT state or timing model.
+- Android callback serialization is permitted only as a platform observation mechanism; it does not confer PRODUCT semantic ownership.
+- New PRODUCT timers, schedulers, state machines or retry loops belong in the existing Rust/Tokio owner unless an explicit architecture change proves otherwise.
+
 ## Architecture enforcement
 
 Architecture tests/guards must prevent regression after the U2 Mesh/Tokio convergence:

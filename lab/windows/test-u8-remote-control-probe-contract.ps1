@@ -2,15 +2,19 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $probePath = Join-Path $PSScriptRoot 'diagnose-u8-remote-control.ps1'
-$tokens = $null
-$errors = $null
-[void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $probePath), [ref]$tokens, [ref]$errors)
-if ($errors.Count -ne 0) {
-    $errors | ForEach-Object { Write-Error $_.Message }
-    throw 'U8 remote-control probe PowerShell syntax is invalid.'
+$modulePath = Join-Path $PSScriptRoot 'PublicEgressObservation.psm1'
+foreach ($parsePath in @($probePath, $modulePath)) {
+    $tokens = $null
+    $errors = $null
+    [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $parsePath), [ref]$tokens, [ref]$errors)
+    if ($errors.Count -ne 0) {
+        $errors | ForEach-Object { Write-Error $_.Message }
+        throw "U8 remote-control observation source PowerShell syntax is invalid: $parsePath"
+    }
 }
 
 $source = Get-Content -Raw -LiteralPath $probePath
+$moduleSource = Get-Content -Raw -LiteralPath $modulePath
 foreach ($required in @(
     "mish.lab.u8-remote-control/v1",
     "com.mobileproxymish.app.action.READ_CONTROL_IDENTITY_V1",
@@ -48,9 +52,51 @@ foreach ($required in @(
     "secrets_persisted_in_evidence = `$false",
     "MISH_U8_REMOTE_CONTROL_PUBLIC_COMMANDS=1",
     "MISH_U8_REMOTE_CONTROL_SERVER_REQUEST_ID=PASS",
-    "MISH_U8_REMOTE_CONTROL_MANAGER_POLLING=0"
+    "MISH_U8_REMOTE_CONTROL_MANAGER_POLLING=0",
+    "device_timeline_proof = `$true",
+    "rotation_origin_from_command_ms",
+    "result_ack_ms",
+    "fresh_cellular_generation",
+    "root_authorized_generation",
+    "MISH_U8_REMOTE_CONTROL_DEVICE_TIMELINE=PASS",
+    "PublicEgressObservation.psm1",
+    "New-MishPublicEgressObservationContext",
+    "Invoke-MishExternalPublicIpObservation",
+    "Close-MishPublicEgressObservationContext",
+    "external_public_ip_observer_proof = `$true",
+    "external_public_ip_consensus",
+    "EXTERNAL_PUBLIC_IP_RESULT_MISMATCH",
+    "MISH_U8_REMOTE_CONTROL_EXTERNAL_PUBLIC_IP=PASS",
+    "U8_REMOTE_CONTROL_MANAGER_TIMEOUT_DIAGNOSTIC",
+    "MISH_U8_REMOTE_CONTROL_TIMEOUT_DIAGNOSTIC=CAPTURED",
+    "operation_polls = 0",
+    "no retry was issued"
 )) {
     if (-not $source.Contains($required)) { throw "U8 remote-control probe contract drifted: $required" }
+}
+
+foreach ($required in @(
+    'https://checkip.amazonaws.com/',
+    'CredentialProvisioning.psm1',
+    'Invoke-MishExternalProxyCredentialProvisioning',
+    'Open-MishExternalProxyCredentialLease',
+    "'forward', 'tcp:0', 'tcp:3128'",
+    "'forward', '--remove'"
+)) {
+    if (-not $moduleSource.Contains($required)) {
+        throw "Shared public-egress observation module lost required remote-control contract: $required"
+    }
+}
+foreach ($forbidden in @(
+    'diagnose-u5-rotation.ps1',
+    'start_public_ip_rotation',
+    'airplane-mode enable',
+    'airplane-mode disable',
+    'MISH_MANAGER_TOKEN'
+)) {
+    if ($moduleSource.Contains($forbidden)) {
+        throw "Shared public-egress observation module must stay read-only and independent from CONTROL: $forbidden"
+    }
 }
 
 foreach ($forbidden in @(
@@ -75,6 +121,16 @@ foreach ($forbidden in @(
     '$requestId = "u8e_'
 )) {
     if ($source.Contains($forbidden)) { throw "U8 remote-control probe contains forbidden second-owner/secret path: $forbidden" }
+}
+foreach ($forbidden in @(
+    'before_ip =',
+    'after_ip =',
+    'Write-Host $beforeAddress',
+    'Write-Host $afterAddress'
+)) {
+    if ($source.Contains($forbidden) -or $moduleSource.Contains($forbidden)) {
+        throw "Remote public-IP consensus must never persist or print raw addresses: $forbidden"
+    }
 }
 
 $validCommandLiteral = '$remote = Invoke-MishManagerRequest -Method POST -Path ''/v1/rotate'' -BearerToken $env:MISH_MANAGER_TOKEN -Body $null'
