@@ -138,6 +138,9 @@ def main() -> None:
         "Accepted producer policy",
         "Exact candidate acceptance",
         "Targeted acceptance",
+        "external_public_ip_observer_proof",
+        "external_public_ip_consensus",
+        "Independent proxy-observed public IP",
     ):
         require(workflow, required, "explicit single-run orchestration contract drifted")
 
@@ -404,14 +407,13 @@ def main() -> None:
 
 
     u8_egress_probe = "lab/windows/diagnose-u8-public-egress-rotation.ps1"
+    u8_egress_observer = "lab/windows/PublicEgressObservation.psm1"
     for required in (
         "mish.lab.u8-public-egress-rotation/v1",
-        "https://checkip.amazonaws.com/",
-        "[Net.Http.HttpClientHandler]::new()",
-        "[Net.WebProxy]::new(\"http://127.0.0.1:$ProxyPort\")",
-        "Invoke-MishExternalProxyCredentialProvisioning",
-        "Open-MishExternalProxyCredentialLease",
-        "@('forward', 'tcp:0', 'tcp:3128')",
+        "PublicEgressObservation.psm1",
+        "New-MishPublicEgressObservationContext",
+        "Invoke-MishExternalPublicIpObservation",
+        "Close-MishPublicEgressObservationContext",
         "diagnose-u5-rotation.ps1",
         "-SuccessfulOperations 1",
         "-SkipShutdownRestoreAfterOn",
@@ -443,6 +445,30 @@ def main() -> None:
         "Write-Host $afterAddress",
     ):
         forbid(u8_egress_probe, forbidden, "U8 external public-egress proof must remain one-shot, redacted and reuse PRODUCT mutation ownership")
+
+    for required in (
+        "https://checkip.amazonaws.com/",
+        "[Net.Http.HttpClientHandler]::new()",
+        "CredentialProvisioning.psm1",
+        "Invoke-MishExternalProxyCredentialProvisioning",
+        "Open-MishExternalProxyCredentialLease",
+        "'forward', 'tcp:0', 'tcp:3128'",
+        "'forward', '--remove'",
+        "New-MishPublicEgressObservationContext",
+        "Invoke-MishExternalPublicIpObservation",
+        "Close-MishPublicEgressObservationContext",
+    ):
+        require(u8_egress_observer, required, "shared public-egress observation module drifted")
+    for forbidden in (
+        "diagnose-u5-rotation.ps1",
+        "start_public_ip_rotation",
+        "MISH_MANAGER_TOKEN",
+        "ROTATE_IP",
+        "/v1/rotate",
+        "airplane-mode enable",
+        "airplane-mode disable",
+    ):
+        forbid(u8_egress_observer, forbidden, "shared public-egress observer must remain read-only and CONTROL-independent")
 
     u8_egress_contract = "lab/windows/test-u8-public-egress-rotation-probe-contract.ps1"
     for required in (
@@ -485,6 +511,17 @@ def main() -> None:
         "public_spki_persisted = $false",
         "raw_public_ip_persisted = $false",
         "secrets_persisted_in_evidence = $false",
+        "PublicEgressObservation.psm1",
+        "external_public_ip_observer_proof = $true",
+        "external_public_ip_consensus",
+        "EXTERNAL_PUBLIC_IP_RESULT_MISMATCH",
+        "MISH_U8_REMOTE_CONTROL_EXTERNAL_PUBLIC_IP=PASS",
+        "U8_REMOTE_CONTROL_MANAGER_TIMEOUT_DIAGNOSTIC",
+        "MISH_U8_REMOTE_CONTROL_TIMEOUT_DIAGNOSTIC=CAPTURED",
+        "device_timeline_at_timeout",
+        "product_snapshot_capture",
+        "operation_polls = 0",
+        "no retry or polling was issued",
     ):
         require(u8_remote_probe, required, "U8 remote-control acceptance contract drifted")
     for forbidden in (
