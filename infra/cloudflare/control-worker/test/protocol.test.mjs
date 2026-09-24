@@ -445,13 +445,14 @@ test("accepted operation with permanently lost RESULT expires and releases BUSY"
 });
 
 test("unaccepted dispatch is fenced before BUSY can be released", async () => {
+  const now = Date.now();
   const storage = new MemoryStorage();
   await storage.put("active_operation", {
     request_id: "req_unaccepted",
     status: "DISPATCHED",
     operation_id: null,
     result: null,
-    created_at_ms: 1,
+    created_at_ms: now - 180_001,
     accepted_at_ms: null,
     fenced_at_ms: null,
     release_at_ms: null,
@@ -462,10 +463,10 @@ test("unaccepted dispatch is fenced before BUSY can be released", async () => {
   });
   const control = new DeviceControl(new FakeContext(storage, [socket]), {});
 
-  let active = await control.reconcileActiveOperation(180_002, { fenceSockets: true });
+  let active = await control.reconcileActiveOperation(now, { fenceSockets: true });
   assert.equal(active.status, "FENCED");
   assert.equal(active.request_id, "req_unaccepted");
-  assert.equal(active.release_at_ms, 300_002);
+  assert.equal(active.release_at_ms, now + 120_000);
   assert.equal(socket.attachment.authenticated, false);
   assert.equal(socket.closed.at(-1)?.reason, "operation fenced");
   assert.equal((await storage.get("recent_operations")) || null, null);
@@ -478,7 +479,10 @@ test("unaccepted dispatch is fenced before BUSY can be released", async () => {
   assert.equal(busy.kind, "BUSY");
   assert.equal(replacement.sent.length, 0);
 
-  active = await replacementControl.reconcileActiveOperation(300_003, { fenceSockets: true });
+  active = await replacementControl.reconcileActiveOperation(
+    now + 120_001,
+    { fenceSockets: true },
+  );
   assert.equal(active.result, "UNKNOWN");
   assert.equal(await storage.get("active_operation"), undefined);
 
