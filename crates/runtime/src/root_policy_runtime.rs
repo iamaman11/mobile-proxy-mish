@@ -195,9 +195,9 @@ impl RootPolicyRuntime {
                 Duration::ZERO,
                 RootPolicyCommandWindowDiagnostic::default(),
             );
-            return RootPolicyReconcileOutcome::Completed(
-                RootPolicyResult::AuthorityUnavailable(authority),
-            );
+            return RootPolicyReconcileOutcome::Completed(RootPolicyResult::AuthorityUnavailable(
+                authority,
+            ));
         }
         if !is_current() {
             record_reconcile(
