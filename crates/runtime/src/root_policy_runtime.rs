@@ -130,6 +130,12 @@ struct RootPolicyState {
     diagnostic: RootPolicyReconcileDiagnostic,
 }
 
+#[derive(Debug, Default)]
+struct RootPolicyReconcileTrace {
+    phases: RootPolicyPhaseDiagnostics,
+    superseded: bool,
+}
+
 pub struct RootPolicyRuntime {
     io: Arc<dyn RootPolicyIo>,
     state: Mutex<RootPolicyState>,
@@ -233,17 +239,15 @@ impl RootPolicyRuntime {
 
         let policy_started = Instant::now();
         let mut window = RootPolicyCommandWindow::default();
-        let mut phases = RootPolicyPhaseDiagnostics::default();
-        let mut superseded = false;
+        let mut trace = RootPolicyReconcileTrace::default();
         let result = self
             .reconcile_authorized(
                 &mut state.contract,
                 admitted,
                 interface_name,
                 &mut window,
-                &mut phases,
+                &mut trace,
                 &is_current,
-                &mut superseded,
             )
             .await;
         record_reconcile(
@@ -251,9 +255,9 @@ impl RootPolicyRuntime {
             reconcile_started,
             policy_started.elapsed(),
             window.diagnostic(),
-            phases,
+            trace.phases,
         );
-        if superseded {
+        if trace.superseded {
             RootPolicyReconcileOutcome::Superseded
         } else {
             RootPolicyReconcileOutcome::Completed(result)
@@ -279,9 +283,8 @@ impl RootPolicyRuntime {
         admitted: bool,
         interface_name: Option<&str>,
         window: &mut RootPolicyCommandWindow,
-        phases: &mut RootPolicyPhaseDiagnostics,
+        trace: &mut RootPolicyReconcileTrace,
         is_current: &F,
-        superseded: &mut bool,
     ) -> RootPolicyResult
     where
         F: Fn() -> bool + Sync,
@@ -292,12 +295,12 @@ impl RootPolicyRuntime {
             Ok(snapshot) => snapshot,
             Err(failure) => return RootPolicyResult::FailClosed(Some(failure)),
         };
-        phases.initial_snapshot =
+        trace.phases.initial_snapshot =
             phase_diagnostic(phase_started, phase_before, window.diagnostic());
         // No policy mutation has happened yet. A superseded generation can be abandoned without
         // changing kernel state.
         if !is_current() {
-            *superseded = true;
+            trace.superseded = true;
             return RootPolicyResult::FailClosed(None);
         }
 
@@ -361,7 +364,7 @@ impl RootPolicyRuntime {
         {
             return RootPolicyResult::FailClosed(Some(failure));
         }
-        phases.fail_closed_prepare =
+        trace.phases.fail_closed_prepare =
             phase_diagnostic(phase_started, phase_before, window.diagnostic());
 
         let phase_started = Instant::now();
@@ -373,12 +376,12 @@ impl RootPolicyRuntime {
         if contract.verify_fail_closed_base(&fail_closed).is_err() {
             return RootPolicyResult::FailClosed(Some(RootPolicyFailure::StructuralMismatch));
         }
-        phases.fail_closed_verify =
+        trace.phases.fail_closed_verify =
             phase_diagnostic(phase_started, phase_before, window.diagnostic());
         // Everything before this point is the fail-closed base. If owner generation changed while
         // constructing it, stop here rather than starting admitted-generation work.
         if !is_current() {
-            *superseded = true;
+            trace.superseded = true;
             return RootPolicyResult::FailClosed(None);
         }
 
@@ -398,11 +401,11 @@ impl RootPolicyRuntime {
             Ok(table) => table,
             Err(failure) => return RootPolicyResult::FailClosed(Some(failure)),
         };
-        phases.table_discovery = phase_diagnostic(phase_started, phase_before, window.diagnostic());
+        trace.phases.table_discovery = phase_diagnostic(phase_started, phase_before, window.diagnostic());
         // Route-table discovery is observation-only. This is the final safe point before the
         // admitted lookup mutation begins.
         if !is_current() {
-            *superseded = true;
+            trace.superseded = true;
             return RootPolicyResult::FailClosed(None);
         }
 
@@ -426,7 +429,7 @@ impl RootPolicyRuntime {
                 RootPolicyFailure::RouteLookupVerificationFailed,
             ));
         }
-        phases.admitted_apply_verify =
+        trace.phases.admitted_apply_verify =
             phase_diagnostic(phase_started, phase_before, window.diagnostic());
 
         RootPolicyResult::Enforced
