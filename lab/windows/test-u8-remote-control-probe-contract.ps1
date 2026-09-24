@@ -48,7 +48,13 @@ foreach ($required in @(
     "secrets_persisted_in_evidence = `$false",
     "MISH_U8_REMOTE_CONTROL_PUBLIC_COMMANDS=1",
     "MISH_U8_REMOTE_CONTROL_SERVER_REQUEST_ID=PASS",
-    "MISH_U8_REMOTE_CONTROL_MANAGER_POLLING=0"
+    "MISH_U8_REMOTE_CONTROL_MANAGER_POLLING=0",
+    "device_timeline_proof = `$true",
+    "rotation_origin_from_command_ms",
+    "result_ack_ms",
+    "fresh_cellular_generation",
+    "root_authorized_generation",
+    "MISH_U8_REMOTE_CONTROL_DEVICE_TIMELINE=PASS"
 )) {
     if (-not $source.Contains($required)) { throw "U8 remote-control probe contract drifted: $required" }
 }
@@ -60,8 +66,8 @@ foreach ($forbidden in @(
     "'cmd', 'phone', 'data'",
     "retry-until",
     "retry_until",
-    "before_ip",
-    "after_ip",
+    "observe_public_egress_ip",
+    "start_public_ip_rotation",
     "Write-Host `$publicSpki",
     "Write-Host `$deviceId",
     "Write-Host `$env:MISH_MANAGER_TOKEN",

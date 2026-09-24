@@ -222,6 +222,92 @@ if ([int64]$post.android.rotation.operation_id -ne $operationId) { Stop-MishRemo
 if ([string]$post.android.rotation.terminal_result -cne $terminalResult) { Stop-MishRemoteControl 'PRODUCT_TERMINAL_MISMATCH' 'PRODUCT Rotation owner and broker disagree on terminal result.' }
 if ([string]$post.external.adb_loopback_proxy_e2e.result -cne 'PASS' -or [string]$post.external.mesh_proxy_e2e.result -cne 'PASS') { Stop-MishRemoteControl 'POST_ROTATION_PROXY_E2E_FAILED' 'Post-rotation proxy E2E did not pass.' }
 
+# Read one bounded timing record from the same real remote operation. This is observation only:
+# no second trigger, local Rotation call, polling loop, radio mutation or public-IP probe is added.
+$controlTimeline = Invoke-MishControlSnapshot
+$operationTiming = $controlTimeline.control.operation_timing
+if ($null -eq $operationTiming -or [string]$operationTiming.origin -cne 'REMOTE_COMMAND_RECEIVED') {
+    Stop-MishRemoteControl 'DEVICE_TIMELINE_MISSING' 'Control diagnostics did not expose the canonical remote-command timing origin.'
+}
+$rotationTiming = $operationTiming.rotation
+if ($null -eq $rotationTiming -or
+    $null -eq $operationTiming.operation_id -or [int64]$operationTiming.operation_id -ne $operationId -or
+    $null -eq $rotationTiming.operation_id -or [int64]$rotationTiming.operation_id -ne $operationId) {
+    Stop-MishRemoteControl 'DEVICE_TIMELINE_OPERATION_MISMATCH' 'CONTROL and Rotation timing evidence are not correlated to the manager operation id.'
+}
+
+foreach ($field in @(
+    'operation_age_ms',
+    'operation_reserved_ms',
+    'accepted_sent_ms',
+    'rotation_terminal_ms',
+    'result_sent_ms',
+    'result_ack_ms',
+    'rotation_origin_from_command_ms'
+)) {
+    if ($null -eq $operationTiming.$field -or [int64]$operationTiming.$field -lt 0) {
+        Stop-MishRemoteControl 'DEVICE_TIMELINE_INCOMPLETE' "Missing/invalid CONTROL timing field: $field."
+    }
+}
+foreach ($field in @(
+    'operation_age_ms',
+    'activated_ms',
+    'before_ip_started_ms',
+    'before_ip_completed_ms',
+    'airplane_enable_started_ms',
+    'airplane_enable_effect_completed_ms',
+    'airplane_on_observed_ms',
+    'cellular_loss_observed_ms',
+    'airplane_disable_started_ms',
+    'airplane_disable_effect_completed_ms',
+    'airplane_off_observed_ms',
+    'fresh_cellular_observed_ms',
+    'fresh_cellular_generation',
+    'root_authorized_ms',
+    'root_authorized_generation',
+    'after_ip_started_ms',
+    'after_ip_completed_ms',
+    'terminal_ms'
+)) {
+    if ($null -eq $rotationTiming.$field -or [int64]$rotationTiming.$field -lt 0) {
+        Stop-MishRemoteControl 'DEVICE_TIMELINE_INCOMPLETE' "Missing/invalid Rotation timing field: $field."
+    }
+}
+if ([bool]$controlTimeline.control.pending_operation) {
+    Stop-MishRemoteControl 'DEVICE_TIMELINE_NOT_ACKED' 'RESULT correlation is still pending after the manager returned and post diagnostics completed.'
+}
+if ([int64]$rotationTiming.fresh_cellular_generation -ne [int64]$rotationTiming.root_authorized_generation -or
+    [int64]$rotationTiming.fresh_cellular_generation -ne [int64]$post.android.rotation.after_generation) {
+    Stop-MishRemoteControl 'DEVICE_TIMELINE_GENERATION_MISMATCH' 'Fresh Cellular, root authorization and terminal Rotation generation are not exact.'
+}
+
+$rotationOriginFromCommandMs = [int64]$operationTiming.rotation_origin_from_command_ms
+$rotationActivatedFromCommandMs = $rotationOriginFromCommandMs + [int64]$rotationTiming.activated_ms
+$rotationTerminalFromCommandMs = $rotationOriginFromCommandMs + [int64]$rotationTiming.terminal_ms
+
+# Preserve the accepted event model. Independent observations are intentionally not ordered
+# against each other: airplane-ON/cellular-loss and fresh-Cellular/root-auth may arrive either way.
+if ([int64]$operationTiming.operation_reserved_ms -gt [int64]$operationTiming.accepted_sent_ms -or
+    [int64]$operationTiming.accepted_sent_ms -gt $rotationActivatedFromCommandMs -or
+    [int64]$rotationTiming.activated_ms -gt [int64]$rotationTiming.before_ip_started_ms -or
+    [int64]$rotationTiming.before_ip_started_ms -gt [int64]$rotationTiming.before_ip_completed_ms -or
+    [int64]$rotationTiming.before_ip_completed_ms -gt [int64]$rotationTiming.airplane_enable_started_ms -or
+    [int64]$rotationTiming.airplane_enable_started_ms -gt [int64]$rotationTiming.airplane_enable_effect_completed_ms -or
+    [int64]$rotationTiming.airplane_on_observed_ms -gt [int64]$rotationTiming.airplane_disable_started_ms -or
+    [int64]$rotationTiming.cellular_loss_observed_ms -gt [int64]$rotationTiming.airplane_disable_started_ms -or
+    [int64]$rotationTiming.airplane_disable_started_ms -gt [int64]$rotationTiming.airplane_disable_effect_completed_ms -or
+    [int64]$rotationTiming.airplane_disable_effect_completed_ms -gt [int64]$rotationTiming.airplane_off_observed_ms -or
+    [int64]$rotationTiming.airplane_off_observed_ms -gt [int64]$rotationTiming.after_ip_started_ms -or
+    [int64]$rotationTiming.fresh_cellular_observed_ms -gt [int64]$rotationTiming.after_ip_started_ms -or
+    [int64]$rotationTiming.root_authorized_ms -gt [int64]$rotationTiming.after_ip_started_ms -or
+    [int64]$rotationTiming.after_ip_started_ms -gt [int64]$rotationTiming.after_ip_completed_ms -or
+    [int64]$rotationTiming.after_ip_completed_ms -gt [int64]$rotationTiming.terminal_ms -or
+    $rotationTerminalFromCommandMs -gt [int64]$operationTiming.rotation_terminal_ms -or
+    [int64]$operationTiming.rotation_terminal_ms -gt [int64]$operationTiming.result_sent_ms -or
+    [int64]$operationTiming.result_sent_ms -gt [int64]$operationTiming.result_ack_ms) {
+    Stop-MishRemoteControl 'DEVICE_TIMELINE_ORDER_INVALID' 'Remote rotation phase evidence violates the accepted event-driven ordering.'
+}
+
 $evidence = [ordered]@{
     schema = $schema
     collected_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
@@ -260,6 +346,40 @@ $evidence = [ordered]@{
     manager_duration_ms = $managerDurationMs
     manager_server_bound_ms = 18000
     client_bound_seconds = $TerminalTimeoutSeconds
+    device_timeline_proof = $true
+    device_timeline = [ordered]@{
+        origin = 'REMOTE_COMMAND_RECEIVED'
+        operation_id = [int64]$operationTiming.operation_id
+        operation_age_ms = [int64]$operationTiming.operation_age_ms
+        operation_reserved_ms = [int64]$operationTiming.operation_reserved_ms
+        accepted_sent_ms = [int64]$operationTiming.accepted_sent_ms
+        reconnect_started_ms = if ($null -eq $operationTiming.reconnect_started_ms) { $null } else { [int64]$operationTiming.reconnect_started_ms }
+        reconnect_ready_ms = if ($null -eq $operationTiming.reconnect_ready_ms) { $null } else { [int64]$operationTiming.reconnect_ready_ms }
+        rotation_origin_from_command_ms = $rotationOriginFromCommandMs
+        rotation_terminal_ms = [int64]$operationTiming.rotation_terminal_ms
+        result_sent_ms = [int64]$operationTiming.result_sent_ms
+        result_ack_ms = [int64]$operationTiming.result_ack_ms
+        rotation_terminal_from_command_ms = $rotationTerminalFromCommandMs
+        rotation = [ordered]@{
+            activated_ms = [int64]$rotationTiming.activated_ms
+            before_ip_started_ms = [int64]$rotationTiming.before_ip_started_ms
+            before_ip_completed_ms = [int64]$rotationTiming.before_ip_completed_ms
+            airplane_enable_started_ms = [int64]$rotationTiming.airplane_enable_started_ms
+            airplane_enable_effect_completed_ms = [int64]$rotationTiming.airplane_enable_effect_completed_ms
+            airplane_on_observed_ms = [int64]$rotationTiming.airplane_on_observed_ms
+            cellular_loss_observed_ms = [int64]$rotationTiming.cellular_loss_observed_ms
+            airplane_disable_started_ms = [int64]$rotationTiming.airplane_disable_started_ms
+            airplane_disable_effect_completed_ms = [int64]$rotationTiming.airplane_disable_effect_completed_ms
+            airplane_off_observed_ms = [int64]$rotationTiming.airplane_off_observed_ms
+            fresh_cellular_observed_ms = [int64]$rotationTiming.fresh_cellular_observed_ms
+            fresh_cellular_generation = [int64]$rotationTiming.fresh_cellular_generation
+            root_authorized_ms = [int64]$rotationTiming.root_authorized_ms
+            root_authorized_generation = [int64]$rotationTiming.root_authorized_generation
+            after_ip_started_ms = [int64]$rotationTiming.after_ip_started_ms
+            after_ip_completed_ms = [int64]$rotationTiming.after_ip_completed_ms
+            terminal_ms = [int64]$rotationTiming.terminal_ms
+        }
+    }
     post_product_diagnostic = [string]$post.classification
     post_readiness = [string]$post.android.readiness.state
     post_root_authorized = [bool]$post.android.root.policy_authorized
@@ -291,6 +411,7 @@ Write-Host 'MISH_U8_REMOTE_CONTROL_SERVER_REQUEST_ID=PASS'
 Write-Host 'MISH_U8_REMOTE_CONTROL_MANAGER_POLLING=0'
 Write-Host "MISH_U8_REMOTE_CONTROL_IDLE_LIVENESS=PASS/heartbeat_delta=$heartbeatDelta/reconnect_delta=$($reconnectAfterIdle - $reconnectBeforeIdle)"
 Write-Host "MISH_U8_REMOTE_CONTROL_MANAGER_DURATION_MS=$managerDurationMs"
+Write-Host "MISH_U8_REMOTE_CONTROL_DEVICE_TIMELINE=PASS/terminal_from_command_ms=$rotationTerminalFromCommandMs/result_ack_ms=$([int64]$operationTiming.result_ack_ms)"
 Write-Host 'MISH_U8_REMOTE_CONTROL_RAW_IP_PERSISTED=false'
 Write-Host 'MISH_U8_REMOTE_CONTROL_SECRETS_PERSISTED=false'
 Write-Host "MISH_U8_REMOTE_CONTROL_EVIDENCE=$fullPath"

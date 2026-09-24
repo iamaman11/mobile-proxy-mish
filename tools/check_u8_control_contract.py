@@ -32,6 +32,7 @@ def main() -> None:
     product = "crates/runtime/src/product_runtime.rs"
     generation = "crates/runtime/src/product_generation.rs"
     ffi = "crates/android-ffi/src/product_runtime_ffi.rs"
+    diagnostics = "android/app/src/main/java/com/mobileproxymish/app/MishDiagnosticsProvider.kt"
     android = "android/app/src/main/java/com/mobileproxymish/app/AndroidControlIdentity.kt"
     controller = "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt"
     receiver = "android/app/src/main/java/com/mobileproxymish/app/ControlIdentityProvisioningReceiver.kt"
@@ -76,6 +77,9 @@ def main() -> None:
         "// A reconnect attempt must never monopolize the public 18 s manager budget.",
         "const CONTROL_RECONNECT_DELAYS_MS: [u64; 5] = [500, 1_000, 2_000, 3_000, 5_000];",
         "CONTROL_RECENT_TERMINAL_REQUESTS: usize = 32",
+        "ControlOperationTimingSnapshot",
+        "rotation_origin_from_command_ms",
+        "RotationRuntimeTimingSnapshot",
         "rotation.prepare(",
         "encode_accepted_message(&request_id, operation_id)",
         "self.write_text_observed(transport, &accepted).await",
@@ -181,6 +185,8 @@ def main() -> None:
 
     for needle in (
         "NativeControlAuthSigner",
+        "ControlOperationTimingView",
+        "RotationRuntimeTimingView",
         "start_remote_control",
         "control_snapshot",
     ):
@@ -364,6 +370,11 @@ def main() -> None:
         "$managerDurationMs -gt 18000",
         "idle_liveness_proof = $true",
         "heartbeat_delta = $heartbeatDelta",
+        "device_timeline_proof = $true",
+        "rotation_terminal_from_command_ms",
+        "result_ack_ms",
+        "fresh_cellular_generation",
+        "root_authorized_generation",
         "client_bound_seconds = $TerminalTimeoutSeconds",
     ):
         require(
@@ -377,12 +388,36 @@ def main() -> None:
         "reconnect_count_after_idle",
         "long_lived_session_age_ms",
         "manager_duration_ms",
+        "device_timeline_proof",
+        "device_timeline.rotation_terminal_from_command_ms",
         "client_bound_seconds",
     ):
         require(
             device_cycle,
             needle,
             "Device Cycle must enforce the long-lived CONTROL acceptance evidence",
+        )
+
+    for needle in (
+        '"operation_timing"',
+        '"REMOTE_COMMAND_RECEIVED"',
+        '"rotation_origin_from_command_ms"',
+        '"result_ack_ms"',
+    ):
+        require(
+            diagnostics,
+            needle,
+            "DUMP-only diagnostics must project operation timing evidence",
+        )
+    for forbidden in (
+        '"request_id"',
+        '"before_ip_address"',
+        '"after_ip_address"',
+    ):
+        forbid(
+            diagnostics,
+            forbidden,
+            "diagnostics must expose timings without request ids or raw public IP",
         )
 
     config = json.loads(
