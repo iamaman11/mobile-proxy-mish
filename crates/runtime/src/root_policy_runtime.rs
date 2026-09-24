@@ -323,46 +323,48 @@ impl RootPolicyRuntime {
 
         let phase_started = Instant::now();
         let phase_before = window.diagnostic();
-        if let Err(failure) = self.ensure_guard(contract, true, window).await {
-            return RootPolicyResult::FailClosed(Some(failure));
-        }
-        if let Err(failure) = self.ensure_guard(contract, false, window).await {
-            return RootPolicyResult::FailClosed(Some(failure));
-        }
-        if let Err(failure) = self.remove_owned_ipv4_lookups(contract, window).await {
-            return RootPolicyResult::FailClosed(Some(failure));
-        }
-        if let Err(failure) = self
-            .ensure_mangle_family(contract, IPTABLES, true, window)
-            .await
-        {
-            return RootPolicyResult::FailClosed(Some(failure));
-        }
-        if let Err(failure) = self
-            .ensure_mangle_family(contract, IP6TABLES, false, window)
-            .await
-        {
-            return RootPolicyResult::FailClosed(Some(failure));
-        }
-        if let Err(failure) = self
-            .remove_exact_rule(
-                &contract.legacy_selector_check(IPTABLES),
-                &contract.legacy_selector_delete(IPTABLES),
-                window,
-            )
-            .await
-        {
-            return RootPolicyResult::FailClosed(Some(failure));
-        }
-        if let Err(failure) = self
-            .remove_exact_rule(
-                &contract.legacy_selector_check(IP6TABLES),
-                &contract.legacy_selector_delete(IP6TABLES),
-                window,
-            )
-            .await
-        {
-            return RootPolicyResult::FailClosed(Some(failure));
+        if !contract.fail_closed_prepare_is_noop(&initial) {
+            if let Err(failure) = self.ensure_guard(contract, true, window).await {
+                return RootPolicyResult::FailClosed(Some(failure));
+            }
+            if let Err(failure) = self.ensure_guard(contract, false, window).await {
+                return RootPolicyResult::FailClosed(Some(failure));
+            }
+            if let Err(failure) = self.remove_owned_ipv4_lookups(contract, window).await {
+                return RootPolicyResult::FailClosed(Some(failure));
+            }
+            if let Err(failure) = self
+                .ensure_mangle_family(contract, IPTABLES, true, window)
+                .await
+            {
+                return RootPolicyResult::FailClosed(Some(failure));
+            }
+            if let Err(failure) = self
+                .ensure_mangle_family(contract, IP6TABLES, false, window)
+                .await
+            {
+                return RootPolicyResult::FailClosed(Some(failure));
+            }
+            if let Err(failure) = self
+                .remove_exact_rule(
+                    &contract.legacy_selector_check(IPTABLES),
+                    &contract.legacy_selector_delete(IPTABLES),
+                    window,
+                )
+                .await
+            {
+                return RootPolicyResult::FailClosed(Some(failure));
+            }
+            if let Err(failure) = self
+                .remove_exact_rule(
+                    &contract.legacy_selector_check(IP6TABLES),
+                    &contract.legacy_selector_delete(IP6TABLES),
+                    window,
+                )
+                .await
+            {
+                return RootPolicyResult::FailClosed(Some(failure));
+            }
         }
         trace.phases.fail_closed_prepare =
             phase_diagnostic(phase_started, phase_before, window.diagnostic());
@@ -1211,6 +1213,180 @@ mod tests {
         );
         assert!(
             !RootPolicyResult::FailClosed(Some(RootPolicyFailure::MutationRejected)).retryable()
+        );
+    }
+
+    struct ExactFailClosedIo {
+        ipv4_rules: Vec<String>,
+        ipv6_rules: Vec<String>,
+        ipv4_mangle: Vec<String>,
+        ipv6_mangle: Vec<String>,
+        line_calls: std::sync::atomic::AtomicUsize,
+        observe_calls: std::sync::atomic::AtomicUsize,
+        mutation_calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl RootPolicyIo for ExactFailClosedIo {
+        fn session_generation<'a>(
+            &'a self,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<u64>> + Send + 'a>> {
+            Box::pin(async { Some(1) })
+        }
+
+        fn raw_observation<'a>(
+            &'a self,
+            _command: &'a str,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            crate::root_session::RootCommandResult,
+                            crate::root_session::RootSessionError,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { panic!("raw observation is not part of reconcile_authorized") })
+        }
+
+        fn observe<'a>(
+            &'a self,
+            _command: &'a str,
+            _window: &'a mut RootPolicyCommandWindow,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            crate::root_session::RootCommandResult,
+                            RootPolicyEffectFailure,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move {
+                self.observe_calls
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                panic!("exact fail-closed no-op preparation must not issue scalar observations")
+            })
+        }
+
+        fn lines<'a>(
+            &'a self,
+            command: &'a str,
+            _window: &'a mut RootPolicyCommandWindow,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Vec<String>, RootPolicyEffectFailure>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move {
+                self.line_calls
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let lines = match command {
+                    IPV4_RULE_SHOW => self.ipv4_rules.clone(),
+                    IPV6_RULE_SHOW => self.ipv6_rules.clone(),
+                    command if command == format!("{IPTABLES} -t mangle -S") => {
+                        self.ipv4_mangle.clone()
+                    }
+                    command if command == format!("{IP6TABLES} -t mangle -S") => {
+                        self.ipv6_mangle.clone()
+                    }
+                    _ => panic!("unexpected exact fail-closed observation: {command}"),
+                };
+                Ok(lines)
+            })
+        }
+
+        fn mutate<'a>(
+            &'a self,
+            _command: &'a str,
+            _window: &'a mut RootPolicyCommandWindow,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), RootPolicyEffectFailure>> + Send + 'a>,
+        > {
+            Box::pin(async move {
+                self.mutation_calls
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                panic!("exact fail-closed no-op preparation must not mutate")
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn exact_fail_closed_initial_snapshot_skips_prepare_reads_but_keeps_full_verify() {
+        let mut contract =
+            RootPolicyContract::new(10_123, RootPolicyNamespace::Release).expect("contract");
+        let empty = RootPolicySnapshot::new(Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let PolicyIdentityResolution::Selected(identity) = contract.resolve_identity(&empty) else {
+            panic!("identity");
+        };
+        let mark = identity.mark_hex();
+        let guard = format!(
+            "{}: from all fwmark {}/{} unreachable",
+            identity.guard_priority(),
+            mark,
+            mark
+        );
+        let ipv4_mangle = {
+            let mut lines = vec![format!("-N {}", contract.chain_name())];
+            lines.extend(contract.ipv4_owned_chain_lines().expect("ipv4 chain"));
+            lines.push(contract.output_jump());
+            lines
+        };
+        let ipv6_mangle = {
+            let mut lines = vec![format!("-N {}", contract.chain_name())];
+            lines.extend(contract.ipv6_owned_chain_lines().expect("ipv6 chain"));
+            lines.push(contract.output_jump());
+            lines
+        };
+        let io = Arc::new(ExactFailClosedIo {
+            ipv4_rules: vec![guard.clone()],
+            ipv6_rules: vec![guard],
+            ipv4_mangle,
+            ipv6_mangle,
+            line_calls: std::sync::atomic::AtomicUsize::new(0),
+            observe_calls: std::sync::atomic::AtomicUsize::new(0),
+            mutation_calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let runtime = RootPolicyRuntime::with_io(
+            Arc::clone(&io) as Arc<dyn RootPolicyIo>,
+            10_123,
+            RootPolicyNamespace::Release,
+        )
+        .expect("runtime");
+        let mut window = RootPolicyCommandWindow::default();
+        let mut trace = RootPolicyReconcileTrace::default();
+
+        let result = runtime
+            .reconcile_authorized(
+                &mut contract,
+                false,
+                None,
+                &mut window,
+                &mut trace,
+                &|| true,
+            )
+            .await;
+
+        assert_eq!(result, RootPolicyResult::FailClosed(None));
+        assert!(!trace.superseded);
+        assert_eq!(
+            io.line_calls.load(std::sync::atomic::Ordering::SeqCst),
+            8,
+            "initial snapshot plus full fail-closed verification must remain"
+        );
+        assert_eq!(
+            io.observe_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "legacy-selector checks must be skipped only when the initial snapshot proves absence"
+        );
+        assert_eq!(
+            io.mutation_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0
         );
     }
 
