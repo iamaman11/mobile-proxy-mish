@@ -3,10 +3,11 @@
 //! Android supplies raw network observations and an exact-handle interface hint. This coordinator
 //! owns latest-generation coalescing, quiescence, policy execution, authorization and retry state.
 
+use crate::root_policy_runtime::{RootPolicyReconcileOutcome, RootPolicyRuntime};
 use crate::root_session::RootSessionManager;
 use crate::{
-    CellularRuntimeCoordinator, CellularRuntimeError, RootPolicyReconcileOutcome, RootPolicyResult,
-    RootPolicyRuntime, RuntimeExecutionError, RuntimeExecutor,
+    CellularRuntimeCoordinator, CellularRuntimeError, RootPolicyResult, RuntimeExecutionError,
+    RuntimeExecutor,
 };
 use mish_cellular::{
     CellularAdmissionSnapshot, CellularAdmissionState, NetworkHandle, NetworkObservation,
