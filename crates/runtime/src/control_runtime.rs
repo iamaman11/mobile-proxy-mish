@@ -22,12 +22,15 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 use tokio::sync::{Notify, watch};
 use tokio::task::JoinHandle;
-use tokio::time::{sleep, timeout};
+use tokio::time::{MissedTickBehavior, interval, sleep, timeout};
 
-const CONTROL_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
-const CONTROL_AUTH_TIMEOUT: Duration = Duration::from_secs(10);
+const CONTROL_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const CONTROL_AUTH_TIMEOUT: Duration = Duration::from_secs(3);
 const CONTROL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
-const CONTROL_RECONNECT_DELAYS_MS: [u64; 5] = [1_000, 5_000, 15_000, 30_000, 60_000];
+const CONTROL_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(4);
+const CONTROL_HEARTBEAT_REQUEST: &str = "MISH_CONTROL_HEARTBEAT_V1";
+const CONTROL_HEARTBEAT_RESPONSE: &str = "MISH_CONTROL_HEARTBEAT_ACK_V1";
+const CONTROL_RECONNECT_DELAYS_MS: [u64; 5] = [500, 1_000, 2_000, 5_000, 5_000];
 const CONTROL_RECENT_TERMINAL_REQUESTS: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -359,6 +362,16 @@ impl ControlRuntimeCoordinator {
         self.publish_connection_state(ControlSessionState::Ready, 0, 0);
         self.send_pending_result_if_terminal(&mut transport).await?;
 
+        // Liveness belongs to the native control-session owner, not to Manager requests.
+        // One tiny application heartbeat rides the existing WSS. Cloudflare Durable Objects
+        // auto-reply without waking from hibernation; if one whole interval passes without the
+        // reply, this same Rust task drops the stale transport and enters its normal reconnect
+        // loop. Manager/Worker therefore never needs to own reconnect policy.
+        let mut heartbeat = interval(CONTROL_HEARTBEAT_INTERVAL);
+        heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        heartbeat.tick().await;
+        let mut heartbeat_outstanding = false;
+
         loop {
             if *cancel.borrow() {
                 return Err(ControlRunError::Cancelled);
@@ -372,8 +385,21 @@ impl ControlRuntimeCoordinator {
                 _ = self.result_changed.notified() => {
                     self.send_pending_result_if_terminal(&mut transport).await?;
                 }
+                _ = heartbeat.tick() => {
+                    if heartbeat_outstanding {
+                        return Err(ControlRunError::Transport);
+                    }
+                    self.write_text_observed(&mut transport, CONTROL_HEARTBEAT_REQUEST).await?;
+                    heartbeat_outstanding = true;
+                }
                 message = self.read_message_observed(&mut transport) => {
                     match message? {
+                        ControlTransportMessage::Text(text)
+                            if text == CONTROL_HEARTBEAT_RESPONSE =>
+                        {
+                            heartbeat_outstanding = false;
+                            self.record_heartbeat();
+                        }
                         ControlTransportMessage::Text(text) => {
                             self.handle_server_message(
                                 &mut transport,
@@ -653,6 +679,13 @@ impl ControlRuntimeCoordinator {
         Ok(message)
     }
 
+    fn record_heartbeat(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.application_heartbeat_count =
+                state.application_heartbeat_count.saturating_add(1);
+        }
+    }
+
     fn record_reconnect(&self) {
         if let Ok(mut state) = self.state.lock() {
             state.reconnect_count = state.reconnect_count.saturating_add(1);
@@ -802,11 +835,13 @@ mod tests {
     }
 
     #[test]
-    fn control_reconnect_has_no_application_heartbeat_policy() {
-        // RFC6455 Ping/Pong is owned by tungstenite. PRODUCT does not generate an application
-        // heartbeat until U8-F physical evidence demonstrates that one is required.
-        let forbidden = ["CONTROL_HEARTBEAT", "_INTERVAL"].concat();
-        assert!(!include_str!("control_runtime.rs").contains(&forbidden));
+    fn control_liveness_is_owned_by_the_existing_native_session_task() {
+        assert_eq!(CONTROL_HEARTBEAT_INTERVAL, Duration::from_secs(4));
+        assert_eq!(CONTROL_HEARTBEAT_REQUEST, "MISH_CONTROL_HEARTBEAT_V1");
+        assert_eq!(
+            CONTROL_HEARTBEAT_RESPONSE,
+            "MISH_CONTROL_HEARTBEAT_ACK_V1"
+        );
     }
 
     #[test]
@@ -827,12 +862,12 @@ mod tests {
 
     #[test]
     fn reconnect_backoff_is_bounded() {
-        assert_eq!(reconnect_delay_ms(1), 1_000);
-        assert_eq!(reconnect_delay_ms(2), 5_000);
-        assert_eq!(reconnect_delay_ms(3), 15_000);
-        assert_eq!(reconnect_delay_ms(4), 30_000);
-        assert_eq!(reconnect_delay_ms(5), 60_000);
-        assert_eq!(reconnect_delay_ms(u32::MAX), 60_000);
+        assert_eq!(reconnect_delay_ms(1), 500);
+        assert_eq!(reconnect_delay_ms(2), 1_000);
+        assert_eq!(reconnect_delay_ms(3), 2_000);
+        assert_eq!(reconnect_delay_ms(4), 5_000);
+        assert_eq!(reconnect_delay_ms(5), 5_000);
+        assert_eq!(reconnect_delay_ms(u32::MAX), 5_000);
     }
 
     #[test]
