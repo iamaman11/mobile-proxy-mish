@@ -34,7 +34,8 @@ const PRIMARY_DEVICE_OBJECT = "primary";
 const PRODUCT_ROTATION_SAFETY_MS = 90_000;
 const CONTROL_DELIVERY_MARGIN_MS = 30_000;
 const ACCEPTED_RESULT_LEASE_MS = PRODUCT_ROTATION_SAFETY_MS + CONTROL_DELIVERY_MARGIN_MS;
-const DISPATCH_FENCE_MS = MANAGER_ROTATE_WAIT_TIMEOUT_MS;
+const INITIAL_DELIVERY_ACK_MS = 10_000;
+const RECOVERY_DELIVERY_ACK_MS = 15_000;
 const FENCED_DRAIN_MS = PRODUCT_ROTATION_SAFETY_MS + CONTROL_DELIVERY_MARGIN_MS;
 
 export default {
@@ -291,13 +292,16 @@ export class DeviceControl {
       if (active.status === "DISPATCHED") {
         active.status = "ACCEPTED";
         active.accepted_at_ms = Date.now();
+        active.delivery_deadline_ms = null;
         await this.ctx.storage.put("active_operation", active);
         await this.ctx.storage.setAlarm(active.accepted_at_ms + ACCEPTED_RESULT_LEASE_MS);
+        this.resolveWaiters(parsed.request_id, active);
         return;
       }
       if (active.status === "ACCEPTED") {
         // Duplicate ACCEPTED is idempotent and must never extend the lease.
         await this.ctx.storage.put("active_operation", active);
+        this.resolveWaiters(parsed.request_id, active);
         return;
       }
       if (active.status === "FENCED") {
@@ -385,13 +389,15 @@ export class DeviceControl {
       result: null,
       created_at_ms: Date.now(),
       accepted_at_ms: null,
+      delivery_recovery_count: 0,
+      delivery_deadline_ms: Date.now() + INITIAL_DELIVERY_ACK_MS,
       fenced_at_ms: null,
       release_at_ms: null,
       completed_at_ms: null,
     };
     try {
       await this.ctx.storage.put("active_operation", operation);
-      await this.ctx.storage.setAlarm(operation.created_at_ms + DISPATCH_FENCE_MS);
+      await this.ctx.storage.setAlarm(operation.delivery_deadline_ms);
     } catch (error) {
       await this.ctx.storage.delete("active_operation").catch(() => {});
       await this.ctx.storage.deleteAlarm().catch(() => {});
@@ -409,9 +415,72 @@ export class DeviceControl {
   }
 
   async waitForTerminal(requestId, operation) {
-    let resolveTerminal;
-    const terminalPromise = new Promise((resolve) => {
-      resolveTerminal = resolve;
+    const managerDeadlineMs = operation.created_at_ms + MANAGER_ROTATE_WAIT_TIMEOUT_MS;
+
+    // socket.send() is not PRODUCT delivery proof. Give the current authenticated session
+    // one short chance to return ACCEPTED, then force exactly one reconnect/redelivery of the
+    // same request_id. PRODUCT idempotency makes that recovery safe if the first frame crossed
+    // the wire but its ACCEPTED was lost.
+    for (const deliveryWindowMs of [INITIAL_DELIVERY_ACK_MS, RECOVERY_DELIVERY_ACK_MS]) {
+      const immediate = await this.currentOperationState(requestId);
+      if (immediate.terminal) return this.operationResponse(immediate.terminal);
+      if (immediate.active?.status === "ACCEPTED") break;
+      if (!immediate.active || immediate.active.status === "FENCED") {
+        return this.managerTimeoutResponse(requestId, operation);
+      }
+
+      const remainingMs = managerDeadlineMs - Date.now();
+      if (remainingMs <= 0) return this.managerTimeoutResponse(requestId, operation);
+      await this.waitForStateChange(
+        requestId,
+        immediate.active.status,
+        Math.min(deliveryWindowMs, remainingMs),
+      );
+
+      const observed = await this.currentOperationState(requestId);
+      if (observed.terminal) return this.operationResponse(observed.terminal);
+      if (observed.active?.status === "ACCEPTED") break;
+      if (!observed.active || observed.active.status === "FENCED") {
+        return this.managerTimeoutResponse(requestId, operation);
+      }
+
+      await this.reconcileActiveOperation(Date.now(), { fenceSockets: true });
+      const reconciled = await this.currentOperationState(requestId);
+      if (reconciled.terminal) return this.operationResponse(reconciled.terminal);
+      if (reconciled.active?.status === "ACCEPTED") break;
+      if (!reconciled.active || reconciled.active.status === "FENCED") {
+        return this.managerTimeoutResponse(requestId, operation);
+      }
+    }
+
+    // ACCEPTED is the authoritative device-delivery boundary. Wait only inside the short
+    // manager HTTP budget. If PRODUCT needs longer, its Durable Object correlation continues
+    // under the existing 120 s accepted-result alarm; the manager gets typed UNKNOWN instead
+    // of holding one DO request long enough to risk runtime eviction.
+    while (Date.now() < managerDeadlineMs) {
+      const current = await this.currentOperationState(requestId);
+      if (current.terminal) return this.operationResponse(current.terminal);
+      if (!current.active || current.active.status !== "ACCEPTED") {
+        return this.managerTimeoutResponse(requestId, operation);
+      }
+      await this.waitForStateChange(
+        requestId,
+        "ACCEPTED",
+        managerDeadlineMs - Date.now(),
+      );
+    }
+
+    const final = await this.currentOperationState(requestId);
+    if (final.terminal) return this.operationResponse(final.terminal);
+    return this.managerTimeoutResponse(requestId, operation);
+  }
+
+  async waitForStateChange(requestId, expectedStatus, timeoutMs) {
+    if (timeoutMs <= 0) return;
+
+    let resolveChange;
+    const changePromise = new Promise((resolve) => {
+      resolveChange = resolve;
       let waiters = this.waiters.get(requestId);
       if (!waiters) {
         waiters = new Set();
@@ -420,54 +489,51 @@ export class DeviceControl {
       waiters.add(resolve);
     });
 
-    const recent = (await this.ctx.storage.get("recent_operations")) || [];
-    const alreadyTerminal = recent.find((item) => item.request_id === requestId);
-    if (alreadyTerminal) {
-      this.resolveWaiters(requestId, alreadyTerminal);
-      return this.operationResponse(alreadyTerminal);
+    // Close the registration race: if state changed before the waiter was installed,
+    // resolve immediately instead of sleeping for the whole timeout.
+    const current = await this.currentOperationState(requestId);
+    if (current.terminal || !current.active || current.active.status !== expectedStatus) {
+      this.resolveWaiters(requestId, current.terminal || current.active || null);
     }
 
     const timeoutController = new AbortController();
     const timeoutPromise = scheduler
-      .wait(MANAGER_ROTATE_WAIT_TIMEOUT_MS, { signal: timeoutController.signal })
+      .wait(timeoutMs, { signal: timeoutController.signal })
       .then(() => null)
       .catch((error) => {
         if (error?.name === "AbortError") return undefined;
         throw error;
       });
 
-    let terminal;
     try {
-      terminal = await Promise.race([terminalPromise, timeoutPromise]);
+      await Promise.race([changePromise, timeoutPromise]);
     } finally {
       timeoutController.abort();
-      this.removeWaiter(requestId, resolveTerminal);
+      this.removeWaiter(requestId, resolveChange);
     }
+  }
 
-    if (terminal) {
-      return this.operationResponse(terminal);
-    }
-
-    // The HTTP wait and the DISPATCHED fence share the same 180 s boundary. Reconcile here
-    // as well as in alarm() so a runtime-delayed alarm cannot leave an unfenced command.
-    await this.reconcileActiveOperation(Date.now(), { fenceSockets: true });
-
-    const finalRecent = (await this.ctx.storage.get("recent_operations")) || [];
-    const finalTerminal = finalRecent.find((item) => item.request_id === requestId);
-    if (finalTerminal) {
-      return this.operationResponse(finalTerminal);
-    }
-
+  async currentOperationState(requestId) {
+    const recent = (await this.ctx.storage.get("recent_operations")) || [];
+    const terminal = recent.find((item) => item.request_id === requestId) || null;
     const active = await this.ctx.storage.get("active_operation");
-    return managerJson(managerRotatePayload({
+    return {
+      terminal,
+      active: active?.request_id === requestId ? active : null,
+    };
+  }
+
+  managerTimeoutResponse(requestId, operation) {
+    const active = this.ctx.storage.get("active_operation");
+    return Promise.resolve(active).then((current) => managerJson(managerRotatePayload({
       requestId,
       result: "UNKNOWN",
       reason: "TIMEOUT",
-      operationId: active?.request_id === requestId ? active.operation_id || null : null,
+      operationId: current?.request_id === requestId ? current.operation_id || null : null,
       deviceOnline: this.authenticatedSocket() !== null,
       dispatched: true,
       startedAtMs: operation.created_at_ms,
-    }), 504);
+    }), 504));
   }
 
   async acceptResult(ws, parsed) {
@@ -546,21 +612,44 @@ export class DeviceControl {
     }
 
     if (active.status === "DISPATCHED") {
-      const fenceAtMs = active.created_at_ms + DISPATCH_FENCE_MS;
-      if (nowMs < fenceAtMs) {
-        await this.ctx.storage.setAlarm(fenceAtMs);
+      const recoveryCount = Number.isSafeInteger(active.delivery_recovery_count)
+        ? active.delivery_recovery_count
+        : 0;
+      // Legacy DISPATCHED records did not persist an ACK deadline. Treat their first
+      // observation as immediately due for the one safe same-request reconnect recovery.
+      const deliveryDeadlineMs = Number.isSafeInteger(active.delivery_deadline_ms)
+        ? active.delivery_deadline_ms
+        : nowMs;
+
+      if (nowMs < deliveryDeadlineMs) {
+        await this.ctx.storage.setAlarm(deliveryDeadlineMs);
         return active;
+      }
+
+      if (recoveryCount === 0) {
+        const recovering = {
+          ...active,
+          delivery_recovery_count: 1,
+          delivery_deadline_ms: nowMs + RECOVERY_DELIVERY_ACK_MS,
+        };
+        await this.ctx.storage.put("active_operation", recovering);
+        await this.ctx.storage.setAlarm(recovering.delivery_deadline_ms);
+        if (fenceSockets) this.recoverAuthenticatedSockets();
+        this.resolveWaiters(active.request_id, recovering);
+        return recovering;
       }
 
       const fenced = {
         ...active,
         status: "FENCED",
+        delivery_deadline_ms: null,
         fenced_at_ms: nowMs,
         release_at_ms: nowMs + FENCED_DRAIN_MS,
       };
       await this.ctx.storage.put("active_operation", fenced);
       await this.ctx.storage.setAlarm(fenced.release_at_ms);
       if (fenceSockets) this.fenceAuthenticatedSockets();
+      this.resolveWaiters(active.request_id, fenced);
       return fenced;
     }
 
@@ -626,6 +715,15 @@ export class DeviceControl {
     const bounded = [terminal, ...recent.filter((item) => item.request_id !== terminal.request_id)]
       .slice(0, MAX_RECENT_OPERATIONS);
     await this.ctx.storage.put("recent_operations", bounded);
+  }
+
+  recoverAuthenticatedSockets() {
+    for (const socket of this.ctx.getWebSockets()) {
+      const attachment = socket.deserializeAttachment();
+      if (attachment?.kind !== "device" || attachment.authenticated !== true) continue;
+      socket.serializeAttachment({ ...attachment, authenticated: false });
+      socket.close(1012, "delivery recovery");
+    }
   }
 
   fenceAuthenticatedSockets() {

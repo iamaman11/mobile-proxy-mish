@@ -3,6 +3,7 @@ import test from "node:test";
 import worker from "../src/index.mjs";
 import {
   MANAGER_ROTATE_SCHEMA,
+  MANAGER_ROTATE_WAIT_TIMEOUT_MS,
   managerJson,
   managerRotatePayload,
   newManagerRequestId,
@@ -10,6 +11,10 @@ import {
 } from "../src/manager_api.mjs";
 
 const TOKEN = "m".repeat(40);
+
+test("manager HTTP wait stays below Durable Object inactive-eviction territory", () => {
+  assert.equal(MANAGER_ROTATE_WAIT_TIMEOUT_MS, 55_000);
+});
 
 test("manager response schema is stable and typed", () => {
   const payload = managerRotatePayload({

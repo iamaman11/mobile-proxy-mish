@@ -254,7 +254,9 @@ def main() -> None:
         "scheduler",
         "PRODUCT_ROTATION_SAFETY_MS = 90_000",
         "ACCEPTED_RESULT_LEASE_MS",
-        "DISPATCH_FENCE_MS = MANAGER_ROTATE_WAIT_TIMEOUT_MS",
+        "INITIAL_DELIVERY_ACK_MS = 10_000",
+        "RECOVERY_DELIVERY_ACK_MS = 15_000",
+        "recoverAuthenticatedSockets",
         "FENCED_DRAIN_MS",
         '"FENCED"',
         "this.ctx.storage.setAlarm(",
@@ -280,7 +282,7 @@ def main() -> None:
 
     for needle in (
         'MANAGER_ROTATE_SCHEMA = "mish.control.rotate/v1"',
-        'MANAGER_ROTATE_WAIT_TIMEOUT_MS = 180_000',
+        'MANAGER_ROTATE_WAIT_TIMEOUT_MS = 55_000',
         '"CHANGED"',
         '"UNCHANGED"',
         '"FAILED"',

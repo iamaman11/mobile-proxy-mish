@@ -444,7 +444,7 @@ test("accepted operation with permanently lost RESULT expires and releases BUSY"
   assert.equal(JSON.parse(socket.sent.at(-1)).request_id, "req_after_stale");
 });
 
-test("unaccepted dispatch is fenced before BUSY can be released", async () => {
+test("unaccepted dispatch gets one reconnect recovery before fencing and BUSY release", async () => {
   const now = Date.now();
   const storage = new MemoryStorage();
   await storage.put("active_operation", {
@@ -452,8 +452,10 @@ test("unaccepted dispatch is fenced before BUSY can be released", async () => {
     status: "DISPATCHED",
     operation_id: null,
     result: null,
-    created_at_ms: now - 180_001,
+    created_at_ms: now - 10_001,
     accepted_at_ms: null,
+    delivery_recovery_count: 0,
+    delivery_deadline_ms: now - 1,
     fenced_at_ms: null,
     release_at_ms: null,
     completed_at_ms: null,
@@ -464,12 +466,12 @@ test("unaccepted dispatch is fenced before BUSY can be released", async () => {
   const control = new DeviceControl(new FakeContext(storage, [socket]), {});
 
   let active = await control.reconcileActiveOperation(now, { fenceSockets: true });
-  assert.equal(active.status, "FENCED");
-  assert.equal(active.request_id, "req_unaccepted");
-  assert.equal(active.release_at_ms, now + 120_000);
+  assert.equal(active.status, "DISPATCHED");
+  assert.equal(active.delivery_recovery_count, 1);
+  assert.equal(active.delivery_deadline_ms, now + 15_000);
   assert.equal(socket.attachment.authenticated, false);
-  assert.equal(socket.closed.at(-1)?.reason, "operation fenced");
-  assert.equal((await storage.get("recent_operations")) || null, null);
+  assert.equal(socket.closed.at(-1)?.reason, "delivery recovery");
+  assert.equal(storage.alarm, now + 15_000);
 
   const replacement = new FakeSocket({
     kind: "device", authenticated: true, device_id: "a".repeat(64),
@@ -480,15 +482,98 @@ test("unaccepted dispatch is fenced before BUSY can be released", async () => {
   assert.equal(replacement.sent.length, 0);
 
   active = await replacementControl.reconcileActiveOperation(
-    now + 120_001,
+    now + 15_001,
+    { fenceSockets: true },
+  );
+  assert.equal(active.status, "FENCED");
+  assert.equal(active.release_at_ms, now + 135_001);
+  assert.equal(replacement.attachment.authenticated, false);
+  assert.equal(replacement.closed.at(-1)?.reason, "operation fenced");
+
+  active = await replacementControl.reconcileActiveOperation(
+    now + 135_002,
     { fenceSockets: true },
   );
   assert.equal(active.result, "UNKNOWN");
   assert.equal(await storage.get("active_operation"), undefined);
 
-  const next = await replacementControl.dispatchRotation("req_new_after_drain");
+  const finalSocket = new FakeSocket({
+    kind: "device", authenticated: true, device_id: "a".repeat(64),
+  });
+  const finalControl = new DeviceControl(new FakeContext(storage, [finalSocket]), {});
+  const next = await finalControl.dispatchRotation("req_new_after_drain");
   assert.equal(next.kind, "DISPATCHED");
-  assert.equal(JSON.parse(replacement.sent.at(-1)).request_id, "req_new_after_drain");
+  assert.equal(JSON.parse(finalSocket.sent.at(-1)).request_id, "req_new_after_drain");
+});
+
+test("delivery recovery reconnect redelivers exactly the same request id", async () => {
+  const identity = await generateIdentity();
+  const storage = new MemoryStorage();
+  await storage.put("device_identity", {
+    device_id: identity.deviceId,
+    public_key_spki_b64: identity.spkiB64,
+  });
+
+  const stale = new FakeSocket({
+    kind: "device", authenticated: true, device_id: identity.deviceId,
+  });
+  const ctx = new FakeContext(storage, [stale]);
+  const control = new DeviceControl(ctx, {});
+
+  const dispatch = await control.dispatchRotation("req_recover_same");
+  assert.equal(dispatch.kind, "DISPATCHED");
+  assert.equal(JSON.parse(stale.sent[0]).request_id, "req_recover_same");
+
+  const active = await storage.get("active_operation");
+  await control.reconcileActiveOperation(
+    active.delivery_deadline_ms + 1,
+    { fenceSockets: true },
+  );
+  assert.equal(stale.closed.at(-1)?.reason, "delivery recovery");
+  assert.equal((await storage.get("active_operation")).delivery_recovery_count, 1);
+
+  const nonce = "e".repeat(43);
+  const signature = await signAuth(identity.keyPair.privateKey, identity.deviceId, nonce);
+  const replacement = new FakeSocket({
+    kind: "device",
+    authenticated: false,
+    device_id: identity.deviceId,
+    challenge: nonce,
+    challenge_issued_at_ms: Date.now(),
+  });
+  ctx.sockets.push(replacement);
+
+  await control.webSocketMessage(replacement, JSON.stringify({
+    v: 1,
+    type: "AUTH",
+    device_id: identity.deviceId,
+    signature,
+  }));
+
+  assert.deepEqual(
+    replacement.sent.map((message) => JSON.parse(message).type),
+    ["READY", "ROTATE_IP"],
+  );
+  assert.equal(JSON.parse(replacement.sent[1]).request_id, "req_recover_same");
+
+  await control.webSocketMessage(
+    replacement,
+    '{"v":1,"type":"ACCEPTED","request_id":"req_recover_same","operation_id":82}',
+  );
+  await control.webSocketMessage(
+    replacement,
+    '{"v":1,"type":"RESULT","request_id":"req_recover_same","result":"CHANGED","operation_id":82}',
+  );
+
+  const recent = await storage.get("recent_operations");
+  assert.equal(recent[0].request_id, "req_recover_same");
+  assert.equal(recent[0].result, "CHANGED");
+  assert.equal(
+    [...stale.sent, ...replacement.sent]
+      .filter((message) => JSON.parse(message).type === "ROTATE_IP")
+      .every((message) => JSON.parse(message).request_id === "req_recover_same"),
+    true,
+  );
 });
 
 test("late real RESULT upgrades stale UNKNOWN correlation and is acknowledged", async () => {
