@@ -554,12 +554,12 @@ U8-F low-impact durability soak                      COMPLETE / PASS
      + one long-lived proxy CONNECT/WebSocket lifetime probe
      + controlled Android process/service-death recovery proof
      + bounded latency/error/resource evidence
-U8-G external privacy/path closure #315              CURRENT
+U8-G external privacy/path closure #315              COMPLETE / PASS
      + clean intended Windows client profile
      + DNS no-bypass proof
      + short final external regression across rotation
-U8-H support + exact provenance closure
-U8 FINAL PASS
+U8-H support + exact provenance closure                COMPLETE / PASS
+U8 FINAL PASS                                          COMPLETE
 ```
 
 Already accepted U2-U7 evidence is reused. Do not repeat process restart, ordinary cellular loss/recovery, accepted rotation lifecycle, 512/513 capacity or repeated 512 cleanup merely because U8 names durability again.
@@ -734,26 +734,51 @@ Canonical physical acceptance:
 
 U8-F is closed. Its lifetime/soak evidence is reused by U8-G and must not be duplicated.
 
-### U8-G — external privacy/path closure
+### U8-G — external privacy/path closure — COMPLETE / PASS
 
-Issue #315 remains the specialized external-client/browser evidence owner rather than duplicating its full matrix here.
+Issue #315 is closed `completed`. Its final canonical physical acceptance is Device Cycle #728 / run `35936074767`.
 
-Final U8 regression must use the intended clean Windows client path and prove:
+Accepted final facts:
 
-- proxy egress remains the expected Cellular egress across explicit rotation;
-- auth fail-closed and valid-after-negative remain healthy;
-- no HOST_DEFAULT/WARP public fallback;
-- DNS no-bypass contract for the intended client profile;
-- no unexpected IPv6/WebRTC/identity-header leak under the accepted policy;
-- long-lived lifetime evidence is referenced from U8-F rather than duplicated as another stress harness.
+- exact accepted PRODUCT source `94a9f4993b524b0388f0e2216e9e78183c8a3a4f`;
+- CONTROL `16a843cca4890b5d777b11cccb0ebeb9cb26924a`;
+- baseline and exact-candidate acceptance PASS;
+- wrong auth rejected, valid-after-negative healthy and HTTPS CONNECT :443 PASS;
+- pre-rotation clean-client DNS no-bypass PASS: PRODUCT DNS `started/completed/accepted_current = +1/+1/+1`, all recorded DNS failure/stale/deadline deltas zero, and the clean target absent from the Windows DNS cache before and after;
+- pre-rotation Camoufox egress classified `EXPECTED_PROXY_EGRESS`, matched the canonical MISH proxy observation and did not match host-default;
+- exactly one existing PRODUCT-owned rotation ended `CHANGED`; canonical proxy and browser external observations also changed with observer consensus true;
+- post-rotation DNS no-bypass repeated the same `+1/+1/+1` healthy owner delta with no Windows-cache bypass;
+- post-rotation Camoufox egress again classified `EXPECTED_PROXY_EGRESS` and did not match host-default;
+- post-state READY; raw public/private IP, raw DNS resolver values and proxy credentials were not persisted;
+- prior accepted #315 evidence remains the authority for four-ingress reliability/auth, identity-header, WebRTC and IPv6 observations;
+- long-lived CONNECT/control lifetime evidence is reused from U8-F rather than repeated.
 
-Population-level fingerprint anonymity and cosmetic anti-detect scores are not PRODUCT blockers.
+The prior headless `NAVIGATION_0` blocker was CONTROL/LAB-only: a one-element DNS-proof URL passed through pipeline `ConvertTo-Json` became a JSON scalar string, so Python enumerated characters before any browser request or PRODUCT DNS dispatch. #360 changed the serialization to `ConvertTo-Json -InputObject @($Urls) -Compress`; #361 added a deterministic hosted regression proving the one-element input remains a JSON array.
 
-### U8-H — support and provenance closure
+No PRODUCT change was required for U8-G.
 
-This is deliberately last.
+### U8-H — support and provenance closure — COMPLETE / PASS
 
-Record exact source/tree, CONTROL, immutable hosted candidate, physical evidence and bounded redacted support evidence. External distribution/signing may derive from the accepted source/artifact later, but must not create a competing RC acceptance lineage.
+U8-H adds no runtime mechanism. Existing natural-owner evidence is sufficient.
+
+Accepted provenance:
+
+- PRODUCT source: `94a9f4993b524b0388f0e2216e9e78183c8a3a4f`;
+- PRODUCT Git tree: `d4f467c8a5c7d793835448eddd7cb0d6753b877e`;
+- hosted candidate producer: PR Validation + PRODUCT Candidate run `35803074208` = PASS;
+- immutable candidate coordinate: artifact `10726024554`, digest `sha256:a60bf25bc02413e4f93aad8bf62abedbf8db0e7a097806e261df3dd2428b336b`;
+- final U8-G physical CONTROL: `16a843cca4890b5d777b11cccb0ebeb9cb26924a`;
+- canonical physical acceptance: Device Cycle #728 / run `35936074767` = PASS / `U8_G_FINAL_CLEAN_CLIENT_PASS`;
+- exact install/verification evidence: artifact `10782918236`, digest `sha256:ca6e37ac6be74ab8cec438038b92c2c36f9e098a0c1b3736aec11c94d93be4a3`;
+- physical cycle/support evidence: artifact `10783028195`, digest `sha256:b1a3bedd309748cf337e591c1eb9de922cef2e973ec856dcc72edc900662d544`;
+- that physical bundle contains the bounded typed `mish-device-diagnostic-v2.json`, the stage-specific `mish-targeted-probe-v1.json`, launch receipt and cycle report; no mutable support/status database is introduced;
+- current protected-main CONTROL-only/docs changes preserve the accepted PRODUCT paths exactly; physical acceptance remains bound to the immutable source/artifact/run coordinates above.
+
+The install verification proves the LAB-signed exact hosted candidate matches the installed `base.apk` and signing identity before physical acceptance. The support diagnostic reads current native owner facts and bounded external Mesh/proxy evidence; it is evidence only and never becomes runtime authority.
+
+External distribution or production signing may derive from the accepted source/artifact later. It must not introduce an RC/prerelease acceptance lineage, mutable `latest` pointer or second physical-acceptance authority.
+
+**U8 = FINAL PASS.** U1-U8 are complete on the current PRODUCT roadmap.
 
 ## U8 architecture invariants
 
