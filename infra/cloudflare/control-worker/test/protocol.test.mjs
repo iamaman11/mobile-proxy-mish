@@ -295,6 +295,73 @@ test("late duplicate acceptance after terminal correlation is harmless", async (
   assert.equal((await storage.get("recent_operations"))[0].result, "CHANGED");
 });
 
+test("primary enrollment is idempotent and fail-closed against identity replacement", async () => {
+  const first = await generateIdentity();
+  const second = await generateIdentity();
+  const storage = new MemoryStorage();
+  const control = new DeviceControl(new FakeContext(storage, []), {});
+
+  let response = await control.enroll(
+    enrollmentRequest(first.deviceId, first.spkiB64),
+    new URL(`https://control.internal/manager/enroll?device_id=${first.deviceId}`),
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(await storage.get("device_identity"), {
+    device_id: first.deviceId,
+    public_key_spki_b64: first.spkiB64,
+  });
+
+  response = await control.enroll(
+    enrollmentRequest(first.deviceId, first.spkiB64),
+    new URL(`https://control.internal/manager/enroll?device_id=${first.deviceId}`),
+  );
+  assert.equal(response.status, 200);
+
+  response = await control.enroll(
+    enrollmentRequest(second.deviceId, second.spkiB64),
+    new URL(`https://control.internal/manager/enroll?device_id=${second.deviceId}`),
+  );
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).error, "IDENTITY_ALREADY_BOUND");
+  assert.equal((await storage.get("device_identity")).device_id, first.deviceId);
+});
+
+test("manager immediate rejection responses share the typed schema", async () => {
+  const offline = new DeviceControl(new FakeContext(new MemoryStorage(), []), {});
+  let response = await offline.rotateAndWait(rotateRequest("req_offline"));
+  assert.equal(response.status, 409);
+  let payload = await response.json();
+  assert.equal(payload.schema, "mish.control.rotate/v1");
+  assert.equal(payload.result, "REJECTED");
+  assert.equal(payload.reason, "DEVICE_OFFLINE");
+  assert.equal(payload.dispatched, false);
+  assert.equal(payload.device_online, false);
+  assert.equal(payload.retryable, true);
+
+  const storage = new MemoryStorage();
+  await storage.put("active_operation", {
+    request_id: "already_active",
+    status: "ACCEPTED",
+    operation_id: 5,
+    result: null,
+    created_at_ms: 1,
+    completed_at_ms: null,
+  });
+  const socket = new FakeSocket({
+    kind: "device", authenticated: true, device_id: "a".repeat(64),
+  });
+  const busy = new DeviceControl(new FakeContext(storage, [socket]), {});
+  response = await busy.rotateAndWait(rotateRequest("req_busy"));
+  assert.equal(response.status, 409);
+  payload = await response.json();
+  assert.equal(payload.schema, "mish.control.rotate/v1");
+  assert.equal(payload.result, "REJECTED");
+  assert.equal(payload.reason, "BUSY");
+  assert.equal(payload.dispatched, false);
+  assert.equal(payload.device_online, true);
+  assert.equal(payload.retryable, true);
+});
+
 test("durable broker is idempotent, busy-bounded and has no offline queue", async () => {
   const storage = new MemoryStorage();
   let activeWasStoredBeforeSend = false;
@@ -514,6 +581,13 @@ function rotateRequest(requestId) {
   return new Request("https://control.internal/manager/rotate-and-wait", {
     method: "POST",
     body: JSON.stringify({ request_id: requestId }),
+  });
+}
+
+function enrollmentRequest(deviceId, spkiB64) {
+  return new Request(`https://control.internal/manager/enroll?device_id=${deviceId}`, {
+    method: "PUT",
+    body: JSON.stringify({ public_key_spki_b64: spkiB64 }),
   });
 }
 
