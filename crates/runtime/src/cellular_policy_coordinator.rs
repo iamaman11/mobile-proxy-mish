@@ -5,8 +5,8 @@
 
 use crate::root_session::RootSessionManager;
 use crate::{
-    CellularRuntimeCoordinator, CellularRuntimeError, RootPolicyResult, RootPolicyRuntime,
-    RuntimeExecutionError, RuntimeExecutor,
+    CellularRuntimeCoordinator, CellularRuntimeError, RootPolicyReconcileOutcome, RootPolicyResult,
+    RootPolicyRuntime, RuntimeExecutionError, RuntimeExecutor,
 };
 use mish_cellular::{
     CellularAdmissionSnapshot, CellularAdmissionState, NetworkHandle, NetworkObservation,
@@ -469,7 +469,7 @@ impl CellularPolicyCoordinator {
             state.max_quiesce_wait_ms = state.max_quiesce_wait_ms.max(quiesce_wait_ms);
         }
 
-        let result = self
+        let outcome = self
             .root_policy
             .reconcile_if_current(
                 request.admission.state() == CellularAdmissionState::Admitted,
@@ -477,14 +477,16 @@ impl CellularPolicyCoordinator {
                 || self.request_is_current(&request),
             )
             .await;
-
-        if result == RootPolicyResult::Superseded {
-            if let Ok(mut state) = self.state.lock() {
-                state.superseded_during_reconcile =
-                    state.superseded_during_reconcile.saturating_add(1);
+        let result = match outcome {
+            RootPolicyReconcileOutcome::Completed(result) => result,
+            RootPolicyReconcileOutcome::Superseded => {
+                if let Ok(mut state) = self.state.lock() {
+                    state.superseded_during_reconcile =
+                        state.superseded_during_reconcile.saturating_add(1);
+                }
+                return;
             }
-            return;
-        }
+        };
 
         if !self.request_is_current(&request) {
             if let Ok(mut state) = self.state.lock() {
@@ -494,7 +496,6 @@ impl CellularPolicyCoordinator {
         }
 
         match result {
-            RootPolicyResult::Superseded => return,
             RootPolicyResult::Enforced => {
                 let Some(sequence) = request.admission.last_sequence() else {
                     return;
