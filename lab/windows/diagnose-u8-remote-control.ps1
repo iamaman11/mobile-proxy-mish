@@ -4,7 +4,7 @@ param(
     [string] $PackageName = 'com.mobileproxymish.app.debug',
     [string] $ComponentName = 'com.mobileproxymish.app.debug/com.mobileproxymish.app.MainActivity',
     [string] $ControlHost = 'api.alegria.by',
-    [ValidateRange(30, 120)][int] $TerminalTimeoutSeconds = 65,
+    [ValidateRange(20, 120)][int] $TerminalTimeoutSeconds = 20,
     [string] $EvidencePath = (Join-Path $env:TEMP 'mish-u8-remote-control-v1.json'),
     [string] $BaselineDiagnosticPath = (Join-Path $env:TEMP 'mish-u8-remote-control-baseline-v2.json'),
     [string] $PostDiagnosticPath = (Join-Path $env:TEMP 'mish-u8-remote-control-post-v2.json')
