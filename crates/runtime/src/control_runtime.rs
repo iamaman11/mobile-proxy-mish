@@ -24,12 +24,11 @@ use tokio::sync::{Notify, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{MissedTickBehavior, interval, sleep, timeout};
 
-const CONTROL_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
-const CONTROL_AUTH_TIMEOUT: Duration = Duration::from_secs(3);
-const CONTROL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 // A reconnect attempt must never monopolize the public 18 s manager budget. CONTROL retries
 // continuously, so small per-attempt bounds are both safer and faster across the intentional
 // cellular outage caused by Rotation.
+const CONTROL_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+const CONTROL_AUTH_TIMEOUT: Duration = Duration::from_secs(3);
 const CONTROL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTROL_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(4);
 const CONTROL_HEARTBEAT_REQUEST: &str = "MISH_CONTROL_HEARTBEAT_V1";
