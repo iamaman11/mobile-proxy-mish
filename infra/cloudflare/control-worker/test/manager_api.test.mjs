@@ -46,6 +46,27 @@ test("manager response schema is stable and typed", () => {
   });
 });
 
+test("bounded stale correlation maps to typed UNKNOWN/TIMEOUT without blind retry", () => {
+  const payload = terminalOperationPayload({
+    request_id: "mgr_stale",
+    status: "TERMINAL",
+    operation_id: 77,
+    result: "UNKNOWN",
+    reason: "TIMEOUT",
+    created_at_ms: 100,
+    completed_at_ms: 200,
+  }, false);
+  assert.equal(payload.schema, MANAGER_ROTATE_SCHEMA);
+  assert.equal(payload.terminal, false);
+  assert.equal(payload.result, "UNKNOWN");
+  assert.equal(payload.reason, "TIMEOUT");
+  assert.equal(payload.operation_id, 77);
+  assert.equal(payload.changed, null);
+  assert.equal(payload.device_online, false);
+  assert.equal(payload.dispatched, true);
+  assert.equal(payload.retryable, false);
+});
+
 test("server-generated manager request ids are bounded protocol-safe values", () => {
   const first = newManagerRequestId();
   const second = newManagerRequestId();
