@@ -319,8 +319,7 @@ impl RootPolicyRuntime {
             Ok(table) => table,
             Err(failure) => return RootPolicyResult::FailClosed(Some(failure)),
         };
-        phases.table_discovery =
-            phase_diagnostic(phase_started, phase_before, window.diagnostic());
+        phases.table_discovery = phase_diagnostic(phase_started, phase_before, window.diagnostic());
 
         let phase_started = Instant::now();
         let phase_before = window.diagnostic();
