@@ -10,6 +10,7 @@ import android.os.SystemClock
 import android.util.Base64
 import com.mobileproxymish.ffi.ControlRuntimeSnapshotView
 import com.mobileproxymish.ffi.ProductDiagnosticSnapshotView
+import com.mobileproxymish.ffi.RootPolicyPhaseDiagnosticView
 import java.nio.charset.StandardCharsets
 import org.json.JSONObject
 
@@ -18,6 +19,16 @@ internal const val MISH_CONTROL_DIAGNOSTICS_SCHEMA_V1 = "mish.control.diagnostic
 internal const val MISH_DIAGNOSTICS_METHOD_SNAPSHOT_V2 = "snapshot_v2"
 internal const val MISH_DIAGNOSTICS_METHOD_CONTROL_SNAPSHOT_V1 = "control_snapshot_v1"
 internal const val MISH_DIAGNOSTICS_RESULT_PAYLOAD_B64 = "payload_b64"
+
+private fun renderRootPolicyPhaseDiagnostic(
+    phase: RootPolicyPhaseDiagnosticView,
+): JSONObject = JSONObject().apply {
+    put("elapsed_ms", phase.elapsedMs.toLong())
+    put("commands", phase.commands.toLong())
+    put("observation_commands", phase.observationCommands.toLong())
+    put("mutation_commands", phase.mutationCommands.toLong())
+    put("duplicate_observations", phase.duplicateObservations.toLong())
+}
 
 /**
  * Serializes one already-composed native PRODUCT diagnostic snapshot.
@@ -126,6 +137,29 @@ internal fun renderMishDiagnosticSnapshotV2(
                 root.lastIncompleteOrTimedOutCommands.toLong(),
             )
             put("last_mutation_failures", root.lastMutationFailures.toLong())
+            put("phases", JSONObject().apply {
+                val phases = root.lastPhases
+                put(
+                    "initial_snapshot",
+                    renderRootPolicyPhaseDiagnostic(phases.initialSnapshot),
+                )
+                put(
+                    "fail_closed_prepare",
+                    renderRootPolicyPhaseDiagnostic(phases.failClosedPrepare),
+                )
+                put(
+                    "fail_closed_verify",
+                    renderRootPolicyPhaseDiagnostic(phases.failClosedVerify),
+                )
+                put(
+                    "table_discovery",
+                    renderRootPolicyPhaseDiagnostic(phases.tableDiscovery),
+                )
+                put(
+                    "admitted_apply_verify",
+                    renderRootPolicyPhaseDiagnostic(phases.admittedApplyVerify),
+                )
+            })
         })
         put("recovery", JSONObject().apply {
             put("pending", snapshot.rootRecovery.pending)
