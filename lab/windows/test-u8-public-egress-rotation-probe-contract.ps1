@@ -11,9 +11,9 @@ foreach ($parsePath in @($probePath, $modulePath)) {
         $errors | ForEach-Object { Write-Error $_.Message }
         throw "U8 public-egress observation source must parse under PowerShell: $parsePath"
     }
-}
-if (@($tokens | Where-Object { $_.Text -ieq '$PID' }).Count -ne 0) {
-    throw 'U8 public-egress rotation probe must not shadow the PowerShell automatic PID variable.'
+    if (@($tokens | Where-Object { $_.Text -ieq '$PID' }).Count -ne 0) {
+        throw "U8 public-egress observation source must not shadow the PowerShell automatic PID variable: $parsePath"
+    }
 }
 
 $source = Get-Content -Raw -LiteralPath $probePath
