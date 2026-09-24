@@ -252,8 +252,8 @@ foreach ($field in @(
 foreach ($field in @(
     'operation_age_ms',
     'activated_ms',
-    'before_ip_started_ms',
-    'before_ip_completed_ms',
+    'pre_rotation_probe_started_ms',
+    'pre_rotation_probe_completed_ms',
     'airplane_enable_started_ms',
     'airplane_enable_effect_completed_ms',
     'airplane_on_observed_ms',
@@ -265,8 +265,8 @@ foreach ($field in @(
     'fresh_cellular_generation',
     'root_authorized_ms',
     'root_authorized_generation',
-    'after_ip_started_ms',
-    'after_ip_completed_ms',
+    'post_rotation_probe_started_ms',
+    'post_rotation_probe_completed_ms',
     'terminal_ms'
 )) {
     if ($null -eq $rotationTiming.$field -or [int64]$rotationTiming.$field -lt 0) {
@@ -289,19 +289,19 @@ $rotationTerminalFromCommandMs = $rotationOriginFromCommandMs + [int64]$rotation
 # against each other: airplane-ON/cellular-loss and fresh-Cellular/root-auth may arrive either way.
 if ([int64]$operationTiming.operation_reserved_ms -gt [int64]$operationTiming.accepted_sent_ms -or
     [int64]$operationTiming.accepted_sent_ms -gt $rotationActivatedFromCommandMs -or
-    [int64]$rotationTiming.activated_ms -gt [int64]$rotationTiming.before_ip_started_ms -or
-    [int64]$rotationTiming.before_ip_started_ms -gt [int64]$rotationTiming.before_ip_completed_ms -or
-    [int64]$rotationTiming.before_ip_completed_ms -gt [int64]$rotationTiming.airplane_enable_started_ms -or
+    [int64]$rotationTiming.activated_ms -gt [int64]$rotationTiming.pre_rotation_probe_started_ms -or
+    [int64]$rotationTiming.pre_rotation_probe_started_ms -gt [int64]$rotationTiming.pre_rotation_probe_completed_ms -or
+    [int64]$rotationTiming.pre_rotation_probe_completed_ms -gt [int64]$rotationTiming.airplane_enable_started_ms -or
     [int64]$rotationTiming.airplane_enable_started_ms -gt [int64]$rotationTiming.airplane_enable_effect_completed_ms -or
     [int64]$rotationTiming.airplane_on_observed_ms -gt [int64]$rotationTiming.airplane_disable_started_ms -or
     [int64]$rotationTiming.cellular_loss_observed_ms -gt [int64]$rotationTiming.airplane_disable_started_ms -or
     [int64]$rotationTiming.airplane_disable_started_ms -gt [int64]$rotationTiming.airplane_disable_effect_completed_ms -or
     [int64]$rotationTiming.airplane_disable_effect_completed_ms -gt [int64]$rotationTiming.airplane_off_observed_ms -or
-    [int64]$rotationTiming.airplane_off_observed_ms -gt [int64]$rotationTiming.after_ip_started_ms -or
-    [int64]$rotationTiming.fresh_cellular_observed_ms -gt [int64]$rotationTiming.after_ip_started_ms -or
-    [int64]$rotationTiming.root_authorized_ms -gt [int64]$rotationTiming.after_ip_started_ms -or
-    [int64]$rotationTiming.after_ip_started_ms -gt [int64]$rotationTiming.after_ip_completed_ms -or
-    [int64]$rotationTiming.after_ip_completed_ms -gt [int64]$rotationTiming.terminal_ms -or
+    [int64]$rotationTiming.airplane_off_observed_ms -gt [int64]$rotationTiming.post_rotation_probe_started_ms -or
+    [int64]$rotationTiming.fresh_cellular_observed_ms -gt [int64]$rotationTiming.post_rotation_probe_started_ms -or
+    [int64]$rotationTiming.root_authorized_ms -gt [int64]$rotationTiming.post_rotation_probe_started_ms -or
+    [int64]$rotationTiming.post_rotation_probe_started_ms -gt [int64]$rotationTiming.post_rotation_probe_completed_ms -or
+    [int64]$rotationTiming.post_rotation_probe_completed_ms -gt [int64]$rotationTiming.terminal_ms -or
     $rotationTerminalFromCommandMs -gt [int64]$operationTiming.rotation_terminal_ms -or
     [int64]$operationTiming.rotation_terminal_ms -gt [int64]$operationTiming.result_sent_ms -or
     [int64]$operationTiming.result_sent_ms -gt [int64]$operationTiming.result_ack_ms) {
@@ -362,8 +362,8 @@ $evidence = [ordered]@{
         rotation_terminal_from_command_ms = $rotationTerminalFromCommandMs
         rotation = [ordered]@{
             activated_ms = [int64]$rotationTiming.activated_ms
-            before_ip_started_ms = [int64]$rotationTiming.before_ip_started_ms
-            before_ip_completed_ms = [int64]$rotationTiming.before_ip_completed_ms
+            pre_rotation_probe_started_ms = [int64]$rotationTiming.pre_rotation_probe_started_ms
+            pre_rotation_probe_completed_ms = [int64]$rotationTiming.pre_rotation_probe_completed_ms
             airplane_enable_started_ms = [int64]$rotationTiming.airplane_enable_started_ms
             airplane_enable_effect_completed_ms = [int64]$rotationTiming.airplane_enable_effect_completed_ms
             airplane_on_observed_ms = [int64]$rotationTiming.airplane_on_observed_ms
@@ -375,8 +375,8 @@ $evidence = [ordered]@{
             fresh_cellular_generation = [int64]$rotationTiming.fresh_cellular_generation
             root_authorized_ms = [int64]$rotationTiming.root_authorized_ms
             root_authorized_generation = [int64]$rotationTiming.root_authorized_generation
-            after_ip_started_ms = [int64]$rotationTiming.after_ip_started_ms
-            after_ip_completed_ms = [int64]$rotationTiming.after_ip_completed_ms
+            post_rotation_probe_started_ms = [int64]$rotationTiming.post_rotation_probe_started_ms
+            post_rotation_probe_completed_ms = [int64]$rotationTiming.post_rotation_probe_completed_ms
             terminal_ms = [int64]$rotationTiming.terminal_ms
         }
     }

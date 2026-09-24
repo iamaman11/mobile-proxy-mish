@@ -66,8 +66,8 @@ pub struct RotationRuntimeTimingSnapshot {
     pub operation_id: Option<u64>,
     pub operation_age_ms: Option<u64>,
     pub activated_ms: Option<u64>,
-    pub before_ip_started_ms: Option<u64>,
-    pub before_ip_completed_ms: Option<u64>,
+    pub pre_rotation_probe_started_ms: Option<u64>,
+    pub pre_rotation_probe_completed_ms: Option<u64>,
     pub airplane_enable_started_ms: Option<u64>,
     pub airplane_enable_effect_completed_ms: Option<u64>,
     pub airplane_on_observed_ms: Option<u64>,
@@ -79,8 +79,8 @@ pub struct RotationRuntimeTimingSnapshot {
     pub fresh_cellular_generation: Option<u64>,
     pub root_authorized_ms: Option<u64>,
     pub root_authorized_generation: Option<u64>,
-    pub after_ip_started_ms: Option<u64>,
-    pub after_ip_completed_ms: Option<u64>,
+    pub post_rotation_probe_started_ms: Option<u64>,
+    pub post_rotation_probe_completed_ms: Option<u64>,
     pub terminal_ms: Option<u64>,
     pub restore_completed_ms: Option<u64>,
 }
@@ -660,7 +660,7 @@ impl RotationRuntimeCoordinator {
             return;
         };
         self.mark_timing(operation_id, |timing, elapsed_ms| {
-            set_once(&mut timing.before_ip_started_ms, elapsed_ms);
+            set_once(&mut timing.pre_rotation_probe_started_ms, elapsed_ms);
         });
         let timeout_duration = remaining(deadline).min(PUBLIC_IP_EFFECT_TIMEOUT);
         let observation_result = timeout_at(
@@ -670,7 +670,7 @@ impl RotationRuntimeCoordinator {
         )
         .await;
         self.mark_timing(operation_id, |timing, elapsed_ms| {
-            set_once(&mut timing.before_ip_completed_ms, elapsed_ms);
+            set_once(&mut timing.pre_rotation_probe_completed_ms, elapsed_ms);
         });
         let observation = match observation_result {
             Ok(Ok(observation)) if observation.generation() == before_generation => observation,
@@ -858,7 +858,7 @@ impl RotationRuntimeCoordinator {
             return;
         };
         self.mark_timing(operation_id, |timing, elapsed_ms| {
-            set_once(&mut timing.after_ip_started_ms, elapsed_ms);
+            set_once(&mut timing.post_rotation_probe_started_ms, elapsed_ms);
         });
         let timeout_duration = remaining(deadline).min(PUBLIC_IP_EFFECT_TIMEOUT);
         let observation_result = timeout_at(
@@ -868,7 +868,7 @@ impl RotationRuntimeCoordinator {
         )
         .await;
         self.mark_timing(operation_id, |timing, elapsed_ms| {
-            set_once(&mut timing.after_ip_completed_ms, elapsed_ms);
+            set_once(&mut timing.post_rotation_probe_completed_ms, elapsed_ms);
         });
         let observation = match observation_result {
             Ok(Ok(observation)) if observation.generation() == after_generation => observation,
@@ -1282,18 +1282,18 @@ mod tests {
     fn operation_timing_is_observation_only_and_rejects_stale_operation_updates() {
         let mut timing = RotationRuntimeTiming::new(7);
         assert!(!timing.mark(8, |snapshot, elapsed_ms| {
-            snapshot.before_ip_started_ms = Some(elapsed_ms);
+            snapshot.pre_rotation_probe_started_ms = Some(elapsed_ms);
         }));
-        assert!(timing.snapshot.before_ip_started_ms.is_none());
+        assert!(timing.snapshot.pre_rotation_probe_started_ms.is_none());
 
         assert!(timing.mark(7, |snapshot, elapsed_ms| {
-            set_once(&mut snapshot.before_ip_started_ms, elapsed_ms);
+            set_once(&mut snapshot.pre_rotation_probe_started_ms, elapsed_ms);
         }));
-        assert!(timing.snapshot.before_ip_started_ms.is_some());
+        assert!(timing.snapshot.pre_rotation_probe_started_ms.is_some());
 
         let replacement = RotationRuntimeTiming::new(8);
         assert_eq!(replacement.snapshot.operation_id, Some(8));
-        assert!(replacement.snapshot.before_ip_started_ms.is_none());
+        assert!(replacement.snapshot.pre_rotation_probe_started_ms.is_none());
     }
 
     #[test]

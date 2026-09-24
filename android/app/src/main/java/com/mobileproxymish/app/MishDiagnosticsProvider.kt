@@ -304,8 +304,8 @@ internal fun renderMishControlDiagnosticSnapshotV1(
                     snapshot.rotationTiming.operationAgeMs?.toLong() ?: JSONObject.NULL,
                 )
                 putNullableLong("activated_ms", snapshot.rotationTiming.activatedMs)
-                putNullableLong("before_ip_started_ms", snapshot.rotationTiming.beforeIpStartedMs)
-                putNullableLong("before_ip_completed_ms", snapshot.rotationTiming.beforeIpCompletedMs)
+                putNullableLong("pre_rotation_probe_started_ms", snapshot.rotationTiming.preRotationProbeStartedMs)
+                putNullableLong("pre_rotation_probe_completed_ms", snapshot.rotationTiming.preRotationProbeCompletedMs)
                 putNullableLong(
                     "airplane_enable_started_ms",
                     snapshot.rotationTiming.airplaneEnableStartedMs,
@@ -347,8 +347,8 @@ internal fun renderMishControlDiagnosticSnapshotV1(
                     "root_authorized_generation",
                     snapshot.rotationTiming.rootAuthorizedGeneration,
                 )
-                putNullableLong("after_ip_started_ms", snapshot.rotationTiming.afterIpStartedMs)
-                putNullableLong("after_ip_completed_ms", snapshot.rotationTiming.afterIpCompletedMs)
+                putNullableLong("post_rotation_probe_started_ms", snapshot.rotationTiming.postRotationProbeStartedMs)
+                putNullableLong("post_rotation_probe_completed_ms", snapshot.rotationTiming.postRotationProbeCompletedMs)
                 putNullableLong("terminal_ms", snapshot.rotationTiming.terminalMs)
                 putNullableLong(
                     "restore_completed_ms",
