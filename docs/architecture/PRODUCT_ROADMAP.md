@@ -864,7 +864,7 @@ Accepted boundary:
 - the existing `DeviceControl("primary")` Durable Object remains the only server-side operation state owner;
 - PRODUCT retains its canonical 90 s rotation safety deadline;
 - accepted operations use a 120 s result-delivery lease (90 s PRODUCT safety + 30 s delivery margin);
-- a dispatch that never receives ACCEPTED is held for the existing 180 s manager/dispatch window, then enters `FENCED`: redelivery stops, the authenticated WSS is closed, and BUSY is released only after a further 120 s PRODUCT drain;
+- historical #370 implementation used a 180 s manager/dispatch window before `FENCED`; **this delivery timing is superseded by issue #373**. The retained #370 guarantee is the bounded fail-closed stale-operation lease and 120 s PRODUCT drain;
 - Durable Object Alarms own the persistent lease deadlines across hibernation/restart;
 - stale expiry is represented as typed `UNKNOWN/TIMEOUT`, `dispatched=true`, `retryable=false`;
 - a late real PRODUCT `RESULT` upgrades the bounded UNKNOWN correlation and receives `RESULT_ACK`;
@@ -888,6 +888,41 @@ Accepted implementation/evidence:
 - accepted PRODUCT remains `94a9f4993b524b0388f0e2216e9e78183c8a3a4f`; no PRODUCT rebuild/source change was required.
 
 Disposition: **issue #370 = COMPLETE / PASS.** Permanent stale BUSY is bounded without weakening fail-closed semantics or adding a second rotation/state owner.
+
+## Post-U8 CONTROL delivery refinement — issue #373 — COMPLETE / PASS
+
+This is **not** a new PRODUCT stage and does not reopen U8. It fixes the real external failure mode where Manager authentication succeeded, `POST /v1/rotate` received no bytes for 195 s, and the phone did not rotate.
+
+Root cause and accepted boundary:
+
+- Worker-side `socket.send(ROTATE_IP)` is only local server dispatch and is **not** treated as proof that PRODUCT received the command;
+- Rust `ACCEPTED(request_id, operation_id)` is the authoritative delivery/mutation-start boundary because PRODUCT flushes ACCEPTED before `rotation.activate_prepared()`;
+- initial delivery-ACK deadline = **10 s**;
+- if still DISPATCHED, Worker closes only the current authenticated WSS to force the existing Rust reconnect lifecycle;
+- reconnect redelivers **exactly the same request_id once**; PRODUCT idempotency returns the known operation if the first delivery actually crossed the wire, so no second mutation is created;
+- recovery delivery-ACK deadline = **15 s**;
+- if still unaccepted, operation becomes `FENCED`, redelivery stops, manager receives typed `UNKNOWN/TIMEOUT`, and the existing 120 s PRODUCT drain remains authoritative before BUSY release;
+- manager HTTP overall wait = **55 s**, deliberately below the Durable Object inactive-eviction window;
+- after manager timeout, Durable Object Alarm continues server-owned correlation independently;
+- no application heartbeat, polling endpoint, manager polling, KV/D1, second scheduler service, second state owner or second rotation owner was added.
+
+Accepted implementation/evidence:
+
+- implementation PR #374, merged as `6ac9e646de77377892a0442148f36a0a316ba19a`;
+- PR Validation #1014 / run `36010752753` = PASS;
+- U8 Control Static #34 / run `36010752435` = PASS;
+- exact Worker deploy #88 / run `36010905104` = PASS;
+- deployed Worker version `29b5f927-b30c-4a42-b392-4eed6c243d46`;
+- physical Device Cycle #746 / run `36011081527` = `U8_REMOTE_CONTROL_ROTATION_PASS`;
+- physical result: exactly one public command, exactly one logical rotation request, server-generated request id PASS, manager polling = 0, operation_id = 1, terminal result `CHANGED`;
+- from the physical log, the interval from the completed pre-rotation invalid-request diagnostic to completed post-rotation diagnostic was under 20 s, including the actual manager command, rotation and post-diagnostic collection;
+- post-rotation runtime/Cellular/root/Proxy/Mesh/readiness = healthy/READY, loopback proxy E2E = PASS, Mesh proxy E2E = PASS;
+- evidence artifact `10812292899`, digest `sha256:8f1d60d8589af92c68c63615ebcf27ba09ff51bad04e8e303765aa0400d65a20`;
+- raw public IP and secrets were not persisted;
+- accepted PRODUCT remains `94a9f4993b524b0388f0e2216e9e78183c8a3a4f`; no PRODUCT rebuild/source change was required;
+- operator/LAB client timeout is aligned to **65 s** (55 s Worker bound + 10 s transport margin), replacing the obsolete 195 s value.
+
+Disposition: **issue #373 = COMPLETE / PASS.** Remote rotation is now delivery-acknowledged, performs one safe same-request reconnect recovery, and cannot hold one manager HTTP request for three minutes.
 
 
 ---
