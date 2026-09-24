@@ -28,18 +28,16 @@ const DEVICE_CONNECT = "/v1/device/connect";
 const MANAGER_ROTATE = "/v1/rotate";
 const PRIMARY_DEVICE_OBJECT = "primary";
 
-// PRODUCT owns mutation timing. Its canonical rotation safety deadline is 90 s.
-// CONTROL adds margin for terminal delivery, and fences an unaccepted dispatch before
-// ever releasing BUSY so an old in-flight command cannot overlap a newer mutation.
+// PRODUCT owns mutation timing. CONTROL owns only delivery correlation.
+// Rust/Tokio owns WSS liveness/reconnect continuously; Manager requests never own reconnect.
 const PRODUCT_ROTATION_SAFETY_MS = 90_000;
 const CONTROL_DELIVERY_MARGIN_MS = 30_000;
 const ACCEPTED_RESULT_LEASE_MS = PRODUCT_ROTATION_SAFETY_MS + CONTROL_DELIVERY_MARGIN_MS;
-const INITIAL_DELIVERY_ACK_MS = 10_000;
-// Recovery must cover the PRODUCT client's allowed first reconnect path after a READY session:
-// 1 s backoff + 15 s connect + 10 s challenge + 10 s READY, plus 4 s CONTROL/wire margin.
-// Keep the resulting 10 s initial + 40 s recovery fence below the 55 s manager HTTP bound.
-const RECOVERY_DELIVERY_ACK_MS = 40_000;
+const DELIVERY_ACK_MS = 2_000;
 const FENCED_DRAIN_MS = PRODUCT_ROTATION_SAFETY_MS + CONTROL_DELIVERY_MARGIN_MS;
+const CONTROL_HEARTBEAT_REQUEST = "MISH_CONTROL_HEARTBEAT_V1";
+const CONTROL_HEARTBEAT_RESPONSE = "MISH_CONTROL_HEARTBEAT_ACK_V1";
+const CONTROL_SESSION_FRESHNESS_MS = 10_000;
 
 export default {
   async fetch(request, env) {
@@ -140,6 +138,16 @@ export class DeviceControl {
     this.ctx = ctx;
     this.env = env;
     this.waiters = new Map();
+
+    // Cloudflare can answer this tiny liveness probe while the Durable Object is hibernated.
+    // The Rust client owns heartbeat cadence and reconnect; the Worker only observes freshness.
+    if (typeof WebSocketRequestResponsePair === "function" &&
+        typeof this.ctx.setWebSocketAutoResponse === "function") {
+      this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair(
+        CONTROL_HEARTBEAT_REQUEST,
+        CONTROL_HEARTBEAT_RESPONSE,
+      ));
+    }
   }
 
   async fetch(request) {
@@ -262,6 +270,7 @@ export class DeviceControl {
         kind: "device",
         authenticated: true,
         device_id: attachment.device_id,
+        authenticated_at_ms: Date.now(),
       });
 
       // A reconnect is also a recovery boundary for legacy/stale broker state. Do not close
@@ -293,333 +302,8 @@ export class DeviceControl {
 
       active.operation_id = parsed.operation_id;
       if (active.status === "DISPATCHED") {
-        active.status = "ACCEPTED";
-        active.accepted_at_ms = Date.now();
-        active.delivery_deadline_ms = null;
-        await this.ctx.storage.put("active_operation", active);
-        await this.ctx.storage.setAlarm(active.accepted_at_ms + ACCEPTED_RESULT_LEASE_MS);
-        this.resolveWaiters(parsed.request_id, active);
-        return;
-      }
-      if (active.status === "ACCEPTED") {
-        // Duplicate ACCEPTED is idempotent and must never extend the lease.
-        await this.ctx.storage.put("active_operation", active);
-        this.resolveWaiters(parsed.request_id, active);
-        return;
-      }
-      if (active.status === "FENCED") {
-        // The command may have crossed the wire just before fencing. Preserve its operation id
-        // but never reactivate/redeliver it; the existing drain deadline remains authoritative.
-        await this.ctx.storage.put("active_operation", active);
-        return;
-      }
-
-      ws.close(1008, "invalid active operation state");
-      return;
-    }
-
-    if (parsed.type === "RESULT") {
-      await this.acceptResult(ws, parsed);
-      return;
-    }
-
-    ws.close(1008, "unsupported device message");
-  }
-
-  async webSocketClose() {
-    // compatibility_date >= 2026-04-07 auto-replies to Close frames.
-  }
-
-  async webSocketError() {
-    // The client owns bounded reconnect. No server-side retry/queue is created here.
-  }
-
-  async rotateAndWait(request) {
-    const command = parseManagerRotateBody(await readBoundedJson(request));
-    const dispatch = await this.dispatchRotation(command.request_id);
-
-    if (dispatch.kind === "TERMINAL") {
-      return this.operationResponse(dispatch.operation);
-    }
-    if (dispatch.kind === "BUSY") {
-      return managerJson(managerRotatePayload({
-        requestId: command.request_id,
-        result: "REJECTED",
-        reason: "BUSY",
-        operationId: null,
-        deviceOnline: this.authenticatedSocket() !== null,
-        dispatched: false,
-        startedAtMs: Date.now(),
-      }), 409);
-    }
-    if (dispatch.kind === "DEVICE_OFFLINE") {
-      return managerJson(managerRotatePayload({
-        requestId: command.request_id,
-        result: "REJECTED",
-        reason: "DEVICE_OFFLINE",
-        operationId: null,
-        deviceOnline: false,
-        dispatched: false,
-        startedAtMs: Date.now(),
-      }), 409);
-    }
-
-    return this.waitForTerminal(command.request_id, dispatch.operation);
-  }
-
-  async dispatchRotation(requestId) {
-    await this.reconcileActiveOperation(Date.now(), { fenceSockets: true });
-
-    const recent = (await this.ctx.storage.get("recent_operations")) || [];
-    const known = recent.find((item) => item.request_id === requestId);
-    if (known) return { kind: "TERMINAL", operation: known };
-
-    const active = await this.ctx.storage.get("active_operation");
-    if (active) {
-      if (active.request_id === requestId) {
-        return { kind: "ACTIVE_SAME", operation: active };
-      }
-      return { kind: "BUSY", operation: active };
-    }
-
-    const socket = this.authenticatedSocket();
-    if (!socket) return { kind: "DEVICE_OFFLINE" };
-
-    const operation = {
-      request_id: requestId,
-      status: "DISPATCHED",
-      operation_id: null,
-      result: null,
-      created_at_ms: Date.now(),
-      accepted_at_ms: null,
-      delivery_recovery_count: 0,
-      delivery_deadline_ms: Date.now() + INITIAL_DELIVERY_ACK_MS,
-      fenced_at_ms: null,
-      release_at_ms: null,
-      completed_at_ms: null,
-    };
-    try {
-      await this.ctx.storage.put("active_operation", operation);
-      await this.ctx.storage.setAlarm(operation.delivery_deadline_ms);
-    } catch (error) {
-      await this.ctx.storage.delete("active_operation").catch(() => {});
-      await this.ctx.storage.deleteAlarm().catch(() => {});
-      throw error;
-    }
-
-    try {
-      socket.send(rotateMessage(requestId));
-    } catch {
-      await this.ctx.storage.delete("active_operation");
-      await this.ctx.storage.deleteAlarm();
-      return { kind: "DEVICE_OFFLINE" };
-    }
-    return { kind: "DISPATCHED", operation };
-  }
-
-  async waitForTerminal(requestId, operation) {
-    const managerDeadlineMs = operation.created_at_ms + MANAGER_ROTATE_WAIT_TIMEOUT_MS;
-
-    // socket.send() is not PRODUCT delivery proof. Give the current authenticated session
-    // one short chance to return ACCEPTED, then force exactly one reconnect/redelivery of the
-    // same request_id. PRODUCT idempotency makes that recovery safe if the first frame crossed
-    // the wire but its ACCEPTED was lost.
-    for (const deliveryWindowMs of [INITIAL_DELIVERY_ACK_MS, RECOVERY_DELIVERY_ACK_MS]) {
-      const immediate = await this.currentOperationState(requestId);
-      if (immediate.terminal) return this.operationResponse(immediate.terminal);
-      if (immediate.active?.status === "ACCEPTED") break;
-      if (!immediate.active || immediate.active.status === "FENCED") {
-        return this.managerTimeoutResponse(requestId, operation);
-      }
-
-      const remainingMs = managerDeadlineMs - Date.now();
-      if (remainingMs <= 0) return this.managerTimeoutResponse(requestId, operation);
-      await this.waitForStateChange(
-        requestId,
-        immediate.active.status,
-        Math.min(deliveryWindowMs, remainingMs),
-      );
-
-      const observed = await this.currentOperationState(requestId);
-      if (observed.terminal) return this.operationResponse(observed.terminal);
-      if (observed.active?.status === "ACCEPTED") break;
-      if (!observed.active || observed.active.status === "FENCED") {
-        return this.managerTimeoutResponse(requestId, operation);
-      }
-
-      await this.reconcileActiveOperation(Date.now(), { fenceSockets: true });
-      const reconciled = await this.currentOperationState(requestId);
-      if (reconciled.terminal) return this.operationResponse(reconciled.terminal);
-      if (reconciled.active?.status === "ACCEPTED") break;
-      if (!reconciled.active || reconciled.active.status === "FENCED") {
-        return this.managerTimeoutResponse(requestId, operation);
-      }
-    }
-
-    // ACCEPTED is the authoritative device-delivery boundary. Wait only inside the short
-    // manager HTTP budget. If PRODUCT needs longer, its Durable Object correlation continues
-    // under the existing 120 s accepted-result alarm; the manager gets typed UNKNOWN instead
-    // of holding one DO request long enough to risk runtime eviction.
-    while (Date.now() < managerDeadlineMs) {
-      const current = await this.currentOperationState(requestId);
-      if (current.terminal) return this.operationResponse(current.terminal);
-      if (!current.active || current.active.status !== "ACCEPTED") {
-        return this.managerTimeoutResponse(requestId, operation);
-      }
-      await this.waitForStateChange(
-        requestId,
-        "ACCEPTED",
-        managerDeadlineMs - Date.now(),
-      );
-    }
-
-    const final = await this.currentOperationState(requestId);
-    if (final.terminal) return this.operationResponse(final.terminal);
-    return this.managerTimeoutResponse(requestId, operation);
-  }
-
-  async waitForStateChange(requestId, expectedStatus, timeoutMs) {
-    if (timeoutMs <= 0) return;
-
-    let resolveChange;
-    const changePromise = new Promise((resolve) => {
-      resolveChange = resolve;
-      let waiters = this.waiters.get(requestId);
-      if (!waiters) {
-        waiters = new Set();
-        this.waiters.set(requestId, waiters);
-      }
-      waiters.add(resolve);
-    });
-
-    // Close the registration race: if state changed before the waiter was installed,
-    // resolve immediately instead of sleeping for the whole timeout.
-    const current = await this.currentOperationState(requestId);
-    if (current.terminal || !current.active || current.active.status !== expectedStatus) {
-      this.resolveWaiters(requestId, current.terminal || current.active || null);
-    }
-
-    const timeoutController = new AbortController();
-    const timeoutPromise = scheduler
-      .wait(timeoutMs, { signal: timeoutController.signal })
-      .then(() => null)
-      .catch((error) => {
-        if (error?.name === "AbortError") return undefined;
-        throw error;
-      });
-
-    try {
-      await Promise.race([changePromise, timeoutPromise]);
-    } finally {
-      timeoutController.abort();
-      this.removeWaiter(requestId, resolveChange);
-    }
-  }
-
-  async currentOperationState(requestId) {
-    const recent = (await this.ctx.storage.get("recent_operations")) || [];
-    const terminal = recent.find((item) => item.request_id === requestId) || null;
-    const active = await this.ctx.storage.get("active_operation");
-    return {
-      terminal,
-      active: active?.request_id === requestId ? active : null,
-    };
-  }
-
-  managerTimeoutResponse(requestId, operation) {
-    const active = this.ctx.storage.get("active_operation");
-    return Promise.resolve(active).then((current) => managerJson(managerRotatePayload({
-      requestId,
-      result: "UNKNOWN",
-      reason: "TIMEOUT",
-      operationId: current?.request_id === requestId ? current.operation_id || null : null,
-      deviceOnline: this.authenticatedSocket() !== null,
-      dispatched: true,
-      startedAtMs: operation.created_at_ms,
-    }), 504));
-  }
-
-  async acceptResult(ws, parsed) {
-    const active = await this.ctx.storage.get("active_operation");
-    if (!active || active.request_id !== parsed.request_id) {
-      const recent = (await this.ctx.storage.get("recent_operations")) || [];
-      const known = recent.find((item) => item.request_id === parsed.request_id);
-      if (known?.result === "UNKNOWN") {
-        if (known.operation_id && parsed.operation_id &&
-            known.operation_id !== parsed.operation_id) {
-          ws.close(1008, "late operation id mismatch");
-          return;
-        }
-        const upgraded = {
-          ...known,
-          operation_id: parsed.operation_id || known.operation_id || null,
-          result: parsed.result,
-          reason: null,
-          completed_at_ms: Date.now(),
-        };
-        await this.storeRecentTerminal(upgraded);
-        ws.send(resultAckMessage(parsed.request_id));
-        return;
-      }
-      if (known && known.result === parsed.result &&
-          (known.operation_id || null) === (parsed.operation_id || null)) {
-        ws.send(resultAckMessage(parsed.request_id));
-        return;
-      }
-      ws.close(1008, "unexpected result");
-      return;
-    }
-
-    if (active.operation_id && parsed.operation_id &&
-        active.operation_id !== parsed.operation_id) {
-      ws.close(1008, "operation id mismatch");
-      return;
-    }
-    if (active.status === "ACCEPTED" && !parsed.operation_id) {
-      ws.close(1008, "accepted operation lost id");
-      return;
-    }
-
-    const terminal = {
-      ...active,
-      operation_id: parsed.operation_id || active.operation_id || null,
-      status: "TERMINAL",
-      result: parsed.result,
-      reason: null,
-      completed_at_ms: Date.now(),
-    };
-    await this.storeRecentTerminal(terminal);
-    await this.ctx.storage.delete("active_operation");
-    await this.ctx.storage.deleteAlarm();
-    this.resolveWaiters(parsed.request_id, terminal);
-    ws.send(resultAckMessage(parsed.request_id));
-  }
-
-  operationResponse(operation) {
-    const status = operation.result === "UNKNOWN" ? 504 : 200;
-    return managerJson(
-      terminalOperationPayload(operation, this.authenticatedSocket() !== null),
-      status,
-    );
-  }
-
-  async alarm() {
-    await this.reconcileActiveOperation(Date.now(), { fenceSockets: true });
-  }
-
-  async reconcileActiveOperation(nowMs, { fenceSockets }) {
-    const active = await this.ctx.storage.get("active_operation");
-    if (!active) {
-      await this.ctx.storage.deleteAlarm();
-      return null;
-    }
-
-    if (active.status === "DISPATCHED") {
-      const recoveryCount = Number.isSafeInteger(active.delivery_recovery_count)
-        ? active.delivery_recovery_count
-        : 0;
-      // Legacy DISPATCHED records did not persist an ACK deadline. Treat their first
-      // observation as immediately due for the one safe same-request reconnect recovery.
+      // Legacy records without a delivery deadline are due immediately. There is no
+      // manager-owned recovery pass: the native control session continuously owns reconnect.
       const deliveryDeadlineMs = Number.isSafeInteger(active.delivery_deadline_ms)
         ? active.delivery_deadline_ms
         : nowMs;
@@ -627,19 +311,6 @@ export class DeviceControl {
       if (nowMs < deliveryDeadlineMs) {
         await this.ctx.storage.setAlarm(deliveryDeadlineMs);
         return active;
-      }
-
-      if (recoveryCount === 0) {
-        const recovering = {
-          ...active,
-          delivery_recovery_count: 1,
-          delivery_deadline_ms: nowMs + RECOVERY_DELIVERY_ACK_MS,
-        };
-        await this.ctx.storage.put("active_operation", recovering);
-        await this.ctx.storage.setAlarm(recovering.delivery_deadline_ms);
-        if (fenceSockets) this.recoverAuthenticatedSockets();
-        this.resolveWaiters(active.request_id, recovering);
-        return recovering;
       }
 
       const fenced = {
@@ -720,15 +391,6 @@ export class DeviceControl {
     await this.ctx.storage.put("recent_operations", bounded);
   }
 
-  recoverAuthenticatedSockets() {
-    for (const socket of this.ctx.getWebSockets()) {
-      const attachment = socket.deserializeAttachment();
-      if (attachment?.kind !== "device" || attachment.authenticated !== true) continue;
-      socket.serializeAttachment({ ...attachment, authenticated: false });
-      socket.close(1012, "delivery recovery");
-    }
-  }
-
   fenceAuthenticatedSockets() {
     for (const socket of this.ctx.getWebSockets()) {
       const attachment = socket.deserializeAttachment();
@@ -752,12 +414,58 @@ export class DeviceControl {
     if (waiters.size === 0) this.waiters.delete(requestId);
   }
 
-  authenticatedSocket() {
+  freshAuthenticatedSocket(nowMs = Date.now()) {
     for (const socket of this.ctx.getWebSockets()) {
       const attachment = socket.deserializeAttachment();
-      if (attachment?.kind === "device" && attachment.authenticated === true) return socket;
+      if (attachment?.kind !== "device" || attachment.authenticated !== true) continue;
+
+      const authenticatedAtMs = Number.isSafeInteger(attachment.authenticated_at_ms)
+        ? attachment.authenticated_at_ms
+        : null;
+      const autoResponseAt = typeof this.ctx.getWebSocketAutoResponseTimestamp === "function"
+        ? this.ctx.getWebSocketAutoResponseTimestamp(socket)
+        : null;
+      const heartbeatAtMs = autoResponseAt instanceof Date
+        ? autoResponseAt.getTime()
+        : null;
+      const freshestAtMs = Math.max(
+        authenticatedAtMs ?? Number.NEGATIVE_INFINITY,
+        Number.isSafeInteger(heartbeatAtMs) ? heartbeatAtMs : Number.NEGATIVE_INFINITY,
+      );
+      if (Number.isFinite(freshestAtMs) &&
+          freshestAtMs <= nowMs &&
+          nowMs - freshestAtMs <= CONTROL_SESSION_FRESHNESS_MS) {
+        return socket;
+      }
     }
     return null;
+  }
+
+  closeStaleAuthenticatedSockets(nowMs = Date.now()) {
+    for (const socket of this.ctx.getWebSockets()) {
+      const attachment = socket.deserializeAttachment();
+      if (attachment?.kind !== "device" || attachment.authenticated !== true) continue;
+
+      const authenticatedAtMs = Number.isSafeInteger(attachment.authenticated_at_ms)
+        ? attachment.authenticated_at_ms
+        : null;
+      const autoResponseAt = typeof this.ctx.getWebSocketAutoResponseTimestamp === "function"
+        ? this.ctx.getWebSocketAutoResponseTimestamp(socket)
+        : null;
+      const heartbeatAtMs = autoResponseAt instanceof Date
+        ? autoResponseAt.getTime()
+        : null;
+      const freshestAtMs = Math.max(
+        authenticatedAtMs ?? Number.NEGATIVE_INFINITY,
+        Number.isSafeInteger(heartbeatAtMs) ? heartbeatAtMs : Number.NEGATIVE_INFINITY,
+      );
+      if (!Number.isFinite(freshestAtMs) ||
+          freshestAtMs > nowMs ||
+          nowMs - freshestAtMs > CONTROL_SESSION_FRESHNESS_MS) {
+        socket.serializeAttachment({ ...attachment, authenticated: false });
+        socket.close(1012, "stale control session");
+      }
+    }
   }
 }
 
