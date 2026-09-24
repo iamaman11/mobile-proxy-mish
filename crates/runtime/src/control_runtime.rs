@@ -8,8 +8,7 @@
 use crate::control_transport::{ControlTransport, ControlTransportError, ControlTransportMessage};
 use crate::{
     CellularRequestRearmEffect, RotationRuntimeCoordinator, RotationRuntimeStartError,
-    RotationRuntimeTimingSnapshot,
-    RuntimeExecutionError, RuntimeExecutor,
+    RotationRuntimeTimingSnapshot, RuntimeExecutionError, RuntimeExecutor,
 };
 use mish_configuration::ControlEndpoint;
 use mish_control::{
@@ -249,25 +248,25 @@ impl ControlRuntimeCoordinator {
                     .map(|operation| operation.timing.snapshot_at(now, rotation_timing))
                     .unwrap_or_default();
                 ControlRuntimeSnapshot {
-                state: state.session_state,
-                reconnect_attempts: state.reconnect_attempts,
-                reconnect_count: state.reconnect_count,
-                next_delay_ms: state.next_delay_ms,
-                session_age_ms: state.session_ready_at.map(|at| elapsed_ms_since(now, at)),
-                application_heartbeat_count: state.application_heartbeat_count,
-                payload_tx_bytes: state.payload_tx_bytes,
-                payload_rx_bytes: state.payload_rx_bytes,
-                last_tx_age_ms: state.last_tx_at.map(|at| elapsed_ms_since(now, at)),
-                last_rx_age_ms: state.last_rx_at.map(|at| elapsed_ms_since(now, at)),
-                pending_operation: state.pending.is_some(),
-                pending_operation_id: state
-                    .pending
-                    .as_ref()
-                    .and_then(|pending| pending.operation_id),
-                last_terminal_result: state.last_terminal_result,
-                operation_timing,
-                rotation_timing,
-            }
+                    state: state.session_state,
+                    reconnect_attempts: state.reconnect_attempts,
+                    reconnect_count: state.reconnect_count,
+                    next_delay_ms: state.next_delay_ms,
+                    session_age_ms: state.session_ready_at.map(|at| elapsed_ms_since(now, at)),
+                    application_heartbeat_count: state.application_heartbeat_count,
+                    payload_tx_bytes: state.payload_tx_bytes,
+                    payload_rx_bytes: state.payload_rx_bytes,
+                    last_tx_age_ms: state.last_tx_at.map(|at| elapsed_ms_since(now, at)),
+                    last_rx_age_ms: state.last_rx_at.map(|at| elapsed_ms_since(now, at)),
+                    pending_operation: state.pending.is_some(),
+                    pending_operation_id: state
+                        .pending
+                        .as_ref()
+                        .and_then(|pending| pending.operation_id),
+                    last_terminal_result: state.last_terminal_result,
+                    operation_timing,
+                    rotation_timing,
+                }
             })
             .unwrap_or(ControlRuntimeSnapshot {
                 state: ControlSessionState::Stopped,

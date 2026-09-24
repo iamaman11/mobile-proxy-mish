@@ -22,10 +22,9 @@ use mish_runtime::{
     CellularPolicyObserver, CellularPolicyPublication, CellularReconcileDiagnostic,
     CellularRequestRearmEffect, ControlAuthSignError, ControlAuthSigner,
     ControlOperationTimingSnapshot, ControlRuntimeSnapshot, ControlRuntimeStartError,
-    ControlSessionState, MeshRuntimeObserver, ProductDiagnosticSnapshot,
-    ProductRuntimeCoordinator, ProductRuntimeSnapshot, ProxyRuntimeObserver,
-    ProxyRuntimePublication, ProxyServingState as OwnerProxyServingState,
-    ReadinessDiagnosticSnapshot, ReadinessObserver,
+    ControlSessionState, MeshRuntimeObserver, ProductDiagnosticSnapshot, ProductRuntimeCoordinator,
+    ProductRuntimeSnapshot, ProxyRuntimeObserver, ProxyRuntimePublication,
+    ProxyServingState as OwnerProxyServingState, ReadinessDiagnosticSnapshot, ReadinessObserver,
     RootAuthorityStatus as OwnerRootAuthorityStatus, RootPolicyFailure as OwnerRootPolicyFailure,
     RootPolicyReconcileDiagnostic, RootPolicyResult as OwnerRootPolicyResult,
     RootRecoveryDiagnostic, RotationObserver, RotationRuntimeStartError,
@@ -1077,9 +1076,7 @@ fn map_control_operation_timing(
     }
 }
 
-fn map_rotation_runtime_timing(
-    timing: RotationRuntimeTimingSnapshot,
-) -> RotationRuntimeTimingView {
+fn map_rotation_runtime_timing(timing: RotationRuntimeTimingSnapshot) -> RotationRuntimeTimingView {
     RotationRuntimeTimingView {
         operation_id: timing.operation_id,
         operation_age_ms: timing.operation_age_ms,

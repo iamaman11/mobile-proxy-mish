@@ -536,13 +536,14 @@ impl RotationRuntimeCoordinator {
             if current.phase.terminal() {
                 return;
             }
-            let snapshot = match state
-                .machine
-                .observe_root_policy(operation_id, generation, authorized)
-            {
-                Ok(snapshot) => snapshot,
-                Err(_) => return,
-            };
+            let snapshot =
+                match state
+                    .machine
+                    .observe_root_policy(operation_id, generation, authorized)
+                {
+                    Ok(snapshot) => snapshot,
+                    Err(_) => return,
+                };
             let is_fresh = current
                 .before_generation
                 .is_some_and(|before_generation| generation > before_generation);
