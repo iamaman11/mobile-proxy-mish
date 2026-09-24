@@ -72,7 +72,7 @@ foreach ($forbidden in @(
     "duplicate_same_request_replays",
     "REMOTE_IDEMPOTENCY_FAILED",
     "MISH_U8_REMOTE_CONTROL_IDEMPOTENT_REPLAY",
-    "`$requestId = \"u8e_"
+    '$requestId = "u8e_'
 )) {
     if ($source.Contains($forbidden)) { throw "U8 remote-control probe contains forbidden second-owner/secret path: $forbidden" }
 }
