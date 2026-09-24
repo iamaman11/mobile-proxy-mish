@@ -234,21 +234,25 @@ test("replacement authentication retires the old socket before broker selection"
   assert.equal(oldSocket.attachment.authenticated, false);
   assert.equal(oldSocket.closed.at(-1)?.reason, "replaced");
   assert.equal(newSocket.attachment.authenticated, true);
-  assert.equal(control.authenticatedSocket(), newSocket);
+  assert.equal(control.freshAuthenticatedSocket(), newSocket);
 });
 
-test("authenticated reattach re-delivers only the one active dispatched request", async () => {
+test("authenticated reattach never makes Worker a reconnect-redelivery owner", async () => {
   const identity = await generateIdentity();
   const nonce = "d".repeat(43);
   const signature = await signAuth(identity.keyPair.privateKey, identity.deviceId, nonce);
   const storage = new MemoryStorage();
-  await storage.put("device_identity", { device_id: identity.deviceId, public_key_spki_b64: identity.spkiB64 });
+  await storage.put("device_identity", {
+    device_id: identity.deviceId,
+    public_key_spki_b64: identity.spkiB64,
+  });
   await storage.put("active_operation", {
     request_id: "req_resume",
     status: "DISPATCHED",
     operation_id: null,
     result: null,
     created_at_ms: Date.now(),
+    delivery_deadline_ms: Date.now() + 2_000,
     completed_at_ms: null,
   });
 
@@ -270,9 +274,8 @@ test("authenticated reattach re-delivers only the one active dispatched request"
 
   assert.deepEqual(
     socket.sent.map((message) => JSON.parse(message).type),
-    ["READY", "ROTATE_IP"],
+    ["READY"],
   );
-  assert.equal(JSON.parse(socket.sent[1]).request_id, "req_resume");
   assert.equal((await storage.get("active_operation")).request_id, "req_resume");
 });
 
