@@ -1200,8 +1200,12 @@ mod tests {
             _window: &'a mut RootPolicyCommandWindow,
         ) -> std::pin::Pin<
             Box<
-                dyn std::future::Future<Output = Result<crate::root_session::RootCommandResult, RootPolicyEffectFailure>>
-                    + Send
+                dyn std::future::Future<
+                        Output = Result<
+                            crate::root_session::RootCommandResult,
+                            RootPolicyEffectFailure,
+                        >,
+                    > + Send
                     + 'a,
             >,
         > {
@@ -1213,7 +1217,11 @@ mod tests {
             command: &'a str,
             _window: &'a mut RootPolicyCommandWindow,
         ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<Vec<String>, RootPolicyEffectFailure>> + Send + 'a>,
+            Box<
+                dyn std::future::Future<Output = Result<Vec<String>, RootPolicyEffectFailure>>
+                    + Send
+                    + 'a,
+            >,
         > {
             Box::pin(async move {
                 let lines = match command {
@@ -1273,10 +1281,7 @@ mod tests {
             .await;
 
         assert_eq!(result, RootPolicyReconcileOutcome::Superseded);
-        assert_eq!(
-            io.line_calls.load(std::sync::atomic::Ordering::SeqCst),
-            4
-        );
+        assert_eq!(io.line_calls.load(std::sync::atomic::Ordering::SeqCst), 4);
         assert_eq!(
             io.mutation_calls.load(std::sync::atomic::Ordering::SeqCst),
             0
