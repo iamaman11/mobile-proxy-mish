@@ -40,7 +40,9 @@ export function managerRotatePayload({
   if (deviceOnline !== null && typeof deviceOnline !== "boolean") {
     throw new Error("invalid manager device-online value");
   }
-  if (typeof dispatched !== "boolean") throw new Error("invalid manager dispatched value");
+  if (dispatched !== null && typeof dispatched !== "boolean") {
+    throw new Error("invalid manager dispatched value");
+  }
   if (!Number.isSafeInteger(startedAtMs) || !Number.isSafeInteger(completedAtMs) ||
       completedAtMs < startedAtMs) {
     throw new Error("invalid manager timing");
@@ -48,7 +50,8 @@ export function managerRotatePayload({
 
   const changed = result === "CHANGED" ? true : result === "UNCHANGED" ? false : null;
   const terminal = result !== "UNKNOWN";
-  const retryable = !dispatched && (reason === "DEVICE_OFFLINE" || reason === "BUSY");
+  const retryable = dispatched === false &&
+    (reason === "DEVICE_OFFLINE" || reason === "BUSY");
 
   return {
     schema: MANAGER_ROTATE_SCHEMA,
