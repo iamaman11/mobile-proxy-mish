@@ -75,6 +75,10 @@ pub struct RotationRuntimeTimingSnapshot {
     pub airplane_disable_started_ms: Option<u64>,
     pub airplane_disable_effect_completed_ms: Option<u64>,
     pub airplane_off_observed_ms: Option<u64>,
+    pub cellular_request_rearm_started_ms: Option<u64>,
+    pub cellular_request_rearm_completed_ms: Option<u64>,
+    pub first_platform_cellular_observation_ms: Option<u64>,
+    pub platform_cellular_observations_after_rearm: u64,
     pub fresh_cellular_observed_ms: Option<u64>,
     pub fresh_cellular_generation: Option<u64>,
     pub root_authorized_ms: Option<u64>,
@@ -393,6 +397,45 @@ impl RotationRuntimeCoordinator {
         });
         self.publish(snapshot);
         true
+    }
+
+    /// Records the Android framework observation entering Rust after the single post-airplane
+    /// request rearm. This is read-only attribution evidence and does not affect admission,
+    /// currentness, retries or Rotation transitions.
+    pub(crate) fn observe_platform_cellular_observation(&self) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        if state.closed {
+            return;
+        }
+        let current = state.machine.snapshot();
+        let Some(operation_id) = current.operation_id else {
+            return;
+        };
+        if current.phase.terminal()
+            || !matches!(
+                current.phase,
+                RotationPhase::WaitingCellularRecovery | RotationPhase::WaitingRootPolicy
+            )
+        {
+            return;
+        }
+        let Some(timing) = state.timing.as_mut() else {
+            return;
+        };
+        if timing.snapshot.cellular_request_rearm_started_ms.is_none() {
+            return;
+        }
+        let _ = timing.mark(operation_id, |timing, elapsed_ms| {
+            set_once(
+                &mut timing.first_platform_cellular_observation_ms,
+                elapsed_ms,
+            );
+            timing.platform_cellular_observations_after_rearm = timing
+                .platform_cellular_observations_after_rearm
+                .saturating_add(1);
+        });
     }
 
     pub fn observe_cellular(self: &Arc<Self>, admission: CellularAdmissionSnapshot) {
@@ -846,10 +889,17 @@ impl RotationRuntimeCoordinator {
             Ok(Some(effect)) => effect,
             Err(()) => return false,
         };
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        self.mark_timing(operation_id, |timing, elapsed_ms| {
+            set_once(&mut timing.cellular_request_rearm_started_ms, elapsed_ms);
+        });
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             effect.rearm_cellular_request()
         }))
-        .unwrap_or(false)
+        .unwrap_or(false);
+        self.mark_timing(operation_id, |timing, elapsed_ms| {
+            set_once(&mut timing.cellular_request_rearm_completed_ms, elapsed_ms);
+        });
+        result
     }
 
     async fn run_after_ip(self: Arc<Self>, operation_id: u64) {
