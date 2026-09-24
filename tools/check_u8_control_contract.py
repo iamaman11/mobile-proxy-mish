@@ -152,6 +152,7 @@ def main() -> None:
         "pub fn activate_prepared(",
         "fail_prepared_before_mutation",
         "RotationPhase::Preparing",
+        "const ROTATION_SAFETY_DEADLINE: Duration = Duration::from_secs(90);",
     ):
         require(rotation, needle, "Rotation owner must retain acceptance-before-mutation seam")
     forbid(rotation, "retry_until_changed", "Rotation must never retry until public IP changes")
