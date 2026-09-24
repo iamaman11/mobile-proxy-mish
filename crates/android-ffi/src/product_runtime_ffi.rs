@@ -28,8 +28,7 @@ use mish_runtime::{
     RootAuthorityStatus as OwnerRootAuthorityStatus, RootPolicyFailure as OwnerRootPolicyFailure,
     RootPolicyPhaseDiagnostic, RootPolicyPhaseDiagnostics, RootPolicyReconcileDiagnostic,
     RootPolicyResult as OwnerRootPolicyResult, RootRecoveryDiagnostic, RotationObserver,
-    RotationRuntimeStartError,
-    RotationRuntimeTimingSnapshot, RuntimeExecutionError,
+    RotationRuntimeStartError, RotationRuntimeTimingSnapshot, RuntimeExecutionError,
 };
 use mish_transport::MeshVpnObservation;
 use std::fmt;
@@ -1549,9 +1548,7 @@ fn map_root_policy_phase_diagnostic(
     }
 }
 
-fn map_root_policy_phases(
-    phases: RootPolicyPhaseDiagnostics,
-) -> RootPolicyPhaseDiagnosticsView {
+fn map_root_policy_phases(phases: RootPolicyPhaseDiagnostics) -> RootPolicyPhaseDiagnosticsView {
     RootPolicyPhaseDiagnosticsView {
         initial_snapshot: map_root_policy_phase_diagnostic(phases.initial_snapshot),
         fail_closed_prepare: map_root_policy_phase_diagnostic(phases.fail_closed_prepare),
