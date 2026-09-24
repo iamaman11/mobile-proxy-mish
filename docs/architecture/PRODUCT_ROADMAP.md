@@ -969,6 +969,56 @@ Accepted implementation/evidence:
 
 Disposition: **issue #376 = COMPLETE / PASS.** CONTROL recovery timing now covers the PRODUCT reconnect/auth contract while remaining bounded below the manager HTTP deadline.
 
+## Post-U8 CONTROL long-lived session liveness — issue #379 — COMPLETE / PASS
+
+A repeated real WSL request after idle showed that the #376 timing correction still treated a broker-visible hibernated WebSocket object as proof of a live mobile session. The request reached the Worker and authenticated correctly, but returned typed `UNKNOWN/TIMEOUT` after the full 50 s unaccepted-delivery window.
+
+Root cause:
+
+- Durable Object `getWebSockets()`/serialized `authenticated=true` proved only that a socket object existed;
+- a mobile NAT/TCP/WSS path could already be half-open/stale after idle;
+- manager-triggered reconnect/redelivery could not reliably repair that state because the Close used to force reconnect travelled over the same potentially stale path;
+- increasing timeout therefore extended the symptom rather than proving liveness.
+
+Accepted architecture correction:
+
+- Android/Kotlin remains only the Android lifecycle/platform/Keystore/diagnostics boundary;
+- the existing Rust/Tokio `ControlRuntimeCoordinator` remains the sole CONTROL session owner;
+- one 4 s application heartbeat runs as one branch of that existing Tokio task; no second runtime/thread/scheduler is created;
+- Cloudflare Durable Object uses hibernation WebSocket auto-response and its timestamp as freshness evidence without keeping the object awake;
+- freshly authenticated sockets receive an explicit authentication timestamp for the initial heartbeat grace period;
+- Worker/DO dispatches only to an authenticated session fresh within 10 s;
+- Worker no longer owns reconnect/redelivery policy;
+- one fresh-session command gets one 2 s `ACCEPTED` boundary;
+- connect timeout = 3 s, auth timeout = 3 s, reconnect backoff = 0.5/1/2/3/5 s;
+- manager HTTP ceiling = 18 s;
+- LAB/client ceiling = 20 s;
+- accepted-operation correlation/FENCED safety remains independently bounded at 120 s;
+- Rotation remains the sole IP-mutation owner;
+- no Hyper, Tonic, polling API, heartbeat service, KV/D1, second state owner or second rotation owner was added.
+
+Accepted implementation/evidence:
+
+- issue #379 = CLOSED / PASS;
+- implementation PR #380 merged as `2ed94e001bcce2b05efa5bea689185bd76b9a7eb`;
+- exact accepted PRODUCT candidate source = `b2b022d66a7ddd8501502b981cad4058ae668bf5`;
+- protected-main and candidate-source trees are identical: `b4dd93fb6256be7030c5e073e92ea1dd3de674ca`;
+- U8 Control Static #46 / run `36024413518` = PASS;
+- PR Validation + PRODUCT Candidate #1029 / run `36024413605` = PASS;
+- candidate artifact `10818148287`, digest `sha256:81b0d81c373a354e3bd5ffc621f35f0cf2c176dd850689fa29f8860676b69278`;
+- Control Worker Deploy #95 / run `36025137947` = PASS;
+- deployed Worker version `4168ec20-dcd0-4a23-b3c9-842a64b2f787`;
+- post-merge physical Device Cycle #754 / run `36025715172` = `U8_REMOTE_CONTROL_ROTATION_PASS`;
+- 12 s idle proof: heartbeat delta = **+3**, reconnect delta = **0**, proving a long-lived READY WSS rather than fresh socket presence;
+- physical result: one public command -> one logical rotation, operation_id = 1, terminal = `CHANGED`, server-generated request id PASS, manager polling = 0;
+- manager response duration = **17,376 ms**, below the 18,000 ms server ceiling and 20 s client ceiling;
+- post-rotation runtime/Cellular/root/Proxy/Mesh/readiness = healthy/READY;
+- loopback proxy E2E = PASS, Mesh proxy E2E = PASS;
+- evidence artifact `10819318630`, digest `sha256:7a605680c6b06d9c5e714498c1cb945faa9c715dafe489f1e201aaee67372fff`;
+- raw public IP and secrets were not persisted.
+
+Disposition: **issue #379 = COMPLETE / PASS.** Long-lived CONTROL liveness is now continuously proven by the existing native owner, stale socket presence is fail-closed before dispatch, and the public rotation path is bounded to 20 s end-to-end.
+
 
 ---
 
