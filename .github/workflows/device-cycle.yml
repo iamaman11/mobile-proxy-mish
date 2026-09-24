@@ -568,7 +568,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $evidence = Get-Content -Raw -LiteralPath "$env:RUNNER_TEMP\\mish-u8-remote-control-v1.json" | ConvertFrom-Json
-          if ([string]$evidence.acceptance_result -cne 'PASS' -or [string]$evidence.classification -cne 'U8_REMOTE_CONTROL_ROTATION_PASS' -or [string]$evidence.exact_candidate_acceptance -cne 'PASS' -or [int]$evidence.logical_rotation_requests -ne 1 -or [int]$evidence.duplicate_same_request_replays -ne 1 -or [int]$evidence.wrong_manager_auth_status -ne 401 -or -not [bool]$evidence.wrong_manager_auth_zero_rotation_mutation -or [int]$evidence.authenticated_invalid_request_status -ne 400 -or -not [bool]$evidence.authenticated_invalid_request_zero_rotation_mutation -or -not [bool]$evidence.idempotent_same_operation -or [bool]$evidence.manager_token_persisted -or [bool]$evidence.public_spki_persisted -or [bool]$evidence.raw_public_ip_persisted -or [bool]$evidence.secrets_persisted_in_evidence) {
+          if ([string]$evidence.acceptance_result -cne 'PASS' -or [string]$evidence.classification -cne 'U8_REMOTE_CONTROL_ROTATION_PASS' -or [string]$evidence.exact_candidate_acceptance -cne 'PASS' -or [string]$evidence.manager_api_schema -cne 'mish.control.rotate/v1' -or [string]$evidence.public_rotate_path -cne '/v1/rotate' -or [string]$evidence.public_rotate_body -cne 'EMPTY' -or -not [bool]$evidence.server_generated_request_id -or -not [bool]$evidence.single_http_command -or [int]$evidence.logical_rotation_requests -ne 1 -or [int]$evidence.operation_polls -ne 0 -or [bool]$evidence.client_request_id_generated -or [bool]$evidence.client_device_id_required_for_rotation -or -not [bool]$evidence.hosted_idempotency_contract -or [int]$evidence.wrong_manager_auth_status -ne 401 -or -not [bool]$evidence.wrong_manager_auth_zero_rotation_mutation -or [int]$evidence.authenticated_invalid_request_status -ne 400 -or -not [bool]$evidence.authenticated_invalid_request_zero_rotation_mutation -or [bool]$evidence.manager_token_persisted -or [bool]$evidence.public_spki_persisted -or [bool]$evidence.raw_public_ip_persisted -or [bool]$evidence.secrets_persisted_in_evidence) {
             throw 'MISH_DEVICE_CYCLE_FAILURE|U8_REMOTE_CONTROL_ACCEPTANCE_FAILED|Remote-control evidence did not satisfy the bounded acceptance contract.'
           }
 
@@ -599,8 +599,11 @@ jobs:
             "- Result: **$([string]$evidence.acceptance_result) / $([string]$evidence.classification)**"
             "- Terminal: **$([string]$evidence.terminal_result)**"
             "- Operation id: **$([int64]$evidence.operation_id)**"
+            '- Public manager command: **POST /v1/rotate with empty body**'
+            '- Server-generated request id: **YES**'
+            '- Manager polling: **0**'
             '- Logical valid rotation requests: **1**'
-            '- Same-request replay: **same terminal operation**'
+            '- Hosted internal idempotency contract: **PASS**'
             '- Wrong manager auth: **401 / zero Rotation mutation**'
             '- Authenticated invalid request: **400 / zero Rotation mutation**'
             '- Post PRODUCT diagnostic: **PASS**'
