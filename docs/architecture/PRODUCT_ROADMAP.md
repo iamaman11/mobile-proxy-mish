@@ -853,6 +853,42 @@ Accepted implementation/evidence:
 
 Disposition: **issue #366 = COMPLETE / PASS.** The remote application contract is now one manager token, one POST command and one typed `mish.control.rotate/v1` response.
 
+## Post-U8 CONTROL reliability refinement — issue #370 — COMPLETE / PASS
+
+This is **not** a new PRODUCT stage and does not reopen U8. It bounds the server-owned manager-operation lease after a real external test demonstrated that an abandoned manager HTTP request could leave `DeviceControl.active_operation` BUSY indefinitely if terminal delivery were permanently lost.
+
+Accepted boundary:
+
+- CONTROL-only; Android/Rust/Rotation owner behavior remains unchanged;
+- public manager API remains one empty-body `POST /v1/rotate` with one typed `mish.control.rotate/v1` response;
+- the existing `DeviceControl("primary")` Durable Object remains the only server-side operation state owner;
+- PRODUCT retains its canonical 90 s rotation safety deadline;
+- accepted operations use a 120 s result-delivery lease (90 s PRODUCT safety + 30 s delivery margin);
+- a dispatch that never receives ACCEPTED is held for the existing 180 s manager/dispatch window, then enters `FENCED`: redelivery stops, the authenticated WSS is closed, and BUSY is released only after a further 120 s PRODUCT drain;
+- Durable Object Alarms own the persistent lease deadlines across hibernation/restart;
+- stale expiry is represented as typed `UNKNOWN/TIMEOUT`, `dispatched=true`, `retryable=false`;
+- a late real PRODUCT `RESULT` upgrades the bounded UNKNOWN correlation and receives `RESULT_ACK`;
+- legacy persisted DISPATCHED/ACCEPTED records self-heal conservatively;
+- no KV/D1/device registry/second scheduler/second mutation owner was added.
+
+Accepted implementation/evidence:
+
+- implementation PR #371, merged as `99f023d38f0871f496d2f747f912b5af14a5647e`;
+- PR Validation #1012 / run `36004396343` = PASS;
+- U8 Control Static #33 / run `36004396302` = PASS;
+- Worker deploy #85 / run `36004561223` = PASS;
+- deployed Worker version `09e56152-f505-43f6-9c2c-06a31fceee53`;
+- deployed Worker source blob is byte-identical to merged-main Worker source;
+- first targeted physical Device Cycle #743 / run `36004727826` correctly remained fail-closed with `409 BUSY` while the legacy active operation was still inside the conservative recovery lease; exact install and pre-rotation PRODUCT diagnostics were healthy;
+- after bounded recovery expiry, Device Cycle #744 / run `36005767863` = `U8_REMOTE_CONTROL_ROTATION_PASS`;
+- #744 physical result: exactly one public command, exactly one logical rotation request, server-generated request id PASS, manager polling = 0, operation_id = 1, terminal result `CHANGED`;
+- post-rotation runtime/Cellular/root/Proxy/Mesh/readiness = healthy/READY, loopback proxy E2E = PASS, Mesh proxy E2E = PASS;
+- #744 evidence artifact `10810821035`, digest `sha256:40a07f0fb593a4fe90e42b8705ec2e4749d6efac8ec9fed640e5700988d75f38`;
+- raw public IP and secrets were not persisted;
+- accepted PRODUCT remains `94a9f4993b524b0388f0e2216e9e78183c8a3a4f`; no PRODUCT rebuild/source change was required.
+
+Disposition: **issue #370 = COMPLETE / PASS.** Permanent stale BUSY is bounded without weakening fail-closed semantics or adding a second rotation/state owner.
+
 
 ---
 
