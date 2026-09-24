@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: 'PR number containing the exact U8-E Worker candidate'
+        description: 'PR number containing the exact control Worker candidate'
         required: true
         type: string
       source_sha:
@@ -220,7 +220,7 @@ jobs:
           test "$(tr -d '\r\n' < config/deployment/control-host.txt)" = "$CONTROL_HOST"
           node --check "$WORKER_DIR/src/index.mjs"
           node --check "$WORKER_DIR/src/protocol.mjs"
-          node --test "$WORKER_DIR/test/protocol.test.mjs"
+          node --test "$WORKER_DIR/test"/*.test.mjs
 
   deploy:
     name: Deploy exact Worker candidate
@@ -283,9 +283,6 @@ jobs:
           MISH_MANAGER_TOKEN: ${{ secrets.MISH_MANAGER_TOKEN }}
         run: |
           set -euo pipefail
-          device_id="$(printf '0%.0s' {1..64})"
-          request_id='deploy_smoke'
-
           check_status() {
             local expected="$1"
             shift
@@ -301,16 +298,20 @@ jobs:
             return 1
           }
 
-          url="https://$CONTROL_HOST/v1/devices/$device_id/operations/$request_id"
-          check_status 401 "$url"
-          check_status 401 -H 'Authorization: Bearer definitely-wrong-manager-token' "$url"
-          check_status 404 -H "Authorization: Bearer $MISH_MANAGER_TOKEN" "$url"
+          url="https://$CONTROL_HOST/v1/rotate"
+          check_status 401 -X POST "$url"
+          check_status 401 -X POST -H 'Authorization: Bearer definitely-wrong-manager-token' "$url"
+          check_status 400 -X POST \
+            -H "Authorization: Bearer $MISH_MANAGER_TOKEN" \
+            -H 'Content-Type: application/json' \
+            --data '{"caller_request_id":"forbidden"}' \
+            "$url"
 
       - name: Publish deployment summary
         shell: bash
         run: |
           {
-            echo '### U8-E Control Worker deployment: PASS'
+            echo '### Control Worker deployment: PASS'
             echo '- Source PR: #${{ needs.resolve.outputs.pr_number }}'
             echo '- Source SHA: `${{ needs.resolve.outputs.source_sha }}`'
             echo '- Hosted gate run: `${{ needs.resolve.outputs.hosted_run_id }}`'
@@ -318,6 +319,7 @@ jobs:
             echo '- Host: `api.alegria.by`'
             echo '- workers.dev: **disabled**'
             echo '- Unauthenticated/wrong-manager auth: **401**'
-            echo '- Authorized unknown operation: **404**'
+            echo '- Authorized caller-supplied rotate body: **400 / rejected before dispatch**'
+            echo '- Public manager command: **POST /v1/rotate, empty body only**'
             echo '- Device enrollment/physical rotation: **NOT performed by this deploy workflow**'
           } >> "$GITHUB_STEP_SUMMARY"
