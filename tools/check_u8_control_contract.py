@@ -63,7 +63,9 @@ def main() -> None:
     for needle in (
         "RuntimeExecutor",
         "ControlTransport",
-        "CONTROL_RECONNECT_DELAYS_MS",
+        "const CONTROL_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);",
+        "const CONTROL_AUTH_TIMEOUT: Duration = Duration::from_secs(10);",
+        "const CONTROL_RECONNECT_DELAYS_MS: [u64; 5] = [1_000, 5_000, 15_000, 30_000, 60_000];",
         "CONTROL_RECENT_TERMINAL_REQUESTS: usize = 32",
         "rotation.prepare(",
         "encode_accepted_message(&request_id, operation_id)",
@@ -255,7 +257,7 @@ def main() -> None:
         "PRODUCT_ROTATION_SAFETY_MS = 90_000",
         "ACCEPTED_RESULT_LEASE_MS",
         "INITIAL_DELIVERY_ACK_MS = 10_000",
-        "RECOVERY_DELIVERY_ACK_MS = 15_000",
+        "RECOVERY_DELIVERY_ACK_MS = 40_000",
         "recoverAuthenticatedSockets",
         "FENCED_DRAIN_MS",
         '"FENCED"',
@@ -267,6 +269,16 @@ def main() -> None:
         "fenceAuthenticatedSockets",
     ):
         require(worker, needle, "Durable Object broker/hibernation contract drifted")
+    # Cross-layer delivery recovery budget is intentional, not an arbitrary Worker timeout:
+    # PRODUCT first reconnect after READY may use 1 s backoff + 15 s connect +
+    # 10 s challenge + 10 s READY = 36 s. Worker retains 4 s scheduling/wire margin
+    # while 10 s initial + 40 s recovery remains below the 55 s manager HTTP bound.
+    require(
+        worker,
+        "RECOVERY_DELIVERY_ACK_MS = 40_000",
+        "Worker recovery ACK must cover the pinned 36 s PRODUCT reconnect/auth budget",
+    )
+
     for forbidden in (
         "Workers VPC",
         "cloudflared",
