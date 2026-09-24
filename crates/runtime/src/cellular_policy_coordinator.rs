@@ -15,7 +15,7 @@ use mish_cellular::{
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::time::sleep;
 
 const EFFECT_DRAIN_TIMEOUT: Duration = Duration::from_secs(15);
@@ -34,6 +34,12 @@ pub struct CellularReconcileDiagnostic {
     pub coalesced: u64,
     pub pending: bool,
     pub drain_scheduled: bool,
+    pub last_owner_sequence: Option<u64>,
+    pub last_dequeue_wait_ms: u64,
+    pub max_dequeue_wait_ms: u64,
+    pub last_quiesce_wait_ms: u64,
+    pub max_quiesce_wait_ms: u64,
+    pub stale_after_reconcile: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,10 +60,17 @@ pub type CellularAdmissionObserver = Arc<dyn Fn(CellularAdmissionSnapshot) + Sen
 
 struct CoordinatorState {
     latest: Option<ReconcileRequest>,
+    latest_enqueued_at: Option<Instant>,
     drain_scheduled: bool,
     requested: u64,
     executed: u64,
     coalesced: u64,
+    last_owner_sequence: Option<u64>,
+    last_dequeue_wait_ms: u64,
+    max_dequeue_wait_ms: u64,
+    last_quiesce_wait_ms: u64,
+    max_quiesce_wait_ms: u64,
+    stale_after_reconcile: u64,
     interface_hints: HashMap<NetworkHandle, String>,
     recovery_pending: bool,
     recovery_attempts: u32,
@@ -96,10 +109,17 @@ impl CellularPolicyCoordinator {
             root_policy,
             state: Mutex::new(CoordinatorState {
                 latest: None,
+                latest_enqueued_at: None,
                 drain_scheduled: false,
                 requested: 0,
                 executed: 0,
                 coalesced: 0,
+                last_owner_sequence: None,
+                last_dequeue_wait_ms: 0,
+                max_dequeue_wait_ms: 0,
+                last_quiesce_wait_ms: 0,
+                max_quiesce_wait_ms: 0,
+                stale_after_reconcile: 0,
                 interface_hints: HashMap::new(),
                 recovery_pending: false,
                 recovery_attempts: 0,
@@ -221,6 +241,12 @@ impl CellularPolicyCoordinator {
                 coalesced: 0,
                 pending: false,
                 drain_scheduled: false,
+                last_owner_sequence: None,
+                last_dequeue_wait_ms: 0,
+                max_dequeue_wait_ms: 0,
+                last_quiesce_wait_ms: 0,
+                max_quiesce_wait_ms: 0,
+                stale_after_reconcile: 0,
             },
             |state| CellularReconcileDiagnostic {
                 requested: state.requested,
@@ -228,6 +254,12 @@ impl CellularPolicyCoordinator {
                 coalesced: state.coalesced,
                 pending: state.latest.is_some(),
                 drain_scheduled: state.drain_scheduled,
+                last_owner_sequence: state.last_owner_sequence,
+                last_dequeue_wait_ms: state.last_dequeue_wait_ms,
+                max_dequeue_wait_ms: state.max_dequeue_wait_ms,
+                last_quiesce_wait_ms: state.last_quiesce_wait_ms,
+                max_quiesce_wait_ms: state.max_quiesce_wait_ms,
+                stale_after_reconcile: state.stale_after_reconcile,
             },
         )
     }
@@ -296,6 +328,7 @@ impl CellularPolicyCoordinator {
         if let Ok(mut state) = self.state.lock() {
             state.closed = true;
             state.latest = None;
+            state.latest_enqueued_at = None;
             state.recovery_epoch = state.recovery_epoch.wrapping_add(1);
             state.recovery_pending = false;
         }
@@ -352,6 +385,7 @@ impl CellularPolicyCoordinator {
                 state.coalesced = state.coalesced.saturating_add(1);
             }
             state.latest = Some(request);
+            state.latest_enqueued_at = Some(Instant::now());
             state.recovery_epoch = state.recovery_epoch.wrapping_add(1);
             state.recovery_pending = false;
             state.recovery_attempts = 0;
@@ -371,42 +405,63 @@ impl CellularPolicyCoordinator {
 
     async fn drain(self: Arc<Self>) {
         loop {
-            let request = {
+            let (request, enqueued_at) = {
                 let Ok(mut state) = self.state.lock() else {
                     return;
                 };
                 if state.closed {
                     state.latest = None;
+                    state.latest_enqueued_at = None;
                     state.drain_scheduled = false;
                     return;
                 }
                 match state.latest.take() {
-                    Some(request) => request,
+                    Some(request) => {
+                        let enqueued_at =
+                            state.latest_enqueued_at.take().unwrap_or_else(Instant::now);
+                        (request, enqueued_at)
+                    }
                     None => {
+                        state.latest_enqueued_at = None;
                         state.drain_scheduled = false;
                         return;
                     }
                 }
             };
 
-            self.process_request(request.clone()).await;
+            self.process_request(request.clone(), enqueued_at).await;
             if let Ok(mut state) = self.state.lock() {
                 state.executed = state.executed.saturating_add(1);
             }
         }
     }
 
-    async fn process_request(self: &Arc<Self>, request: ReconcileRequest) {
+    async fn process_request(self: &Arc<Self>, request: ReconcileRequest, enqueued_at: Instant) {
         if !self.request_is_current(&request) {
             return;
         }
+
+        let dequeue_wait_ms = duration_ms(enqueued_at.elapsed());
+        let quiesce_started = Instant::now();
         let quiesced = self
             .cellular
             .await_root_policy_quiesced_async(EFFECT_DRAIN_TIMEOUT)
             .await
             .unwrap_or(false);
+        let quiesce_wait_ms = duration_ms(quiesce_started.elapsed());
         if !quiesced || !self.request_is_current(&request) {
             return;
+        }
+
+        if let Ok(mut state) = self.state.lock() {
+            state.last_owner_sequence = request
+                .admission
+                .last_sequence()
+                .map(|sequence| sequence.raw());
+            state.last_dequeue_wait_ms = dequeue_wait_ms;
+            state.max_dequeue_wait_ms = state.max_dequeue_wait_ms.max(dequeue_wait_ms);
+            state.last_quiesce_wait_ms = quiesce_wait_ms;
+            state.max_quiesce_wait_ms = state.max_quiesce_wait_ms.max(quiesce_wait_ms);
         }
 
         let result = self
@@ -418,6 +473,9 @@ impl CellularPolicyCoordinator {
             .await;
 
         if !self.request_is_current(&request) {
+            if let Ok(mut state) = self.state.lock() {
+                state.stale_after_reconcile = state.stale_after_reconcile.saturating_add(1);
+            }
             return;
         }
 
@@ -508,6 +566,7 @@ impl CellularPolicyCoordinator {
                 state.coalesced = state.coalesced.saturating_add(1);
             }
             state.latest = Some(request);
+            state.latest_enqueued_at = Some(Instant::now());
             if state.drain_scheduled {
                 false
             } else {
@@ -594,6 +653,10 @@ fn same_generation(
     expected.last_sequence() == current.last_sequence()
         && expected.state() == current.state()
         && expected.admitted_network() == current.admitted_network()
+}
+
+fn duration_ms(duration: Duration) -> u64 {
+    duration.as_millis().min(u128::from(u64::MAX)) as u64
 }
 
 fn recovery_delay_ms(attempt: u32) -> u64 {

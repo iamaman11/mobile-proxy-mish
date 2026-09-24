@@ -53,6 +53,15 @@ internal fun renderMishDiagnosticSnapshotV2(
             put("coalesced", snapshot.cellularReconcile.coalesced.toLong())
             put("pending", snapshot.cellularReconcile.pending)
             put("drain_scheduled", snapshot.cellularReconcile.drainScheduled)
+            put(
+                "last_owner_sequence",
+                snapshot.cellularReconcile.lastOwnerSequence?.toLong() ?: JSONObject.NULL,
+            )
+            put("last_dequeue_wait_ms", snapshot.cellularReconcile.lastDequeueWaitMs.toLong())
+            put("max_dequeue_wait_ms", snapshot.cellularReconcile.maxDequeueWaitMs.toLong())
+            put("last_quiesce_wait_ms", snapshot.cellularReconcile.lastQuiesceWaitMs.toLong())
+            put("max_quiesce_wait_ms", snapshot.cellularReconcile.maxQuiesceWaitMs.toLong())
+            put("stale_after_reconcile", snapshot.cellularReconcile.staleAfterReconcile.toLong())
         })
         put("dns", JSONObject().apply {
             val dns = snapshot.dns

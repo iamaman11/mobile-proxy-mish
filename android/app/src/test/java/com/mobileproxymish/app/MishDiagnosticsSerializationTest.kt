@@ -35,6 +35,12 @@ class MishDiagnosticsSerializationTest {
                 coalesced = 1uL,
                 pending = false,
                 drainScheduled = false,
+                lastOwnerSequence = 41uL,
+                lastDequeueWaitMs = 275uL,
+                maxDequeueWaitMs = 900uL,
+                lastQuiesceWaitMs = 17uL,
+                maxQuiesceWaitMs = 42uL,
+                staleAfterReconcile = 2uL,
             ),
             dns = CellularDnsDiagnosticView(
                 slowThresholdMs = 1_000uL,
@@ -137,7 +143,15 @@ class MishDiagnosticsSerializationTest {
         assertTrue(json.getBoolean("consistent"))
         assertEquals(11L, json.getJSONObject("runtime").getLong("generation"))
         assertEquals(6L, json.getJSONObject("runtime").getLong("active_tasks"))
-        assertEquals(41L, json.getJSONObject("cellular").getLong("owner_sequence"))
+        val cellular = json.getJSONObject("cellular")
+        assertEquals(41L, cellular.getLong("owner_sequence"))
+        val reconcile = cellular.getJSONObject("reconcile")
+        assertEquals(41L, reconcile.getLong("last_owner_sequence"))
+        assertEquals(275L, reconcile.getLong("last_dequeue_wait_ms"))
+        assertEquals(900L, reconcile.getLong("max_dequeue_wait_ms"))
+        assertEquals(17L, reconcile.getLong("last_quiesce_wait_ms"))
+        assertEquals(42L, reconcile.getLong("max_quiesce_wait_ms"))
+        assertEquals(2L, reconcile.getLong("stale_after_reconcile"))
 
         val root = json.getJSONObject("root")
         assertTrue(root.getBoolean("policy_authorized"))
