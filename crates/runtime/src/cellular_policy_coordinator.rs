@@ -40,6 +40,7 @@ pub struct CellularReconcileDiagnostic {
     pub last_quiesce_wait_ms: u64,
     pub max_quiesce_wait_ms: u64,
     pub stale_after_reconcile: u64,
+    pub superseded_during_reconcile: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +72,7 @@ struct CoordinatorState {
     last_quiesce_wait_ms: u64,
     max_quiesce_wait_ms: u64,
     stale_after_reconcile: u64,
+    superseded_during_reconcile: u64,
     interface_hints: HashMap<NetworkHandle, String>,
     recovery_pending: bool,
     recovery_attempts: u32,
@@ -120,6 +122,7 @@ impl CellularPolicyCoordinator {
                 last_quiesce_wait_ms: 0,
                 max_quiesce_wait_ms: 0,
                 stale_after_reconcile: 0,
+                superseded_during_reconcile: 0,
                 interface_hints: HashMap::new(),
                 recovery_pending: false,
                 recovery_attempts: 0,
@@ -247,6 +250,7 @@ impl CellularPolicyCoordinator {
                 last_quiesce_wait_ms: 0,
                 max_quiesce_wait_ms: 0,
                 stale_after_reconcile: 0,
+                superseded_during_reconcile: 0,
             },
             |state| CellularReconcileDiagnostic {
                 requested: state.requested,
@@ -260,6 +264,7 @@ impl CellularPolicyCoordinator {
                 last_quiesce_wait_ms: state.last_quiesce_wait_ms,
                 max_quiesce_wait_ms: state.max_quiesce_wait_ms,
                 stale_after_reconcile: state.stale_after_reconcile,
+                superseded_during_reconcile: state.superseded_during_reconcile,
             },
         )
     }
@@ -466,11 +471,20 @@ impl CellularPolicyCoordinator {
 
         let result = self
             .root_policy
-            .reconcile(
+            .reconcile_if_current(
                 request.admission.state() == CellularAdmissionState::Admitted,
                 request.interface_name.as_deref(),
+                || self.request_is_current(&request),
             )
             .await;
+
+        if result == RootPolicyResult::Superseded {
+            if let Ok(mut state) = self.state.lock() {
+                state.superseded_during_reconcile =
+                    state.superseded_during_reconcile.saturating_add(1);
+            }
+            return;
+        }
 
         if !self.request_is_current(&request) {
             if let Ok(mut state) = self.state.lock() {
@@ -480,6 +494,7 @@ impl CellularPolicyCoordinator {
         }
 
         match result {
+            RootPolicyResult::Superseded => return,
             RootPolicyResult::Enforced => {
                 let Some(sequence) = request.admission.last_sequence() else {
                     return;
