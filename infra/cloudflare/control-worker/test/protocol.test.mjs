@@ -145,7 +145,7 @@ test("device challenge is bounded, tamper-safe and non-replayable", async () => 
   );
 
   const storage = new MemoryStorage();
-  await storage.put("public_key_spki_b64", identity.spkiB64);
+  await storage.put("device_identity", { device_id: identity.deviceId, public_key_spki_b64: identity.spkiB64 });
   const socket = new FakeSocket({
     kind: "device",
     authenticated: false,
@@ -201,7 +201,7 @@ test("replacement authentication retires the old socket before broker selection"
   const nonce = "c".repeat(43);
   const signature = await signAuth(identity.keyPair.privateKey, identity.deviceId, nonce);
   const storage = new MemoryStorage();
-  await storage.put("public_key_spki_b64", identity.spkiB64);
+  await storage.put("device_identity", { device_id: identity.deviceId, public_key_spki_b64: identity.spkiB64 });
 
   const oldSocket = new FakeSocket({
     kind: "device",
@@ -235,7 +235,7 @@ test("authenticated reattach re-delivers only the one active dispatched request"
   const nonce = "d".repeat(43);
   const signature = await signAuth(identity.keyPair.privateKey, identity.deviceId, nonce);
   const storage = new MemoryStorage();
-  await storage.put("public_key_spki_b64", identity.spkiB64);
+  await storage.put("device_identity", { device_id: identity.deviceId, public_key_spki_b64: identity.spkiB64 });
   await storage.put("active_operation", {
     request_id: "req_resume",
     status: "DISPATCHED",
@@ -295,6 +295,73 @@ test("late duplicate acceptance after terminal correlation is harmless", async (
   assert.equal((await storage.get("recent_operations"))[0].result, "CHANGED");
 });
 
+test("primary enrollment is idempotent and fail-closed against identity replacement", async () => {
+  const first = await generateIdentity();
+  const second = await generateIdentity();
+  const storage = new MemoryStorage();
+  const control = new DeviceControl(new FakeContext(storage, []), {});
+
+  let response = await control.enroll(
+    enrollmentRequest(first.deviceId, first.spkiB64),
+    new URL(`https://control.internal/manager/enroll?device_id=${first.deviceId}`),
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(await storage.get("device_identity"), {
+    device_id: first.deviceId,
+    public_key_spki_b64: first.spkiB64,
+  });
+
+  response = await control.enroll(
+    enrollmentRequest(first.deviceId, first.spkiB64),
+    new URL(`https://control.internal/manager/enroll?device_id=${first.deviceId}`),
+  );
+  assert.equal(response.status, 200);
+
+  response = await control.enroll(
+    enrollmentRequest(second.deviceId, second.spkiB64),
+    new URL(`https://control.internal/manager/enroll?device_id=${second.deviceId}`),
+  );
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).error, "IDENTITY_ALREADY_BOUND");
+  assert.equal((await storage.get("device_identity")).device_id, first.deviceId);
+});
+
+test("manager immediate rejection responses share the typed schema", async () => {
+  const offline = new DeviceControl(new FakeContext(new MemoryStorage(), []), {});
+  let response = await offline.rotateAndWait(rotateRequest("req_offline"));
+  assert.equal(response.status, 409);
+  let payload = await response.json();
+  assert.equal(payload.schema, "mish.control.rotate/v1");
+  assert.equal(payload.result, "REJECTED");
+  assert.equal(payload.reason, "DEVICE_OFFLINE");
+  assert.equal(payload.dispatched, false);
+  assert.equal(payload.device_online, false);
+  assert.equal(payload.retryable, true);
+
+  const storage = new MemoryStorage();
+  await storage.put("active_operation", {
+    request_id: "already_active",
+    status: "ACCEPTED",
+    operation_id: 5,
+    result: null,
+    created_at_ms: 1,
+    completed_at_ms: null,
+  });
+  const socket = new FakeSocket({
+    kind: "device", authenticated: true, device_id: "a".repeat(64),
+  });
+  const busy = new DeviceControl(new FakeContext(storage, [socket]), {});
+  response = await busy.rotateAndWait(rotateRequest("req_busy"));
+  assert.equal(response.status, 409);
+  payload = await response.json();
+  assert.equal(payload.schema, "mish.control.rotate/v1");
+  assert.equal(payload.result, "REJECTED");
+  assert.equal(payload.reason, "BUSY");
+  assert.equal(payload.dispatched, false);
+  assert.equal(payload.device_online, true);
+  assert.equal(payload.retryable, true);
+});
+
 test("durable broker is idempotent, busy-bounded and has no offline queue", async () => {
   const storage = new MemoryStorage();
   let activeWasStoredBeforeSend = false;
@@ -306,18 +373,17 @@ test("durable broker is idempotent, busy-bounded and has no offline queue", asyn
   );
   const control = new DeviceControl(new FakeContext(storage, [socket]), {});
 
-  let response = await control.rotate(rotateRequest("req_1"));
-  assert.equal(response.status, 202);
+  let dispatch = await control.dispatchRotation("req_1");
+  assert.equal(dispatch.kind, "DISPATCHED");
   assert.equal(socket.sent.length, 1);
   assert.equal(activeWasStoredBeforeSend, true);
 
-  response = await control.rotate(rotateRequest("req_1"));
-  assert.equal(response.status, 200);
+  dispatch = await control.dispatchRotation("req_1");
+  assert.equal(dispatch.kind, "ACTIVE_SAME");
   assert.equal(socket.sent.length, 1);
 
-  response = await control.rotate(rotateRequest("req_2"));
-  assert.equal(response.status, 409);
-  assert.equal((await response.json()).error, "BUSY");
+  dispatch = await control.dispatchRotation("req_2");
+  assert.equal(dispatch.kind, "BUSY");
   assert.equal(socket.sent.length, 1);
 
   await control.webSocketMessage(
@@ -333,16 +399,84 @@ test("durable broker is idempotent, busy-bounded and has no offline queue", asyn
   assert.equal(await storage.get("active_operation"), undefined);
   assert.equal((await storage.get("recent_operations"))[0].result, "CHANGED");
 
-  response = await control.rotate(rotateRequest("req_1"));
-  assert.equal(response.status, 200);
+  dispatch = await control.dispatchRotation("req_1");
+  assert.equal(dispatch.kind, "TERMINAL");
   assert.equal(socket.sent.filter((message) => JSON.parse(message).type === "ROTATE_IP").length, 1);
 
   const offlineStorage = new MemoryStorage();
   const offline = new DeviceControl(new FakeContext(offlineStorage, []), {});
-  response = await offline.rotate(rotateRequest("offline_1"));
-  assert.equal(response.status, 409);
-  assert.equal((await response.json()).error, "DEVICE_OFFLINE");
+  dispatch = await offline.dispatchRotation("offline_1");
+  assert.equal(dispatch.kind, "DEVICE_OFFLINE");
   assert.equal(await offlineStorage.get("active_operation"), undefined);
+});
+
+test("manager wait is event-driven and returns one typed terminal result", async () => {
+  const previousScheduler = globalThis.scheduler;
+  globalThis.scheduler = { wait: () => new Promise(() => {}) };
+  try {
+    const storage = new MemoryStorage();
+    let sentResolve;
+    const sent = new Promise((resolve) => { sentResolve = resolve; });
+    const socket = new FakeSocket(
+      { kind: "device", authenticated: true, device_id: "a".repeat(64) },
+      () => sentResolve(),
+    );
+    const control = new DeviceControl(new FakeContext(storage, [socket]), {});
+
+    const responsePromise = control.rotateAndWait(rotateRequest("req_wait"));
+    await sent;
+    assert.equal(JSON.parse(socket.sent[0]).request_id, "req_wait");
+
+    await control.webSocketMessage(
+      socket,
+      '{"v":1,"type":"ACCEPTED","request_id":"req_wait","operation_id":11}',
+    );
+    await control.webSocketMessage(
+      socket,
+      '{"v":1,"type":"RESULT","request_id":"req_wait","result":"UNCHANGED","operation_id":11}',
+    );
+
+    const response = await responsePromise;
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.schema, "mish.control.rotate/v1");
+    assert.equal(payload.request_id, "req_wait");
+    assert.equal(payload.terminal, true);
+    assert.equal(payload.result, "UNCHANGED");
+    assert.equal(payload.reason, "NONE");
+    assert.equal(payload.operation_id, 11);
+    assert.equal(payload.changed, false);
+    assert.equal(payload.dispatched, true);
+    assert.equal(payload.retryable, false);
+  } finally {
+    globalThis.scheduler = previousScheduler;
+  }
+});
+
+test("manager wait timeout is typed unknown and never invites blind retry", async () => {
+  const previousScheduler = globalThis.scheduler;
+  globalThis.scheduler = { wait: async () => {} };
+  try {
+    const storage = new MemoryStorage();
+    const socket = new FakeSocket({
+      kind: "device", authenticated: true, device_id: "a".repeat(64),
+    });
+    const control = new DeviceControl(new FakeContext(storage, [socket]), {});
+
+    const response = await control.rotateAndWait(rotateRequest("req_timeout"));
+    assert.equal(response.status, 504);
+    const payload = await response.json();
+    assert.equal(payload.schema, "mish.control.rotate/v1");
+    assert.equal(payload.request_id, "req_timeout");
+    assert.equal(payload.terminal, false);
+    assert.equal(payload.result, "UNKNOWN");
+    assert.equal(payload.reason, "TIMEOUT");
+    assert.equal(payload.dispatched, true);
+    assert.equal(payload.retryable, false);
+    assert.equal(socket.sent.filter((message) => JSON.parse(message).type === "ROTATE_IP").length, 1);
+  } finally {
+    globalThis.scheduler = previousScheduler;
+  }
 });
 
 test("durable broker bounds recent terminal correlation and re-acks duplicates", async () => {
@@ -444,9 +578,16 @@ class FakeSocket {
 }
 
 function rotateRequest(requestId) {
-  return new Request("https://control.internal/manager/rotate", {
+  return new Request("https://control.internal/manager/rotate-and-wait", {
     method: "POST",
     body: JSON.stringify({ request_id: requestId }),
+  });
+}
+
+function enrollmentRequest(deviceId, spkiB64) {
+  return new Request(`https://control.internal/manager/enroll?device_id=${deviceId}`, {
+    method: "PUT",
+    body: JSON.stringify({ public_key_spki_b64: spkiB64 }),
   });
 }
 

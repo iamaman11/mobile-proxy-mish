@@ -807,6 +807,36 @@ External distribution/store signing may derive later from the accepted source/ar
 
 Exit: **U8 CLOSED / PASS.** B-H are accepted on exact provenance. U8 is the final stage in the current PRODUCT roadmap; no further PRODUCT stage is implied by this closure.
 
+## Post-U8 explicit CONTROL refinement — issue #366
+
+This is **not** a new PRODUCT stage and does not reopen U8. It is an explicitly requested manager-API simplification over the already accepted U8-E control plane.
+
+Public remote-manager contract:
+
+```text
+POST https://api.alegria.by/v1/rotate
+Authorization: Bearer <MISH_MANAGER_TOKEN>
+body: empty
+        |
+        v
+one typed mish.control.rotate/v1 response
+```
+
+Required boundary:
+
+- the remote application knows only the manager token; host/path are application constants;
+- `device_id`, `request_id`, `operation_id`, polling and WebSocket correlation are control-plane internals;
+- Worker generates `request_id` cryptographically;
+- one fixed-name existing `DeviceControl("primary")` Durable Object is used for the single-device deployment; do not add KV/D1/device registry/a second Durable Object state owner;
+- the existing Android Keystore identity, Rust/Tokio control runtime, WSS authentication, `ROTATE_IP -> ACCEPTED -> RESULT` wire protocol and Rotation owner remain unchanged;
+- one public POST maps to at most one PRODUCT rotation;
+- manager wait is event-driven, not polling;
+- transport uncertainty is represented explicitly as typed `UNKNOWN` and is non-retryable; never imply that an uncertain command was not dispatched;
+- old manager `/devices/{device_id}/rotate` and `/operations/{request_id}` paths are not public application APIs after this refinement;
+- privileged enrollment remains an explicit operator/LAB provisioning seam.
+
+Acceptance is CONTROL/LAB-first: hosted schema/auth/idempotency/BUSY/offline/timeout guards, exact Worker deploy, then one physical remote POST proving one PRODUCT rotation and post-rotation READY/proxy E2E. No PRODUCT rebuild unless evidence exposes a PRODUCT defect.
+
 
 ---
 

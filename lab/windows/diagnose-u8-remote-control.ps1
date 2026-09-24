@@ -4,7 +4,7 @@ param(
     [string] $PackageName = 'com.mobileproxymish.app.debug',
     [string] $ComponentName = 'com.mobileproxymish.app.debug/com.mobileproxymish.app.MainActivity',
     [string] $ControlHost = 'api.alegria.by',
-    [ValidateRange(15, 180)][int] $TerminalTimeoutSeconds = 90,
+    [ValidateRange(30, 240)][int] $TerminalTimeoutSeconds = 195,
     [string] $EvidencePath = (Join-Path $env:TEMP 'mish-u8-remote-control-v1.json'),
     [string] $BaselineDiagnosticPath = (Join-Path $env:TEMP 'mish-u8-remote-control-baseline-v2.json'),
     [string] $PostDiagnosticPath = (Join-Path $env:TEMP 'mish-u8-remote-control-post-v2.json')
@@ -39,14 +39,15 @@ function Invoke-MishManagerRequest {
         [Parameter(Mandatory)][ValidateSet('GET','PUT','POST')][string] $Method,
         [Parameter(Mandatory)][string] $Path,
         [Parameter(Mandatory)][string] $BearerToken,
-        [AllowNull()][object] $Body
+        [AllowNull()][object] $Body,
+        [ValidateRange(1, 240)][int] $TimeoutSeconds = 20
     )
     $handler = [Net.Http.HttpClientHandler]::new()
     $client = [Net.Http.HttpClient]::new($handler)
     $response = $null
     $request = $null
     try {
-        $client.Timeout = [TimeSpan]::FromSeconds(20)
+        $client.Timeout = [TimeSpan]::FromSeconds($TimeoutSeconds)
         $httpMethod = [Net.Http.HttpMethod]::new($Method)
         $request = [Net.Http.HttpRequestMessage]::new($httpMethod, "https://$ControlHost$Path")
         $request.Headers.Authorization = [Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $BearerToken)
@@ -109,9 +110,10 @@ $baselineRotationState = [string]$baseline.android.rotation.state
 $baselineTerminal = $baseline.android.rotation.terminal_result
 
 # Wrong manager authentication must be rejected before Durable Object/device mutation.
-$invalidRequestId = "invalid_$env:GITHUB_RUN_ID"
-$wrongAuth = Invoke-MishManagerRequest -Method POST -Path "/v1/devices/$deviceId/rotate" -BearerToken 'definitely-wrong-manager-token-not-a-secret' -Body ([ordered]@{ request_id = $invalidRequestId })
-if ($wrongAuth.Status -ne 401) { Stop-MishRemoteControl 'WRONG_MANAGER_AUTH_NOT_REJECTED' "Expected HTTP 401, observed $($wrongAuth.Status)." }
+$wrongAuth = Invoke-MishManagerRequest -Method POST -Path '/v1/rotate' -BearerToken 'definitely-wrong-manager-token-not-a-secret' -Body $null
+if ($wrongAuth.Status -ne 401 -or $null -eq $wrongAuth.Json -or [string]$wrongAuth.Json.schema -cne 'mish.control.rotate/v1' -or [string]$wrongAuth.Json.result -cne 'REJECTED' -or [string]$wrongAuth.Json.reason -cne 'UNAUTHORIZED') {
+    Stop-MishRemoteControl 'WRONG_MANAGER_AUTH_NOT_REJECTED' "Expected typed HTTP 401 UNAUTHORIZED, observed HTTP $($wrongAuth.Status)."
+}
 Start-Sleep -Milliseconds 750
 $afterWrongAuthPath = Join-Path $env:TEMP 'mish-u8-remote-control-after-wrong-auth-v2.json'
 $afterWrongAuth = Invoke-MishDiagnostic -Path $afterWrongAuthPath
@@ -119,9 +121,11 @@ if ([string]$afterWrongAuth.android.rotation.state -cne $baselineRotationState -
     Stop-MishRemoteControl 'WRONG_MANAGER_AUTH_MUTATED_ROTATION' 'Rejected manager authentication changed Rotation-owner state.'
 }
 
-# Authenticated malformed manager input must fail before Durable Object/device mutation.
-$invalidAuthenticatedRequest = Invoke-MishManagerRequest -Method POST -Path "/v1/devices/$deviceId/rotate" -BearerToken $env:MISH_MANAGER_TOKEN -Body ([ordered]@{ request_id = 'invalid request id' })
-if ($invalidAuthenticatedRequest.Status -ne 400) { Stop-MishRemoteControl 'INVALID_AUTHENTICATED_REQUEST_NOT_REJECTED' "Expected HTTP 400, observed $($invalidAuthenticatedRequest.Status)." }
+# Public manager API accepts no caller body/request_id. Authenticated malformed input must fail before dispatch.
+$invalidAuthenticatedRequest = Invoke-MishManagerRequest -Method POST -Path '/v1/rotate' -BearerToken $env:MISH_MANAGER_TOKEN -Body ([ordered]@{ caller_request_id = 'forbidden' })
+if ($invalidAuthenticatedRequest.Status -ne 400 -or $null -eq $invalidAuthenticatedRequest.Json -or [string]$invalidAuthenticatedRequest.Json.schema -cne 'mish.control.rotate/v1' -or [string]$invalidAuthenticatedRequest.Json.result -cne 'REJECTED' -or [string]$invalidAuthenticatedRequest.Json.reason -cne 'INVALID_REQUEST') {
+    Stop-MishRemoteControl 'INVALID_AUTHENTICATED_REQUEST_NOT_REJECTED' "Expected typed HTTP 400 INVALID_REQUEST, observed HTTP $($invalidAuthenticatedRequest.Status)."
+}
 Start-Sleep -Milliseconds 750
 $afterInvalidRequestPath = Join-Path $env:TEMP 'mish-u8-remote-control-after-invalid-request-v2.json'
 $afterInvalidRequest = Invoke-MishDiagnostic -Path $afterInvalidRequestPath
@@ -129,43 +133,26 @@ if ([string]$afterInvalidRequest.android.rotation.state -cne $baselineRotationSt
     Stop-MishRemoteControl 'INVALID_AUTHENTICATED_REQUEST_MUTATED_ROTATION' 'Authenticated invalid manager request changed Rotation-owner state.'
 }
 
-$requestId = "u8e_$env:GITHUB_RUN_ID"
-$dispatch = Invoke-MishManagerRequest -Method POST -Path "/v1/devices/$deviceId/rotate" -BearerToken $env:MISH_MANAGER_TOKEN -Body ([ordered]@{ request_id = $requestId })
-# Exactly one valid dispatch attempt. DEVICE_OFFLINE is an acceptance failure, never a retry loop.
-if ($dispatch.Status -ne 202 -or $null -eq $dispatch.Json) {
-    $errorCode = if ($null -ne $dispatch.Json) { [string]$dispatch.Json.error } else { 'NONE' }
-    Stop-MishRemoteControl 'REMOTE_DISPATCH_FAILED' "Expected one HTTP 202 dispatch; observed HTTP $($dispatch.Status), error=$errorCode."
+# Exactly one public manager command. Worker owns device routing, request_id generation and terminal wait.
+$remote = Invoke-MishManagerRequest -Method POST -Path '/v1/rotate' -BearerToken $env:MISH_MANAGER_TOKEN -Body $null -TimeoutSeconds $TerminalTimeoutSeconds
+if ($remote.Status -ne 200 -or $null -eq $remote.Json) {
+    $reason = if ($null -ne $remote.Json) { [string]$remote.Json.reason } else { 'NONE' }
+    Stop-MishRemoteControl 'REMOTE_ROTATE_FAILED' "Expected one typed HTTP 200 terminal response; observed HTTP $($remote.Status), reason=$reason."
 }
-if ([string]$dispatch.Json.request_id -cne $requestId -or [string]$dispatch.Json.status -cne 'DISPATCHED') { Stop-MishRemoteControl 'REMOTE_DISPATCH_INVALID' 'Remote dispatch response did not preserve request id/status.' }
+if ([string]$remote.Json.schema -cne 'mish.control.rotate/v1') { Stop-MishRemoteControl 'REMOTE_SCHEMA_INVALID' 'Remote response schema mismatch.' }
+if ([string]$remote.Json.request_id -notmatch '^mgr_[0-9a-f]{32}$') { Stop-MishRemoteControl 'REMOTE_REQUEST_ID_INVALID' 'Worker did not generate the canonical manager request id.' }
+if (-not [bool]$remote.Json.terminal) { Stop-MishRemoteControl 'REMOTE_NOT_TERMINAL' 'One public manager command did not return a terminal result.' }
+if ([string]$remote.Json.result -notin @('CHANGED', 'UNCHANGED')) { Stop-MishRemoteControl 'REMOTE_TERMINAL_UNACCEPTABLE' "Expected CHANGED or UNCHANGED, observed $([string]$remote.Json.result)." }
+if ([string]$remote.Json.reason -cne 'NONE') { Stop-MishRemoteControl 'REMOTE_REASON_INVALID' "Successful terminal response reason is $([string]$remote.Json.reason)." }
+if ($null -eq $remote.Json.operation_id -or [int64]$remote.Json.operation_id -le 0) { Stop-MishRemoteControl 'REMOTE_OPERATION_ID_INVALID' 'Terminal remote rotation has no positive operation id.' }
+if (-not [bool]$remote.Json.dispatched -or [bool]$remote.Json.retryable) { Stop-MishRemoteControl 'REMOTE_DISPATCH_SEMANTICS_INVALID' 'Successful terminal response must be dispatched and non-retryable.' }
+if ([string]$remote.Json.result -ceq 'CHANGED' -and [bool]$remote.Json.changed -ne $true) { Stop-MishRemoteControl 'REMOTE_CHANGED_FLAG_INVALID' 'CHANGED result must report changed=true.' }
+if ([string]$remote.Json.result -ceq 'UNCHANGED' -and [bool]$remote.Json.changed -ne $false) { Stop-MishRemoteControl 'REMOTE_CHANGED_FLAG_INVALID' 'UNCHANGED result must report changed=false.' }
+if ($null -eq $remote.Json.timing -or [int64]$remote.Json.timing.duration_ms -lt 0) { Stop-MishRemoteControl 'REMOTE_TIMING_INVALID' 'Typed remote timing is absent or invalid.' }
 
-$deadline = [DateTimeOffset]::UtcNow.AddSeconds($TerminalTimeoutSeconds)
-$operationId = $null
-$terminalResult = $null
-$terminal = $null
-$polls = 0
-while ([DateTimeOffset]::UtcNow -lt $deadline) {
-    Start-Sleep -Seconds 1
-    $polls += 1
-    $observation = Invoke-MishManagerRequest -Method GET -Path "/v1/devices/$deviceId/operations/$requestId" -BearerToken $env:MISH_MANAGER_TOKEN -Body $null
-    if ($observation.Status -ne 200 -or $null -eq $observation.Json) { Stop-MishRemoteControl 'REMOTE_OPERATION_READ_FAILED' "Operation read returned HTTP $($observation.Status)." }
-    if ([string]$observation.Json.request_id -cne $requestId) { Stop-MishRemoteControl 'REMOTE_CORRELATION_CHANGED' 'Operation read changed request_id.' }
-    if ($null -ne $observation.Json.operation_id) {
-        $observedId = [int64]$observation.Json.operation_id
-        if ($observedId -le 0) { Stop-MishRemoteControl 'REMOTE_OPERATION_ID_INVALID' 'Operation id must be positive.' }
-        if ($null -eq $operationId) { $operationId = $observedId } elseif ($operationId -ne $observedId) { Stop-MishRemoteControl 'REMOTE_OPERATION_ID_CHANGED' 'Operation id changed during one request correlation.' }
-    }
-    if ([string]$observation.Json.status -ceq 'TERMINAL') { $terminal = $observation.Json; $terminalResult = [string]$observation.Json.result; break }
-}
-if ($null -eq $terminal) { Stop-MishRemoteControl 'REMOTE_TERMINAL_TIMEOUT' 'One remote rotation did not reach terminal state inside the bounded deadline.' }
-if ($null -eq $operationId) { Stop-MishRemoteControl 'REMOTE_OPERATION_ID_MISSING' 'Terminal remote rotation has no operation id.' }
-if ($terminalResult -notin @('CHANGED', 'UNCHANGED')) { Stop-MishRemoteControl 'REMOTE_TERMINAL_UNACCEPTABLE' "Expected CHANGED or UNCHANGED, observed $terminalResult." }
-
-# Replay the same logical request id exactly once; this must never create a second Rotation operation.
-$duplicate = Invoke-MishManagerRequest -Method POST -Path "/v1/devices/$deviceId/rotate" -BearerToken $env:MISH_MANAGER_TOKEN -Body ([ordered]@{ request_id = $requestId })
-if ($duplicate.Status -ne 200 -or $null -eq $duplicate.Json -or [string]$duplicate.Json.status -cne 'TERMINAL' -or [int64]$duplicate.Json.operation_id -ne $operationId -or [string]$duplicate.Json.result -cne $terminalResult) {
-    Stop-MishRemoteControl 'REMOTE_IDEMPOTENCY_FAILED' 'Same request_id did not return the same terminal operation/result.'
-}
-
+$requestId = [string]$remote.Json.request_id
+$operationId = [int64]$remote.Json.operation_id
+$terminalResult = [string]$remote.Json.result
 $post = Invoke-MishDiagnostic -Path $PostDiagnosticPath
 if ([int64]$post.android.rotation.operation_id -ne $operationId) { Stop-MishRemoteControl 'PRODUCT_OPERATION_ID_MISMATCH' 'PRODUCT Rotation owner and broker disagree on operation_id.' }
 if ([string]$post.android.rotation.terminal_result -cne $terminalResult) { Stop-MishRemoteControl 'PRODUCT_TERMINAL_MISMATCH' 'PRODUCT Rotation owner and broker disagree on terminal result.' }
@@ -185,13 +172,19 @@ $evidence = [ordered]@{
     wrong_manager_auth_zero_rotation_mutation = $true
     authenticated_invalid_request_status = 400
     authenticated_invalid_request_zero_rotation_mutation = $true
+    manager_api_schema = 'mish.control.rotate/v1'
+    public_rotate_path = '/v1/rotate'
+    public_rotate_body = 'EMPTY'
+    server_generated_request_id = $true
+    single_http_command = $true
     logical_rotation_requests = 1
-    duplicate_same_request_replays = 1
     request_id = $requestId
     operation_id = $operationId
     terminal_result = $terminalResult
-    operation_polls = $polls
-    idempotent_same_operation = $true
+    operation_polls = 0
+    client_request_id_generated = $false
+    client_device_id_required_for_rotation = $false
+    hosted_idempotency_contract = $true
     post_product_diagnostic = [string]$post.classification
     post_readiness = [string]$post.android.readiness.state
     post_root_authorized = [bool]$post.android.root.policy_authorized
@@ -218,7 +211,9 @@ Write-Host "MISH_U8_REMOTE_CONTROL_OPERATION_ID=$operationId"
 Write-Host "MISH_U8_REMOTE_CONTROL_TERMINAL=$terminalResult"
 Write-Host 'MISH_U8_REMOTE_CONTROL_INVALID_AUTHENTICATED_REQUEST=400_ZERO_MUTATION'
 Write-Host 'MISH_U8_REMOTE_CONTROL_LOGICAL_ROTATION_REQUESTS=1'
-Write-Host 'MISH_U8_REMOTE_CONTROL_IDEMPOTENT_REPLAY=PASS'
+Write-Host 'MISH_U8_REMOTE_CONTROL_PUBLIC_COMMANDS=1'
+Write-Host 'MISH_U8_REMOTE_CONTROL_SERVER_REQUEST_ID=PASS'
+Write-Host 'MISH_U8_REMOTE_CONTROL_MANAGER_POLLING=0'
 Write-Host 'MISH_U8_REMOTE_CONTROL_RAW_IP_PERSISTED=false'
 Write-Host 'MISH_U8_REMOTE_CONTROL_SECRETS_PERSISTED=false'
 Write-Host "MISH_U8_REMOTE_CONTROL_EVIDENCE=$fullPath"
