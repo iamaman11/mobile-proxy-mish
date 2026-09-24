@@ -563,6 +563,33 @@ jobs:
             -BaselineDiagnosticPath "$env:RUNNER_TEMP\\mish-u8-remote-control-baseline-v2.json" `
             -PostDiagnosticPath "$env:RUNNER_TEMP\\mish-u8-remote-control-post-v2.json"
 
+      - name: Capture post-request control snapshot
+        if: ${{ always() }}
+        shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = @(& $env:ADB_EXE shell content call --uri "content://$env:PACKAGE_NAME.diagnostics" --method control_snapshot_v1 2>&1 | ForEach-Object { [string]$_ })
+          if ($LASTEXITCODE -ne 0) { throw 'MISH_DEVICE_CYCLE_FAILURE|CONTROL_SNAPSHOT_FAILED|Post-request control snapshot call failed.' }
+          $text = ($output -join [Environment]::NewLine).Trim()
+          $match = [regex]::Match($text, 'payload_b64=(?<payload>[A-Za-z0-9+/=]+)')
+          if (-not $match.Success) { throw 'MISH_DEVICE_CYCLE_FAILURE|CONTROL_SNAPSHOT_INVALID|Post-request control snapshot payload missing.' }
+          $bytes = [Convert]::FromBase64String($match.Groups['payload'].Value)
+          try {
+            $json = [Text.Encoding]::UTF8.GetString($bytes)
+            $snapshot = $json | ConvertFrom-Json
+          } finally {
+            [Array]::Clear($bytes, 0, $bytes.Length)
+          }
+          if ([string]$snapshot.schema -cne 'mish.control.diagnostics/v1') { throw 'MISH_DEVICE_CYCLE_FAILURE|CONTROL_SNAPSHOT_INVALID|Post-request control snapshot schema mismatch.' }
+          $path = "$env:RUNNER_TEMP\mish-u8-remote-control-control-after-v1.json"
+          [IO.File]::WriteAllText($path, (($snapshot | ConvertTo-Json -Depth 6) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+          Write-Host "MISH_U8_CONTROL_AFTER_STATE=$([string]$snapshot.control.state)"
+          Write-Host "MISH_U8_CONTROL_AFTER_RECONNECT_COUNT=$([int64]$snapshot.control.reconnect_count)"
+          Write-Host "MISH_U8_CONTROL_AFTER_HEARTBEAT_COUNT=$([int64]$snapshot.control.application_heartbeat_count)"
+          Write-Host "MISH_U8_CONTROL_AFTER_PENDING=$([bool]$snapshot.control.pending_operation)"
+          Write-Host "MISH_U8_CONTROL_AFTER_OPERATION_ID=$($snapshot.control.pending_operation_id)"
+          Write-Host "MISH_U8_CONTROL_AFTER_TERMINAL=$($snapshot.control.last_terminal_result)"
+
       - name: Enforce redacted U8-E acceptance evidence
         shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
         run: |
@@ -585,6 +612,7 @@ jobs:
             ${{ runner.temp }}\\mish-u8-remote-control-post-v2.json
             ${{ runner.temp }}\\mish-u8-remote-control-start-before-v1.json
             ${{ runner.temp }}\\mish-u8-remote-control-start-after-v1.json
+            ${{ runner.temp }}\\mish-u8-remote-control-control-after-v1.json
           if-no-files-found: warn
           retention-days: 30
 
