@@ -91,6 +91,7 @@ export function terminalOperationPayload(operation, deviceOnline = true) {
     UNCHANGED: ["UNCHANGED", "NONE"],
     FAILED: ["FAILED", "PRODUCT_FAILED"],
     REJECTED: ["REJECTED", "PRODUCT_REJECTED"],
+    UNKNOWN: ["UNKNOWN", "TIMEOUT"],
   };
   const mapped = mapping[operation.result];
   if (!mapped) throw new Error("unsupported terminal operation result");
