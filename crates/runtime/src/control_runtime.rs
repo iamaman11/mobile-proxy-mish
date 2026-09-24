@@ -680,8 +680,7 @@ impl ControlRuntimeCoordinator {
 
     fn record_heartbeat(&self) {
         if let Ok(mut state) = self.state.lock() {
-            state.application_heartbeat_count =
-                state.application_heartbeat_count.saturating_add(1);
+            state.application_heartbeat_count = state.application_heartbeat_count.saturating_add(1);
         }
     }
 
@@ -845,10 +844,7 @@ mod tests {
     fn control_liveness_is_owned_by_the_existing_native_session_task() {
         assert_eq!(CONTROL_HEARTBEAT_INTERVAL, Duration::from_secs(4));
         assert_eq!(CONTROL_HEARTBEAT_REQUEST, "MISH_CONTROL_HEARTBEAT_V1");
-        assert_eq!(
-            CONTROL_HEARTBEAT_RESPONSE,
-            "MISH_CONTROL_HEARTBEAT_ACK_V1"
-        );
+        assert_eq!(CONTROL_HEARTBEAT_RESPONSE, "MISH_CONTROL_HEARTBEAT_ACK_V1");
     }
 
     #[test]
