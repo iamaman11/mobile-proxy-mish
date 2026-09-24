@@ -323,24 +323,46 @@ impl RootPolicyRuntime {
 
         let phase_started = Instant::now();
         let phase_before = window.diagnostic();
-        if let Err(failure) = self.ensure_guard(contract, true, window).await {
-            return RootPolicyResult::FailClosed(Some(failure));
-        }
-        if let Err(failure) = self.ensure_guard(contract, false, window).await {
-            return RootPolicyResult::FailClosed(Some(failure));
-        }
-        if let Err(failure) = self.remove_owned_ipv4_lookups(contract, window).await {
-            return RootPolicyResult::FailClosed(Some(failure));
-        }
-        if let Err(failure) = self
-            .ensure_mangle_family(contract, IPTABLES, true, window)
-            .await
+
+        // Reuse the authoritative initial snapshot only for exact no-op decisions. Any state that
+        // needs repair still enters the existing fresh-read helper path, and the complete
+        // fail-closed base is always re-read and verified below before admitted policy may start.
+        if !initial
+            .ipv4_rules
+            .iter()
+            .any(|line| contract.is_owned_ipv4_guard(line))
+            && let Err(failure) = self.ensure_guard(contract, true, window).await
         {
             return RootPolicyResult::FailClosed(Some(failure));
         }
-        if let Err(failure) = self
-            .ensure_mangle_family(contract, IP6TABLES, false, window)
-            .await
+        if !initial
+            .ipv6_rules
+            .iter()
+            .any(|line| contract.is_owned_ipv6_guard(line))
+            && let Err(failure) = self.ensure_guard(contract, false, window).await
+        {
+            return RootPolicyResult::FailClosed(Some(failure));
+        }
+        if !contract
+            .owned_ipv4_lookup_tables(&initial.ipv4_rules)
+            .is_empty()
+            && let Err(failure) = self.remove_owned_ipv4_lookups(contract, window).await
+        {
+            return RootPolicyResult::FailClosed(Some(failure));
+        }
+        if contract.mangle_family_state(&initial.ipv4_mangle, true)
+            != Some(MangleFamilyState::AttachedExact)
+            && let Err(failure) = self
+                .ensure_mangle_family(contract, IPTABLES, true, window)
+                .await
+        {
+            return RootPolicyResult::FailClosed(Some(failure));
+        }
+        if contract.mangle_family_state(&initial.ipv6_mangle, false)
+            != Some(MangleFamilyState::AttachedExact)
+            && let Err(failure) = self
+                .ensure_mangle_family(contract, IP6TABLES, false, window)
+                .await
         {
             return RootPolicyResult::FailClosed(Some(failure));
         }
@@ -1327,6 +1349,194 @@ mod tests {
                 Ok(())
             })
         }
+    }
+
+
+    struct PreparedFailClosedIo {
+        snapshot: RootPolicySnapshot,
+        line_calls: std::sync::atomic::AtomicUsize,
+        observe_calls: std::sync::atomic::AtomicUsize,
+        mutation_calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl PreparedFailClosedIo {
+        fn result(exit_code: i32, stdout: impl Into<String>) -> crate::root_session::RootCommandResult {
+            crate::root_session::RootCommandResult {
+                exit_code,
+                stdout: stdout.into(),
+                timed_out: false,
+                output_complete: true,
+                session_generation: 1,
+            }
+        }
+    }
+
+    impl RootPolicyIo for PreparedFailClosedIo {
+        fn session_generation<'a>(
+            &'a self,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<u64>> + Send + 'a>> {
+            Box::pin(async { Some(1) })
+        }
+
+        fn raw_observation<'a>(
+            &'a self,
+            command: &'a str,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            crate::root_session::RootCommandResult,
+                            crate::root_session::RootSessionError,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move {
+                let stdout = match command {
+                    "id -u" => "0".to_owned(),
+                    IPV4_RULE_SHOW => self.snapshot.ipv4_rules.join("\n"),
+                    _ => String::new(),
+                };
+                Ok(Self::result(0, stdout))
+            })
+        }
+
+        fn observe<'a>(
+            &'a self,
+            _command: &'a str,
+            _window: &'a mut RootPolicyCommandWindow,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            crate::root_session::RootCommandResult,
+                            RootPolicyEffectFailure,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move {
+                self.observe_calls
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(Self::result(1, ""))
+            })
+        }
+
+        fn lines<'a>(
+            &'a self,
+            command: &'a str,
+            _window: &'a mut RootPolicyCommandWindow,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Vec<String>, RootPolicyEffectFailure>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move {
+                self.line_calls
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let lines = if command == IPV4_RULE_SHOW {
+                    self.snapshot.ipv4_rules.clone()
+                } else if command == IPV6_RULE_SHOW {
+                    self.snapshot.ipv6_rules.clone()
+                } else if command == format!("{IPTABLES} -t mangle -S") {
+                    self.snapshot.ipv4_mangle.clone()
+                } else if command == format!("{IP6TABLES} -t mangle -S") {
+                    self.snapshot.ipv6_mangle.clone()
+                } else {
+                    panic!("unexpected line observation: {command}");
+                };
+                Ok(lines)
+            })
+        }
+
+        fn mutate<'a>(
+            &'a self,
+            _command: &'a str,
+            _window: &'a mut RootPolicyCommandWindow,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), RootPolicyEffectFailure>> + Send + 'a>,
+        > {
+            Box::pin(async move {
+                self.mutation_calls
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+        }
+    }
+
+    fn prepared_fail_closed_snapshot(product_uid: u32) -> RootPolicySnapshot {
+        let mut contract =
+            RootPolicyContract::new(product_uid, RootPolicyNamespace::Release).expect("contract");
+        let empty = RootPolicySnapshot::new(
+            vec![
+                "0: from all lookup local".to_owned(),
+                "32766: from all lookup main".to_owned(),
+            ],
+            vec![
+                "0: from all lookup local".to_owned(),
+                "32766: from all lookup main".to_owned(),
+            ],
+            Vec::new(),
+            Vec::new(),
+        );
+        let PolicyIdentityResolution::Selected(identity) = contract.resolve_identity(&empty) else {
+            panic!("identity");
+        };
+        let mark = identity.mark_hex();
+        let guard = format!(
+            "{}: from all fwmark {mark}/{mark} unreachable",
+            identity.guard_priority()
+        );
+        let mut ipv4_mangle = vec![format!("-N {}", contract.chain_name())];
+        ipv4_mangle.extend(contract.ipv4_owned_chain_lines().expect("ipv4 chain"));
+        ipv4_mangle.push(contract.output_jump());
+        let mut ipv6_mangle = vec![format!("-N {}", contract.chain_name())];
+        ipv6_mangle.extend(contract.ipv6_owned_chain_lines().expect("ipv6 chain"));
+        ipv6_mangle.push(contract.output_jump());
+
+        RootPolicySnapshot::new(vec![guard.clone()], vec![guard], ipv4_mangle, ipv6_mangle)
+    }
+
+    #[tokio::test]
+    async fn prepared_initial_snapshot_skips_redundant_prepare_reads_but_keeps_final_verify() {
+        let product_uid = 10_123;
+        let io = Arc::new(PreparedFailClosedIo {
+            snapshot: prepared_fail_closed_snapshot(product_uid),
+            line_calls: std::sync::atomic::AtomicUsize::new(0),
+            observe_calls: std::sync::atomic::AtomicUsize::new(0),
+            mutation_calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let runtime = RootPolicyRuntime::with_io(
+            Arc::clone(&io) as Arc<dyn RootPolicyIo>,
+            product_uid,
+            RootPolicyNamespace::Release,
+        )
+        .expect("root policy runtime");
+
+        let result = runtime.reconcile_if_current(false, None, || true).await;
+
+        assert_eq!(
+            result,
+            RootPolicyReconcileOutcome::Completed(RootPolicyResult::FailClosed(None))
+        );
+        assert_eq!(
+            io.line_calls.load(std::sync::atomic::Ordering::SeqCst),
+            8,
+            "only initial snapshot plus final fail-closed verification should read full state"
+        );
+        assert_eq!(
+            io.observe_calls.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "legacy selector absence still uses its exact checks"
+        );
+        assert_eq!(
+            io.mutation_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
     }
 
     #[tokio::test]
