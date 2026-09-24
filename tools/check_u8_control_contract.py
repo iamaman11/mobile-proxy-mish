@@ -392,7 +392,6 @@ def main() -> None:
         manager_api,
         protocol,
         wrangler,
-        lab_remote,
     ):
         text = read(path).lower()
         for forbidden_secret in (
