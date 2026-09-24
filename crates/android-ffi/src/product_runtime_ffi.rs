@@ -198,6 +198,12 @@ pub struct CellularReconcileDiagnosticView {
     pub coalesced: u64,
     pub pending: bool,
     pub drain_scheduled: bool,
+    pub last_owner_sequence: Option<u64>,
+    pub last_dequeue_wait_ms: u64,
+    pub max_dequeue_wait_ms: u64,
+    pub last_quiesce_wait_ms: u64,
+    pub max_quiesce_wait_ms: u64,
+    pub stale_after_reconcile: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
@@ -1494,6 +1500,12 @@ fn map_reconcile_diagnostic(
         coalesced: diagnostic.coalesced,
         pending: diagnostic.pending,
         drain_scheduled: diagnostic.drain_scheduled,
+        last_owner_sequence: diagnostic.last_owner_sequence,
+        last_dequeue_wait_ms: diagnostic.last_dequeue_wait_ms,
+        max_dequeue_wait_ms: diagnostic.max_dequeue_wait_ms,
+        last_quiesce_wait_ms: diagnostic.last_quiesce_wait_ms,
+        max_quiesce_wait_ms: diagnostic.max_quiesce_wait_ms,
+        stale_after_reconcile: diagnostic.stale_after_reconcile,
     }
 }
 
