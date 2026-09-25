@@ -3,7 +3,7 @@ param(
     [string] $AdbPath = 'C:\mish-lab\tools\android-sdk\platform-tools\adb.exe',
     [string] $PackageName = 'com.mobileproxymish.app.debug',
     [string] $ComponentName = 'com.mobileproxymish.app.debug/com.mobileproxymish.app.MainActivity',
-    [string] $ControlHost = 'api.alegria.by',
+    [string] $ControlHost = 'mish.alegria.by',
     [ValidateRange(20, 120)][int] $TerminalTimeoutSeconds = 20,
     [ValidateRange(5, 30)][int] $ExternalProbeTimeoutSeconds = 15,
     [string] $EvidencePath = (Join-Path $env:TEMP 'mish-u8-remote-control-v1.json'),
@@ -125,7 +125,7 @@ function Invoke-MishControlSnapshot {
 
 if (-not (Test-Path -LiteralPath $AdbPath -PathType Leaf)) { Stop-MishRemoteControl 'ADB_MISSING' 'Canonical ADB executable is missing.' }
 if ([string]::IsNullOrWhiteSpace($env:MISH_MANAGER_TOKEN) -or $env:MISH_MANAGER_TOKEN.Length -lt 32) { Stop-MishRemoteControl 'MANAGER_TOKEN_MISSING' 'Protected MISH_MANAGER_TOKEN is unavailable.' }
-if ($ControlHost -cne 'api.alegria.by') { Stop-MishRemoteControl 'CONTROL_HOST_MISMATCH' 'Physical U8-E acceptance is pinned to api.alegria.by.' }
+if ($ControlHost -cne 'mish.alegria.by') { Stop-MishRemoteControl 'CONTROL_HOST_MISMATCH' 'Physical U8-E acceptance is pinned to mish.alegria.by.' }
 
 $devices = @(& $AdbPath devices | Where-Object { $_ -match '^\S+\s+device\s*$' })
 if ($LASTEXITCODE -ne 0 -or $devices.Count -ne 1) { Stop-MishRemoteControl 'DEVICE_UNAVAILABLE' 'Exactly one authorized DEVICE-1 is required.' }

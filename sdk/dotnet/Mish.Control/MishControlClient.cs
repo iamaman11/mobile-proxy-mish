@@ -8,7 +8,7 @@ public sealed class MishControlClient : IDisposable
     public const string RotateSchema = "mish.control.rotate/v1";
 
     private const string RotateEndpoint =
-        "https://api.alegria.by/v1/rotate";
+        "https://mish.alegria.by/v1/rotate";
     private const int MaxResponseBytes = 64 * 1024;
 
     private static readonly Uri Endpoint =

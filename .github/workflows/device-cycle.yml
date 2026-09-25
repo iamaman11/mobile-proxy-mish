@@ -561,7 +561,7 @@ jobs:
             AdbPath = $env:ADB_EXE
             PackageName = $env:PACKAGE_NAME
             ComponentName = "$env:PACKAGE_NAME/com.mobileproxymish.app.MainActivity"
-            ControlHost = 'api.alegria.by'
+            ControlHost = 'mish.alegria.by'
             EvidencePath = "$env:RUNNER_TEMP\\mish-u8-remote-control-v1.json"
             BaselineDiagnosticPath = "$env:RUNNER_TEMP\\mish-u8-remote-control-baseline-v2.json"
             PostDiagnosticPath = "$env:RUNNER_TEMP\\mish-u8-remote-control-post-v2.json"

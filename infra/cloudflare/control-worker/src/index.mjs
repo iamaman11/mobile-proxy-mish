@@ -26,6 +26,8 @@ import {
 
 const DEVICE_CONNECT = "/v1/device/connect";
 const MANAGER_ROTATE = "/v1/rotate";
+const DEVICE_CONTROL_HOST = "api.alegria.by";
+const MANAGER_HOST = "mish.alegria.by";
 const PRIMARY_DEVICE_OBJECT = "primary";
 
 // PRODUCT owns mutation timing. CONTROL owns only delivery correlation and fresh-session proof.
@@ -44,6 +46,9 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === DEVICE_CONNECT) {
+      if (url.hostname !== DEVICE_CONTROL_HOST) {
+        return json({ error: "NOT_FOUND" }, 404);
+      }
       const deviceId = url.searchParams.get("device_id");
       if (!isDeviceId(deviceId) || url.searchParams.size !== 1 ||
           request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
@@ -55,6 +60,9 @@ export default {
     }
 
     if (url.pathname === MANAGER_ROTATE) {
+      if (url.hostname !== MANAGER_HOST) {
+        return json({ error: "NOT_FOUND" }, 404);
+      }
       const startedAtMs = Date.now();
       if (request.method !== "POST") {
         return managerJson(managerRotatePayload({
@@ -106,7 +114,9 @@ export default {
     }
 
     const enrollmentMatch = url.pathname.match(/^\/v1\/devices\/([0-9a-f]{64})$/u);
-    if (!enrollmentMatch) return json({ error: "NOT_FOUND" }, 404);
+    if (!enrollmentMatch || url.hostname !== MANAGER_HOST) {
+      return json({ error: "NOT_FOUND" }, 404);
+    }
     if (!(await managerAuthorized(request, env.MISH_MANAGER_TOKEN))) {
       return json({ error: "UNAUTHORIZED" }, 401);
     }
