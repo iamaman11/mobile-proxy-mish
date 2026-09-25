@@ -296,7 +296,7 @@ try {
             product_rotation_triggered = $false
             manager_command_issued = $false
             public_ip_polled = $false
-            retry_until_changed = $false
+            automatic_repeat_rotation = $false
         }
         restore = [ordered]@{
             attempted = $restoreAttempted
