@@ -71,6 +71,20 @@ function Invoke-MishTelephonyProviderCall {
     return $snapshot
 }
 
+function Get-MishTelephonyDetachObservationSnapshot {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string] $AdbPath,
+        [Parameter(Mandatory)][string] $PackageName
+    )
+
+    $snapshot = Invoke-MishTelephonyProviderCall -AdbPath $AdbPath -PackageName $PackageName -Method 'snapshot_v1'
+    if (-not [bool]$snapshot.active -or $null -eq $snapshot.correlation) {
+        Stop-MishTelephonyDetachFailure 'OBSERVER_SNAPSHOT_INVALID' 'Typed telephony observer snapshot is inactive or missing its monotonic correlation window.'
+    }
+    return $snapshot
+}
+
 function Start-MishTelephonyDetachObservation {
     [CmdletBinding()]
     param(
@@ -250,6 +264,7 @@ function New-MishTelephonyDetachResearchProjection {
 
 Export-ModuleMember -Function @(
     'Start-MishTelephonyDetachObservation',
+    'Get-MishTelephonyDetachObservationSnapshot',
     'Stop-MishTelephonyDetachObservation',
     'New-MishTelephonyDetachResearchProjection'
 )
