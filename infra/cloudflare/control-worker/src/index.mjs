@@ -46,7 +46,7 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === DEVICE_CONNECT) {
-      if (url.hostname !== DEVICE_CONTROL_HOST) {
+      if (url.hostname !== DEVICE_CONTROL_HOST && url.hostname !== MANAGER_HOST) {
         return json({ error: "NOT_FOUND" }, 404);
       }
       const deviceId = url.searchParams.get("device_id");

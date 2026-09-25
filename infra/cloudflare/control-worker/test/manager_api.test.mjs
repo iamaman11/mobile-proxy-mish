@@ -238,17 +238,23 @@ test("device transport host does not expose the public manager API", async () =>
   assert.equal(calls, 0);
 });
 
-test("manager host does not expose the device WebSocket endpoint", async () => {
+test("migration bridge accepts device WebSocket on mish manager host", async () => {
   const device = "a".repeat(64);
-  const env = managerEnv(async () => {
-    throw new Error("must not be called");
+  let calls = 0;
+  const env = managerEnv(async (request) => {
+    calls += 1;
+    const url = new URL(request.url);
+    assert.equal(url.pathname, "/device/connect");
+    assert.equal(url.searchParams.get("device_id"), device);
+    return new Response("bridged", { status: 200 });
   });
   const response = await worker.fetch(new Request(
     `https://mish.alegria.by/v1/device/connect?device_id=${device}`,
     { headers: { Upgrade: "websocket" } },
   ), env);
-  assert.equal(response.status, 404);
-  assert.deepEqual(await response.json(), { error: "NOT_FOUND" });
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "bridged");
+  assert.equal(calls, 1);
 });
 
 function managerEnv(fetchImpl) {
