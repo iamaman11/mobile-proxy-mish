@@ -405,6 +405,7 @@ pub struct RotationRuntimeTimingView {
     pub airplane_enable_effect_completed_ms: Option<u64>,
     pub airplane_on_observed_ms: Option<u64>,
     pub cellular_loss_observed_ms: Option<u64>,
+    pub radio_power_off_observed_ms: Option<u64>,
     pub airplane_disable_started_ms: Option<u64>,
     pub airplane_disable_effect_completed_ms: Option<u64>,
     pub airplane_off_observed_ms: Option<u64>,
@@ -786,6 +787,12 @@ impl NativeProductRuntime {
             .map_err(|_| CellularBridgeError::OwnerUnavailable)
     }
 
+    /// Positive Android telephony fact only. Rust decides whether it belongs to an active
+    /// Rotation and whether the radio-down gate is complete.
+    pub fn observe_radio_power_off(&self) -> Result<(), NativeProductRuntimeError> {
+        self.runtime.observe_radio_power_off().map_err(Into::into)
+    }
+
     pub fn invalidate_cellular_platform_facts(&self) -> Result<(), NativeProductRuntimeError> {
         self.runtime
             .invalidate_cellular_platform_facts()
@@ -1135,6 +1142,7 @@ fn map_rotation_runtime_timing(timing: RotationRuntimeTimingSnapshot) -> Rotatio
         airplane_enable_effect_completed_ms: timing.airplane_enable_effect_completed_ms,
         airplane_on_observed_ms: timing.airplane_on_observed_ms,
         cellular_loss_observed_ms: timing.cellular_loss_observed_ms,
+        radio_power_off_observed_ms: timing.radio_power_off_observed_ms,
         airplane_disable_started_ms: timing.airplane_disable_started_ms,
         airplane_disable_effect_completed_ms: timing.airplane_disable_effect_completed_ms,
         airplane_off_observed_ms: timing.airplane_off_observed_ms,
