@@ -8,7 +8,9 @@ param(
     [ValidateRange(5, 30)][int] $ExternalProbeTimeoutSeconds = 15,
     [string] $EvidencePath = (Join-Path $env:TEMP 'mish-u8-remote-control-v1.json'),
     [string] $BaselineDiagnosticPath = (Join-Path $env:TEMP 'mish-u8-remote-control-baseline-v2.json'),
-    [string] $PostDiagnosticPath = (Join-Path $env:TEMP 'mish-u8-remote-control-post-v2.json')
+    [string] $PostDiagnosticPath = (Join-Path $env:TEMP 'mish-u8-remote-control-post-v2.json'),
+    [switch] $CollectTelephonyDetachEvidence,
+    [string] $TelephonyDetachEvidencePath = (Join-Path $env:TEMP 'mish-u8-telephony-detach-v1.json')
 )
 
 Set-StrictMode -Version Latest
@@ -18,6 +20,7 @@ $identityAction = 'com.mobileproxymish.app.action.READ_CONTROL_IDENTITY_V1'
 $identityComponent = "$PackageName/com.mobileproxymish.app.ControlIdentityProvisioningReceiver"
 
 Import-Module (Join-Path $PSScriptRoot 'PublicEgressObservation.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'TelephonyDetachObservation.psm1') -Force
 
 function Stop-MishRemoteControl {
     param([Parameter(Mandatory)][string] $Category, [Parameter(Mandatory)][string] $Message)
@@ -207,6 +210,9 @@ if ([string]$afterInvalidRequest.android.rotation.state -cne $baselineRotationSt
 $observationContext = $null
 $beforeAddress = $null
 $afterAddress = $null
+$telephonyObservationStarted = $false
+$telephonySnapshot = $null
+$radioDetachResearch = $null
 try {
     $observationContext = New-MishPublicEgressObservationContext `
         -AdbPath $AdbPath `
@@ -216,6 +222,11 @@ try {
         -TimeoutSeconds $ExternalProbeTimeoutSeconds
     $beforeAddress = [string]$externalBefore.Address
     $externalBeforeMs = [int64]$externalBefore.ElapsedMs
+
+if ($CollectTelephonyDetachEvidence) {
+    [void](Start-MishTelephonyDetachObservation -AdbPath $AdbPath -PackageName $PackageName)
+    $telephonyObservationStarted = $true
+}
 
 # Exactly one public manager command. Worker owns device routing, request_id generation and terminal wait.
 $remote = Invoke-MishManagerRequest -Method POST -Path '/v1/rotate' -BearerToken $env:MISH_MANAGER_TOKEN -Body $null -TimeoutSeconds $TerminalTimeoutSeconds
@@ -516,6 +527,12 @@ if ([int64]$operationTiming.operation_reserved_ms -gt [int64]$operationTiming.ac
     Stop-MishRemoteControl 'DEVICE_TIMELINE_ORDER_INVALID' 'Remote rotation phase evidence violates the accepted event-driven ordering.'
 }
 
+if ($CollectTelephonyDetachEvidence) {
+    $telephonySnapshot = Stop-MishTelephonyDetachObservation -AdbPath $AdbPath -PackageName $PackageName -EvidencePath $TelephonyDetachEvidencePath
+    $telephonyObservationStarted = $false
+    $radioDetachResearch = New-MishTelephonyDetachResearchProjection -Observation $telephonySnapshot -OperationId $operationId -RotationTiming $rotationTiming
+}
+
 $evidence = [ordered]@{
     schema = $schema
     collected_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
@@ -561,6 +578,7 @@ $evidence = [ordered]@{
     external_public_ip_before_observation_ms = $externalBeforeMs
     external_public_ip_after_observation_ms = $externalAfterMs
     device_timeline_proof = $true
+    telephony_detach_research = $radioDetachResearch
     device_timeline = [ordered]@{
         origin = 'REMOTE_COMMAND_RECEIVED'
         operation_id = [int64]$operationTiming.operation_id
@@ -635,11 +653,23 @@ Write-Host "MISH_U8_REMOTE_CONTROL_IDLE_LIVENESS=PASS/heartbeat_delta=$heartbeat
 Write-Host "MISH_U8_REMOTE_CONTROL_MANAGER_DURATION_MS=$managerDurationMs"
 Write-Host "MISH_U8_REMOTE_CONTROL_DEVICE_TIMELINE=PASS/terminal_from_command_ms=$rotationTerminalFromCommandMs/result_ack_ms=$([int64]$operationTiming.result_ack_ms)"
 Write-Host "MISH_U8_REMOTE_CONTROL_EXTERNAL_PUBLIC_IP=PASS/outcome=$externalPublicIpOutcome/consensus=$externalPublicIpConsensus"
+if ($CollectTelephonyDetachEvidence) {
+    Write-Host "MISH_U8_REMOTE_CONTROL_TELEPHONY_DETACH=PASS/power_off=$([bool]$radioDetachResearch.power_off_observed)/vs_disable=$([string]$radioDetachResearch.power_off_vs_airplane_disable_started)"
+}
 Write-Host 'MISH_U8_REMOTE_CONTROL_RAW_IP_PERSISTED=false'
 Write-Host 'MISH_U8_REMOTE_CONTROL_SECRETS_PERSISTED=false'
 Write-Host "MISH_U8_REMOTE_CONTROL_EVIDENCE=$fullPath"
 }
 finally {
+    if ($telephonyObservationStarted) {
+        try {
+            [void](Stop-MishTelephonyDetachObservation -AdbPath $AdbPath -PackageName $PackageName -EvidencePath $TelephonyDetachEvidencePath)
+        }
+        catch {
+            Write-Warning 'Typed telephony observer cleanup failed after the primary remote-control result.'
+        }
+        $telephonyObservationStarted = $false
+    }
     $beforeAddress = $null
     $afterAddress = $null
     Close-MishPublicEgressObservationContext -Context $observationContext

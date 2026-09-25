@@ -2489,6 +2489,71 @@ def main() -> None:
             "Current IP must be shown only for the currently admitted Cellular owner generation",
         )
 
+    # One-shot DEVICE-1 research stays debug-only and observation-only. It may timestamp
+    # typed Android telephony callbacks, but it must never become a PRODUCT owner/effect path.
+    debug_telephony = "android/app/src/debug/java/com/mobileproxymish/app/DebugTelephonyDetachProvider.kt"
+    debug_manifest = "android/app/src/debug/AndroidManifest.xml"
+    for required in (
+        "PhoneStateListener(directExecutor)",
+        "PhoneStateListener.LISTEN_SERVICE_STATE",
+        "ServiceState.STATE_POWER_OFF",
+        "SubscriptionManager.getActiveDataSubscriptionId()",
+        "createForSubscriptionId(subscriptionId)",
+        "SystemClock.elapsedRealtime()",
+        'put("product_mutation_performed", false)',
+        'put("radio_mutation_performed", false)',
+        'put("rotation_triggered", false)',
+        'put("subscription_id_persisted", false)',
+    ):
+        require(
+            debug_telephony,
+            required,
+            "debug telephony-detach research must remain typed, timestamped and observation-only",
+        )
+    for forbidden in (
+        "ProcessBuilder",
+        "cmd connectivity airplane-mode",
+        "airplane-mode enable",
+        "airplane-mode disable",
+        "startPublicIpRotation",
+        "start_public_ip_rotation",
+        "Thread(",
+        "Timer(",
+        "ScheduledExecutorService",
+        "kotlinx.coroutines.delay",
+        "SystemClock.sleep",
+    ):
+        forbid(
+            debug_telephony,
+            forbidden,
+            "debug telephony-detach research may not own radio effects, Rotation, timers or polling",
+        )
+    for required in (
+        'android:name=".DebugTelephonyDetachProvider"',
+        'android:authorities="${applicationId}.telephony-detach-diagnostics"',
+        'android:permission="android.permission.DUMP"',
+    ):
+        require(
+            debug_manifest,
+            required,
+            "typed radio-detach research must exist only in the debug/DUMP-gated surface",
+        )
+    for forbidden in (
+        "DebugTelephonyDetachProvider",
+        "telephony-detach-diagnostics",
+    ):
+        forbid(
+            "android/app/src/main/AndroidManifest.xml",
+            forbidden,
+            "telephony-detach research must not enter the PRODUCT release manifest",
+        )
+    for manifest in (debug_manifest, "android/app/src/main/AndroidManifest.xml"):
+        forbid(
+            manifest,
+            "READ_PHONE_STATE",
+            "ServiceState research must not add an unnecessary phone-state runtime permission",
+        )
+
     print("ARCHITECTURE_GUARDS=PASS")
 
 
