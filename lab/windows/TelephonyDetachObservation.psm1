@@ -143,6 +143,7 @@ function Stop-MishTelephonyDetachObservation {
             application_id = $PackageName
             native = $snapshot
             diagnostic_permission_grant_performed = $true
+            diagnostic_permission_revoke_performed = $false
             product_mutation_performed = $false
             radio_mutation_performed = $false
             rotation_triggered = $false
