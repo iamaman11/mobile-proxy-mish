@@ -1,5 +1,16 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+
     <application>
+        <!-- Debug-only typed ServiceState observer for one DUMP-gated Device Lab experiment. -->
+        <provider
+            android:name=".DebugTelephonyDetachProvider"
+            android:authorities="${applicationId}.telephony-detach-diagnostics"
+            android:enabled="true"
+            android:exported="true"
+            android:grantUriPermissions="false"
+            android:permission="android.permission.DUMP" />
+
         <!-- Debug-only, no-input diagnostic endpoint. It emits typed readiness booleans only. -->
         <activity
             android:name=".DebugReadinessActivity"
