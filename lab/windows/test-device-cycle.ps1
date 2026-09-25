@@ -288,6 +288,60 @@ try {
         throw 'A collected but failing loopback matrix must not be promoted to a green probe.'
     }
 
+    $capabilityPassPath = Join-Path $root 'cellular-primitive-capabilities-pass.json'
+    [ordered]@{
+        schema = 'mish.lab.cellular-primitive-capabilities/v1'
+        acceptance_result = 'PASS'
+        classification = 'CELLULAR_PRIMITIVE_CAPABILITY_AUDIT_PASS'
+        device = [ordered]@{ model = 'SM-A022G'; api = 30; abi = 'armeabi-v7a'; build_type = 'user' }
+        authority = [ordered]@{ existing_root_readonly_available = $true }
+        command_surfaces = [ordered]@{
+            svc_data_available = $true
+            cmd_phone_available = $true
+            cmd_phone_data_advertised = $true
+            cmd_phone_radio_advertised = $false
+            cmd_phone_restart_modem_advertised = $false
+        }
+        initial_settings = [ordered]@{ airplane_mode = 'DISABLED'; mobile_data = 'ENABLED' }
+        mutation = [ordered]@{
+            product_mutation_performed = $false
+            data_mutation_performed = $false
+            radio_mutation_performed = $false
+            modem_mutation_performed = $false
+            rotation_triggered = $false
+            app_restart_performed = $false
+            install_performed = $false
+        }
+        raw_command_help_persisted = $false
+        raw_public_ip_persisted = $false
+        subscription_id_persisted = $false
+        operator_identity_persisted = $false
+        secrets_persisted_in_evidence = $false
+        architecture_decision = 'NOT_MADE'
+    } | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 -LiteralPath $capabilityPassPath
+    $capabilityPass = & $reportScript -Mode probe_only -PrNumber 425 -SourceSha ('0' * 40) -ControlSha $controlSha -RequestedProbe cellular_primitive_capabilities -TargetedEvidencePath $capabilityPassPath -OutputPath (Join-Path $root 'cellular-capability-pass-report.json') | Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$capabilityPass.cycle_result -cne 'PASS' -or
+        [string]$capabilityPass.classification -cne 'CELLULAR_PRIMITIVE_CAPABILITY_AUDIT_PASS' -or
+        [string]$capabilityPass.targeted_probe.acceptance_result -cne 'PASS' -or
+        [string]$capabilityPass.exact_candidate_acceptance -cne 'NOT_EVALUATED' -or
+        [string]$capabilityPass.source_identity_claim -cne 'REQUEST_CONTEXT_ONLY'
+    ) {
+        throw 'Read-only cellular capability probe PASS must remain LAB-only and cannot claim PRODUCT acceptance.'
+    }
+
+    $capabilityInvalidPath = Join-Path $root 'cellular-primitive-capabilities-invalid.json'
+    $capabilityInvalidEvidence = Get-Content -Raw -LiteralPath $capabilityPassPath | ConvertFrom-Json
+    $capabilityInvalidEvidence.mutation.data_mutation_performed = $true
+    $capabilityInvalidEvidence | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 -LiteralPath $capabilityInvalidPath
+    $capabilityInvalid = & $reportScript -Mode probe_only -PrNumber 425 -SourceSha ('0' * 40) -ControlSha $controlSha -RequestedProbe cellular_primitive_capabilities -TargetedEvidencePath $capabilityInvalidPath -OutputPath (Join-Path $root 'cellular-capability-invalid-report.json') | Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$capabilityInvalid.cycle_result -cne 'LAB_FAIL' -or
+        [string]$capabilityInvalid.classification -cne 'LAB_TARGETED_PROBE_SCHEMA_INVALID'
+    ) {
+        throw 'Cellular capability evidence that reports a mutation must fail closed as invalid LAB evidence.'
+    }
+
     $dnsObservationPath = Join-Path $root 'dns-lifetime-live-pass.json'
     [ordered]@{
         schema = 'mish.lab.dns-lifetime-live/v1'
