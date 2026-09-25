@@ -96,9 +96,8 @@ function Start-MishTelephonyDetachObservation {
         return $snapshot
     }
     catch {
-        [void](Invoke-MishTelephonyAdb -AdbPath $AdbPath -Arguments @(
-            'shell', 'pm', 'revoke', $PackageName, $script:ReadPhoneStatePermission
-        ))
+        # Do not revoke here: Android may kill the package when a runtime permission is revoked,
+        # which would turn a read-only diagnostic failure into a PRODUCT lifecycle mutation.
         throw
     }
 }
@@ -166,9 +165,9 @@ function Stop-MishTelephonyDetachObservation {
         return $snapshot
     }
     finally {
-        [void](Invoke-MishTelephonyAdb -AdbPath $AdbPath -Arguments @(
-            'shell', 'pm', 'revoke', $PackageName, $script:ReadPhoneStatePermission
-        ))
+        # The debug-only runtime permission is intentionally left granted for this installed
+        # candidate. Revoking it can kill the package process on Android and corrupt the
+        # post-Rotation lifecycle evidence. The next APK without this debug permission drops it.
     }
 }
 
