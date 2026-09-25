@@ -25,6 +25,7 @@ try {
         'test-u8-remote-control-probe-contract.ps1',
         'TelephonyDetachObservation.psm1',
         'characterize-radio-poweroff.ps1',
+        'characterize-radio-poweroff-public-egress.ps1',
         'diagnose-u8-durability-soak.ps1',
         'test-u8-durability-soak-probe-contract.ps1',
         'test-diagnostic-connect-probe.ps1',
@@ -701,6 +702,73 @@ try {
         [string]$radioPoweroffInvalid.exact_candidate_acceptance -cne 'NOT_EVALUATED'
     ) {
         throw 'Radio POWER_OFF characterization without proven restore must fail closed as LAB evidence.'
+    }
+
+    $radioPoweroffEgressPassPath = Join-Path $root 'radio-poweroff-public-egress-pass.json'
+    [ordered]@{
+        schema = 'mish.lab.radio-poweroff-public-egress/v1'
+        acceptance_result = 'PASS'
+        classification = 'POWER_OFF_PUBLIC_EGRESS_CHANGED'
+        radio_cycles = 1
+        external_observations = 2
+        power_off_observed = $true
+        restore = [ordered]@{
+            attempted = $true
+            airplane_off_verified = $true
+            product_pid_stable = $true
+            product_recovered = $true
+            rotation_operation_id_unchanged = $true
+        }
+        mutation = [ordered]@{
+            product_mutation_performed = $false
+            product_rotation_triggered = $false
+            manager_command_issued = $false
+            automatic_repeat_rotation = $false
+        }
+        raw_public_ip_persisted = $false
+        secrets_persisted_in_evidence = $false
+    } | ConvertTo-Json -Depth 7 | Set-Content -Encoding UTF8 -LiteralPath $radioPoweroffEgressPassPath
+    $radioPoweroffEgressPass = & $reportScript -Mode full -PrNumber 401 -SourceSha ('9' * 40) -ControlSha $controlSha -DiagnosticEvidencePath $passDiagnostic -RequestedProbe u8_radio_poweroff_public_egress -TargetedEvidencePath $radioPoweroffEgressPassPath -OutputPath (Join-Path $root 'radio-poweroff-public-egress-pass-report.json') | Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$radioPoweroffEgressPass.cycle_result -cne 'PASS' -or
+        [string]$radioPoweroffEgressPass.classification -cne 'POWER_OFF_PUBLIC_EGRESS_CHANGED' -or
+        [string]$radioPoweroffEgressPass.acceptance_scope -cne 'FULL_BASELINE_PLUS_U8_RADIO_POWEROFF_PUBLIC_EGRESS' -or
+        [string]$radioPoweroffEgressPass.exact_candidate_acceptance -cne 'NOT_EVALUATED'
+    ) {
+        throw 'Hold-to-POWER_OFF public-egress PASS must remain characterization evidence, not PRODUCT acceptance.'
+    }
+
+    $radioPoweroffEgressInvalidPath = Join-Path $root 'radio-poweroff-public-egress-invalid.json'
+    [ordered]@{
+        schema = 'mish.lab.radio-poweroff-public-egress/v1'
+        acceptance_result = 'PASS'
+        classification = 'POWER_OFF_PUBLIC_EGRESS_CHANGED'
+        radio_cycles = 1
+        external_observations = 2
+        power_off_observed = $true
+        restore = [ordered]@{
+            attempted = $true
+            airplane_off_verified = $false
+            product_pid_stable = $true
+            product_recovered = $false
+            rotation_operation_id_unchanged = $true
+        }
+        mutation = [ordered]@{
+            product_mutation_performed = $false
+            product_rotation_triggered = $false
+            manager_command_issued = $false
+            automatic_repeat_rotation = $false
+        }
+        raw_public_ip_persisted = $false
+        secrets_persisted_in_evidence = $false
+    } | ConvertTo-Json -Depth 7 | Set-Content -Encoding UTF8 -LiteralPath $radioPoweroffEgressInvalidPath
+    $radioPoweroffEgressInvalid = & $reportScript -Mode full -PrNumber 401 -SourceSha ('a' * 40) -ControlSha $controlSha -DiagnosticEvidencePath $passDiagnostic -RequestedProbe u8_radio_poweroff_public_egress -TargetedEvidencePath $radioPoweroffEgressInvalidPath -OutputPath (Join-Path $root 'radio-poweroff-public-egress-invalid-report.json') | Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$radioPoweroffEgressInvalid.cycle_result -cne 'LAB_FAIL' -or
+        [string]$radioPoweroffEgressInvalid.classification -cne 'LAB_TARGETED_PROBE_SCHEMA_INVALID' -or
+        [string]$radioPoweroffEgressInvalid.exact_candidate_acceptance -cne 'NOT_EVALUATED'
+    ) {
+        throw 'Hold-to-POWER_OFF public-egress evidence without proven restore must fail closed as LAB evidence.'
     }
 
     Write-Host 'DEVICE_CYCLE_CONTRACT=PASS'

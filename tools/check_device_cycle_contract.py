@@ -75,7 +75,7 @@ def main() -> None:
         "candidate build is not a completed successful PR preflight",
         "PR Validation + PRODUCT Candidate",
         "probe_only supports only the current-function loopback_connect probe",
-        "full accepts only none, capacity_resources, recovery_lifecycle, dns_lifetime_live, u5_rotation, u7_runtime_restart_resources, u7_512_lifecycle_stability, u8_reboot_install_durability, u8_public_egress_rotation, u8_remote_control, u8_radio_detach_research, u8_radio_poweroff_characterization, u8_durability_soak, or u8g_final_clean_client",
+        "full accepts only none, capacity_resources, recovery_lifecycle, dns_lifetime_live, u5_rotation, u7_runtime_restart_resources, u7_512_lifecycle_stability, u8_reboot_install_durability, u8_public_egress_rotation, u8_remote_control, u8_radio_detach_research, u8_radio_poweroff_characterization, u8_radio_poweroff_public_egress, u8_durability_soak, or u8g_final_clean_client",
         "install_only/diagnose_only require probe=none",
         "capacity_resources",
         "recovery_lifecycle",
@@ -88,6 +88,7 @@ def main() -> None:
         "u8_remote_control",
         "u8_radio_detach_research",
         "u8_radio_poweroff_characterization",
+        "u8_radio_poweroff_public_egress",
         "u8_durability_soak",
         "u8g_final_clean_client",
         "Explicit U8-G final clean-client privacy acceptance",
@@ -102,6 +103,8 @@ def main() -> None:
         "diagnose-u8-reboot-install-durability.ps1",
         "Explicit DEVICE-1 radio POWER_OFF characterization",
         "characterize-radio-poweroff.ps1",
+        "Explicit DEVICE-1 hold-to-POWER_OFF public egress characterization",
+        "characterize-radio-poweroff-public-egress.ps1",
         "Explicit U8-F bounded durability soak",
         "diagnose-u8-durability-soak.ps1",
         "Explicit U3 DNS lifetime - live same-process observation",
@@ -172,10 +175,15 @@ def main() -> None:
     report = "lab/windows/new-device-cycle-report.ps1"
     for required in (
         "'mish.lab.radio-poweroff-characterization/v1'",
+        "'mish.lab.radio-poweroff-public-egress/v1'",
         "'u8_radio_poweroff_characterization'",
+        "'u8_radio_poweroff_public_egress'",
         "'FULL_BASELINE_PLUS_U8_RADIO_POWEROFF_CHARACTERIZATION'",
+        "'FULL_BASELINE_PLUS_U8_RADIO_POWEROFF_PUBLIC_EGRESS'",
         "'POWER_OFF_OBSERVED'",
         "'POWER_OFF_NOT_OBSERVED_WITHIN_SAFETY_ENVELOPE'",
+        "'POWER_OFF_PUBLIC_EGRESS_CHANGED'",
+        "'POWER_OFF_PUBLIC_EGRESS_UNCHANGED'",
         "rotation_operation_id_unchanged",
         "automatic_repeat_rotation",
     ):
@@ -183,6 +191,50 @@ def main() -> None:
             report,
             required,
             "Device Cycle report must classify radio POWER_OFF characterization as bounded LAB evidence rather than PRODUCT acceptance",
+        )
+
+    radio_poweroff_egress = "lab/windows/characterize-radio-poweroff-public-egress.ps1"
+    for required in (
+        "mish.lab.radio-poweroff-public-egress/v1",
+        "PublicEgressObservation.psm1",
+        "New-MishPublicEgressObservationContext",
+        "Invoke-MishExternalPublicIpObservation",
+        "Close-MishPublicEgressObservationContext",
+        "characterize-radio-poweroff.ps1",
+        "radio_cycles = 1",
+        "external_observations = 2",
+        "POWER_OFF_PUBLIC_EGRESS_CHANGED",
+        "POWER_OFF_PUBLIC_EGRESS_UNCHANGED",
+        "product_rotation_triggered = $false",
+        "manager_command_issued = $false",
+        "automatic_repeat_rotation = $false",
+        "raw_public_ip_persisted = $false",
+        "$beforeAddress = $null",
+        "$afterAddress = $null",
+    ):
+        require(
+            radio_poweroff_egress,
+            required,
+            "hold-to-POWER_OFF public-egress probe must reuse one LAB radio owner and one read-only egress observer",
+        )
+    for forbidden in (
+        "diagnose-u5-rotation.ps1",
+        "/v1/rotate",
+        "MISH_MANAGER_TOKEN",
+        "DebugRotationActivity",
+        "startPublicIpRotation",
+        "start_public_ip_rotation",
+        "retry-until-changed",
+        "retry_until_changed",
+        "Write-Host $beforeAddress",
+        "Write-Host $afterAddress",
+        "before_ip =",
+        "after_ip =",
+    ):
+        forbid(
+            radio_poweroff_egress,
+            forbidden,
+            "hold-to-POWER_OFF public-egress probe must not become PRODUCT Rotation/manager/retry or leak raw IP",
         )
 
     radio_poweroff = "lab/windows/characterize-radio-poweroff.ps1"
@@ -886,6 +938,7 @@ def main() -> None:
         "u7_512_lifecycle_stability",
         "u8_durability_soak",
         "u8g_final_clean_client",
+        "FULL_BASELINE_PLUS_U8_RADIO_POWEROFF_PUBLIC_EGRESS",
         "FULL_BASELINE_PLUS_U8_DURABILITY_SOAK",
         "FULL_BASELINE_PLUS_U8G_FINAL_CLEAN_CLIENT",
         "FULL_BASELINE_PLUS_DNS_LIFETIME_OBSERVATION",
