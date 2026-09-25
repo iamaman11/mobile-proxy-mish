@@ -12,7 +12,7 @@ Issue #135                         -> current stage / exact execution pointer on
 stage-specific issue/PR            -> bounded implementation/evidence only
 SYSTEM.md / DEPENDENCIES.md         -> accepted architecture
 EXECUTION.md / ACCEPTANCE.md        -> process/evidence rules
-Issue #134                         -> historical research/rationale archive + roadmap pointer
+Issue #134                         -> CLOSED historical research/rationale archive
 ```
 
 ## Product goal
@@ -1195,6 +1195,88 @@ Accepted implementation/evidence:
 The physical run intentionally validates normal production behavior after the Worker change. The rare reconnect race itself is proven deterministically in the hosted Durable Object harness rather than by artificially breaking DEVICE-1 WSS.
 
 
+## Current accepted post-U8 remote-rotation contract
+
+The historical #373/#376 recovery sections below remain evidence of how the design evolved. They are **not** the current runtime contract.
+
+Current accepted remote-control boundary after #379, #413 and #419:
+
+```text
+host = mish.alegria.by
+
+Rust/Tokio
+  = sole WSS reconnect + heartbeat owner
+  = sole Rotation owner
+  = PRODUCT request-id idempotency owner
+
+Worker / Durable Object
+  = manager auth + correlation
+  = fresh-session proof
+  = one 2 s initial delivery-ACK boundary
+  = if first ACK is lost: bounded RECOVERING
+  = on natural authenticated Rust reconnect:
+      redeliver the SAME request_id at most once
+  = no Worker-triggered reconnect
+  = no replacement request_id
+  = existing fail-closed FENCED drain if uncertainty remains
+
+public manager
+  = POST https://mish.alegria.by/v1/rotate
+  = empty body
+  = one typed response
+  = no polling
+  = no hidden retry/replay
+```
+
+Current accepted timing/safety constants:
+
+- Rust/Tokio CONTROL heartbeat interval = **4 s**;
+- Worker fresh-session window = **10 s**;
+- initial delivery ACK boundary = **2 s**;
+- manager HTTP ceiling = **18 s**;
+- SDK/LAB client ceiling = **20 s**;
+- accepted-result / fail-closed drain remains **120 s**;
+- typed POWER_OFF remains mandatory before airplane restore;
+- CHANGED and UNCHANGED are equally valid successful Rotation outcomes.
+
+Current accepted identities:
+
+- protected main at research start = `05a57f7988295a6af3e7fadcef0f35023ea7c618`;
+- accepted Android/Rust PRODUCT = `db3abd4ec7225f46004afa8b3dd54a1d391fa958`;
+- live Worker after #419 = `fa4da7ee-8c99-4022-85d6-675baaa577e2`.
+
+### Current measurement-only research — issue #422
+
+Issue #422 is the **only active latency/stability research owner**. It does not define a new PRODUCT stage and authorizes no code or timeout change.
+
+Triggering external sample after #419:
+
+| sample | terminal | server duration | external HTTP total |
+|---|---|---:|---:|
+| op 2 | CHANGED | 16,951 ms | 17.337 s |
+| op 3 | CHANGED | 11,205 ms | 11.521 s |
+| op 4 | CHANGED | 11,647 ms | 11.965 s |
+| op 5 | CHANGED | 16,984 ms | 17.351 s |
+
+For this small N=4 sample:
+
+- success = 4/4;
+- server min / median / max = **11,205 / 14,299 / 16,984 ms**;
+- server mean = **14,196.75 ms**;
+- observed spread = **5,779 ms**.
+
+Do not infer a stable bimodal distribution from four observations.
+
+The next research question is whether the ~11 s versus ~17 s spread is still dominated by the already-attributed physical phase:
+
+```text
+rearm complete
+ -> modem/carrier + Android framework reacquisition
+ -> first Cellular callback enters Rust
+```
+
+The research must use a bounded predeclared sample, preserve one public command -> one logical Rotation, stop on UNKNOWN/BUSY/unhealthy post-state, and make no implementation change unless a repeated material `PRODUCT_AVOIDABLE` phase is demonstrated.
+
 ## Single-pass execution rule
 
 Development proceeds linearly through `U1 -> U2 -> ... -> U8` with **one current stage** and no parallel roadmap hierarchy.
@@ -1210,10 +1292,10 @@ fresh exact baseline
  -> advance the single current-stage pointer
 ```
 
-Do not open a planning issue for every subtask. A stage-specific issue exists only when it materially improves execution/evidence traceability. Issue #135 is the single current-stage pointer.
+Do not open a planning issue for every subtask. A stage-specific issue exists only when it materially improves execution/evidence traceability. Issue #135 is the single live pointer. A bounded research issue such as #422 may be active without creating or reopening a PRODUCT stage.
 
 A failed gate does not create a new roadmap stage: fix only the surfaced defect on the same line and rerun the exact gate.
 
 ## Supersession rule
 
-When old #134/#135 comments conflict with this document because architecture has since changed, this document defines the current order. Historical comments remain useful rationale/evidence but must not resurrect removed components or obsolete optimization targets.
+When old #134 archive comments or older #135 checkpoints conflict with this document because architecture has since changed, this document defines the current order. Historical comments remain useful rationale/evidence but must not resurrect removed components or obsolete optimization targets.
