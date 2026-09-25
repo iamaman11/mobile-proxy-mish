@@ -75,8 +75,11 @@ if ($model -cne 'SM-A022G' -or $api -cne '30' -or $abi -cne 'armeabi-v7a') {
 $rootIdentity = Invoke-MishAdbCapture -Arguments @('shell','su','-c','id -u')
 $rootAvailable = $rootIdentity.ExitCode -eq 0 -and $rootIdentity.Text.Trim() -ceq '0'
 
-$svcHelp = if ($rootAvailable) {
-    Invoke-MishAdbCapture -Arguments @('shell','su','-c','svc help')
+# Android 11's /system/bin/svc shell wrapper exposes the data usage when invoked with the
+# subcommand but no mutation argument. That read-only usage path intentionally exits non-zero,
+# so capability detection must inspect the usage text rather than require exit code 0.
+$svcDataHelp = if ($rootAvailable) {
+    Invoke-MishAdbCapture -Arguments @('shell','su','-c','svc data')
 } else {
     [pscustomobject]@{ ExitCode = -1; Text = '' }
 }
@@ -89,14 +92,17 @@ $phoneHelp = if ($rootAvailable) {
 
 $svcDataAvailable = (
     $rootAvailable -and
-    $svcHelp.ExitCode -eq 0 -and
-    $svcHelp.Text -match '(?im)^\s*data(?:\s|:)'
+    $svcDataHelp.Text -match '(?im)usage:\s*svc\s+data\s+\[enable\|disable\]'
 )
 
-$cmdPhoneAvailable = $rootAvailable -and $phoneHelp.ExitCode -eq 0
+$cmdPhoneAvailable = (
+    $rootAvailable -and
+    -not [string]::IsNullOrWhiteSpace($phoneHelp.Text) -and
+    $phoneHelp.Text -notmatch '(?i)can.?t find service.*phone'
+)
 $cmdPhoneDataAdvertised = (
     $cmdPhoneAvailable -and
-    $phoneHelp.Text -match '(?im)^\s*data(?:\s|:)'
+    $phoneHelp.Text -match '(?im)\bdata\s+(?:enable|disable)\b'
 )
 $cmdPhoneRadioAdvertised = (
     $cmdPhoneAvailable -and
@@ -104,7 +110,7 @@ $cmdPhoneRadioAdvertised = (
 )
 $cmdPhoneRestartModemAdvertised = (
     $cmdPhoneAvailable -and
-    $phoneHelp.Text -match '(?im)^\s*restart-modem(?:\s|:)'
+    $phoneHelp.Text -match '(?im)\brestart-modem\b'
 )
 
 $airplaneCapture = Invoke-MishAdbCapture -Arguments @(

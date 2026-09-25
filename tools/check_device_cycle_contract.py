@@ -200,7 +200,7 @@ def main() -> None:
     for required in (
         "mish.lab.cellular-primitive-capabilities/v1",
         "'shell','su','-c','id -u'",
-        "'shell','su','-c','svc help'",
+        "'shell','su','-c','svc data'",
         "'shell','su','-c','cmd phone help'",
         "existing_root_readonly_available",
         "svc_data_available",
