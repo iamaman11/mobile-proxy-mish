@@ -554,9 +554,6 @@ $correlatedTelephonyEvents = @(
         [int64]$_.operation_age_ms -ge 0
     }
 )
-if ($correlatedTelephonyEvents.Count -lt 1) {
-    Stop-MishRemoteControl 'TELEPHONY_EVIDENCE_UNCORRELATED' 'No typed ServiceState callback was correlated to the real remote Rotation.'
-}
 foreach ($event in $correlatedTelephonyEvents) {
     if ([string]$event.state -notin @('IN_SERVICE', 'OUT_OF_SERVICE', 'EMERGENCY_ONLY', 'POWER_OFF', 'UNKNOWN')) {
         Stop-MishRemoteControl 'TELEPHONY_EVIDENCE_INVALID' 'Typed ServiceState evidence contains an unknown state encoding.'
@@ -574,7 +571,9 @@ $outOfServiceMs = if ($null -eq $outOfServiceEvent) { $null } else { [int64]$out
 $powerOffMs = if ($null -eq $powerOffEvent) { $null } else { [int64]$powerOffEvent.operation_age_ms }
 $cellularLossFromCommandMs = $rotationOriginFromCommandMs + [int64]$rotationTiming.cellular_loss_observed_ms
 $airplaneDisableFromCommandMs = $rotationOriginFromCommandMs + [int64]$rotationTiming.airplane_disable_started_ms
-$radioDetachClassification = if ($null -eq $powerOffMs) {
+$radioDetachClassification = if ($correlatedTelephonyEvents.Count -eq 0) {
+    'NO_CORRELATED_SERVICE_STATE_EVENT'
+} elseif ($null -eq $powerOffMs) {
     'POWER_OFF_NOT_OBSERVED'
 } elseif ($powerOffMs -le $airplaneDisableFromCommandMs) {
     'POWER_OFF_AT_OR_BEFORE_DISABLE'
