@@ -1241,41 +1241,53 @@ Current accepted timing/safety constants:
 
 Current accepted identities:
 
-- protected main at research start = `05a57f7988295a6af3e7fadcef0f35023ea7c618`;
+- protected main used for the completed revalidation = `d2beb1d7910ba1fc53017a9f4fd8862ecb1c9d7f`;
 - accepted Android/Rust PRODUCT = `db3abd4ec7225f46004afa8b3dd54a1d391fa958`;
 - live Worker after #419 = `fa4da7ee-8c99-4022-85d6-675baaa577e2`.
 
-### Current measurement-only research — issue #422
+### Completed measurement-only research — issue #422
 
-Issue #422 is the **only active latency/stability research owner**. It does not define a new PRODUCT stage and authorizes no code or timeout change.
+Issue #422 is **CLOSED / PASS**. It remained measurement-only and caused no PRODUCT, Worker, timeout or POWER_OFF behavior change.
 
-Triggering external sample after #419:
+Triggering external sample after #419 contained four consecutive successful public commands with server durations 16,951 / 11,205 / 11,647 / 16,984 ms. Those commands were not phase-instrumented, so no individual 11 s or 17 s operation is retroactively assigned to a specific phase.
 
-| sample | terminal | server duration | external HTTP total |
-|---|---|---:|---:|
-| op 2 | CHANGED | 16,951 ms | 17.337 s |
-| op 3 | CHANGED | 11,205 ms | 11.521 s |
-| op 4 | CHANGED | 11,647 ms | 11.965 s |
-| op 5 | CHANGED | 16,984 ms | 17.351 s |
+The bounded follow-up collected six new exact-candidate physical samples through Device Cycle #853/#854/#855/#856/#858/#859. All six were PASS / CHANGED with one public command -> one logical Rotation, polling=0, POWER_OFF PASS, fresh/root generation exactness, healthy READY post-state and privacy evidence.
 
-For this small N=4 sample:
+Small-N timing summary:
 
-- success = 4/4;
-- server min / median / max = **11,205 / 14,299 / 16,984 ms**;
-- server mean = **14,196.75 ms**;
-- observed spread = **5,779 ms**.
+- manager min / median / max = **13,519 / 14,063.5 / 15,775 ms**;
+- Rotation terminal min / median / max = **12,996 / 13,376 / 14,170 ms**;
+- OFF -> fresh min / median / max = **5,000 / 5,793 / 6,526 ms**;
+- rearm-complete -> first Android callback min / median / max = **4,508 / 5,206 / 5,887 ms**;
+- that pre-callback interval accounts for **87.3-90.4%** of OFF -> fresh in every sample;
+- callback -> fresh min / median / max = **452 / 594.5 / 723 ms**;
+- fresh -> exact root min / median / max = **1,497 / 2,005 / 2,355 ms**;
+- post-IP proof min / median / max = **348 / 363 / 392 ms**;
+- terminal -> RESULT_ACK min / median / max = **73 / 431.5 / 2,404 ms**.
 
-Do not infer a stable bimodal distribution from four observations.
-
-The next research question is whether the ~11 s versus ~17 s spread is still dominated by the already-attributed physical phase:
+Final attribution:
 
 ```text
-rearm complete
- -> modem/carrier + Android framework reacquisition
- -> first Cellular callback enters Rust
+dominant OFF -> fresh variance
+  = EXTERNAL_ANDROID_MODEM_CARRIER_VARIANCE
+  = modem/carrier + Android framework reacquisition before first callback reaches Rust
+
+occasional post-terminal tail
+  = CONTROL_TRANSPORT_VARIANCE
+  = existing Rust-owned reconnect / TLS / WSS / authentication transport surface
 ```
 
-The research must use a bounded predeclared sample, preserve one public command -> one logical Rotation, stop on UNKNOWN/BUSY/unhealthy post-state, and make no implementation change unless a repeated material `PRODUCT_AVOIDABLE` phase is demonstrated.
+The larger CONTROL-tail samples occurred after Rotation was already terminal and did not make Rotation itself slower. #419 normal-path behavior showed no regression: no UNKNOWN/TIMEOUT/BUSY, no hidden retry, manager duration remained below 18 s, and the rare same-request recovery remains covered by its deterministic hosted tests.
+
+No repeated material `PRODUCT_AVOIDABLE` interval was demonstrated.
+
+Final disposition:
+
+```text
+NO PRODUCT OPTIMIZATION JUSTIFIED
+```
+
+Do not weaken POWER_OFF, add polling/rebind loops, tune timeouts, move Rotation/recovery ownership to Kotlin, or add a second scheduler/state machine. Further physical sampling requires a new concrete causal question rather than repetition.
 
 ## Single-pass execution rule
 

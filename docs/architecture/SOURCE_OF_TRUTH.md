@@ -31,7 +31,7 @@ Keep the issue surface intentionally small:
 - **#340** — separate LAB runner/TLS infrastructure debt; keep open until its own acceptance is proven. It is not a PRODUCT blocker.
 - **#134** — closed architecture/research archive.
 - **#219** — closed/not-planned rootless experiment; reopen only for a new explicit product requirement.
-- **#422** — current bounded remote-rotation latency/stability research; measurement only, no PRODUCT mutation authority.
+- **#422** — closed remote-rotation latency/stability research evidence owner; final result PASS / no PRODUCT optimization justified.
 
 Do not create a second master roadmap or use an archival/reference issue as a current-stage owner.
 
