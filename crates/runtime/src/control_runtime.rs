@@ -57,6 +57,11 @@ pub struct ControlOperationTimingSnapshot {
     pub accepted_sent_ms: Option<u64>,
     pub reconnect_started_ms: Option<u64>,
     pub reconnect_ready_ms: Option<u64>,
+    pub rotation_terminal_control_state: Option<ControlSessionState>,
+    pub post_terminal_connect_started_ms: Option<u64>,
+    pub post_terminal_connect_attempts: u32,
+    pub post_terminal_transport_connected_ms: Option<u64>,
+    pub post_terminal_transport_connections: u32,
     pub rotation_terminal_ms: Option<u64>,
     pub result_sent_ms: Option<u64>,
     pub result_ack_ms: Option<u64>,
@@ -389,6 +394,7 @@ impl ControlRuntimeCoordinator {
                 break;
             }
             self.publish_connection_state(ControlSessionState::Connecting, failures, 0);
+            self.record_post_terminal_connect_attempt();
 
             let result = self
                 .connect_and_run(
@@ -459,6 +465,7 @@ impl ControlRuntimeCoordinator {
                 CONTROL_CONNECT_TIMEOUT,
             ) => result.map_err(ControlRunError::from)?,
         };
+        self.record_post_terminal_transport_connected();
 
         self.publish_connection_state(ControlSessionState::Authenticating, 0, 0);
         self.authenticate(&mut transport, identity, signer).await?;
@@ -760,19 +767,26 @@ impl ControlRuntimeCoordinator {
             RotationTerminalResult::Unchanged => RemoteRotationResult::Unchanged,
             RotationTerminalResult::Failed => RemoteRotationResult::Failed,
         };
-        let changed = if let Ok(mut state) = self.state.lock()
-            && let Some(pending) = state.pending.as_mut()
-            && pending.operation_id == Some(operation_id)
-            && pending.result.is_none()
-        {
-            pending.result = Some(result);
-            if let Some(operation_id) = pending.operation_id {
-                let _ = pending.timing.mark(operation_id, |timing, elapsed_ms| {
-                    set_timing_once(&mut timing.rotation_terminal_ms, elapsed_ms);
-                });
+        let changed = if let Ok(mut state) = self.state.lock() {
+            let terminal_control_state = state.session_state;
+            if let Some(pending) = state.pending.as_mut()
+                && pending.operation_id == Some(operation_id)
+                && pending.result.is_none()
+            {
+                pending.result = Some(result);
+                if let Some(operation_id) = pending.operation_id {
+                    let _ = pending.timing.mark(operation_id, |timing, elapsed_ms| {
+                        set_timing_once(&mut timing.rotation_terminal_ms, elapsed_ms);
+                        if timing.rotation_terminal_control_state.is_none() {
+                            timing.rotation_terminal_control_state = Some(terminal_control_state);
+                        }
+                    });
+                }
+                state.last_terminal_result = Some(result);
+                true
+            } else {
+                false
             }
-            state.last_terminal_result = Some(result);
-            true
         } else {
             false
         };
@@ -824,6 +838,34 @@ impl ControlRuntimeCoordinator {
                     set_timing_once(&mut timing.reconnect_started_ms, elapsed_ms);
                 });
             }
+        }
+    }
+
+    fn record_post_terminal_connect_attempt(&self) {
+        if let Ok(mut state) = self.state.lock()
+            && let Some(pending) = state.pending.as_mut()
+            && pending.result.is_some()
+            && let Some(operation_id) = pending.operation_id
+        {
+            let _ = pending.timing.mark(operation_id, |timing, elapsed_ms| {
+                set_timing_once(&mut timing.post_terminal_connect_started_ms, elapsed_ms);
+                timing.post_terminal_connect_attempts =
+                    timing.post_terminal_connect_attempts.saturating_add(1);
+            });
+        }
+    }
+
+    fn record_post_terminal_transport_connected(&self) {
+        if let Ok(mut state) = self.state.lock()
+            && let Some(pending) = state.pending.as_mut()
+            && pending.result.is_some()
+            && let Some(operation_id) = pending.operation_id
+        {
+            let _ = pending.timing.mark(operation_id, |timing, elapsed_ms| {
+                set_timing_once(&mut timing.post_terminal_transport_connected_ms, elapsed_ms);
+                timing.post_terminal_transport_connections =
+                    timing.post_terminal_transport_connections.saturating_add(1);
+            });
         }
     }
 

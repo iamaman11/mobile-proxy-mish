@@ -273,6 +273,11 @@ class MishDiagnosticsSerializationTest {
                 acceptedSentMs = 7uL,
                 reconnectStartedMs = 7_200uL,
                 reconnectReadyMs = 13_900uL,
+                rotationTerminalControlState = ControlSessionStateView.BACKOFF,
+                postTerminalConnectStartedMs = 14_101uL,
+                postTerminalConnectAttempts = 1u,
+                postTerminalTransportConnectedMs = 14_120uL,
+                postTerminalTransportConnections = 1u,
                 rotationTerminalMs = 14_100uL,
                 resultSentMs = 14_150uL,
                 resultAckMs = 14_180uL,
@@ -333,6 +338,11 @@ class MishDiagnosticsSerializationTest {
         assertEquals("REMOTE_COMMAND_RECEIVED", timing.getString("origin"))
         assertEquals(9L, timing.getLong("operation_id"))
         assertEquals(7L, timing.getLong("accepted_sent_ms"))
+        assertEquals("BACKOFF", timing.getString("rotation_terminal_control_state"))
+        assertEquals(14_101L, timing.getLong("post_terminal_connect_started_ms"))
+        assertEquals(1L, timing.getLong("post_terminal_connect_attempts"))
+        assertEquals(14_120L, timing.getLong("post_terminal_transport_connected_ms"))
+        assertEquals(1L, timing.getLong("post_terminal_transport_connections"))
         assertEquals(14_180L, timing.getLong("result_ack_ms"))
         assertEquals(1L, timing.getLong("rotation_origin_from_command_ms"))
         val rotationTiming = timing.getJSONObject("rotation")
