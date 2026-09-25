@@ -1022,6 +1022,41 @@ Disposition: **issue #379 = COMPLETE / PASS.** Long-lived CONTROL liveness is no
 
 ---
 
+## Post-U8 — Consumer-facing remote rotation SDK — COMPLETED / PASS
+
+A demonstrated integration requirement after U8 was to expose the already accepted public remote-rotation contract to future applications through one thin typed client without moving any command, retry, polling, device or Rotation ownership out of the existing Cloudflare Worker/DO + Rust/Tokio path.
+
+Accepted boundary:
+
+```text
+future application
+  -> MishControlClient.RotateIpAsync()
+     -> one POST https://api.alegria.by/v1/rotate
+        -> existing Worker/DO
+           -> existing reverse WSS CONTROL
+              -> existing Rust Rotation SM
+```
+
+Accepted implementation/evidence:
+
+- issue #410 = CLOSED / PASS;
+- implementation PR #411 merged as `54c5b44e6a4d1d11396f3fabb87b02a4af4b77ff`;
+- SDK lives only under `sdk/dotnet/**` with dedicated `.github/workflows/sdk-dotnet.yml`;
+- public typed models: `RotateIpResponse`, `RotateResult`, `RotateReason`;
+- consumer call surface: `await client.RotateIpAsync()`;
+- caller cannot provide request id, operation id, device id, WSS/session details or Android/PRODUCT internals;
+- one SDK call performs one empty-body public POST, with no SDK polling, hidden retry, redirect replay or replay after `UNKNOWN`;
+- valid `CHANGED`, `UNCHANGED`, `FAILED`, `REJECTED` and `UNKNOWN` remain typed results;
+- unknown schema/version, malformed JSON, transport failure and HTTP/body mismatch are typed errors;
+- SDK .NET #2 / run `36152559730` = PASS, build 0 warnings / 0 errors, contract tests 16/16 PASS;
+- general PR validation #1096 / run `36152559646` = PASS with `PRODUCT_CHANGED=false`, heavy Rust validation NO, heavy Android build NO, device candidate NO;
+- no Cloudflare Worker/DO behavior changed;
+- no Android/Rust/Rotation/CONTROL/POWER_OFF/Cellular/root behavior changed;
+- no APK rebuild or physical DEVICE cycle was required for this SDK slice.
+
+The accepted PRODUCT immediately before this external SDK slice remains commit `3c5d337243eeeb12c18fb09bf881489d54c6d7ee`, physically accepted by Device Cycle #823 / run `36142620609`. The subsequent SDK merge changes only SDK/SDK-CI files and does not reopen PRODUCT acceptance.
+
+
 ## Single-pass execution rule
 
 Development proceeds linearly through `U1 -> U2 -> ... -> U8` with **one current stage** and no parallel roadmap hierarchy.
