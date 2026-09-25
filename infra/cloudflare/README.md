@@ -24,11 +24,10 @@ It is deployed directly with Wrangler and owns only:
 
 - the `mish-device-control` Worker;
 - one fixed-name `DeviceControl("primary")` Durable Object for this single-device deployment;
-- the device/control transport hostname `api.alegria.by`;
-- the public manager hostname `mish.alegria.by`;
+- the unified control hostname `mish.alegria.by` for both device WSS and manager HTTPS;
 - the Worker secret `MISH_MANAGER_TOKEN`.
 
-The Android device authenticates with its non-exportable Keystore P-256 key. The Worker keeps the device WebSocket surface on `api.alegria.by`, while manager/enrollment HTTPS is accepted only on `mish.alegria.by`. The primary Durable Object stores the enrolled public identity and bounded operation correlation. Proxy credentials are not part of this control plane.
+The Android device authenticates with its non-exportable Keystore P-256 key. The same Worker custom domain `mish.alegria.by` serves the device WebSocket transport, privileged enrollment seam, and public manager HTTPS API; path semantics keep those surfaces distinct. The primary Durable Object stores the enrolled public identity and bounded operation correlation. Proxy credentials are not part of this control plane.
 
 ### Public manager API
 

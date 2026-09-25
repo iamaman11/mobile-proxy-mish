@@ -265,10 +265,8 @@ def main() -> None:
         "MAX_RECENT_OPERATIONS",
         "resultAckMessage",
         'const MANAGER_ROTATE = "/v1/rotate"',
-        'const DEVICE_CONTROL_HOST = "api.alegria.by"',
-        'const MANAGER_HOST = "mish.alegria.by"',
-        "url.hostname !== DEVICE_CONTROL_HOST",
-        "url.hostname !== MANAGER_HOST",
+        'const CONTROL_HOST = "mish.alegria.by"',
+        "url.hostname !== CONTROL_HOST",
         'const PRIMARY_DEVICE_OBJECT = "primary"',
         '"https://control.internal/manager/rotate-and-wait"',
         "newManagerRequestId()",
@@ -536,14 +534,9 @@ def main() -> None:
         raise SystemExit("u8 control contract: Worker compatibility date must remain explicit")
     if config.get("workers_dev") is not False:
         raise SystemExit("u8 control contract: control Worker must not expose a workers.dev endpoint")
-    expected_routes = [
-        {"pattern": "api.alegria.by", "custom_domain": True},
-        {"pattern": "mish.alegria.by", "custom_domain": True},
-    ]
-    if config.get("routes") != expected_routes:
+    if config.get("routes") != [{"pattern": "mish.alegria.by", "custom_domain": True}]:
         raise SystemExit(
-            "u8 control contract: exact Worker domains are required: "
-            "api.alegria.by for device transport and mish.alegria.by for manager API"
+            "u8 control contract: Worker must own only the exact mish.alegria.by custom domain"
         )
     if config.get("secrets", {}).get("required") != ["MISH_MANAGER_TOKEN"]:
         raise SystemExit("u8 control contract: manager token must be a required Worker secret")

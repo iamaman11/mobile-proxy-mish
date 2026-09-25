@@ -238,13 +238,13 @@ test("device transport host does not expose the public manager API", async () =>
   assert.equal(calls, 0);
 });
 
-test("manager host does not expose the device WebSocket endpoint", async () => {
+test("old api hostname does not expose the device WebSocket endpoint", async () => {
   const device = "a".repeat(64);
   const env = managerEnv(async () => {
     throw new Error("must not be called");
   });
   const response = await worker.fetch(new Request(
-    `https://mish.alegria.by/v1/device/connect?device_id=${device}`,
+    `https://api.alegria.by/v1/device/connect?device_id=${device}`,
     { headers: { Upgrade: "websocket" } },
   ), env);
   assert.equal(response.status, 404);
