@@ -893,6 +893,7 @@ mod tests {
             .expect("enable");
         machine.observe_airplane(id, true).expect("on");
         machine.observe_cellular(id, 11, false).expect("loss");
+        machine.observe_radio_power_off(id).expect("radio power off");
 
         let waiting = machine
             .airplane_disable_effect_completed(id, RotationMutationOutcome::Uncertain)
