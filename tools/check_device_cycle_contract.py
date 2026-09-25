@@ -625,6 +625,8 @@ def main() -> None:
         "PublicEgressObservation.psm1",
         "external_public_ip_observer_proof = $true",
         "external_public_ip_consensus",
+        "radio_power_off_observed_ms",
+        "MISH_U8_REMOTE_CONTROL_RADIO_POWEROFF_GATE=PASS",
         "EXTERNAL_PUBLIC_IP_RESULT_MISMATCH",
         "MISH_U8_REMOTE_CONTROL_EXTERNAL_PUBLIC_IP=PASS",
         "U8_REMOTE_CONTROL_MANAGER_TIMEOUT_DIAGNOSTIC",
