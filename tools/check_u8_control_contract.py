@@ -43,6 +43,7 @@ def main() -> None:
     wrangler = "infra/cloudflare/control-worker/wrangler.jsonc"
     lab_remote = "lab/windows/diagnose-u8-remote-control.ps1"
     public_egress_observer = "lab/windows/PublicEgressObservation.psm1"
+    telephony_detach_observer = "lab/windows/TelephonyDetachObservation.psm1"
     device_cycle = ".github/workflows/device-cycle.yml"
 
     for needle in (
@@ -466,6 +467,56 @@ def main() -> None:
             diagnostics,
             forbidden,
             "diagnostics must expose timings without request ids or raw public IP",
+        )
+
+    for needle in (
+        "CollectTelephonyDetachEvidence",
+        "Start-MishTelephonyDetachObservation",
+        "Stop-MishTelephonyDetachObservation",
+        "New-MishTelephonyDetachResearchProjection",
+        "telephony_detach_research = $radioDetachResearch",
+    ):
+        require(
+            lab_remote,
+            needle,
+            "remote-control research must reuse the one existing manager Rotation and add observation only",
+        )
+    for needle in (
+        "u8_radio_detach_research",
+        "mish-u8-telephony-detach-v1.json",
+        "U8_RADIO_DETACH_RESEARCH_INVALID",
+    ):
+        require(
+            device_cycle,
+            needle,
+            "Device Cycle must expose one explicit typed radio-detach research probe",
+        )
+    for needle in (
+        "'mish.lab.telephony-detach-research/v1'",
+        "'PhoneStateListener.LISTEN_SERVICE_STATE'",
+        "'POWER_OFF'",
+        "second_rotation_triggered = $false",
+        "product_mutation_performed = $false",
+        "radio_mutation_performed = $false",
+    ):
+        require(
+            telephony_detach_observer,
+            needle,
+            "telephony detach projection must remain a read-only exact-operation observation",
+        )
+    for forbidden in (
+        "/v1/rotate",
+        "MISH_MANAGER_TOKEN",
+        "ROTATE_IP",
+        "airplane-mode enable",
+        "airplane-mode disable",
+        "Start-Sleep",
+        "Thread.Sleep",
+    ):
+        forbid(
+            telephony_detach_observer,
+            forbidden,
+            "typed telephony observer must not acquire manager, radio-effect, retry or dwell ownership",
         )
 
     config = json.loads(
