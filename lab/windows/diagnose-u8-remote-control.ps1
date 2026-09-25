@@ -452,6 +452,7 @@ foreach ($field in @(
     'airplane_enable_effect_completed_ms',
     'airplane_on_observed_ms',
     'cellular_loss_observed_ms',
+    'radio_power_off_observed_ms',
     'airplane_disable_started_ms',
     'airplane_disable_effect_completed_ms',
     'airplane_off_observed_ms',
@@ -510,6 +511,7 @@ if ([int64]$operationTiming.operation_reserved_ms -gt [int64]$operationTiming.ac
     [int64]$rotationTiming.airplane_enable_started_ms -gt [int64]$rotationTiming.airplane_enable_effect_completed_ms -or
     [int64]$rotationTiming.airplane_on_observed_ms -gt [int64]$rotationTiming.airplane_disable_started_ms -or
     [int64]$rotationTiming.cellular_loss_observed_ms -gt [int64]$rotationTiming.airplane_disable_started_ms -or
+    [int64]$rotationTiming.radio_power_off_observed_ms -gt [int64]$rotationTiming.airplane_disable_started_ms -or
     [int64]$rotationTiming.airplane_disable_started_ms -gt [int64]$rotationTiming.airplane_disable_effect_completed_ms -or
     [int64]$rotationTiming.airplane_disable_effect_completed_ms -gt [int64]$rotationTiming.airplane_off_observed_ms -or
     [int64]$rotationTiming.airplane_off_observed_ms -gt [int64]$rotationTiming.cellular_request_rearm_started_ms -or
@@ -605,6 +607,7 @@ $evidence = [ordered]@{
             airplane_enable_effect_completed_ms = [int64]$rotationTiming.airplane_enable_effect_completed_ms
             airplane_on_observed_ms = [int64]$rotationTiming.airplane_on_observed_ms
             cellular_loss_observed_ms = [int64]$rotationTiming.cellular_loss_observed_ms
+            radio_power_off_observed_ms = [int64]$rotationTiming.radio_power_off_observed_ms
             airplane_disable_started_ms = [int64]$rotationTiming.airplane_disable_started_ms
             airplane_disable_effect_completed_ms = [int64]$rotationTiming.airplane_disable_effect_completed_ms
             airplane_off_observed_ms = [int64]$rotationTiming.airplane_off_observed_ms
