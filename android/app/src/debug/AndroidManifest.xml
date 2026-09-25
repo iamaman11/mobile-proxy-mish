@@ -22,5 +22,14 @@
             android:name=".DebugRuntimeStartActivity"
             android:exported="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+        <!-- Debug-only DUMP-gated typed telephony observation. It has no mutation authority and
+             exists only for physical DEVICE-1 evidence. Release variants exclude this provider. -->
+        <provider
+            android:name=".DebugTelephonyServiceStateProvider"
+            android:authorities="${applicationId}.telephony-diagnostics"
+            android:enabled="true"
+            android:exported="true"
+            android:grantUriPermissions="false"
+            android:permission="android.permission.DUMP" />
     </application>
 </manifest>
