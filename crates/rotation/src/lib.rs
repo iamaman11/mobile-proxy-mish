@@ -1039,6 +1039,42 @@ mod tests {
     }
 
     #[test]
+    fn radio_power_off_fact_is_not_reused_by_the_next_operation() {
+        let (mut machine, first_id) = started();
+        machine
+            .airplane_enable_effect_completed(first_id, RotationMutationOutcome::Applied)
+            .expect("enable first");
+        machine.observe_airplane(first_id, true).expect("on first");
+        machine
+            .observe_cellular(first_id, 11, false)
+            .expect("loss first");
+        machine
+            .observe_radio_power_off(first_id)
+            .expect("radio power off first");
+        assert_eq!(
+            machine.snapshot().phase,
+            RotationPhase::AirplaneDisabling
+        );
+        machine
+            .fail(first_id, RotationFailure::StateUnavailable)
+            .expect("terminate first");
+
+        let second_id = machine.start(12).expect("start second");
+        machine
+            .record_before_ip(second_id, 12, ip("198.51.100.20"))
+            .expect("before second");
+        machine
+            .airplane_enable_effect_completed(second_id, RotationMutationOutcome::Applied)
+            .expect("enable second");
+        machine.observe_airplane(second_id, true).expect("on second");
+        let waiting = machine
+            .observe_cellular(second_id, 13, false)
+            .expect("loss second");
+
+        assert_eq!(waiting.phase, RotationPhase::WaitingRadioDown);
+    }
+
+    #[test]
     fn stale_operation_id_is_rejected() {
         let (mut machine, id) = started();
         assert_eq!(
