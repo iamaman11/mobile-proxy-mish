@@ -329,6 +329,26 @@ internal fun renderMishControlDiagnosticSnapshotV1(
                 snapshot.operationTiming.reconnectReadyMs?.toLong() ?: JSONObject.NULL,
             )
             put(
+                "rotation_terminal_control_state",
+                snapshot.operationTiming.rotationTerminalControlState?.name ?: JSONObject.NULL,
+            )
+            put(
+                "post_terminal_connect_started_ms",
+                snapshot.operationTiming.postTerminalConnectStartedMs?.toLong() ?: JSONObject.NULL,
+            )
+            put(
+                "post_terminal_connect_attempts",
+                snapshot.operationTiming.postTerminalConnectAttempts.toLong(),
+            )
+            put(
+                "post_terminal_transport_connected_ms",
+                snapshot.operationTiming.postTerminalTransportConnectedMs?.toLong() ?: JSONObject.NULL,
+            )
+            put(
+                "post_terminal_transport_connections",
+                snapshot.operationTiming.postTerminalTransportConnections.toLong(),
+            )
+            put(
                 "rotation_terminal_ms",
                 snapshot.operationTiming.rotationTerminalMs?.toLong() ?: JSONObject.NULL,
             )

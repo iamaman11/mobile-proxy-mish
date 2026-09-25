@@ -421,6 +421,17 @@ foreach ($field in @(
         Stop-MishRemoteControl 'DEVICE_TIMELINE_INCOMPLETE' "Missing/invalid CONTROL timing field: $field."
     }
 }
+if ([string]$operationTiming.rotation_terminal_control_state -notin @('CONNECTING', 'AUTHENTICATING', 'READY', 'BACKOFF')) {
+    Stop-MishRemoteControl 'DEVICE_TIMELINE_INCOMPLETE' 'Missing/invalid CONTROL state at Rotation terminal.'
+}
+foreach ($counter in @(
+    'post_terminal_connect_attempts',
+    'post_terminal_transport_connections'
+)) {
+    if ($null -eq $operationTiming.$counter -or [int64]$operationTiming.$counter -lt 0) {
+        Stop-MishRemoteControl 'DEVICE_TIMELINE_INCOMPLETE' "Missing/invalid CONTROL reconnect counter: $counter."
+    }
+}
 foreach ($field in @(
     'operation_age_ms',
     'activated_ms',
@@ -463,6 +474,20 @@ if ([int64]$rotationTiming.fresh_cellular_generation -ne [int64]$rotationTiming.
 $rotationOriginFromCommandMs = [int64]$operationTiming.rotation_origin_from_command_ms
 $rotationActivatedFromCommandMs = $rotationOriginFromCommandMs + [int64]$rotationTiming.activated_ms
 $rotationTerminalFromCommandMs = $rotationOriginFromCommandMs + [int64]$rotationTiming.terminal_ms
+
+if ($null -ne $operationTiming.post_terminal_connect_started_ms -and
+    [int64]$operationTiming.post_terminal_connect_started_ms -lt [int64]$operationTiming.rotation_terminal_ms) {
+    Stop-MishRemoteControl 'DEVICE_TIMELINE_ORDER_INVALID' 'Post-terminal CONTROL connect attempt precedes Rotation terminal.'
+}
+if ($null -ne $operationTiming.post_terminal_transport_connected_ms -and
+    [int64]$operationTiming.post_terminal_transport_connected_ms -lt [int64]$operationTiming.rotation_terminal_ms) {
+    Stop-MishRemoteControl 'DEVICE_TIMELINE_ORDER_INVALID' 'Post-terminal CONTROL transport connection precedes Rotation terminal.'
+}
+if ($null -ne $operationTiming.post_terminal_connect_started_ms -and
+    $null -ne $operationTiming.post_terminal_transport_connected_ms -and
+    [int64]$operationTiming.post_terminal_connect_started_ms -gt [int64]$operationTiming.post_terminal_transport_connected_ms) {
+    Stop-MishRemoteControl 'DEVICE_TIMELINE_ORDER_INVALID' 'Post-terminal CONTROL transport connected before its recorded connect attempt.'
+}
 
 # Preserve the accepted event model. Independent observations are intentionally not ordered
 # against each other: airplane-ON/cellular-loss and fresh-Cellular/root-auth may arrive either way.
@@ -544,6 +569,11 @@ $evidence = [ordered]@{
         accepted_sent_ms = [int64]$operationTiming.accepted_sent_ms
         reconnect_started_ms = if ($null -eq $operationTiming.reconnect_started_ms) { $null } else { [int64]$operationTiming.reconnect_started_ms }
         reconnect_ready_ms = if ($null -eq $operationTiming.reconnect_ready_ms) { $null } else { [int64]$operationTiming.reconnect_ready_ms }
+        rotation_terminal_control_state = [string]$operationTiming.rotation_terminal_control_state
+        post_terminal_connect_started_ms = if ($null -eq $operationTiming.post_terminal_connect_started_ms) { $null } else { [int64]$operationTiming.post_terminal_connect_started_ms }
+        post_terminal_connect_attempts = [int64]$operationTiming.post_terminal_connect_attempts
+        post_terminal_transport_connected_ms = if ($null -eq $operationTiming.post_terminal_transport_connected_ms) { $null } else { [int64]$operationTiming.post_terminal_transport_connected_ms }
+        post_terminal_transport_connections = [int64]$operationTiming.post_terminal_transport_connections
         rotation_origin_from_command_ms = $rotationOriginFromCommandMs
         rotation_terminal_ms = [int64]$operationTiming.rotation_terminal_ms
         result_sent_ms = [int64]$operationTiming.result_sent_ms
