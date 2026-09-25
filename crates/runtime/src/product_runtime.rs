@@ -411,6 +411,25 @@ impl ProductRuntimeCoordinator {
         Ok(admission)
     }
 
+    /// Forwards one transient typed Android radio POWER_OFF fact to the current Rust Rotation.
+    ///
+    /// This fact is deliberately not persisted in ProductPlatformFacts or replayed across runtime
+    /// generation replacement. It is meaningful only to the single active Rotation operation.
+    pub fn observe_radio_power_off(&self) -> Result<(), RuntimeExecutionError> {
+        let generation = {
+            let state = self.state()?;
+            if !matches!(
+                state.lifecycle.state(),
+                RuntimeLifecycleState::Starting | RuntimeLifecycleState::Running
+            ) {
+                return Err(RuntimeExecutionError::StateUnavailable);
+            }
+            Arc::clone(&state.generation)
+        };
+        generation.rotation().observe_radio_power_off();
+        Ok(())
+    }
+
     pub fn observe_mesh_vpn(
         &self,
         sequence: u64,
