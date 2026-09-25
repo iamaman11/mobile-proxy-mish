@@ -295,7 +295,7 @@ mod tests {
     #[test]
     fn deployment_control_target_is_canonical_wss_origin() {
         let target = ControlEndpoint::deployment().expect("control target");
-        assert_eq!(target.hostname(), "api.alegria.by");
+        assert_eq!(target.hostname(), "mish.alegria.by");
         assert_eq!(target.port(), 443);
         assert_eq!(target.path(), "/v1/device/connect");
     }
@@ -304,11 +304,11 @@ mod tests {
     fn control_target_rejects_ip_case_injection_and_alternate_path() {
         for (host, port, path) in [
             ("", 443, "/v1/device/connect"),
-            ("Api.alegria.by", 443, "/v1/device/connect"),
+            ("Mish.alegria.by", 443, "/v1/device/connect"),
             ("127.0.0.1", 443, "/v1/device/connect"),
             ("api.alegria.by\r\nX: y", 443, "/v1/device/connect"),
-            ("api.alegria.by", 0, "/v1/device/connect"),
-            ("api.alegria.by", 443, "/other"),
+            ("mish.alegria.by", 0, "/v1/device/connect"),
+            ("mish.alegria.by", 443, "/other"),
         ] {
             assert!(ControlEndpoint::parse(host, port, path).is_err());
         }

@@ -25,8 +25,7 @@ concurrency:
 
 env:
   WRANGLER_VERSION: '4.135.0'
-  DEVICE_CONTROL_HOST: api.alegria.by
-  MANAGER_HOST: mish.alegria.by
+  CONTROL_HOST: mish.alegria.by
   WORKER_DIR: infra/cloudflare/control-worker
 
 jobs:
@@ -208,12 +207,8 @@ jobs:
               raise SystemExit("unexpected Worker compatibility date")
           if config["workers_dev"] is not False:
               raise SystemExit("workers.dev must remain disabled")
-          expected_routes = [
-              {"pattern": "api.alegria.by", "custom_domain": True},
-              {"pattern": "mish.alegria.by", "custom_domain": True},
-          ]
-          if config["routes"] != expected_routes:
-              raise SystemExit("Worker custom-domain boundary is not exact")
+          if config["routes"] != [{"pattern": "mish.alegria.by", "custom_domain": True}]:
+              raise SystemExit("Worker must own only mish.alegria.by")
           if config["durable_objects"] != {
               "bindings": [{"name": "DEVICE_CONTROL", "class_name": "DeviceControl"}]
           }:
@@ -228,7 +223,7 @@ jobs:
               raise SystemExit("control Worker deploy must not execute repository package scripts")
           PY
 
-          test "$(tr -d '\r\n' < config/deployment/control-host.txt)" = "$DEVICE_CONTROL_HOST"
+          test "$(tr -d '\r\n' < config/deployment/control-host.txt)" = "$CONTROL_HOST"
           node --check "$WORKER_DIR/src/index.mjs"
           node --check "$WORKER_DIR/src/protocol.mjs"
           node --test "$WORKER_DIR/test"/*.test.mjs
@@ -305,12 +300,11 @@ jobs:
               fi
               sleep 10
             done
-            echo "::error::Expected HTTP $expected from $MANAGER_HOST, last status=$status"
+            echo "::error::Expected HTTP $expected from $CONTROL_HOST, last status=$status"
             return 1
           }
 
-          url="https://$MANAGER_HOST/v1/rotate"
-          legacy_url="https://$DEVICE_CONTROL_HOST/v1/rotate"
+          url="https://$CONTROL_HOST/v1/rotate"
           check_status 401 -X POST "$url"
           check_status 401 -X POST -H 'Authorization: Bearer definitely-wrong-manager-token' "$url"
           check_status 400 -X POST \
@@ -318,9 +312,6 @@ jobs:
             -H 'Content-Type: application/json' \
             --data '{"caller_request_id":"forbidden"}' \
             "$url"
-          check_status 404 -X POST \
-            -H "Authorization: Bearer $MISH_MANAGER_TOKEN" \
-            "$legacy_url"
 
       - name: Publish deployment summary
         shell: bash
@@ -332,12 +323,10 @@ jobs:
             echo '- PR Validation run: `${{ needs.resolve.outputs.hosted_run_id }}`'
             echo '- U8 Control Static run: `${{ needs.resolve.outputs.control_static_run_id }}`'
             echo '- Wrangler: `4.135.0`'
-            echo '- Device/control host: `api.alegria.by`'
-            echo '- Public manager host: `mish.alegria.by`'
+            echo '- Unified control host: `mish.alegria.by`'
             echo '- workers.dev: **disabled**'
             echo '- Unauthenticated/wrong-manager auth: **401**'
             echo '- Authorized caller-supplied rotate body: **400 / rejected before dispatch**'
             echo '- Public manager command: **POST https://mish.alegria.by/v1/rotate, empty body only**'
-            echo '- Legacy manager path on api.alegria.by: **404**'
             echo '- Device enrollment/physical rotation: **NOT performed by this deploy workflow**'
           } >> "$GITHUB_STEP_SUMMARY"
