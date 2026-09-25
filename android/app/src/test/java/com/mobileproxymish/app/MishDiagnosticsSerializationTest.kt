@@ -293,11 +293,12 @@ class MishDiagnosticsSerializationTest {
                 airplaneEnableEffectCompletedMs = 720uL,
                 airplaneOnObservedMs = 880uL,
                 cellularLossObservedMs = 900uL,
-                airplaneDisableStartedMs = 901uL,
-                airplaneDisableEffectCompletedMs = 1_020uL,
-                airplaneOffObservedMs = 1_150uL,
-                cellularRequestRearmStartedMs = 1_151uL,
-                cellularRequestRearmCompletedMs = 1_153uL,
+                radioPowerOffObservedMs = 1_400uL,
+                airplaneDisableStartedMs = 1_401uL,
+                airplaneDisableEffectCompletedMs = 1_520uL,
+                airplaneOffObservedMs = 1_650uL,
+                cellularRequestRearmStartedMs = 1_651uL,
+                cellularRequestRearmCompletedMs = 1_653uL,
                 firstPlatformCellularObservationMs = 4_800uL,
                 platformCellularObservationsAfterRearm = 2uL,
                 freshCellularObservedMs = 5_900uL,
@@ -347,8 +348,9 @@ class MishDiagnosticsSerializationTest {
         assertEquals(1L, timing.getLong("rotation_origin_from_command_ms"))
         val rotationTiming = timing.getJSONObject("rotation")
         assertEquals(9L, rotationTiming.getLong("operation_id"))
-        assertEquals(1_151L, rotationTiming.getLong("cellular_request_rearm_started_ms"))
-        assertEquals(1_153L, rotationTiming.getLong("cellular_request_rearm_completed_ms"))
+        assertEquals(1_400L, rotationTiming.getLong("radio_power_off_observed_ms"))
+        assertEquals(1_651L, rotationTiming.getLong("cellular_request_rearm_started_ms"))
+        assertEquals(1_653L, rotationTiming.getLong("cellular_request_rearm_completed_ms"))
         assertEquals(4_800L, rotationTiming.getLong("first_platform_cellular_observation_ms"))
         assertEquals(2L, rotationTiming.getLong("platform_cellular_observations_after_rearm"))
         assertEquals(44L, rotationTiming.getLong("fresh_cellular_generation"))

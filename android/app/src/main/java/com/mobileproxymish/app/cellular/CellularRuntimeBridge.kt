@@ -52,6 +52,10 @@ class CellularRuntimeBridge(
     private val productRuntime: NativeProductRuntime,
 ) : CellularObservationSink, Closeable {
     private val observer = CellularNetworkObserver(context, this)
+    private val radioPowerObserver = CellularRadioPowerObserver(context) {
+        // A callback outside a live Rotation is intentionally a no-op in Rust.
+        runCatching { productRuntime.observeRadioPowerOff() }
+    }
     private val started = AtomicBoolean(false)
     private val closed = AtomicBoolean(false)
     private val mutableSnapshot = MutableStateFlow(initialSnapshot())
@@ -108,15 +112,21 @@ class CellularRuntimeBridge(
 
         try {
             observer.start()
-            if (closed.get()) observer.close()
+            radioPowerObserver.start()
+            if (closed.get()) {
+                radioPowerObserver.close()
+                observer.close()
+            }
         } catch (error: LinkageError) {
             started.set(false)
+            cleanupPlatformObservation()
             mutableSnapshot.value = CellularRuntimeSnapshot.BoundaryUnavailable(
                 CellularBoundaryFailure.NativeLibraryUnavailable,
             )
             throw error
         } catch (error: Exception) {
             started.set(false)
+            cleanupPlatformObservation()
             mutableSnapshot.value = CellularRuntimeSnapshot.BoundaryUnavailable(
                 CellularBoundaryFailure.ForeignCallFailed,
             )
@@ -126,9 +136,7 @@ class CellularRuntimeBridge(
 
     fun stop() {
         if (closed.get() || !started.compareAndSet(true, false)) return
-        var clean = runCatching(observer::close).isSuccess
-        clean = runCatching { productRuntime.invalidateCellularPlatformFacts() }.isSuccess && clean
-        if (!clean) {
+        if (!cleanupPlatformObservation()) {
             throw IllegalStateException("Cellular platform observation cleanup failed")
         }
     }
@@ -213,11 +221,21 @@ class CellularRuntimeBridge(
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         started.set(false)
-        var clean = runCatching(observer::close).isSuccess
-        clean = runCatching { productRuntime.invalidateCellularPlatformFacts() }.isSuccess && clean
-        if (!clean) {
+        if (!cleanupPlatformObservation()) {
             throw IllegalStateException("Cellular platform observation cleanup failed")
         }
+    }
+
+    /**
+     * Android owns observer registration mechanics only. Native platform facts are invalidated
+     * whenever this observation session ends, including partial start failure after a network
+     * callback may already have reached Rust.
+     */
+    private fun cleanupPlatformObservation(): Boolean {
+        var clean = runCatching(radioPowerObserver::close).isSuccess
+        clean = runCatching(observer::close).isSuccess && clean
+        clean = runCatching { productRuntime.invalidateCellularPlatformFacts() }.isSuccess && clean
+        return clean
     }
 
     private companion object {

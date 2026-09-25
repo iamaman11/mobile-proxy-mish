@@ -124,6 +124,7 @@ struct RotationOperation {
     airplane_on_observed: bool,
     airplane_off_observed: bool,
     cellular_loss_observed: bool,
+    radio_power_off_observed: bool,
     latest_owner_generation: u64,
     fresh_cellular_generation: Option<u64>,
     root_authorized_generation: Option<u64>,
@@ -188,6 +189,7 @@ impl RotationOperation {
         if self.phase == RotationPhase::WaitingRadioDown
             && self.airplane_on_observed
             && self.cellular_loss_observed
+            && self.radio_power_off_observed
         {
             self.phase = RotationPhase::AirplaneDisabling;
             self.restore_required = true;
@@ -273,6 +275,7 @@ impl RotationStateMachine {
             airplane_on_observed: false,
             airplane_off_observed: false,
             cellular_loss_observed: false,
+            radio_power_off_observed: false,
             latest_owner_generation: before_generation,
             fresh_cellular_generation: None,
             root_authorized_generation: None,
@@ -366,6 +369,30 @@ impl RotationStateMachine {
                 }
                 operation.airplane_off_observed = true;
                 operation.maybe_advance_recovery();
+            }
+            _ => return Err(RotationTransitionError::InvalidPhase),
+        }
+        Ok(operation.snapshot())
+    }
+
+    /// Records the positive Android telephony fact that the cellular radio is powered off.
+    ///
+    /// This is an operation-scoped framework observation, not a timer or carrier lease-release
+    /// claim. It may arrive before or after ConnectivityManager loss; normal disable starts only
+    /// after all required radio-down facts are present.
+    pub fn observe_radio_power_off(
+        &mut self,
+        operation_id: u64,
+    ) -> Result<RotationSnapshot, RotationTransitionError> {
+        let operation = self.active(operation_id)?;
+        match operation.phase {
+            RotationPhase::AirplaneEnabling | RotationPhase::WaitingRadioDown => {
+                operation.radio_power_off_observed = true;
+                operation.maybe_advance_radio_down();
+            }
+            RotationPhase::AirplaneDisabling => {
+                // A duplicate/late POWER_OFF callback carries no new transition authority.
+                operation.radio_power_off_observed = true;
             }
             _ => return Err(RotationTransitionError::InvalidPhase),
         }
@@ -637,6 +664,9 @@ mod tests {
         machine.observe_airplane(id, true).expect("airplane on");
         machine.observe_cellular(id, 11, false).expect("loss");
         machine
+            .observe_radio_power_off(id)
+            .expect("radio power off");
+        machine
             .airplane_disable_effect_completed(id, RotationMutationOutcome::Applied)
             .expect("disable");
         machine.observe_airplane(id, false).expect("airplane off");
@@ -670,6 +700,11 @@ mod tests {
         assert_eq!(snapshot.phase, RotationPhase::WaitingRadioDown);
 
         let snapshot = machine.observe_airplane(id, true).expect("airplane on");
+        assert_eq!(snapshot.phase, RotationPhase::WaitingRadioDown);
+
+        let snapshot = machine
+            .observe_radio_power_off(id)
+            .expect("radio power off");
         assert_eq!(snapshot.phase, RotationPhase::AirplaneDisabling);
     }
 
@@ -681,22 +716,67 @@ mod tests {
             .expect("enable");
         let snapshot = machine.observe_airplane(id, true).expect("airplane on");
         assert_eq!(snapshot.phase, RotationPhase::WaitingRadioDown);
+        let snapshot = machine
+            .observe_radio_power_off(id)
+            .expect("radio power off");
+        assert_eq!(snapshot.phase, RotationPhase::WaitingRadioDown);
     }
 
     #[test]
-    fn disable_is_reached_once_both_required_facts_exist_in_either_order() {
+    fn disable_is_reached_once_all_required_facts_exist() {
         let (mut machine, id) = started();
         machine
             .airplane_enable_effect_completed(id, RotationMutationOutcome::Applied)
             .expect("enable");
         machine.observe_airplane(id, true).expect("on");
         let snapshot = machine.observe_cellular(id, 11, false).expect("loss");
+        assert_eq!(snapshot.phase, RotationPhase::WaitingRadioDown);
+        let snapshot = machine
+            .observe_radio_power_off(id)
+            .expect("radio power off");
         assert_eq!(snapshot.phase, RotationPhase::AirplaneDisabling);
         let still_disabling = machine
             .observe_cellular(id, 12, false)
             .expect("cellular event during disable");
         assert_eq!(still_disabling.phase, RotationPhase::AirplaneDisabling);
         assert_eq!(still_disabling.after_generation, None);
+    }
+
+    #[test]
+    fn radio_down_facts_can_arrive_in_any_order_without_a_timer() {
+        for order in 0..3 {
+            let (mut machine, id) = started();
+            machine
+                .airplane_enable_effect_completed(id, RotationMutationOutcome::Applied)
+                .expect("enable");
+            let first = match order {
+                0 => {
+                    machine.observe_airplane(id, true).expect("on");
+                    machine.observe_cellular(id, 11, false).expect("loss")
+                }
+                1 => {
+                    machine.observe_cellular(id, 11, false).expect("loss");
+                    machine
+                        .observe_radio_power_off(id)
+                        .expect("radio power off")
+                }
+                _ => {
+                    machine
+                        .observe_radio_power_off(id)
+                        .expect("radio power off");
+                    machine.observe_airplane(id, true).expect("on")
+                }
+            };
+            assert_eq!(first.phase, RotationPhase::WaitingRadioDown);
+            let terminal_fact = match order {
+                0 => machine
+                    .observe_radio_power_off(id)
+                    .expect("radio power off"),
+                1 => machine.observe_airplane(id, true).expect("on"),
+                _ => machine.observe_cellular(id, 11, false).expect("loss"),
+            };
+            assert_eq!(terminal_fact.phase, RotationPhase::AirplaneDisabling);
+        }
     }
 
     #[test]
@@ -707,6 +787,9 @@ mod tests {
             .expect("enable");
         machine.observe_airplane(id, true).expect("on");
         machine.observe_cellular(id, 11, false).expect("loss");
+        machine
+            .observe_radio_power_off(id)
+            .expect("radio power off");
         machine
             .airplane_disable_effect_completed(id, RotationMutationOutcome::Applied)
             .expect("disable");
@@ -750,6 +833,9 @@ mod tests {
                 .expect("enable");
             machine.observe_airplane(id, true).expect("on");
             machine.observe_cellular(id, 11, false).expect("loss");
+            machine
+                .observe_radio_power_off(id)
+                .expect("radio power off");
             machine
                 .airplane_disable_effect_completed(id, RotationMutationOutcome::Applied)
                 .expect("disable");
@@ -817,6 +903,9 @@ mod tests {
             .expect("enable");
         machine.observe_airplane(id, true).expect("on");
         machine.observe_cellular(id, 11, false).expect("loss");
+        machine
+            .observe_radio_power_off(id)
+            .expect("radio power off");
 
         let waiting = machine
             .airplane_disable_effect_completed(id, RotationMutationOutcome::Uncertain)
@@ -838,6 +927,9 @@ mod tests {
             .expect("enable");
         machine.observe_airplane(id, true).expect("on");
         machine.observe_cellular(id, 11, false).expect("loss");
+        machine
+            .observe_radio_power_off(id)
+            .expect("radio power off");
         machine
             .airplane_disable_effect_completed(id, RotationMutationOutcome::Applied)
             .expect("disable");
@@ -870,12 +962,16 @@ mod tests {
     }
 
     #[test]
-    fn cellular_loss_during_enable_is_retained_until_airplane_on_is_observed() {
+    fn early_radio_down_facts_are_retained_until_all_required_facts_exist() {
         let (mut machine, id) = started();
         let early_loss = machine
             .observe_cellular(id, 11, false)
             .expect("loss during enable");
         assert_eq!(early_loss.phase, RotationPhase::AirplaneEnabling);
+        let early_power_off = machine
+            .observe_radio_power_off(id)
+            .expect("radio power off during enable");
+        assert_eq!(early_power_off.phase, RotationPhase::AirplaneEnabling);
         let waiting = machine
             .airplane_enable_effect_completed(id, RotationMutationOutcome::Applied)
             .expect("enable complete");
@@ -893,6 +989,9 @@ mod tests {
         machine.observe_airplane(id, true).expect("on");
         machine.observe_cellular(id, 11, false).expect("loss");
         machine
+            .observe_radio_power_off(id)
+            .expect("radio power off");
+        machine
             .airplane_disable_effect_completed(id, RotationMutationOutcome::Applied)
             .expect("disable");
         machine.observe_airplane(id, false).expect("off");
@@ -908,6 +1007,9 @@ mod tests {
             .expect("enable");
         machine.observe_airplane(id, true).expect("on");
         machine.observe_cellular(id, 11, false).expect("loss");
+        machine
+            .observe_radio_power_off(id)
+            .expect("radio power off");
         machine
             .airplane_disable_effect_completed(id, RotationMutationOutcome::Applied)
             .expect("disable");
@@ -939,6 +1041,9 @@ mod tests {
         machine.observe_airplane(id, true).expect("on");
         machine.observe_cellular(id, 11, false).expect("loss");
         machine
+            .observe_radio_power_off(id)
+            .expect("radio power off");
+        machine
             .airplane_disable_effect_completed(id, RotationMutationOutcome::Applied)
             .expect("disable");
         machine.observe_airplane(id, false).expect("off");
@@ -954,10 +1059,49 @@ mod tests {
     }
 
     #[test]
+    fn radio_power_off_fact_is_not_reused_by_the_next_operation() {
+        let (mut machine, first_id) = started();
+        machine
+            .airplane_enable_effect_completed(first_id, RotationMutationOutcome::Applied)
+            .expect("enable first");
+        machine.observe_airplane(first_id, true).expect("on first");
+        machine
+            .observe_cellular(first_id, 11, false)
+            .expect("loss first");
+        machine
+            .observe_radio_power_off(first_id)
+            .expect("radio power off first");
+        assert_eq!(machine.snapshot().phase, RotationPhase::AirplaneDisabling);
+        machine
+            .fail(first_id, RotationFailure::StateUnavailable)
+            .expect("terminate first");
+
+        let second_id = machine.start(12).expect("start second");
+        machine
+            .record_before_ip(second_id, 12, ip("198.51.100.20"))
+            .expect("before second");
+        machine
+            .airplane_enable_effect_completed(second_id, RotationMutationOutcome::Applied)
+            .expect("enable second");
+        machine
+            .observe_airplane(second_id, true)
+            .expect("on second");
+        let waiting = machine
+            .observe_cellular(second_id, 13, false)
+            .expect("loss second");
+
+        assert_eq!(waiting.phase, RotationPhase::WaitingRadioDown);
+    }
+
+    #[test]
     fn stale_operation_id_is_rejected() {
         let (mut machine, id) = started();
         assert_eq!(
             machine.observe_airplane(id + 1, true),
+            Err(RotationTransitionError::StaleOperation)
+        );
+        assert_eq!(
+            machine.observe_radio_power_off(id + 1),
             Err(RotationTransitionError::StaleOperation)
         );
     }

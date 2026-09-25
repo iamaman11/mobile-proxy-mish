@@ -83,6 +83,7 @@ Consequences:
 - Kotlin may invoke a narrow typed platform effect only when Rust owns the semantic decision to invoke it.
 - Kotlin diagnostics may serialize an immutable native snapshot, but must not derive a second authoritative PRODUCT state or timing model.
 - Android callback serialization is permitted only as a platform observation mechanism; it does not confer PRODUCT semantic ownership.
+- Android telephony `ServiceState.STATE_POWER_OFF` is a raw framework fact only. Kotlin may project that positive fact through typed FFI, while `mish-rotation` alone decides whether it completes the current radio-down barrier.
 - New PRODUCT timers, schedulers, state machines or retry loops belong in the existing Rust/Tokio owner unless an explicit architecture change proves otherwise.
 
 ## Architecture enforcement

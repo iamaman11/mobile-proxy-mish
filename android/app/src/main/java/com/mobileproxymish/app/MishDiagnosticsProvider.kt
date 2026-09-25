@@ -390,6 +390,10 @@ internal fun renderMishControlDiagnosticSnapshotV1(
                     snapshot.rotationTiming.cellularLossObservedMs,
                 )
                 putNullableLong(
+                    "radio_power_off_observed_ms",
+                    snapshot.rotationTiming.radioPowerOffObservedMs,
+                )
+                putNullableLong(
                     "airplane_disable_started_ms",
                     snapshot.rotationTiming.airplaneDisableStartedMs,
                 )
