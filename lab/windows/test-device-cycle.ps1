@@ -644,6 +644,65 @@ try {
         throw 'U8 durability LAB fixture failure must not reject the PRODUCT candidate.'
     }
 
+    $radioPoweroffPassPath = Join-Path $root 'radio-poweroff-characterization-pass.json'
+    [ordered]@{
+        schema = 'mish.lab.radio-poweroff-characterization/v1'
+        result = 'PASS'
+        classification = 'POWER_OFF_OBSERVED'
+        restore = [ordered]@{
+            attempted = $true
+            airplane_off_verified = $true
+            product_pid_stable = $true
+            product_recovered = $true
+            rotation_operation_id_unchanged = $true
+        }
+        mutation = [ordered]@{
+            product_mutation_performed = $false
+            product_rotation_triggered = $false
+            manager_command_issued = $false
+            public_ip_polled = $false
+            automatic_repeat_rotation = $false
+        }
+    } | ConvertTo-Json -Depth 6 | Set-Content -Encoding UTF8 -LiteralPath $radioPoweroffPassPath
+    $radioPoweroffPass = & $reportScript -Mode full -PrNumber 401 -SourceSha ('7' * 40) -ControlSha $controlSha -DiagnosticEvidencePath $passDiagnostic -RequestedProbe u8_radio_poweroff_characterization -TargetedEvidencePath $radioPoweroffPassPath -OutputPath (Join-Path $root 'radio-poweroff-characterization-pass-report.json') | Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$radioPoweroffPass.cycle_result -cne 'PASS' -or
+        [string]$radioPoweroffPass.classification -cne 'POWER_OFF_OBSERVED' -or
+        [string]$radioPoweroffPass.acceptance_scope -cne 'FULL_BASELINE_PLUS_U8_RADIO_POWEROFF_CHARACTERIZATION' -or
+        [string]$radioPoweroffPass.exact_candidate_acceptance -cne 'NOT_EVALUATED'
+    ) {
+        throw 'Radio POWER_OFF characterization PASS must validate LAB evidence without accepting or rejecting PRODUCT behavior.'
+    }
+
+    $radioPoweroffInvalidPath = Join-Path $root 'radio-poweroff-characterization-invalid.json'
+    [ordered]@{
+        schema = 'mish.lab.radio-poweroff-characterization/v1'
+        result = 'PASS'
+        classification = 'POWER_OFF_OBSERVED'
+        restore = [ordered]@{
+            attempted = $true
+            airplane_off_verified = $false
+            product_pid_stable = $true
+            product_recovered = $false
+            rotation_operation_id_unchanged = $true
+        }
+        mutation = [ordered]@{
+            product_mutation_performed = $false
+            product_rotation_triggered = $false
+            manager_command_issued = $false
+            public_ip_polled = $false
+            automatic_repeat_rotation = $false
+        }
+    } | ConvertTo-Json -Depth 6 | Set-Content -Encoding UTF8 -LiteralPath $radioPoweroffInvalidPath
+    $radioPoweroffInvalid = & $reportScript -Mode full -PrNumber 401 -SourceSha ('8' * 40) -ControlSha $controlSha -DiagnosticEvidencePath $passDiagnostic -RequestedProbe u8_radio_poweroff_characterization -TargetedEvidencePath $radioPoweroffInvalidPath -OutputPath (Join-Path $root 'radio-poweroff-characterization-invalid-report.json') | Select-Object -Last 1 | ConvertFrom-Json
+    if (
+        [string]$radioPoweroffInvalid.cycle_result -cne 'LAB_FAIL' -or
+        [string]$radioPoweroffInvalid.classification -cne 'LAB_TARGETED_PROBE_SCHEMA_INVALID' -or
+        [string]$radioPoweroffInvalid.exact_candidate_acceptance -cne 'NOT_EVALUATED'
+    ) {
+        throw 'Radio POWER_OFF characterization without proven restore must fail closed as LAB evidence.'
+    }
+
     Write-Host 'DEVICE_CYCLE_CONTRACT=PASS'
 }
 finally {
