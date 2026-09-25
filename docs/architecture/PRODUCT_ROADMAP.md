@@ -1031,7 +1031,7 @@ Accepted boundary:
 ```text
 future application
   -> MishControlClient.RotateIpAsync()
-     -> one POST https://api.alegria.by/v1/rotate
+     -> one POST https://mish.alegria.by/v1/rotate
         -> existing Worker/DO
            -> existing reverse WSS CONTROL
               -> existing Rust Rotation SM
@@ -1055,6 +1055,41 @@ Accepted implementation/evidence:
 - no APK rebuild or physical DEVICE cycle was required for this SDK slice.
 
 The accepted PRODUCT immediately before this external SDK slice remains commit `3c5d337243eeeb12c18fb09bf881489d54c6d7ee`, physically accepted by Device Cycle #823 / run `36142620609`. The subsequent SDK merge changes only SDK/SDK-CI files and does not reopen PRODUCT acceptance.
+
+
+## Post-U8 — Public manager hostname split — DEPLOYED / pending one external authorized proof
+
+Issue #413 moves the public manager API from the device/control transport hostname to a dedicated consumer hostname without changing the accepted Android/Rust PRODUCT.
+
+Current split:
+
+```text
+api.alegria.by
+  -> device reverse-WSS/control transport only
+
+mish.alegria.by
+  -> manager/enrollment HTTPS
+  -> POST /v1/rotate
+```
+
+Accepted implementation/deployment evidence so far:
+
+- implementation PR #414 merged as `1d52c38557b8d48a8d47fc555b0c6b02af6d3cca`;
+- exact candidate `d52b42f5278814a11c09e6255dc897f1db09191d`;
+- PR Validation #1098 / run `36154383583` = PASS with `PRODUCT_CHANGED=false`;
+- U8 Control Static #100 / run `36154383344` = PASS;
+- SDK .NET #3 / run `36154383368` = PASS;
+- Control Worker Deploy #179 / run `36154528251` = PASS;
+- deployed Worker version `e9798ea2-f3a1-45cb-8281-e35b470bda97`;
+- Wrangler deployed exact custom domains `api.alegria.by` and `mish.alegria.by`;
+- deploy smoke proved unauthenticated/wrong-manager auth rejection and invalid-body rejection on `mish.alegria.by`;
+- deploy smoke proved `api.alegria.by/v1/rotate` is no longer a manager API and returns HTTP 404;
+- `config/deployment/control-host.txt` remains `api.alegria.by`, so the accepted phone PRODUCT keeps its existing reverse-WSS endpoint;
+- SDK fixed endpoint and LAB manager probe now use `mish.alegria.by`;
+- no Android/Rust/Rotation/POWER_OFF/Cellular/root change;
+- no APK rebuild, device candidate or physical Device Cycle.
+
+One final external acceptance fact remains intentionally outside deploy CI: one authorized WSL call to `https://mish.alegria.by/v1/rotate`, exactly one POST with no polling/retry/replay, must return one typed `mish.control.rotate/v1` result. CI does not perform that mutation automatically.
 
 
 ## Single-pass execution rule
