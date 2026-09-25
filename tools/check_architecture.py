@@ -2489,6 +2489,100 @@ def main() -> None:
             "Current IP must be shown only for the currently admitted Cellular owner generation",
         )
 
+    # DEVICE-1 radio-detach research is a debug-only typed Android observation surface.
+    # It may correlate ServiceState callbacks to the existing Rust CONTROL operation clock, but it
+    # must never become a second Rotation/Cellular owner, scheduler, polling loop or mutation path.
+    telephony_diag = (
+        "android/app/src/debug/java/com/mobileproxymish/app/"
+        "DebugTelephonyServiceStateProvider.kt"
+    )
+    debug_manifest = "android/app/src/debug/AndroidManifest.xml"
+    telephony_lab = "lab/windows/collect-telephony-service-state-diagnostic.ps1"
+    for required in (
+        "SubscriptionManager.getActiveDataSubscriptionId()",
+        "createForSubscriptionId(subscriptionId)",
+        "PhoneStateListener(context.mainExecutor)",
+        "PhoneStateListener.LISTEN_SERVICE_STATE",
+        "override fun onServiceStateChanged(serviceState: ServiceState)",
+        "app.runtimeController.controlSnapshot()",
+        'ServiceState.STATE_POWER_OFF -> "POWER_OFF"',
+        'put("mutation_performed", false)',
+        "MAX_EVENTS = 32",
+    ):
+        require(
+            telephony_diag,
+            required,
+            "debug telephony evidence must stay typed, bounded and correlated to the existing native owner clock",
+        )
+    for forbidden in (
+        "SystemClock",
+        "Thread.sleep",
+        "Thread {",
+        "CoroutineScope(",
+        "kotlinx.coroutines.delay",
+        "Handler(",
+        "postDelayed(",
+        "Timer(",
+        "ScheduledExecutorService",
+        "startPublicIpRotation",
+        "cmd connectivity",
+        "airplane-mode",
+        "ProcessBuilder",
+        "su -c",
+        "WebSocket(",
+        "OkHttp",
+    ):
+        forbid(
+            telephony_diag,
+            forbidden,
+            "debug telephony observer must remain callback-only observation with no PRODUCT control/timing authority",
+        )
+    for required in (
+        'android:name=".DebugTelephonyServiceStateProvider"',
+        'android:authorities="${applicationId}.telephony-diagnostics"',
+        'android:permission="android.permission.DUMP"',
+    ):
+        require(
+            debug_manifest,
+            required,
+            "typed telephony observer must remain debug-only and DUMP-gated",
+        )
+    forbid(
+        "android/app/src/main/AndroidManifest.xml",
+        "DebugTelephonyServiceStateProvider",
+        "typed telephony research provider must never ship through the main/release manifest",
+    )
+    forbid(
+        debug_manifest,
+        "android.permission.READ_PHONE_STATE",
+        "ServiceState state-only research must not add unnecessary phone-identity permission",
+    )
+    for required in (
+        "telephony_service_state_start_v1",
+        "telephony_service_state_snapshot_v1",
+        "telephony_service_state_stop_v1",
+        "mish.lab.telephony-service-state/v1",
+        "adb_rotation_trigger_used = $false",
+        "mutation_performed = $false",
+    ):
+        require(
+            telephony_lab,
+            required,
+            "LAB telephony collector must remain one bounded read-only ADB evidence path",
+        )
+    for forbidden in (
+        "MISH_MANAGER_TOKEN",
+        "/v1/rotate",
+        "airplane-mode",
+        "startPublicIpRotation",
+        "cmd connectivity",
+    ):
+        forbid(
+            telephony_lab,
+            forbidden,
+            "LAB telephony collector must not become a Rotation trigger or manager client",
+        )
+
     print("ARCHITECTURE_GUARDS=PASS")
 
 
