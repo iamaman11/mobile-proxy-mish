@@ -43,6 +43,7 @@ on:
           - u8_durability_soak
           - u8g_final_clean_client
           - loopback_connect
+          - cellular_primitive_capabilities
   issue_comment:
     types: [created]
 
@@ -117,7 +118,7 @@ jobs:
               match = re.fullmatch(
                   r"/mish-cycle\s+([1-9][0-9]*)\s+([0-9a-f]{40})\s+"
                   r"(full|install_only|diagnose_only|probe_only)\s+"
-                  r"(none|capacity_resources|recovery_lifecycle|dns_lifetime_live|u5_rotation|u7_runtime_restart_resources|u7_512_lifecycle_stability|u8_reboot_install_durability|u8_public_egress_rotation|u8_remote_control|u8_radio_detach_research|u8_radio_poweroff_characterization|u8_radio_poweroff_public_egress|u8_durability_soak|u8g_final_clean_client|loopback_connect)",
+                  r"(none|capacity_resources|recovery_lifecycle|dns_lifetime_live|u5_rotation|u7_runtime_restart_resources|u7_512_lifecycle_stability|u8_reboot_install_durability|u8_public_egress_rotation|u8_remote_control|u8_radio_detach_research|u8_radio_poweroff_characterization|u8_radio_poweroff_public_egress|u8_durability_soak|u8g_final_clean_client|loopback_connect|cellular_primitive_capabilities)",
                   body,
               )
               if match is None:
@@ -164,8 +165,8 @@ jobs:
           if mode not in {'full', 'install_only', 'diagnose_only', 'probe_only'}:
               raise SystemExit('invalid device-cycle mode')
           if mode == 'probe_only':
-              if probe != 'loopback_connect':
-                  raise SystemExit('probe_only supports only the current-function loopback_connect probe')
+              if probe not in {'loopback_connect', 'cellular_primitive_capabilities'}:
+                  raise SystemExit('probe_only supports only loopback_connect or cellular_primitive_capabilities')
           elif mode == 'full':
               if probe not in {'none', 'capacity_resources', 'recovery_lifecycle', 'dns_lifetime_live', 'u5_rotation', 'u7_runtime_restart_resources', 'u7_512_lifecycle_stability', 'u8_reboot_install_durability', 'u8_public_egress_rotation', 'u8_remote_control', 'u8_radio_detach_research', 'u8_radio_poweroff_characterization', 'u8_radio_poweroff_public_egress', 'u8_durability_soak', 'u8g_final_clean_client'}:
                   raise SystemExit('full accepts only none, capacity_resources, recovery_lifecycle, dns_lifetime_live, u5_rotation, u7_runtime_restart_resources, u7_512_lifecycle_stability, u8_reboot_install_durability, u8_public_egress_rotation, u8_remote_control, u8_radio_detach_research, u8_radio_poweroff_characterization, u8_radio_poweroff_public_egress, u8_durability_soak, or u8g_final_clean_client')
@@ -750,6 +751,16 @@ jobs:
           .\\lab\\windows\\diagnose-loopback-connect.ps1 `
             -AdbPath $env:ADB_EXE `
             -PackageName $env:PACKAGE_NAME `
+            -EvidencePath "$env:RUNNER_TEMP\\mish-targeted-probe-v1.json"
+
+      - name: Explicit read-only cellular primitive capability audit
+        if: ${{ needs.resolve.outputs.mode == 'probe_only' && needs.resolve.outputs.probe == 'cellular_primitive_capabilities' }}
+        continue-on-error: true
+        shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\\lab\\windows\\diagnose-cellular-primitive-capabilities.ps1 `
+            -AdbPath $env:ADB_EXE `
             -EvidencePath "$env:RUNNER_TEMP\\mish-targeted-probe-v1.json"
 
       - name: Explicit U7 capacity/resources - external Mesh

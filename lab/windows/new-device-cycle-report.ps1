@@ -58,6 +58,31 @@ function Get-MishTargetedAcceptance {
         }
         return [string]$Evidence.acceptance_result
     }
+    if ([string]$Evidence.schema -ceq 'mish.lab.cellular-primitive-capabilities/v1') {
+        if (
+            [string]$Evidence.acceptance_result -cne 'PASS' -or
+            [string]$Evidence.classification -cne 'CELLULAR_PRIMITIVE_CAPABILITY_AUDIT_PASS' -or
+            [string]$Evidence.device.model -cne 'SM-A022G' -or
+            [int]$Evidence.device.api -ne 30 -or
+            [string]$Evidence.device.abi -cne 'armeabi-v7a' -or
+            [string]$Evidence.architecture_decision -cne 'NOT_MADE' -or
+            [bool]$Evidence.mutation.product_mutation_performed -or
+            [bool]$Evidence.mutation.data_mutation_performed -or
+            [bool]$Evidence.mutation.radio_mutation_performed -or
+            [bool]$Evidence.mutation.modem_mutation_performed -or
+            [bool]$Evidence.mutation.rotation_triggered -or
+            [bool]$Evidence.mutation.app_restart_performed -or
+            [bool]$Evidence.mutation.install_performed -or
+            [bool]$Evidence.raw_command_help_persisted -or
+            [bool]$Evidence.raw_public_ip_persisted -or
+            [bool]$Evidence.subscription_id_persisted -or
+            [bool]$Evidence.operator_identity_persisted -or
+            [bool]$Evidence.secrets_persisted_in_evidence
+        ) {
+            return 'INVALID'
+        }
+        return 'PASS'
+    }
     if ($Evidence.PSObject.Properties.Name -contains 'acceptance_result') {
         $value = [string]$Evidence.acceptance_result
         if ($value -in @('PASS', 'FAIL')) { return $value }
@@ -150,7 +175,7 @@ if ($launchFailed -and $launchFailureCategory -notmatch '^[A-Z0-9_]+$') { $launc
 $classification = switch ($Mode) {
     'install_only' { 'INSTALL_ONLY_PASS'; break }
     'probe_only' {
-        if ($RequestedProbe -cne 'loopback_connect') { 'LAB_PROBE_NOT_EXPLICIT' }
+        if ($RequestedProbe -notin @('loopback_connect', 'cellular_primitive_capabilities')) { 'LAB_PROBE_NOT_EXPLICIT' }
         elseif ($targetedAcceptance -eq 'MISSING') { 'LAB_TARGETED_PROBE_COLLECTION_FAILED' }
         elseif ($targetedAcceptance -eq 'INVALID') { 'LAB_TARGETED_PROBE_SCHEMA_INVALID' }
         else { $targetedClassification }
