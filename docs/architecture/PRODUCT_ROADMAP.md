@@ -1057,40 +1057,72 @@ Accepted implementation/evidence:
 The accepted PRODUCT immediately before this external SDK slice remains commit `3c5d337243eeeb12c18fb09bf881489d54c6d7ee`, physically accepted by Device Cycle #823 / run `36142620609`. The subsequent SDK merge changes only SDK/SDK-CI files and does not reopen PRODUCT acceptance.
 
 
-## Post-U8 — Public manager hostname split — DEPLOYED / pending one external authorized proof
+## Post-U8 — Unified remote-control hostname — COMPLETED / PASS
 
-Issue #413 moves the public manager API from the device/control transport hostname to a dedicated consumer hostname without changing the accepted Android/Rust PRODUCT.
-
-Current split:
+Issue #413 converged the entire remote-control surface onto one canonical hostname:
 
 ```text
-api.alegria.by
-  -> device reverse-WSS/control transport only
-
 mish.alegria.by
-  -> manager/enrollment HTTPS
-  -> POST /v1/rotate
+├── /v1/device/connect
+├── /v1/devices/{device_id}
+└── /v1/rotate
 ```
 
-Accepted implementation/deployment evidence so far:
+The previous split-host deployment was an intermediate migration state only and is superseded. No permanent `api.alegria.by` control surface or fallback remains.
 
-- implementation PR #414 merged as `1d52c38557b8d48a8d47fc555b0c6b02af6d3cca`;
-- exact candidate `d52b42f5278814a11c09e6255dc897f1db09191d`;
-- PR Validation #1098 / run `36154383583` = PASS with `PRODUCT_CHANGED=false`;
-- U8 Control Static #100 / run `36154383344` = PASS;
-- SDK .NET #3 / run `36154383368` = PASS;
-- Control Worker Deploy #179 / run `36154528251` = PASS;
-- deployed Worker version `e9798ea2-f3a1-45cb-8281-e35b470bda97`;
-- Wrangler deployed exact custom domains `api.alegria.by` and `mish.alegria.by`;
-- deploy smoke proved unauthenticated/wrong-manager auth rejection and invalid-body rejection on `mish.alegria.by`;
-- deploy smoke proved `api.alegria.by/v1/rotate` is no longer a manager API and returns HTTP 404;
-- `config/deployment/control-host.txt` remains `api.alegria.by`, so the accepted phone PRODUCT keeps its existing reverse-WSS endpoint;
-- SDK fixed endpoint and LAB manager probe now use `mish.alegria.by`;
-- no Android/Rust/Rotation/POWER_OFF/Cellular/root change;
-- no APK rebuild, device candidate or physical Device Cycle.
+Accepted implementation and deployment:
 
-One final external acceptance fact remains intentionally outside deploy CI: one authorized WSL call to `https://mish.alegria.by/v1/rotate`, exactly one POST with no polling/retry/replay, must return one typed `mish.control.rotate/v1` result. CI does not perform that mutation automatically.
+- issue #413 = CLOSED / PASS;
+- final implementation PR #416 exact accepted head = `b650ce8ce5ddc9cc7bce2e7f2ebd12fe739576d4`;
+- protected-main merge = `db3abd4ec7225f46004afa8b3dd54a1d391fa958`;
+- accepted candidate tree = protected-main tree = `eb0530caf9e81ff15485d26ece5899e5b93c43b1`;
+- `config/deployment/control-host.txt = mish.alegria.by`;
+- Worker owns exactly one custom domain: `mish.alegria.by`;
+- SDK fixed endpoint and LAB remote-control path use the same hostname;
+- U8 Control Static #101 / run `36155418650` = PASS;
+- PR Validation #1100 / run `36155418667` = PASS;
+- Rust Workspace, Android Build/Test and Android Compose Shell = PASS;
+- `PRODUCT_CHANGED=true` only because the repository-owned CONTROL hostname is compiled into PRODUCT;
+- canonical exact PRODUCT candidate artifact `10873528228`, digest `sha256:5a397344f619c33ca4cd7dcbc1a7f42babf0e94e30cf6970d186cf4eae4590f3`.
 
+The migration used one temporary Worker-only bridge, PR #417, solely to avoid a CONTROL blackout while DEVICE-1 moved from the old hostname to the new PRODUCT candidate. The bridge was deployed as Worker version `26f69057-2ac7-4072-a599-62a93192d8f2`, was never merged, and was closed after the final Worker deployment.
+
+Physical acceptance before removing the legacy route:
+
+- Device Cycle #839 / run `36159146523` = PASS;
+- exact #416 installed bytes/signing identity = PASS;
+- CONTROL host = `mish.alegria.by`;
+- one remote command / one logical Rotation / polling=0;
+- terminal = `CHANGED`;
+- heartbeat delta=3 / reconnect delta=0;
+- POWER_OFF gate = PASS;
+- independent external public-IP proof = CHANGED / consensus=true;
+- post PRODUCT health = Cellular ADMITTED, root authorized, Proxy RUNNING/healthy, Mesh ADMITTED, readiness READY, loopback E2E PASS, Mesh E2E PASS;
+- evidence artifact `10874093566`, digest `sha256:9b351c8f5580fb7d024d7685528e486a877df180f9197d15d3d2849a29a27839`.
+
+Final Worker deployment:
+
+- Control Worker Deploy #183 / run `36159592728` = PASS;
+- Worker exact source = #416 head `b650ce8...`;
+- deployed trigger list contains only `mish.alegria.by (custom domain)`;
+- Worker version = `cd481e60-a625-4c78-9eaf-5bec630a4308`.
+
+Final physical acceptance after removing the legacy route:
+
+- Device Cycle #841 / run `36159721069` = PASS;
+- exact installed bytes/signing identity = PASS;
+- CONTROL host = `mish.alegria.by`;
+- remote classification = `U8_REMOTE_CONTROL_ROTATION_PASS`;
+- terminal = `CHANGED`;
+- one logical/public command; polling=0;
+- manager duration = 14881 ms;
+- heartbeat delta=3 / reconnect delta=0;
+- POWER_OFF gate = PASS;
+- independent external public-IP proof = CHANGED / consensus=true;
+- final Cellular/root/Proxy/Mesh/readiness and both proxy E2E checks = PASS;
+- final evidence artifact `10874304341`, digest `sha256:e0e0fe1bf009ab396d2e3987229b044b1004ce9cbcf65a048aceca0f905c6b19`.
+
+No Rotation state machine, Cellular/root policy, retry/polling owner or Worker/DO ownership boundary was added by this migration. The only PRODUCT semantic input changed is the canonical CONTROL hostname.
 
 ## Single-pass execution rule
 
