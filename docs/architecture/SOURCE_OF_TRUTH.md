@@ -19,7 +19,21 @@ A feature or implementation branch is a **candidate**, not a second accepted PRO
 
 Issue #135 is the single live checkpoint pointer. It owns the current roadmap stage, current open implementation PR when one exists, and immutable evidence identifiers. It does not define a second long-lived source tree.
 
-Issue #134 is historical research/rationale only.
+Issue #134 is a **closed historical research/rationale archive**. It is never a live planning surface.
+
+## Live issue roles
+
+Keep the issue surface intentionally small:
+
+- **#135** — the single live execution/research pointer. It may point to a measurement-only research issue without creating a new PRODUCT stage.
+- **#63** — permanent DEVICE-1 physical reference/evidence owner; keep open.
+- **#163** — permanent bounded LAB diagnostic command surface; keep open.
+- **#340** — separate LAB runner/TLS infrastructure debt; keep open until its own acceptance is proven. It is not a PRODUCT blocker.
+- **#134** — closed architecture/research archive.
+- **#219** — closed/not-planned rootless experiment; reopen only for a new explicit product requirement.
+- **#422** — current bounded remote-rotation latency/stability research; measurement only, no PRODUCT mutation authority.
+
+Do not create a second master roadmap or use an archival/reference issue as a current-stage owner.
 
 ## Fresh reconstruction procedure
 
