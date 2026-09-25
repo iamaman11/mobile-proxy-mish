@@ -237,8 +237,9 @@ test("replacement authentication retires the old socket before broker selection"
   assert.equal(control.freshAuthenticatedSocket(), newSocket);
 });
 
-test("authenticated reattach never makes Worker a reconnect-redelivery owner", async () => {
+test("natural reattach redelivers the same uncertain request exactly once", async () => {
   const identity = await generateIdentity();
+  const now = Date.now();
   const nonce = "d".repeat(43);
   const signature = await signAuth(identity.keyPair.privateKey, identity.deviceId, nonce);
   const storage = new MemoryStorage();
@@ -248,11 +249,17 @@ test("authenticated reattach never makes Worker a reconnect-redelivery owner", a
   });
   await storage.put("active_operation", {
     request_id: "req_resume",
-    status: "DISPATCHED",
+    status: "RECOVERING",
     operation_id: null,
     result: null,
-    created_at_ms: Date.now(),
-    delivery_deadline_ms: Date.now() + 2_000,
+    created_at_ms: now - 3_000,
+    accepted_at_ms: null,
+    delivery_attempts: 1,
+    delivery_sent_at_ms: now - 3_000,
+    delivery_deadline_ms: null,
+    recovery_deadline_ms: now + 10_000,
+    fenced_at_ms: null,
+    release_at_ms: null,
     completed_at_ms: null,
   });
 
@@ -261,7 +268,7 @@ test("authenticated reattach never makes Worker a reconnect-redelivery owner", a
     authenticated: false,
     device_id: identity.deviceId,
     challenge: nonce,
-    challenge_issued_at_ms: Date.now(),
+    challenge_issued_at_ms: now,
   });
   const control = new DeviceControl(new FakeContext(storage, [socket]), {});
 
@@ -272,11 +279,46 @@ test("authenticated reattach never makes Worker a reconnect-redelivery owner", a
     signature,
   }));
 
+  const messages = socket.sent.map((message) => JSON.parse(message));
+  assert.deepEqual(messages.map((message) => message.type), ["READY", "ROTATE_IP"]);
+  assert.equal(messages[1].request_id, "req_resume");
+  assert.equal(socket.closed.length, 0);
+
+  const redelivered = await storage.get("active_operation");
+  assert.equal(redelivered.status, "DISPATCHED");
+  assert.equal(redelivered.request_id, "req_resume");
+  assert.equal(redelivered.delivery_attempts, 2);
+  assert.ok(redelivered.delivery_deadline_ms > redelivered.delivery_sent_at_ms);
+
+  const secondNonce = "e".repeat(43);
+  const secondSignature = await signAuth(
+    identity.keyPair.privateKey,
+    identity.deviceId,
+    secondNonce,
+  );
+  const secondSocket = new FakeSocket({
+    kind: "device",
+    authenticated: false,
+    device_id: identity.deviceId,
+    challenge: secondNonce,
+    challenge_issued_at_ms: Date.now(),
+  });
+  const secondControl = new DeviceControl(
+    new FakeContext(storage, [secondSocket]),
+    {},
+  );
+  await secondControl.webSocketMessage(secondSocket, JSON.stringify({
+    v: 1,
+    type: "AUTH",
+    device_id: identity.deviceId,
+    signature: secondSignature,
+  }));
+
   assert.deepEqual(
-    socket.sent.map((message) => JSON.parse(message).type),
+    secondSocket.sent.map((message) => JSON.parse(message).type),
     ["READY"],
   );
-  assert.equal((await storage.get("active_operation")).request_id, "req_resume");
+  assert.equal((await storage.get("active_operation")).delivery_attempts, 2);
 });
 
 test("late duplicate acceptance after terminal correlation is harmless", async () => {
@@ -454,9 +496,10 @@ test("accepted operation with permanently lost RESULT expires and releases BUSY"
   assert.equal(JSON.parse(socket.sent.at(-1)).request_id, "req_after_stale");
 });
 
-test("unaccepted dispatch fences after one 2 second ACK window and keeps the safety drain", async () => {
+test("first missing delivery ACK enters RECOVERING without forcing reconnect", async () => {
   const now = Date.now();
   const storage = new MemoryStorage();
+  const recoveryDeadlineMs = now + 10_000;
   await storage.put("active_operation", {
     request_id: "req_unaccepted",
     status: "DISPATCHED",
@@ -464,7 +507,10 @@ test("unaccepted dispatch fences after one 2 second ACK window and keeps the saf
     result: null,
     created_at_ms: now - 2_001,
     accepted_at_ms: null,
+    delivery_attempts: 1,
+    delivery_sent_at_ms: now - 2_001,
     delivery_deadline_ms: now - 1,
+    recovery_deadline_ms: recoveryDeadlineMs,
     fenced_at_ms: null,
     release_at_ms: null,
     completed_at_ms: null,
@@ -475,37 +521,97 @@ test("unaccepted dispatch fences after one 2 second ACK window and keeps the saf
   const control = new DeviceControl(new FakeContext(storage, [socket]), {});
 
   let active = await control.reconcileActiveOperation(now, { fenceSockets: true });
+  assert.equal(active.status, "RECOVERING");
+  assert.equal(active.recovery_deadline_ms, recoveryDeadlineMs);
+  assert.equal(socket.attachment.authenticated, true);
+  assert.equal(socket.closed.length, 0);
+  assert.equal(storage.alarm, recoveryDeadlineMs);
+
+  const busy = await control.dispatchRotation("req_new_too_early");
+  assert.equal(busy.kind, "BUSY");
+  assert.equal(socket.sent.length, 0);
+
+  active = await control.reconcileActiveOperation(
+    recoveryDeadlineMs,
+    { fenceSockets: true },
+  );
   assert.equal(active.status, "FENCED");
-  assert.equal(active.release_at_ms, now + 120_000);
+  assert.equal(active.release_at_ms, recoveryDeadlineMs + 120_000);
   assert.equal(socket.attachment.authenticated, false);
   assert.equal(socket.closed.at(-1)?.reason, "operation fenced");
-  assert.equal(storage.alarm, now + 120_000);
+  assert.equal(storage.alarm, recoveryDeadlineMs + 120_000);
 
-  const replacementSocket = new FakeSocket({
-    kind: "device", authenticated: true, device_id: "a".repeat(64),
-  });
-  const replacementControl = new DeviceControl(
-    new FakeContext(storage, [replacementSocket]),
-    {},
-  );
-  const busy = await replacementControl.dispatchRotation("req_new_too_early");
-  assert.equal(busy.kind, "BUSY");
-  assert.equal(replacementSocket.sent.length, 0);
-
-  active = await replacementControl.reconcileActiveOperation(
-    now + 120_001,
+  active = await control.reconcileActiveOperation(
+    recoveryDeadlineMs + 120_001,
     { fenceSockets: true },
   );
   assert.equal(active.result, "UNKNOWN");
   assert.equal(await storage.get("active_operation"), undefined);
+});
 
-  const finalSocket = new FakeSocket({
+test("late ACCEPTED during RECOVERING wins without transport redelivery", async () => {
+  const now = Date.now();
+  const storage = new MemoryStorage();
+  await storage.put("active_operation", {
+    request_id: "req_late_accept",
+    status: "RECOVERING",
+    operation_id: null,
+    result: null,
+    created_at_ms: now - 3_000,
+    accepted_at_ms: null,
+    delivery_attempts: 1,
+    delivery_sent_at_ms: now - 3_000,
+    delivery_deadline_ms: null,
+    recovery_deadline_ms: now + 10_000,
+    fenced_at_ms: null,
+    release_at_ms: null,
+    completed_at_ms: null,
+  });
+  const socket = new FakeSocket({
     kind: "device", authenticated: true, device_id: "a".repeat(64),
   });
-  const finalControl = new DeviceControl(new FakeContext(storage, [finalSocket]), {});
-  const next = await finalControl.dispatchRotation("req_new_after_drain");
-  assert.equal(next.kind, "DISPATCHED");
-  assert.equal(JSON.parse(finalSocket.sent.at(-1)).request_id, "req_new_after_drain");
+  const control = new DeviceControl(new FakeContext(storage, [socket]), {});
+
+  await control.webSocketMessage(
+    socket,
+    '{"v":1,"type":"ACCEPTED","request_id":"req_late_accept","operation_id":41}',
+  );
+
+  const active = await storage.get("active_operation");
+  assert.equal(active.status, "ACCEPTED");
+  assert.equal(active.operation_id, 41);
+  assert.equal(active.recovery_deadline_ms, null);
+  assert.equal(socket.sent.length, 0);
+});
+
+test("second missing delivery ACK enters the existing fail-closed drain", async () => {
+  const now = Date.now();
+  const storage = new MemoryStorage();
+  await storage.put("active_operation", {
+    request_id: "req_second_miss",
+    status: "DISPATCHED",
+    operation_id: null,
+    result: null,
+    created_at_ms: now - 5_000,
+    accepted_at_ms: null,
+    delivery_attempts: 2,
+    delivery_sent_at_ms: now - 2_001,
+    delivery_deadline_ms: now - 1,
+    recovery_deadline_ms: now + 5_000,
+    fenced_at_ms: null,
+    release_at_ms: null,
+    completed_at_ms: null,
+  });
+  const socket = new FakeSocket({
+    kind: "device", authenticated: true, device_id: "a".repeat(64),
+  });
+  const control = new DeviceControl(new FakeContext(storage, [socket]), {});
+
+  const active = await control.reconcileActiveOperation(now, { fenceSockets: true });
+  assert.equal(active.status, "FENCED");
+  assert.equal(active.release_at_ms, now + 120_000);
+  assert.equal(socket.attachment.authenticated, false);
+  assert.equal(socket.closed.at(-1)?.reason, "operation fenced");
 });
 
 test("stale hibernated socket is rejected before dispatch", async () => {
@@ -689,15 +795,115 @@ test("manager wait is event-driven and returns one typed terminal result", async
   }
 });
 
-test("manager wait timeout is typed unknown and never invites blind retry", async () => {
+test("manager wait completes through one natural same-request redelivery", async () => {
   const previousScheduler = globalThis.scheduler;
-  globalThis.scheduler = { wait: async () => {} };
+  globalThis.scheduler = { wait: () => new Promise(() => {}) };
+  try {
+    const identity = await generateIdentity();
+    const storage = new MemoryStorage();
+    await storage.put("device_identity", {
+      device_id: identity.deviceId,
+      public_key_spki_b64: identity.spkiB64,
+    });
+
+    let initialSendResolve;
+    const initialSent = new Promise((resolve) => { initialSendResolve = resolve; });
+    const initialSocket = new FakeSocket(
+      { kind: "device", authenticated: true, device_id: identity.deviceId },
+      (message) => {
+        if (JSON.parse(message).type === "ROTATE_IP") initialSendResolve();
+      },
+    );
+    const context = new FakeContext(storage, [initialSocket]);
+    const control = new DeviceControl(context, {});
+
+    const responsePromise = control.rotateAndWait(rotateRequest("req_recover"));
+    await initialSent;
+
+    const dispatched = await storage.get("active_operation");
+    assert.equal(dispatched.status, "DISPATCHED");
+    assert.equal(dispatched.delivery_attempts, 1);
+
+    const recovering = await control.reconcileActiveOperation(
+      dispatched.delivery_deadline_ms,
+      { fenceSockets: false },
+    );
+    assert.equal(recovering.status, "RECOVERING");
+    assert.equal(initialSocket.closed.length, 0);
+
+    const nonce = "f".repeat(43);
+    const signature = await signAuth(
+      identity.keyPair.privateKey,
+      identity.deviceId,
+      nonce,
+    );
+    const reconnectSocket = new FakeSocket({
+      kind: "device",
+      authenticated: false,
+      device_id: identity.deviceId,
+      challenge: nonce,
+      challenge_issued_at_ms: Date.now(),
+    });
+    context.sockets = [initialSocket, reconnectSocket];
+
+    await control.webSocketMessage(reconnectSocket, JSON.stringify({
+      v: 1,
+      type: "AUTH",
+      device_id: identity.deviceId,
+      signature,
+    }));
+
+    const reconnectMessages = reconnectSocket.sent.map((message) => JSON.parse(message));
+    assert.deepEqual(
+      reconnectMessages.map((message) => message.type),
+      ["READY", "ROTATE_IP"],
+    );
+    assert.equal(reconnectMessages[1].request_id, "req_recover");
+    assert.equal(
+      JSON.parse(initialSocket.sent[0]).request_id,
+      reconnectMessages[1].request_id,
+    );
+
+    await control.webSocketMessage(
+      reconnectSocket,
+      '{"v":1,"type":"ACCEPTED","request_id":"req_recover","operation_id":55}',
+    );
+    await control.webSocketMessage(
+      reconnectSocket,
+      '{"v":1,"type":"RESULT","request_id":"req_recover","result":"UNCHANGED","operation_id":55}',
+    );
+
+    const response = await responsePromise;
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.result, "UNCHANGED");
+    assert.equal(payload.operation_id, 55);
+    assert.equal(payload.dispatched, true);
+    assert.equal(payload.retryable, false);
+  } finally {
+    globalThis.scheduler = previousScheduler;
+  }
+});
+
+test("manager wait exhausts bounded natural-reconnect recovery without blind retry", async () => {
+  const previousScheduler = globalThis.scheduler;
+  const previousDateNow = Date.now;
+  let now = 1_000_000;
+  Date.now = () => now;
+  globalThis.scheduler = {
+    wait: async (milliseconds) => {
+      now += milliseconds;
+    },
+  };
   try {
     const storage = new MemoryStorage();
     const socket = new FakeSocket({
       kind: "device", authenticated: true, device_id: "a".repeat(64),
     });
-    const control = new DeviceControl(new FakeContext(storage, [socket]), {});
+    const control = new DeviceControl(
+      new FakeContext(storage, [socket], { autoResponseAtMs: now }),
+      {},
+    );
 
     const response = await control.rotateAndWait(rotateRequest("req_timeout"));
     assert.equal(response.status, 504);
@@ -709,9 +915,14 @@ test("manager wait timeout is typed unknown and never invites blind retry", asyn
     assert.equal(payload.reason, "TIMEOUT");
     assert.equal(payload.dispatched, true);
     assert.equal(payload.retryable, false);
-    assert.equal(socket.sent.filter((message) => JSON.parse(message).type === "ROTATE_IP").length, 1);
+    assert.equal(
+      socket.sent.filter((message) => JSON.parse(message).type === "ROTATE_IP").length,
+      1,
+    );
+    assert.equal((await storage.get("active_operation")).status, "FENCED");
   } finally {
     globalThis.scheduler = previousScheduler;
+    Date.now = previousDateNow;
   }
 });
 
