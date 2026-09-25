@@ -37,6 +37,7 @@ on:
           - u8_reboot_install_durability
           - u8_public_egress_rotation
           - u8_remote_control
+          - u8_radio_detach_research
           - u8_durability_soak
           - u8g_final_clean_client
           - loopback_connect
@@ -114,7 +115,7 @@ jobs:
               match = re.fullmatch(
                   r"/mish-cycle\s+([1-9][0-9]*)\s+([0-9a-f]{40})\s+"
                   r"(full|install_only|diagnose_only|probe_only)\s+"
-                  r"(none|capacity_resources|recovery_lifecycle|dns_lifetime_live|u5_rotation|u7_runtime_restart_resources|u7_512_lifecycle_stability|u8_reboot_install_durability|u8_public_egress_rotation|u8_remote_control|u8_durability_soak|u8g_final_clean_client|loopback_connect)",
+                  r"(none|capacity_resources|recovery_lifecycle|dns_lifetime_live|u5_rotation|u7_runtime_restart_resources|u7_512_lifecycle_stability|u8_reboot_install_durability|u8_public_egress_rotation|u8_remote_control|u8_radio_detach_research|u8_durability_soak|u8g_final_clean_client|loopback_connect)",
                   body,
               )
               if match is None:
@@ -164,8 +165,8 @@ jobs:
               if probe != 'loopback_connect':
                   raise SystemExit('probe_only supports only the current-function loopback_connect probe')
           elif mode == 'full':
-              if probe not in {'none', 'capacity_resources', 'recovery_lifecycle', 'dns_lifetime_live', 'u5_rotation', 'u7_runtime_restart_resources', 'u7_512_lifecycle_stability', 'u8_reboot_install_durability', 'u8_public_egress_rotation', 'u8_remote_control', 'u8_durability_soak', 'u8g_final_clean_client'}:
-                  raise SystemExit('full accepts only none, capacity_resources, recovery_lifecycle, dns_lifetime_live, u5_rotation, u7_runtime_restart_resources, u7_512_lifecycle_stability, u8_reboot_install_durability, u8_public_egress_rotation, u8_remote_control, u8_durability_soak, or u8g_final_clean_client')
+              if probe not in {'none', 'capacity_resources', 'recovery_lifecycle', 'dns_lifetime_live', 'u5_rotation', 'u7_runtime_restart_resources', 'u7_512_lifecycle_stability', 'u8_reboot_install_durability', 'u8_public_egress_rotation', 'u8_remote_control', 'u8_radio_detach_research', 'u8_durability_soak', 'u8g_final_clean_client'}:
+                  raise SystemExit('full accepts only none, capacity_resources, recovery_lifecycle, dns_lifetime_live, u5_rotation, u7_runtime_restart_resources, u7_512_lifecycle_stability, u8_reboot_install_durability, u8_public_egress_rotation, u8_remote_control, u8_radio_detach_research, u8_durability_soak, or u8g_final_clean_client')
           elif probe != 'none':
               raise SystemExit('install_only/diagnose_only require probe=none')
           PY
@@ -516,7 +517,7 @@ jobs:
     if: >-
       ${{ always() && needs.resolve.outputs.eligible == 'true' &&
           needs.resolve.outputs.mode == 'full' &&
-          needs.resolve.outputs.probe == 'u8_remote_control' &&
+          contains(fromJSON('["u8_remote_control","u8_radio_detach_research"]'), needs.resolve.outputs.probe) &&
           needs.install.result == 'success' }}
     runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
     timeout-minutes: 15
@@ -554,14 +555,20 @@ jobs:
           MISH_MANAGER_TOKEN: ${{ secrets.MISH_MANAGER_TOKEN }}
         run: |
           $ErrorActionPreference = 'Stop'
-          .\\lab\\windows\\diagnose-u8-remote-control.ps1 `
-            -AdbPath $env:ADB_EXE `
-            -PackageName $env:PACKAGE_NAME `
-            -ComponentName "$env:PACKAGE_NAME/com.mobileproxymish.app.MainActivity" `
-            -ControlHost 'api.alegria.by' `
-            -EvidencePath "$env:RUNNER_TEMP\\mish-u8-remote-control-v1.json" `
-            -BaselineDiagnosticPath "$env:RUNNER_TEMP\\mish-u8-remote-control-baseline-v2.json" `
-            -PostDiagnosticPath "$env:RUNNER_TEMP\\mish-u8-remote-control-post-v2.json"
+          $parameters = @{
+            AdbPath = $env:ADB_EXE
+            PackageName = $env:PACKAGE_NAME
+            ComponentName = "$env:PACKAGE_NAME/com.mobileproxymish.app.MainActivity"
+            ControlHost = 'api.alegria.by'
+            EvidencePath = "$env:RUNNER_TEMP\\mish-u8-remote-control-v1.json"
+            BaselineDiagnosticPath = "$env:RUNNER_TEMP\\mish-u8-remote-control-baseline-v2.json"
+            PostDiagnosticPath = "$env:RUNNER_TEMP\\mish-u8-remote-control-post-v2.json"
+          }
+          if ('${{ needs.resolve.outputs.probe }}' -ceq 'u8_radio_detach_research') {
+            $parameters.CollectTelephonyDetachEvidence = $true
+            $parameters.TelephonyDetachEvidencePath = "$env:RUNNER_TEMP\\mish-u8-telephony-detach-v1.json"
+          }
+          .\\lab\\windows\\diagnose-u8-remote-control.ps1 @parameters
 
       - name: Enforce redacted U8-E acceptance evidence
         shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
@@ -570,6 +577,33 @@ jobs:
           $evidence = Get-Content -Raw -LiteralPath "$env:RUNNER_TEMP\\mish-u8-remote-control-v1.json" | ConvertFrom-Json
           if ([string]$evidence.acceptance_result -cne 'PASS' -or [string]$evidence.classification -cne 'U8_REMOTE_CONTROL_ROTATION_PASS' -or [string]$evidence.exact_candidate_acceptance -cne 'PASS' -or [string]$evidence.manager_api_schema -cne 'mish.control.rotate/v1' -or [string]$evidence.public_rotate_path -cne '/v1/rotate' -or [string]$evidence.public_rotate_body -cne 'EMPTY' -or -not [bool]$evidence.server_generated_request_id -or -not [bool]$evidence.single_http_command -or [int]$evidence.logical_rotation_requests -ne 1 -or [int]$evidence.operation_polls -ne 0 -or [bool]$evidence.client_request_id_generated -or [bool]$evidence.client_device_id_required_for_rotation -or -not [bool]$evidence.hosted_idempotency_contract -or -not [bool]$evidence.idle_liveness_proof -or [int]$evidence.idle_seconds -lt 12 -or [int64]$evidence.heartbeat_delta -lt 2 -or [int64]$evidence.reconnect_count_after_idle -ne [int64]$evidence.reconnect_count_before_idle -or [int64]$evidence.long_lived_session_age_ms -lt 10000 -or [int64]$evidence.manager_duration_ms -gt 18000 -or -not [bool]$evidence.external_public_ip_observer_proof -or -not [bool]$evidence.external_public_ip_consensus -or [string]$evidence.external_public_ip_outcome -notin @('CHANGED','UNCHANGED') -or -not [bool]$evidence.device_timeline_proof -or [int64]$evidence.device_timeline.operation_id -ne [int64]$evidence.operation_id -or [int64]$evidence.device_timeline.rotation_terminal_from_command_ms -lt 0 -or [int64]$evidence.device_timeline.result_ack_ms -lt [int64]$evidence.device_timeline.result_sent_ms -or [int]$evidence.client_bound_seconds -ne 20 -or [int]$evidence.wrong_manager_auth_status -ne 401 -or -not [bool]$evidence.wrong_manager_auth_zero_rotation_mutation -or [int]$evidence.authenticated_invalid_request_status -ne 400 -or -not [bool]$evidence.authenticated_invalid_request_zero_rotation_mutation -or [bool]$evidence.manager_token_persisted -or [bool]$evidence.public_spki_persisted -or [bool]$evidence.raw_public_ip_persisted -or [bool]$evidence.secrets_persisted_in_evidence) {
             throw 'MISH_DEVICE_CYCLE_FAILURE|U8_REMOTE_CONTROL_ACCEPTANCE_FAILED|Remote-control evidence did not satisfy the bounded acceptance contract.'
+          }
+
+      - name: Enforce typed API30 radio-detach research evidence
+        if: ${{ needs.resolve.outputs.probe == 'u8_radio_detach_research' }}
+        shell: 'C:\\mish-lab\\tools\\powershell-7.6.6\\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $remote = Get-Content -Raw -LiteralPath "$env:RUNNER_TEMP\\mish-u8-remote-control-v1.json" | ConvertFrom-Json
+          $typed = Get-Content -Raw -LiteralPath "$env:RUNNER_TEMP\\mish-u8-telephony-detach-v1.json" | ConvertFrom-Json
+          $research = $remote.telephony_detach_research
+          if ($null -eq $research -or
+              [string]$research.schema -cne 'mish.lab.telephony-detach-research/v1' -or
+              [int64]$research.operation_id -ne [int64]$remote.operation_id -or
+              [string]$research.observer -cne 'PhoneStateListener.LISTEN_SERVICE_STATE' -or
+              [string]$research.power_off_vs_airplane_disable_started -notin @('AT_OR_BEFORE_DISABLE_START','AFTER_DISABLE_START','INDETERMINATE_WITHIN_CORRELATION_WINDOW','NOT_OBSERVED') -or
+              [bool]$research.product_mutation_performed -or
+              [bool]$research.radio_mutation_performed -or
+              [bool]$research.second_rotation_triggered -or
+              [string]$research.architecture_decision -cne 'NOT_MADE' -or
+              [string]$typed.schema -cne 'mish.lab.telephony-detach-observation/v1' -or
+              [bool]$typed.product_mutation_performed -or
+              [bool]$typed.radio_mutation_performed -or
+              [bool]$typed.rotation_triggered -or
+              [bool]$typed.raw_public_ip_persisted -or
+              [bool]$typed.subscription_id_persisted -or
+              [bool]$typed.secrets_persisted_in_evidence) {
+            throw 'MISH_DEVICE_CYCLE_FAILURE|U8_RADIO_DETACH_RESEARCH_INVALID|Typed telephony research evidence violated the read-only one-operation contract.'
           }
 
       - name: Upload bounded U8-E remote-control evidence
@@ -585,6 +619,7 @@ jobs:
             ${{ runner.temp }}\\mish-u8-remote-control-post-v2.json
             ${{ runner.temp }}\\mish-u8-remote-control-start-before-v1.json
             ${{ runner.temp }}\\mish-u8-remote-control-start-after-v1.json
+            ${{ runner.temp }}\\mish-u8-telephony-detach-v1.json
           if-no-files-found: warn
           retention-days: 30
 
@@ -909,6 +944,20 @@ jobs:
               '- Automatic repair/probe decision: **NO**',
               '- Next action: **STOP_FOR_ANALYSIS**'
             ) | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_STEP_SUMMARY
+          if ($null -ne $evidence.telephony_detach_research) {
+            $research = $evidence.telephony_detach_research
+            @(
+              ''
+              '### Typed API30 radio-detach research'
+              "- POWER_OFF observed: **$([bool]$research.power_off_observed)**"
+              "- POWER_OFF vs Cellular loss: **$([string]$research.power_off_vs_cellular_loss)**"
+              "- POWER_OFF vs airplane disable start: **$([string]$research.power_off_vs_airplane_disable_started)**"
+              "- loss -> disable start: **$([int64]$research.cellular_loss_to_disable_started_ms) ms**"
+              "- clock correlation window: **$([int64]$research.control_origin_correlation_window_ms) ms**"
+              '- PRODUCT mutation: **NO**'
+              '- Architecture decision: **NOT MADE**'
+            ) | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_STEP_SUMMARY
+          }
           }
 
       - name: Enforce observed result
