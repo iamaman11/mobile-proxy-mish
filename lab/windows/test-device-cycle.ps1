@@ -25,6 +25,7 @@ try {
         'test-u8-remote-control-probe-contract.ps1',
         'TelephonyDetachObservation.psm1',
         'characterize-radio-poweroff.ps1',
+        'characterize-radio-poweroff-public-egress.ps1',
         'diagnose-u8-durability-soak.ps1',
         'test-u8-durability-soak-probe-contract.ps1',
         'test-diagnostic-connect-probe.ps1',
