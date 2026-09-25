@@ -100,6 +100,87 @@ jobs:
           retention-days: 30
 
 
+  control-snapshot:
+    name: Read-only CONTROL snapshot
+    if: >-
+      github.event.issue.number == 163 &&
+      github.event.comment.user.login == 'iamaman11' &&
+      github.event.comment.body == '/mish-diag control-snapshot'
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 5
+    env:
+      ADB_EXE: C:\\mish-lab\\tools\\android-sdk\\platform-tools\\adb.exe
+    steps:
+      - name: Checkout protected main diagnostics bridge
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+          clean: true
+
+      - name: Verify pinned PowerShell 7 runtime
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($PSVersionTable.PSEdition -cne 'Core' -or $PSVersionTable.PSVersion.ToString() -cne $env:DIAGNOSTIC_PWSH_VERSION) {
+            throw "MISH_CONTROL_DIAGNOSTIC_FAILURE|POWERSHELL_RUNTIME_MISMATCH|Expected PowerShell $env:DIAGNOSTIC_PWSH_VERSION; observed $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)"
+          }
+
+      - name: Verify physical LAB identity
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\labctl.ps1 host inspect -PhysicalLab
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Collect one read-only CONTROL snapshot
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\collect-control-diagnostic.ps1 `
+            -AdbPath "$env:ADB_EXE" `
+            -PackageName 'com.mobileproxymish.app.debug' `
+            -EvidencePath "$env:RUNNER_TEMP\mish-control-diagnostic-v1.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Publish CONTROL timing summary
+        if: ${{ always() }}
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $path = Join-Path $env:RUNNER_TEMP 'mish-control-diagnostic-v1.json'
+          if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            "### Read-only CONTROL snapshot`n`nEvidence was not produced." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            exit 0
+          }
+          $evidence = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json
+          $timing = $evidence.control.operation_timing
+          @(
+            '### Read-only CONTROL snapshot',
+            '',
+            "- PID stable: **$($evidence.pid_stable)**",
+            "- CONTROL state: **$($evidence.control.state)**",
+            "- Operation id: **$($timing.operation_id)**",
+            "- Rotation terminal CONTROL state: **$($timing.rotation_terminal_control_state)**",
+            "- Rotation terminal: **$($timing.rotation_terminal_ms) ms**",
+            "- Post-terminal connect start: **$($timing.post_terminal_connect_started_ms) ms** / attempts=$($timing.post_terminal_connect_attempts)",
+            "- Post-terminal transport connected: **$($timing.post_terminal_transport_connected_ms) ms** / connections=$($timing.post_terminal_transport_connections)",
+            "- Reconnect READY: **$($timing.reconnect_ready_ms) ms**",
+            "- RESULT sent: **$($timing.result_sent_ms) ms**",
+            "- RESULT ACK: **$($timing.result_ack_ms) ms**",
+            '',
+            'Read-only DUMP only: no Rotation, network, root-policy, install, restart or Cloudflare mutation.'
+          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Upload CONTROL diagnostic evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mish-control-diagnostic-v1-${{ github.run_id }}
+          path: ${{ runner.temp }}\mish-control-diagnostic-v1.json
+          if-no-files-found: warn
+          retention-days: 30
+
+
   protocol-parity:
     name: Read-only U2 protocol parity
     if: >-
