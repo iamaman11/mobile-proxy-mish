@@ -1049,6 +1049,52 @@ mod tests {
     }
 
     #[test]
+    fn terminal_reconnect_attribution_is_operation_scoped_and_observation_only() {
+        let origin = Instant::now();
+        let mut timing = ControlOperationTiming::new(7, origin);
+
+        assert!(timing.mark(7, |snapshot, elapsed_ms| {
+            set_timing_once(&mut snapshot.rotation_terminal_ms, elapsed_ms);
+            snapshot.rotation_terminal_control_state = Some(ControlSessionState::Backoff);
+        }));
+        assert!(timing.mark(7, |snapshot, elapsed_ms| {
+            set_timing_once(&mut snapshot.post_terminal_connect_started_ms, elapsed_ms);
+            snapshot.post_terminal_connect_attempts =
+                snapshot.post_terminal_connect_attempts.saturating_add(1);
+        }));
+        assert!(timing.mark(7, |snapshot, elapsed_ms| {
+            set_timing_once(
+                &mut snapshot.post_terminal_transport_connected_ms,
+                elapsed_ms,
+            );
+            snapshot.post_terminal_transport_connections = snapshot
+                .post_terminal_transport_connections
+                .saturating_add(1);
+        }));
+
+        assert!(!timing.mark(8, |snapshot, _| {
+            snapshot.post_terminal_connect_attempts =
+                snapshot.post_terminal_connect_attempts.saturating_add(1);
+        }));
+
+        assert_eq!(
+            timing.snapshot.rotation_terminal_control_state,
+            Some(ControlSessionState::Backoff)
+        );
+        assert!(timing.snapshot.rotation_terminal_ms.is_some());
+        assert!(timing.snapshot.post_terminal_connect_started_ms.is_some());
+        assert_eq!(timing.snapshot.post_terminal_connect_attempts, 1);
+        assert!(
+            timing
+                .snapshot
+                .post_terminal_transport_connected_ms
+                .is_some()
+        );
+        assert_eq!(timing.snapshot.post_terminal_transport_connections, 1);
+        assert_eq!(timing.snapshot.operation_id, Some(7));
+    }
+
+    #[test]
     fn control_liveness_is_owned_by_the_existing_native_session_task() {
         assert_eq!(CONTROL_HEARTBEAT_INTERVAL, Duration::from_secs(4));
         assert_eq!(CONTROL_HEARTBEAT_REQUEST, "MISH_CONTROL_HEARTBEAT_V1");
