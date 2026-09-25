@@ -182,6 +182,7 @@ def main() -> None:
         "LAB_RESTORE_ONLY_NOT_PRODUCT_TRANSITION",
         "product_rotation_triggered = $false",
         "manager_command_issued = $false",
+        "automatic_repeat_rotation = $false",
         "rotation_operation_id_unchanged",
         "finally {",
     ):
