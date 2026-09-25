@@ -862,13 +862,9 @@ impl ControlRuntimeCoordinator {
             && let Some(operation_id) = pending.operation_id
         {
             let _ = pending.timing.mark(operation_id, |timing, elapsed_ms| {
-                set_timing_once(
-                    &mut timing.post_terminal_transport_connected_ms,
-                    elapsed_ms,
-                );
-                timing.post_terminal_transport_connections = timing
-                    .post_terminal_transport_connections
-                    .saturating_add(1);
+                set_timing_once(&mut timing.post_terminal_transport_connected_ms, elapsed_ms);
+                timing.post_terminal_transport_connections =
+                    timing.post_terminal_transport_connections.saturating_add(1);
             });
         }
     }

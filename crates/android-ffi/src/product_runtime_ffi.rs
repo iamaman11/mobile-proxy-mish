@@ -1104,12 +1104,14 @@ fn map_control_operation_timing(
         accepted_sent_ms: timing.accepted_sent_ms,
         reconnect_started_ms: timing.reconnect_started_ms,
         reconnect_ready_ms: timing.reconnect_ready_ms,
-        rotation_terminal_control_state: timing.rotation_terminal_control_state.map(|state| match state {
-            ControlSessionState::Stopped => ControlSessionStateView::Stopped,
-            ControlSessionState::Connecting => ControlSessionStateView::Connecting,
-            ControlSessionState::Authenticating => ControlSessionStateView::Authenticating,
-            ControlSessionState::Ready => ControlSessionStateView::Ready,
-            ControlSessionState::Backoff => ControlSessionStateView::Backoff,
+        rotation_terminal_control_state: timing.rotation_terminal_control_state.map(|state| {
+            match state {
+                ControlSessionState::Stopped => ControlSessionStateView::Stopped,
+                ControlSessionState::Connecting => ControlSessionStateView::Connecting,
+                ControlSessionState::Authenticating => ControlSessionStateView::Authenticating,
+                ControlSessionState::Ready => ControlSessionStateView::Ready,
+                ControlSessionState::Backoff => ControlSessionStateView::Backoff,
+            }
         }),
         post_terminal_connect_started_ms: timing.post_terminal_connect_started_ms,
         post_terminal_connect_attempts: timing.post_terminal_connect_attempts,
