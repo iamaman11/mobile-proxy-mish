@@ -1124,6 +1124,77 @@ Final physical acceptance after removing the legacy route:
 
 No Rotation state machine, Cellular/root policy, retry/polling owner or Worker/DO ownership boundary was added by this migration. The only PRODUCT semantic input changed is the canonical CONTROL hostname.
 
+
+## Post-U8 — CONTROL same-request delivery recovery — COMPLETED / PASS
+
+Issue #419 was opened from a real production delivery race observed after the unified `mish.alegria.by` migration:
+
+```text
+one public POST
+ -> Worker socket.send()
+ -> no PRODUCT ACCEPTED inside 2 s
+ -> UNKNOWN / TIMEOUT / dispatched=true / device_online=false
+
+later manual public POST
+ -> BUSY / device_online=true
+```
+
+The evidence showed that the initial Worker dispatch crossed the broker boundary, the PRODUCT delivery ACK was not observed before the short delivery deadline, and the Rust/Tokio session later recovered naturally while the existing fail-closed drain correctly prevented a second logical Rotation.
+
+The accepted refinement remains Worker/DO-only:
+
+```text
+DISPATCHED attempt 1
+ -> ACCEPTED
+ -> or 2 s ACK miss -> RECOVERING
+
+RECOVERING
+ -> late ACCEPTED/RESULT: accept normally
+ -> natural authenticated Rust/Tokio reconnect:
+      READY
+      redeliver the SAME request_id exactly once
+      DISPATCHED attempt 2
+ -> bounded recovery expiry -> FENCED
+
+DISPATCHED attempt 2
+ -> ACCEPTED
+ -> or 2 s ACK miss -> existing 120 s FENCED drain
+```
+
+Ownership invariants remain unchanged:
+
+- Rust/Tokio remains the only WSS reconnect/heartbeat owner;
+- Rust/Tokio remains the only Rotation owner;
+- PRODUCT request-id idempotency remains authoritative;
+- Worker never initiates reconnect;
+- Worker never creates a replacement request_id for recovery;
+- one public POST still represents one logical command;
+- no manager polling, retry-until-CHANGED or Android/Kotlin recovery owner was introduced.
+
+Accepted implementation/evidence:
+
+- issue #419 = CLOSED / PASS;
+- implementation PR #420 exact accepted head = `222eaf79b3187a8b516414cc21127a0d6204ce17`;
+- protected-main merge = `a102ad4c313ccc3035f2fc14869d9eb01679ecbb`;
+- accepted PR tree = protected-main tree = `94c124c9da0d4bf4e3319bc00c18fde5ffffb3d0`;
+- U8 Control Static #103 / run `36163220525` = PASS;
+- PR Validation #1103 / run `36163220584` = PASS;
+- `PRODUCT_CHANGED=false`;
+- deterministic Durable Object tests cover RECOVERING, no forced reconnect, one same-request redelivery, late ACCEPTED, second-ACK fencing, recovery expiry, BUSY during uncertainty, and manager completion through recovered delivery;
+- Control Worker Deploy #190 / run `36163352981` = PASS;
+- deployed Worker version = `fa4da7ee-8c99-4022-85d6-675baaa577e2`;
+- physical no-regression Device Cycle #849 / run `36163926660` = PASS / `U8_REMOTE_CONTROL_ROTATION_PASS`;
+- physical result = CHANGED, one public command, one logical Rotation, polling=0;
+- manager duration = 13277 ms;
+- heartbeat delta=3 / reconnect delta=0;
+- POWER_OFF gate = PASS;
+- independent public-IP proof = CHANGED / consensus=true;
+- post PRODUCT Cellular/root/Proxy/Mesh/readiness and both proxy E2E checks = PASS;
+- physical evidence artifact `10876549670`, digest `sha256:72ae554daaafbdf512d5af3be6ab1f9771e4feb515fed7e7aea97e0c2857644c`.
+
+The physical run intentionally validates normal production behavior after the Worker change. The rare reconnect race itself is proven deterministically in the hosted Durable Object harness rather than by artificially breaking DEVICE-1 WSS.
+
+
 ## Single-pass execution rule
 
 Development proceeds linearly through `U1 -> U2 -> ... -> U8` with **one current stage** and no parallel roadmap hierarchy.
