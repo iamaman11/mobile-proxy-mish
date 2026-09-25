@@ -75,7 +75,7 @@ def main() -> None:
         "candidate build is not a completed successful PR preflight",
         "PR Validation + PRODUCT Candidate",
         "probe_only supports only the current-function loopback_connect probe",
-        "full accepts only none, capacity_resources, recovery_lifecycle, dns_lifetime_live, u5_rotation, u7_runtime_restart_resources, u7_512_lifecycle_stability, u8_reboot_install_durability, u8_public_egress_rotation, u8_remote_control, u8_radio_detach_research, u8_durability_soak, or u8g_final_clean_client",
+        "full accepts only none, capacity_resources, recovery_lifecycle, dns_lifetime_live, u5_rotation, u7_runtime_restart_resources, u7_512_lifecycle_stability, u8_reboot_install_durability, u8_public_egress_rotation, u8_remote_control, u8_radio_detach_research, u8_radio_poweroff_characterization, u8_durability_soak, or u8g_final_clean_client",
         "install_only/diagnose_only require probe=none",
         "capacity_resources",
         "recovery_lifecycle",
@@ -87,6 +87,7 @@ def main() -> None:
         "u8_public_egress_rotation",
         "u8_remote_control",
         "u8_radio_detach_research",
+        "u8_radio_poweroff_characterization",
         "u8_durability_soak",
         "u8g_final_clean_client",
         "Explicit U8-G final clean-client privacy acceptance",
@@ -99,6 +100,8 @@ def main() -> None:
         "Explicit U8 public Cellular egress rotation proof",
         "diagnose-u8-public-egress-rotation.ps1",
         "diagnose-u8-reboot-install-durability.ps1",
+        "Explicit DEVICE-1 radio POWER_OFF characterization",
+        "characterize-radio-poweroff.ps1",
         "Explicit U8-F bounded durability soak",
         "diagnose-u8-durability-soak.ps1",
         "Explicit U3 DNS lifetime - live same-process observation",
@@ -165,6 +168,43 @@ def main() -> None:
         "test-u8-durability-soak-probe-contract.ps1",
         "U8-F durability soak guard must run inside the existing Device Cycle Contracts job",
     )
+
+    radio_poweroff = "lab/windows/characterize-radio-poweroff.ps1"
+    for required in (
+        "mish.lab.radio-poweroff-characterization/v1",
+        "Get-MishTelephonyDetachObservationSnapshot",
+        "PhoneStateListener.LISTEN_SERVICE_STATE",
+        "cmd connectivity airplane-mode enable",
+        "cmd connectivity airplane-mode disable",
+        "POWER_OFF_OBSERVED",
+        "POWER_OFF_NOT_OBSERVED_WITHIN_SAFETY_ENVELOPE",
+        "LAB_RESTORE_ONLY_NOT_PRODUCT_TRANSITION",
+        "product_rotation_triggered = $false",
+        "manager_command_issued = $false",
+        "rotation_operation_id_unchanged",
+        "finally {",
+    ):
+        require(
+            radio_poweroff,
+            required,
+            "radio POWER_OFF characterization must remain one bounded LAB mutation with guaranteed restore and no PRODUCT Rotation",
+        )
+    for forbidden in (
+        "/v1/rotate",
+        "MISH_MANAGER_TOKEN",
+        "DebugRotationActivity",
+        "startPublicIpRotation",
+        "start_public_ip_rotation",
+        "retry_until_changed",
+        "retry-until-changed",
+        "checkip.amazonaws.com",
+        "public_ip_address",
+    ):
+        forbid(
+            radio_poweroff,
+            forbidden,
+            "radio POWER_OFF characterization must not become a manager/PRODUCT Rotation or public-IP path",
+        )
 
     for required in (
         "name: Device Cycle Contracts",
