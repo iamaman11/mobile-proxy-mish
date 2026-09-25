@@ -597,8 +597,7 @@ jobs:
               [bool]$research.second_rotation_triggered -or
               [string]$research.architecture_decision -cne 'NOT_MADE' -or
               [string]$typed.schema -cne 'mish.lab.telephony-detach-observation/v1' -or
-              -not [bool]$typed.diagnostic_permission_grant_performed -or
-              [bool]$typed.diagnostic_permission_revoke_performed -or
+              [bool]$typed.runtime_permission_mutation_performed -or
               [bool]$typed.product_mutation_performed -or
               [bool]$typed.radio_mutation_performed -or
               [bool]$typed.rotation_triggered -or
