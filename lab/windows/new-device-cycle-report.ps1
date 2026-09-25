@@ -29,6 +29,35 @@ function Read-OptionalJson {
 function Get-MishTargetedAcceptance {
     param($Evidence)
     if ($null -eq $Evidence) { return 'MISSING' }
+    if ([string]$Evidence.schema -ceq 'mish.lab.radio-poweroff-public-egress/v1') {
+        if (
+            [string]$Evidence.acceptance_result -notin @('PASS', 'FAIL') -or
+            [string]$Evidence.classification -notin @(
+                'POWER_OFF_PUBLIC_EGRESS_CHANGED',
+                'POWER_OFF_PUBLIC_EGRESS_UNCHANGED',
+                'LAB_RADIO_POWEROFF_PUBLIC_EGRESS_UNCLASSIFIED',
+                'LAB_POWEROFF_INNER_EVIDENCE_MISSING',
+                'LAB_POWEROFF_INNER_CONTRACT_FAILED'
+            ) -or
+            [int]$Evidence.radio_cycles -ne 1 -or
+            [int]$Evidence.external_observations -ne 2 -or
+            -not [bool]$Evidence.power_off_observed -or
+            $null -eq $Evidence.restore -or
+            -not [bool]$Evidence.restore.airplane_off_verified -or
+            -not [bool]$Evidence.restore.product_pid_stable -or
+            -not [bool]$Evidence.restore.product_recovered -or
+            -not [bool]$Evidence.restore.rotation_operation_id_unchanged -or
+            [bool]$Evidence.mutation.product_mutation_performed -or
+            [bool]$Evidence.mutation.product_rotation_triggered -or
+            [bool]$Evidence.mutation.manager_command_issued -or
+            [bool]$Evidence.mutation.automatic_repeat_rotation -or
+            [bool]$Evidence.raw_public_ip_persisted -or
+            [bool]$Evidence.secrets_persisted_in_evidence
+        ) {
+            return 'INVALID'
+        }
+        return [string]$Evidence.acceptance_result
+    }
     if ($Evidence.PSObject.Properties.Name -contains 'acceptance_result') {
         $value = [string]$Evidence.acceptance_result
         if ($value -in @('PASS', 'FAIL')) { return $value }
@@ -99,7 +128,7 @@ function Get-MishCycleFailureKind {
 
 function Test-MishSupportedFullProbe {
     param([Parameter(Mandatory)][string] $Probe)
-    return $Probe -in @('capacity_resources', 'recovery_lifecycle', 'dns_lifetime_live', 'u5_rotation', 'u7_runtime_restart_resources', 'u7_512_lifecycle_stability', 'u8_reboot_install_durability', 'u8_public_egress_rotation', 'u8_radio_poweroff_characterization', 'u8_durability_soak', 'u8g_final_clean_client')
+    return $Probe -in @('capacity_resources', 'recovery_lifecycle', 'dns_lifetime_live', 'u5_rotation', 'u7_runtime_restart_resources', 'u7_512_lifecycle_stability', 'u8_reboot_install_durability', 'u8_public_egress_rotation', 'u8_radio_poweroff_characterization', 'u8_radio_poweroff_public_egress', 'u8_durability_soak', 'u8g_final_clean_client')
 }
 
 $launch = Read-OptionalJson -Path $LaunchReceiptPath
@@ -192,7 +221,7 @@ $exactCandidateAcceptance = if ($Mode -cne 'full') {
 elseif ($cycleResult -ceq 'PRODUCT_FAIL') {
     'FAIL'
 }
-elseif ($RequestedProbe -in @('dns_lifetime_live', 'u8_radio_poweroff_characterization')) {
+elseif ($RequestedProbe -in @('dns_lifetime_live', 'u8_radio_poweroff_characterization', 'u8_radio_poweroff_public_egress')) {
     # Measurement/characterization probes can guide an engineering decision, but they do not
     # independently accept PRODUCT behavior.
     'NOT_EVALUATED'
@@ -221,6 +250,7 @@ $report = [ordered]@{
             elseif ($RequestedProbe -ceq 'u8_reboot_install_durability') { 'FULL_BASELINE_PLUS_U8_REBOOT_INSTALL_DURABILITY' }
             elseif ($RequestedProbe -ceq 'u8_public_egress_rotation') { 'FULL_BASELINE_PLUS_U8_PUBLIC_EGRESS_ROTATION' }
             elseif ($RequestedProbe -ceq 'u8_radio_poweroff_characterization') { 'FULL_BASELINE_PLUS_U8_RADIO_POWEROFF_CHARACTERIZATION' }
+            elseif ($RequestedProbe -ceq 'u8_radio_poweroff_public_egress') { 'FULL_BASELINE_PLUS_U8_RADIO_POWEROFF_PUBLIC_EGRESS' }
             elseif ($RequestedProbe -ceq 'u8_durability_soak') { 'FULL_BASELINE_PLUS_U8_DURABILITY_SOAK' }
             elseif ($RequestedProbe -ceq 'u8g_final_clean_client') { 'FULL_BASELINE_PLUS_U8G_FINAL_CLEAN_CLIENT' }
             else { 'FULL_BASELINE' }
