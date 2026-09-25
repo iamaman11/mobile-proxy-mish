@@ -105,7 +105,7 @@ test("public rotate requires manager auth and does not touch the device broker o
     throw new Error("must not be called");
   });
 
-  let response = await worker.fetch(new Request("https://api.alegria.by/v1/rotate", {
+  let response = await worker.fetch(new Request("https://mish.alegria.by/v1/rotate", {
     method: "POST",
   }), env);
   assert.equal(response.status, 401);
@@ -116,7 +116,7 @@ test("public rotate requires manager auth and does not touch the device broker o
   assert.equal(payload.request_id, null);
   assert.equal(payload.dispatched, false);
 
-  response = await worker.fetch(new Request("https://api.alegria.by/v1/rotate", {
+  response = await worker.fetch(new Request("https://mish.alegria.by/v1/rotate", {
     method: "POST",
     headers: { Authorization: `Bearer ${"n".repeat(40)}` },
   }), env);
@@ -146,7 +146,7 @@ test("public rotate accepts no caller body and generates correlation inside Work
   });
 
   for (let index = 0; index < 2; index += 1) {
-    const response = await worker.fetch(new Request("https://api.alegria.by/v1/rotate", {
+    const response = await worker.fetch(new Request("https://mish.alegria.by/v1/rotate", {
       method: "POST",
       headers: { Authorization: `Bearer ${TOKEN}` },
     }), env);
@@ -168,7 +168,7 @@ test("public rotate rejects any caller-supplied request body before correlation 
     calls += 1;
     throw new Error("must not be called");
   });
-  const response = await worker.fetch(new Request("https://api.alegria.by/v1/rotate", {
+  const response = await worker.fetch(new Request("https://mish.alegria.by/v1/rotate", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${TOKEN}`,
@@ -190,7 +190,7 @@ test("manager transport uncertainty is typed UNKNOWN and non-retryable", async (
   const env = managerEnv(async () => {
     throw new Error("subrequest transport failed");
   });
-  const response = await worker.fetch(new Request("https://api.alegria.by/v1/rotate", {
+  const response = await worker.fetch(new Request("https://mish.alegria.by/v1/rotate", {
     method: "POST",
     headers: { Authorization: `Bearer ${TOKEN}` },
   }), env);
@@ -215,12 +215,40 @@ test("old manager rotate and polling paths are not part of the public API", asyn
     `/v1/devices/${device}/rotate`,
     `/v1/devices/${device}/operations/old_request`,
   ]) {
-    const response = await worker.fetch(new Request(`https://api.alegria.by${path}`, {
+    const response = await worker.fetch(new Request(`https://mish.alegria.by${path}`, {
       method: path.endsWith("/rotate") ? "POST" : "GET",
       headers: { Authorization: `Bearer ${TOKEN}` },
     }), env);
     assert.equal(response.status, 404);
   }
+});
+
+test("device transport host does not expose the public manager API", async () => {
+  let calls = 0;
+  const env = managerEnv(async () => {
+    calls += 1;
+    throw new Error("must not be called");
+  });
+  const response = await worker.fetch(new Request("https://api.alegria.by/v1/rotate", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${TOKEN}` },
+  }), env);
+  assert.equal(response.status, 404);
+  assert.deepEqual(await response.json(), { error: "NOT_FOUND" });
+  assert.equal(calls, 0);
+});
+
+test("manager host does not expose the device WebSocket endpoint", async () => {
+  const device = "a".repeat(64);
+  const env = managerEnv(async () => {
+    throw new Error("must not be called");
+  });
+  const response = await worker.fetch(new Request(
+    `https://mish.alegria.by/v1/device/connect?device_id=${device}`,
+    { headers: { Upgrade: "websocket" } },
+  ), env);
+  assert.equal(response.status, 404);
+  assert.deepEqual(await response.json(), { error: "NOT_FOUND" });
 });
 
 function managerEnv(fetchImpl) {

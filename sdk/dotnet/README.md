@@ -44,7 +44,7 @@ UNKNOWN
 ```text
 one RotateIpAsync()
  -> one SDK HTTP send
- -> POST https://api.alegria.by/v1/rotate
+ -> POST https://mish.alegria.by/v1/rotate
  -> empty body
  -> no polling
  -> no SDK retry

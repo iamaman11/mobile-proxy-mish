@@ -8,6 +8,10 @@
     {
       "pattern": "api.alegria.by",
       "custom_domain": true
+    },
+    {
+      "pattern": "mish.alegria.by",
+      "custom_domain": true
     }
   ],
   "durable_objects": {

@@ -376,7 +376,7 @@ internal static class Program
         Equal(1, handler.SendCount, "send_count");
         Equal(HttpMethod.Post, handler.LastMethod, "method");
         Equal(
-            "https://api.alegria.by/v1/rotate",
+            "https://mish.alegria.by/v1/rotate",
             handler.LastUri?.AbsoluteUri,
             "uri");
         Equal<int?>(0, handler.LastBodyLength, "body_length");
