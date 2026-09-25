@@ -8,7 +8,8 @@ param(
     [ValidateRange(5, 30)][int] $ExternalProbeTimeoutSeconds = 15,
     [string] $EvidencePath = (Join-Path $env:TEMP 'mish-u8-remote-control-v1.json'),
     [string] $BaselineDiagnosticPath = (Join-Path $env:TEMP 'mish-u8-remote-control-baseline-v2.json'),
-    [string] $PostDiagnosticPath = (Join-Path $env:TEMP 'mish-u8-remote-control-post-v2.json')
+    [string] $PostDiagnosticPath = (Join-Path $env:TEMP 'mish-u8-remote-control-post-v2.json'),
+    [string] $TelephonyDiagnosticPath = (Join-Path $env:TEMP 'mish-telephony-service-state-v1.json')
 )
 
 Set-StrictMode -Version Latest
@@ -207,7 +208,16 @@ if ([string]$afterInvalidRequest.android.rotation.state -cne $baselineRotationSt
 $observationContext = $null
 $beforeAddress = $null
 $afterAddress = $null
+$telephonyObserverStarted = $false
+$telephonySnapshotCaptured = $false
 try {
+    & (Join-Path $PSScriptRoot 'collect-telephony-service-state-diagnostic.ps1') `
+        -Action Start `
+        -AdbPath $AdbPath `
+        -PackageName $PackageName `
+        -EvidencePath $TelephonyDiagnosticPath | Out-Host
+    $telephonyObserverStarted = $true
+
     $observationContext = New-MishPublicEgressObservationContext `
         -AdbPath $AdbPath `
         -PackageName $PackageName
@@ -516,6 +526,64 @@ if ([int64]$operationTiming.operation_reserved_ms -gt [int64]$operationTiming.ac
     Stop-MishRemoteControl 'DEVICE_TIMELINE_ORDER_INVALID' 'Remote rotation phase evidence violates the accepted event-driven ordering.'
 }
 
+# Capture the typed Android telephony observation after the same operation is fully correlated.
+# Callback timestamps are sampled from the existing Rust CONTROL operation clock; Kotlin owns no
+# timer, transition, retry, polling loop or radio decision.
+& (Join-Path $PSScriptRoot 'collect-telephony-service-state-diagnostic.ps1') `
+    -Action Snapshot `
+    -AdbPath $AdbPath `
+    -PackageName $PackageName `
+    -EvidencePath $TelephonyDiagnosticPath | Out-Host
+$telephonySnapshotCaptured = $true
+$telephonyEvidence = Read-MishJsonFile -Path $TelephonyDiagnosticPath
+$telephony = $telephonyEvidence.telephony
+if ([string]$telephonyEvidence.schema -cne 'mish.lab.telephony-service-state/v1' -or
+    [bool]$telephonyEvidence.mutation_performed -or
+    [bool]$telephonyEvidence.adb_rotation_trigger_used -or
+    [int64]$telephony.dropped_events -ne 0 -or
+    $null -eq $telephony.snapshot_operation_id -or
+    [int64]$telephony.snapshot_operation_id -ne $operationId) {
+    Stop-MishRemoteControl 'TELEPHONY_EVIDENCE_INVALID' 'Typed ServiceState evidence is incomplete, mutated, dropped, or not correlated to the remote operation.'
+}
+$telephonyEvents = @($telephony.events)
+$correlatedTelephonyEvents = @(
+    $telephonyEvents | Where-Object {
+        $null -ne $_.operation_id -and
+        $null -ne $_.operation_age_ms -and
+        [int64]$_.operation_id -eq $operationId -and
+        [int64]$_.operation_age_ms -ge 0
+    }
+)
+if ($correlatedTelephonyEvents.Count -lt 1) {
+    Stop-MishRemoteControl 'TELEPHONY_EVIDENCE_UNCORRELATED' 'No typed ServiceState callback was correlated to the real remote Rotation.'
+}
+foreach ($event in $correlatedTelephonyEvents) {
+    if ([string]$event.state -notin @('IN_SERVICE', 'OUT_OF_SERVICE', 'EMERGENCY_ONLY', 'POWER_OFF', 'UNKNOWN')) {
+        Stop-MishRemoteControl 'TELEPHONY_EVIDENCE_INVALID' 'Typed ServiceState evidence contains an unknown state encoding.'
+    }
+}
+$outOfServiceEvent = $correlatedTelephonyEvents |
+    Where-Object { [string]$_.state -ceq 'OUT_OF_SERVICE' } |
+    Sort-Object { [int64]$_.operation_age_ms } |
+    Select-Object -First 1
+$powerOffEvent = $correlatedTelephonyEvents |
+    Where-Object { [string]$_.state -ceq 'POWER_OFF' } |
+    Sort-Object { [int64]$_.operation_age_ms } |
+    Select-Object -First 1
+$outOfServiceMs = if ($null -eq $outOfServiceEvent) { $null } else { [int64]$outOfServiceEvent.operation_age_ms }
+$powerOffMs = if ($null -eq $powerOffEvent) { $null } else { [int64]$powerOffEvent.operation_age_ms }
+$cellularLossFromCommandMs = $rotationOriginFromCommandMs + [int64]$rotationTiming.cellular_loss_observed_ms
+$airplaneDisableFromCommandMs = $rotationOriginFromCommandMs + [int64]$rotationTiming.airplane_disable_started_ms
+$radioDetachClassification = if ($null -eq $powerOffMs) {
+    'POWER_OFF_NOT_OBSERVED'
+} elseif ($powerOffMs -le $airplaneDisableFromCommandMs) {
+    'POWER_OFF_AT_OR_BEFORE_DISABLE'
+} else {
+    'POWER_OFF_AFTER_DISABLE'
+}
+$lossToPowerOffMs = if ($null -eq $powerOffMs) { $null } else { $powerOffMs - $cellularLossFromCommandMs }
+$powerOffToDisableMs = if ($null -eq $powerOffMs) { $null } else { $airplaneDisableFromCommandMs - $powerOffMs }
+
 $evidence = [ordered]@{
     schema = $schema
     collected_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
@@ -603,6 +671,23 @@ $evidence = [ordered]@{
             terminal_ms = [int64]$rotationTiming.terminal_ms
         }
     }
+    radio_detach_observation = [ordered]@{
+        schema = 'mish.lab.radio-detach-observation/v1'
+        typed_android_service_state = $true
+        active_data_subscription_selected = [bool]$telephony.active_data_subscription_selected
+        operation_id = $operationId
+        event_count = [int64]$telephony.event_count
+        correlated_event_count = [int64]$correlatedTelephonyEvents.Count
+        first_out_of_service_ms = $outOfServiceMs
+        first_power_off_ms = $powerOffMs
+        cellular_loss_observed_ms = $cellularLossFromCommandMs
+        airplane_disable_started_ms = $airplaneDisableFromCommandMs
+        loss_to_power_off_ms = $lossToPowerOffMs
+        power_off_to_disable_started_ms = $powerOffToDisableMs
+        classification = $radioDetachClassification
+        product_mutation_performed = $false
+        adb_rotation_trigger_used = $false
+    }
     post_product_diagnostic = [string]$post.classification
     post_readiness = [string]$post.android.readiness.state
     post_root_authorized = [bool]$post.android.root.policy_authorized
@@ -635,11 +720,36 @@ Write-Host "MISH_U8_REMOTE_CONTROL_IDLE_LIVENESS=PASS/heartbeat_delta=$heartbeat
 Write-Host "MISH_U8_REMOTE_CONTROL_MANAGER_DURATION_MS=$managerDurationMs"
 Write-Host "MISH_U8_REMOTE_CONTROL_DEVICE_TIMELINE=PASS/terminal_from_command_ms=$rotationTerminalFromCommandMs/result_ack_ms=$([int64]$operationTiming.result_ack_ms)"
 Write-Host "MISH_U8_REMOTE_CONTROL_EXTERNAL_PUBLIC_IP=PASS/outcome=$externalPublicIpOutcome/consensus=$externalPublicIpConsensus"
+Write-Host "MISH_U8_REMOTE_CONTROL_RADIO_DETACH=$radioDetachClassification/power_off_ms=$powerOffMs/loss_ms=$cellularLossFromCommandMs/disable_ms=$airplaneDisableFromCommandMs"
 Write-Host 'MISH_U8_REMOTE_CONTROL_RAW_IP_PERSISTED=false'
 Write-Host 'MISH_U8_REMOTE_CONTROL_SECRETS_PERSISTED=false'
 Write-Host "MISH_U8_REMOTE_CONTROL_EVIDENCE=$fullPath"
 }
 finally {
+    if ($telephonyObserverStarted) {
+        if (-not $telephonySnapshotCaptured) {
+            try {
+                & (Join-Path $PSScriptRoot 'collect-telephony-service-state-diagnostic.ps1') `
+                    -Action Snapshot `
+                    -AdbPath $AdbPath `
+                    -PackageName $PackageName `
+                    -EvidencePath $TelephonyDiagnosticPath | Out-Host
+            }
+            catch {
+                Write-Warning 'MISH_TELEPHONY_DIAGNOSTIC_SNAPSHOT=FAILED'
+            }
+        }
+        try {
+            & (Join-Path $PSScriptRoot 'collect-telephony-service-state-diagnostic.ps1') `
+                -Action Stop `
+                -AdbPath $AdbPath `
+                -PackageName $PackageName `
+                -EvidencePath $TelephonyDiagnosticPath | Out-Host
+        }
+        catch {
+            Write-Warning 'MISH_TELEPHONY_DIAGNOSTIC_STOP=FAILED'
+        }
+    }
     $beforeAddress = $null
     $afterAddress = $null
     Close-MishPublicEgressObservationContext -Context $observationContext
