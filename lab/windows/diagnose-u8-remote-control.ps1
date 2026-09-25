@@ -655,6 +655,7 @@ Write-Host 'MISH_U8_REMOTE_CONTROL_MANAGER_POLLING=0'
 Write-Host "MISH_U8_REMOTE_CONTROL_IDLE_LIVENESS=PASS/heartbeat_delta=$heartbeatDelta/reconnect_delta=$($reconnectAfterIdle - $reconnectBeforeIdle)"
 Write-Host "MISH_U8_REMOTE_CONTROL_MANAGER_DURATION_MS=$managerDurationMs"
 Write-Host "MISH_U8_REMOTE_CONTROL_DEVICE_TIMELINE=PASS/terminal_from_command_ms=$rotationTerminalFromCommandMs/result_ack_ms=$([int64]$operationTiming.result_ack_ms)"
+Write-Host "MISH_U8_REMOTE_CONTROL_RADIO_POWEROFF_GATE=PASS/power_off_ms=$([int64]$rotationTiming.radio_power_off_observed_ms)/disable_ms=$([int64]$rotationTiming.airplane_disable_started_ms)"
 Write-Host "MISH_U8_REMOTE_CONTROL_EXTERNAL_PUBLIC_IP=PASS/outcome=$externalPublicIpOutcome/consensus=$externalPublicIpConsensus"
 if ($CollectTelephonyDetachEvidence) {
     Write-Host "MISH_U8_REMOTE_CONTROL_TELEPHONY_DETACH=PASS/power_off=$([bool]$radioDetachResearch.power_off_observed)/vs_disable=$([string]$radioDetachResearch.power_off_vs_airplane_disable_started)"
