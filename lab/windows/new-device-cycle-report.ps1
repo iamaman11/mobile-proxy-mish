@@ -34,6 +34,30 @@ function Get-MishTargetedAcceptance {
         if ($value -in @('PASS', 'FAIL')) { return $value }
         return 'INVALID'
     }
+    if ([string]$Evidence.schema -ceq 'mish.lab.radio-poweroff-characterization/v1') {
+        if (
+            [string]$Evidence.result -notin @('PASS', 'FAIL') -or
+            [string]$Evidence.classification -notin @(
+                'POWER_OFF_OBSERVED',
+                'POWER_OFF_OBSERVED_BEFORE_RESTORE_COMPLETION',
+                'POWER_OFF_NOT_OBSERVED_WITHIN_SAFETY_ENVELOPE'
+            ) -or
+            $null -eq $Evidence.restore -or
+            -not [bool]$Evidence.restore.attempted -or
+            -not [bool]$Evidence.restore.airplane_off_verified -or
+            -not [bool]$Evidence.restore.product_pid_stable -or
+            -not [bool]$Evidence.restore.product_recovered -or
+            -not [bool]$Evidence.restore.rotation_operation_id_unchanged -or
+            [bool]$Evidence.mutation.product_mutation_performed -or
+            [bool]$Evidence.mutation.product_rotation_triggered -or
+            [bool]$Evidence.mutation.manager_command_issued -or
+            [bool]$Evidence.mutation.public_ip_polled -or
+            [bool]$Evidence.mutation.automatic_repeat_rotation
+        ) {
+            return 'INVALID'
+        }
+        return [string]$Evidence.result
+    }
     # Compatibility with the accepted #207 loopback schema. File existence is not success.
     if (
         [string]$Evidence.schema -ceq 'mish.lab.loopback-connect-diagnostic/v1' -and
@@ -75,7 +99,7 @@ function Get-MishCycleFailureKind {
 
 function Test-MishSupportedFullProbe {
     param([Parameter(Mandatory)][string] $Probe)
-    return $Probe -in @('capacity_resources', 'recovery_lifecycle', 'dns_lifetime_live', 'u5_rotation', 'u7_runtime_restart_resources', 'u7_512_lifecycle_stability', 'u8_reboot_install_durability', 'u8_public_egress_rotation', 'u8_durability_soak', 'u8g_final_clean_client')
+    return $Probe -in @('capacity_resources', 'recovery_lifecycle', 'dns_lifetime_live', 'u5_rotation', 'u7_runtime_restart_resources', 'u7_512_lifecycle_stability', 'u8_reboot_install_durability', 'u8_public_egress_rotation', 'u8_radio_poweroff_characterization', 'u8_durability_soak', 'u8g_final_clean_client')
 }
 
 $launch = Read-OptionalJson -Path $LaunchReceiptPath
@@ -168,9 +192,9 @@ $exactCandidateAcceptance = if ($Mode -cne 'full') {
 elseif ($cycleResult -ceq 'PRODUCT_FAIL') {
     'FAIL'
 }
-elseif ($RequestedProbe -ceq 'dns_lifetime_live') {
-    # This probe is an explicit U3 measurement. A complete observation can guide the next
-    # engineering decision, but it does not independently accept PRODUCT behavior.
+elseif ($RequestedProbe -in @('dns_lifetime_live', 'u8_radio_poweroff_characterization')) {
+    # Measurement/characterization probes can guide an engineering decision, but they do not
+    # independently accept PRODUCT behavior.
     'NOT_EVALUATED'
 }
 elseif ($cycleResult -ceq 'PASS') {
@@ -196,6 +220,7 @@ $report = [ordered]@{
             elseif ($RequestedProbe -ceq 'u7_512_lifecycle_stability') { 'FULL_BASELINE_PLUS_U7_512_LIFECYCLE_STABILITY' }
             elseif ($RequestedProbe -ceq 'u8_reboot_install_durability') { 'FULL_BASELINE_PLUS_U8_REBOOT_INSTALL_DURABILITY' }
             elseif ($RequestedProbe -ceq 'u8_public_egress_rotation') { 'FULL_BASELINE_PLUS_U8_PUBLIC_EGRESS_ROTATION' }
+            elseif ($RequestedProbe -ceq 'u8_radio_poweroff_characterization') { 'FULL_BASELINE_PLUS_U8_RADIO_POWEROFF_CHARACTERIZATION' }
             elseif ($RequestedProbe -ceq 'u8_durability_soak') { 'FULL_BASELINE_PLUS_U8_DURABILITY_SOAK' }
             elseif ($RequestedProbe -ceq 'u8g_final_clean_client') { 'FULL_BASELINE_PLUS_U8G_FINAL_CLEAN_CLIENT' }
             else { 'FULL_BASELINE' }
