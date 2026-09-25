@@ -11,7 +11,7 @@ import java.util.concurrent.Executor
 /**
  * Thin Android telephony boundary for the one positive radio-power fact used by Rust Rotation.
  *
- * This class owns no Rotation phase, timeout, retry, dwell, recovery or currentness decision.
+ * This class owns no Rotation phase, timeout, dwell, recovery or currentness decision.
  * It only subscribes to the configured data subscription and forwards STATE_POWER_OFF. Rust
  * decides whether the callback belongs to an active operation and whether any transition follows.
  */
