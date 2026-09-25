@@ -1305,6 +1305,9 @@ mod tests {
             .observe_cellular(operation_id, 2, false)
             .expect("cellular loss");
         machine
+            .observe_radio_power_off(operation_id)
+            .expect("radio power off");
+        machine
             .airplane_disable_effect_completed(operation_id, RotationMutationOutcome::Applied)
             .expect("airplane disable effect");
         machine
@@ -1380,6 +1383,11 @@ mod tests {
             set_once(&mut snapshot.pre_rotation_probe_started_ms, elapsed_ms);
         }));
         assert!(timing.snapshot.pre_rotation_probe_started_ms.is_some());
+
+        assert!(timing.mark(7, |snapshot, elapsed_ms| {
+            set_once(&mut snapshot.radio_power_off_observed_ms, elapsed_ms);
+        }));
+        assert!(timing.snapshot.radio_power_off_observed_ms.is_some());
 
         let replacement = RotationRuntimeTiming::new(8);
         assert_eq!(replacement.snapshot.operation_id, Some(8));
