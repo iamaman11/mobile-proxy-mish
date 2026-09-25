@@ -169,6 +169,22 @@ def main() -> None:
         "U8-F durability soak guard must run inside the existing Device Cycle Contracts job",
     )
 
+    report = "lab/windows/new-device-cycle-report.ps1"
+    for required in (
+        "'mish.lab.radio-poweroff-characterization/v1'",
+        "'u8_radio_poweroff_characterization'",
+        "'FULL_BASELINE_PLUS_U8_RADIO_POWEROFF_CHARACTERIZATION'",
+        "'POWER_OFF_OBSERVED'",
+        "'POWER_OFF_NOT_OBSERVED_WITHIN_SAFETY_ENVELOPE'",
+        "rotation_operation_id_unchanged",
+        "automatic_repeat_rotation",
+    ):
+        require(
+            report,
+            required,
+            "Device Cycle report must classify radio POWER_OFF characterization as bounded LAB evidence rather than PRODUCT acceptance",
+        )
+
     radio_poweroff = "lab/windows/characterize-radio-poweroff.ps1"
     for required in (
         "mish.lab.radio-poweroff-characterization/v1",
