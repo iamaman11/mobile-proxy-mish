@@ -762,8 +762,8 @@ mod tests {
                 }
                 _ => {
                     machine
-            .observe_radio_power_off(id)
-            .expect("radio power off");
+                        .observe_radio_power_off(id)
+                        .expect("radio power off");
                     machine.observe_airplane(id, true).expect("on")
                 }
             };
