@@ -3,8 +3,6 @@ $ErrorActionPreference = 'Stop'
 
 $script:TelephonyDetachNativeSchema = 'mish.debug.telephony-detach/v1'
 $script:TelephonyDetachEvidenceSchema = 'mish.lab.telephony-detach-observation/v1'
-$script:ReadPhoneStatePermission = 'android.permission.READ_PHONE_STATE'
-
 function Stop-MishTelephonyDetachFailure {
     param(
         [Parameter(Mandatory)][string] $Category,
@@ -80,26 +78,12 @@ function Start-MishTelephonyDetachObservation {
         [Parameter(Mandatory)][string] $PackageName
     )
 
-    $grant = Invoke-MishTelephonyAdb -AdbPath $AdbPath -Arguments @(
-        'shell', 'pm', 'grant', $PackageName, $script:ReadPhoneStatePermission
-    )
-    if ($grant.ExitCode -ne 0) {
-        Stop-MishTelephonyDetachFailure 'PERMISSION_GRANT_FAILED' 'Could not grant debug-only READ_PHONE_STATE observation permission.'
+    $snapshot = Invoke-MishTelephonyProviderCall -AdbPath $AdbPath -PackageName $PackageName -Method 'start_v1'
+    if (-not [bool]$snapshot.active -or -not [bool]$snapshot.active_data_subscription_valid) {
+        Stop-MishTelephonyDetachFailure 'OBSERVER_NOT_ACTIVE' 'Typed telephony observer did not become active on the active data subscription.'
     }
-
-    try {
-        $snapshot = Invoke-MishTelephonyProviderCall -AdbPath $AdbPath -PackageName $PackageName -Method 'start_v1'
-        if (-not [bool]$snapshot.active -or -not [bool]$snapshot.active_data_subscription_valid) {
-            Stop-MishTelephonyDetachFailure 'OBSERVER_NOT_ACTIVE' 'Typed telephony observer did not become active on the active data subscription.'
-        }
-        Write-Host 'MISH_TELEPHONY_DETACH_OBSERVER=STARTED'
-        return $snapshot
-    }
-    catch {
-        # Do not revoke here: Android may kill the package when a runtime permission is revoked,
-        # which would turn a read-only diagnostic failure into a PRODUCT lifecycle mutation.
-        throw
-    }
+    Write-Host 'MISH_TELEPHONY_DETACH_OBSERVER=STARTED'
+    return $snapshot
 }
 
 function Stop-MishTelephonyDetachObservation {
@@ -142,8 +126,7 @@ function Stop-MishTelephonyDetachObservation {
             collected_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
             application_id = $PackageName
             native = $snapshot
-            diagnostic_permission_grant_performed = $true
-            diagnostic_permission_revoke_performed = $false
+            runtime_permission_mutation_performed = $false
             product_mutation_performed = $false
             radio_mutation_performed = $false
             rotation_triggered = $false
@@ -166,9 +149,7 @@ function Stop-MishTelephonyDetachObservation {
         return $snapshot
     }
     finally {
-        # The debug-only runtime permission is intentionally left granted for this installed
-        # candidate. Revoking it can kill the package process on Android and corrupt the
-        # post-Rotation lifecycle evidence. The next APK without this debug permission drops it.
+        # No runtime permission is granted or revoked by this diagnostic.
     }
 }
 
