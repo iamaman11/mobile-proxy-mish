@@ -2529,7 +2529,6 @@ def main() -> None:
             "debug telephony-detach research may not own radio effects, Rotation, timers or polling",
         )
     for required in (
-        '<uses-permission android:name="android.permission.READ_PHONE_STATE" />',
         'android:name=".DebugTelephonyDetachProvider"',
         'android:authorities="${applicationId}.telephony-detach-diagnostics"',
         'android:permission="android.permission.DUMP"',
@@ -2542,12 +2541,17 @@ def main() -> None:
     for forbidden in (
         "DebugTelephonyDetachProvider",
         "telephony-detach-diagnostics",
-        "READ_PHONE_STATE",
     ):
         forbid(
             "android/app/src/main/AndroidManifest.xml",
             forbidden,
             "telephony-detach research must not enter the PRODUCT release manifest",
+        )
+    for manifest in (debug_manifest, "android/app/src/main/AndroidManifest.xml"):
+        forbid(
+            manifest,
+            "READ_PHONE_STATE",
+            "ServiceState research must not add an unnecessary phone-state runtime permission",
         )
 
     print("ARCHITECTURE_GUARDS=PASS")
