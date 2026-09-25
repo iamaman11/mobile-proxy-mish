@@ -124,6 +124,7 @@ struct RotationOperation {
     airplane_on_observed: bool,
     airplane_off_observed: bool,
     cellular_loss_observed: bool,
+    radio_power_off_observed: bool,
     latest_owner_generation: u64,
     fresh_cellular_generation: Option<u64>,
     root_authorized_generation: Option<u64>,
@@ -188,6 +189,7 @@ impl RotationOperation {
         if self.phase == RotationPhase::WaitingRadioDown
             && self.airplane_on_observed
             && self.cellular_loss_observed
+            && self.radio_power_off_observed
         {
             self.phase = RotationPhase::AirplaneDisabling;
             self.restore_required = true;
@@ -273,6 +275,7 @@ impl RotationStateMachine {
             airplane_on_observed: false,
             airplane_off_observed: false,
             cellular_loss_observed: false,
+            radio_power_off_observed: false,
             latest_owner_generation: before_generation,
             fresh_cellular_generation: None,
             root_authorized_generation: None,
@@ -366,6 +369,30 @@ impl RotationStateMachine {
                 }
                 operation.airplane_off_observed = true;
                 operation.maybe_advance_recovery();
+            }
+            _ => return Err(RotationTransitionError::InvalidPhase),
+        }
+        Ok(operation.snapshot())
+    }
+
+    /// Records the positive Android telephony fact that the cellular radio is powered off.
+    ///
+    /// This is an operation-scoped framework observation, not a timer or carrier lease-release
+    /// claim. It may arrive before or after ConnectivityManager loss; normal disable starts only
+    /// after all required radio-down facts are present.
+    pub fn observe_radio_power_off(
+        &mut self,
+        operation_id: u64,
+    ) -> Result<RotationSnapshot, RotationTransitionError> {
+        let operation = self.active(operation_id)?;
+        match operation.phase {
+            RotationPhase::AirplaneEnabling | RotationPhase::WaitingRadioDown => {
+                operation.radio_power_off_observed = true;
+                operation.maybe_advance_radio_down();
+            }
+            RotationPhase::AirplaneDisabling => {
+                // A duplicate/late POWER_OFF callback carries no new transition authority.
+                operation.radio_power_off_observed = true;
             }
             _ => return Err(RotationTransitionError::InvalidPhase),
         }
