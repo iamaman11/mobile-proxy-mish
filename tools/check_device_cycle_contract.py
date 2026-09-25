@@ -74,7 +74,7 @@ def main() -> None:
         "build first, then explicitly request the cycle",
         "candidate build is not a completed successful PR preflight",
         "PR Validation + PRODUCT Candidate",
-        "probe_only supports only the current-function loopback_connect probe",
+        "probe_only supports only loopback_connect or cellular_primitive_capabilities",
         "full accepts only none, capacity_resources, recovery_lifecycle, dns_lifetime_live, u5_rotation, u7_runtime_restart_resources, u7_512_lifecycle_stability, u8_reboot_install_durability, u8_public_egress_rotation, u8_remote_control, u8_radio_detach_research, u8_radio_poweroff_characterization, u8_radio_poweroff_public_egress, u8_durability_soak, or u8g_final_clean_client",
         "install_only/diagnose_only require probe=none",
         "capacity_resources",
@@ -132,6 +132,9 @@ def main() -> None:
         "Collect one canonical current-L8 diagnostic snapshot",
         "mish-device-diagnostic-v2.json",
         "Explicit current-function probe only - loopback CONNECT",
+        "Explicit read-only cellular primitive capability audit",
+        "diagnose-cellular-primitive-capabilities.ps1",
+        "cellular_primitive_capabilities",
         "Explicit U7 capacity/resources - external Mesh",
         "diagnose-capacity-resources.ps1",
         "steps.baseline.outcome == 'success'",
@@ -191,6 +194,54 @@ def main() -> None:
             report,
             required,
             "Device Cycle report must classify radio POWER_OFF characterization as bounded LAB evidence rather than PRODUCT acceptance",
+        )
+
+    capability_probe = "lab/windows/diagnose-cellular-primitive-capabilities.ps1"
+    for required in (
+        "mish.lab.cellular-primitive-capabilities/v1",
+        "'shell','su','-c','id -u'",
+        "'shell','su','-c','svc help'",
+        "'shell','su','-c','cmd phone help'",
+        "existing_root_readonly_available",
+        "svc_data_available",
+        "cmd_phone_data_advertised",
+        "cmd_phone_radio_advertised",
+        "cmd_phone_restart_modem_advertised",
+        "product_mutation_performed = $false",
+        "data_mutation_performed = $false",
+        "radio_mutation_performed = $false",
+        "modem_mutation_performed = $false",
+        "rotation_triggered = $false",
+        "app_restart_performed = $false",
+        "install_performed = $false",
+        "raw_command_help_persisted = $false",
+        "raw_public_ip_persisted = $false",
+        "subscription_id_persisted = $false",
+        "operator_identity_persisted = $false",
+        "secrets_persisted_in_evidence = $false",
+        "architecture_decision = 'NOT_MADE'",
+    ):
+        require(
+            capability_probe,
+            required,
+            "cellular primitive capability audit must remain read-only and persist sanitized capability evidence only",
+        )
+    for forbidden in (
+        "svc data disable",
+        "svc data enable",
+        "cmd phone data disable",
+        "cmd phone data enable",
+        "cmd phone radio",
+        "cmd phone restart-modem",
+        "airplane-mode enable",
+        "airplane-mode disable",
+        "am', 'force-stop'",
+        "pm install",
+    ):
+        forbid(
+            capability_probe,
+            forbidden,
+            "Phase-0 cellular primitive capability audit must not perform a physical or PRODUCT mutation",
         )
 
     radio_poweroff_egress = "lab/windows/characterize-radio-poweroff-public-egress.ps1"
@@ -932,6 +983,9 @@ def main() -> None:
         "ControlSha",
         "RequestedProbe",
         "loopback_connect",
+        "cellular_primitive_capabilities",
+        "mish.lab.cellular-primitive-capabilities/v1",
+        "CELLULAR_PRIMITIVE_CAPABILITY_AUDIT_PASS",
         "capacity_resources",
         "recovery_lifecycle",
         "dns_lifetime_live",
@@ -966,6 +1020,8 @@ def main() -> None:
         "Healthy current L8 fact set did not classify PASS",
         "Full PASS report must accept the exact current candidate and contain no automatic probe decision",
         "A collected but failing loopback matrix must not be promoted to a green probe",
+        "Read-only cellular capability probe PASS must remain LAB-only and cannot claim PRODUCT acceptance",
+        "Cellular capability evidence that reports a mutation must fail closed as invalid LAB evidence",
         "A real capacity failure must reject the exact PRODUCT candidate",
         "DNS lifetime observation PASS must remain measurement-only",
         "DNS lifetime collection failure must remain LAB-only",
