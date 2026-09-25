@@ -206,6 +206,7 @@ def main() -> None:
         "android/app/src/main/java/com/mobileproxymish/app/MishDiagnosticsProvider.kt",
         "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRuntimeBridge.kt",
         "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularNetworkObserver.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRadioPowerObserver.kt",
     ):
         for forbidden in (
             "Executors.",
@@ -1619,6 +1620,8 @@ def main() -> None:
         "pub struct RotationStateMachine",
         "pub enum RotationMutationOutcome",
         "pub fn observe_root_policy(",
+        "pub fn observe_radio_power_off(",
+        "radio_power_off_observed",
         "pub fn deadline_exceeded(",
         "RotationTerminalResult::Changed",
         "RotationTerminalResult::Unchanged",
@@ -1635,7 +1638,8 @@ def main() -> None:
         "uncertain_disable_requires_observation_and_preserves_restore_requirement",
         "root_authorization_is_an_independent_exact_generation_fact",
         "absolute_deadline_is_terminal_and_keeps_restore_requirement",
-        "cellular_loss_during_enable_is_retained_until_airplane_on_is_observed",
+        "early_radio_down_facts_are_retained_until_all_required_facts_exist",
+        "radio_down_facts_can_arrive_in_any_order_without_a_timer",
     ):
         require(
             rotation_semantics,
@@ -1652,6 +1656,8 @@ def main() -> None:
         "RotationAction::RestoreOff",
         "AirplaneModeState::Enabled",
         "AirplaneModeState::Disabled",
+        "pub fn observe_radio_power_off(",
+        "radio_power_off_observed_ms",
         "credential_guard_current",
         "RESTORE_EFFECT_TIMEOUT",
     ):
@@ -1711,6 +1717,8 @@ def main() -> None:
     for required in (
         "pub fn start_public_ip_rotation(",
         "generation.rotation().observe_cellular(admission)",
+        "pub fn observe_radio_power_off(&self)",
+        "generation.rotation().observe_radio_power_off()",
         "pub fn rotation_snapshot(",
     ):
         require_product(
@@ -1731,7 +1739,9 @@ def main() -> None:
     for required in (
         "pub struct RotationSnapshotView",
         "pub fn start_public_ip_rotation(",
+        "pub fn observe_radio_power_off(&self)",
         "pub fn rotation_snapshot(",
+        "radio_power_off_observed_ms",
         "rotation_operation_id",
         "rotation_before_generation",
         "rotation_after_generation",
@@ -1770,6 +1780,63 @@ def main() -> None:
         "internal fun rearmNetworkRequest(): Boolean",
         "Android Cellular bridge must expose only the bounded framework request re-arm effect",
     )
+    radio_power_observer = (
+        "android/app/src/main/java/com/mobileproxymish/app/cellular/"
+        "CellularRadioPowerObserver.kt"
+    )
+    for required in (
+        "PhoneStateListener(directExecutor)",
+        "PhoneStateListener.LISTEN_SERVICE_STATE",
+        "ServiceState.STATE_POWER_OFF",
+        "SubscriptionManager.getActiveDataSubscriptionId()",
+        "SubscriptionManager.getDefaultDataSubscriptionId()",
+        "createForSubscriptionId(subscriptionId)",
+        "onRadioPowerOff()",
+        "PhoneStateListener.LISTEN_NONE",
+    ):
+        require(
+            radio_power_observer,
+            required,
+            "Android radio-power boundary must remain one typed ServiceState observer",
+        )
+    for forbidden in (
+        "SystemClock",
+        "Thread.sleep",
+        "SystemClock.sleep",
+        "Handler(",
+        "postDelayed(",
+        "Timer(",
+        "Executors.",
+        "ScheduledExecutorService",
+        "kotlinx.coroutines",
+        "airplane-mode",
+        "startPublicIpRotation",
+        "retry",
+        "backoff",
+        "delay",
+        "RotationPhase",
+    ):
+        forbid(
+            radio_power_observer,
+            forbidden,
+            "Kotlin radio-power boundary must not own Rotation semantics, timing, retry or mutation",
+        )
+    forbid(
+        "android/app/src/main/AndroidManifest.xml",
+        "android.permission.READ_PHONE_STATE",
+        "typed ServiceState POWER_OFF observation must not add phone-identity permission",
+    )
+    for required in (
+        "private val radioPowerObserver = CellularRadioPowerObserver(context)",
+        "productRuntime.observeRadioPowerOff()",
+        "radioPowerObserver.start()",
+        "radioPowerObserver.close()",
+    ):
+        require(
+            cellular_bridge,
+            required,
+            "CellularRuntimeBridge must own radio observer lifetime while Rust owns the transition",
+        )
     require(
         "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularNetworkObserver.kt",
         "fun rearm()",
