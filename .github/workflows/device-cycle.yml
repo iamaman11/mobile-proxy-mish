@@ -652,13 +652,27 @@ jobs:
             '- Raw public IP persisted: **NO**'
             '- Secrets/SPKI persisted: **NO**'
           ) | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_STEP_SUMMARY
+          if ($null -ne $evidence.telephony_detach_research) {
+            $research = $evidence.telephony_detach_research
+            @(
+              ''
+              '### Typed API30 radio-detach research'
+              "- POWER_OFF observed: **$([bool]$research.power_off_observed)**"
+              "- POWER_OFF vs Cellular loss: **$([string]$research.power_off_vs_cellular_loss)**"
+              "- POWER_OFF vs airplane disable start: **$([string]$research.power_off_vs_airplane_disable_started)**"
+              "- loss -> disable start: **$([int64]$research.cellular_loss_to_disable_started_ms) ms**"
+              "- clock correlation window: **$([int64]$research.control_origin_correlation_window_ms) ms**"
+              '- PRODUCT mutation: **NO**'
+              '- Architecture decision: **NOT MADE**'
+            ) | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_STEP_SUMMARY
+          }
 
   diagnose:
     name: Launch -> canonical diagnostic -> STOP
     needs: [resolve, install]
     if: >-
       ${{ always() && needs.resolve.outputs.eligible == 'true' && needs.resolve.outputs.mode != 'install_only' &&
-          needs.resolve.outputs.probe != 'u8_remote_control' &&
+          !contains(fromJSON('["u8_remote_control","u8_radio_detach_research"]'), needs.resolve.outputs.probe) &&
           (needs.resolve.outputs.mode != 'full' || needs.install.result == 'success') }}
     runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
     timeout-minutes: 30
@@ -944,20 +958,6 @@ jobs:
               '- Automatic repair/probe decision: **NO**',
               '- Next action: **STOP_FOR_ANALYSIS**'
             ) | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_STEP_SUMMARY
-          if ($null -ne $evidence.telephony_detach_research) {
-            $research = $evidence.telephony_detach_research
-            @(
-              ''
-              '### Typed API30 radio-detach research'
-              "- POWER_OFF observed: **$([bool]$research.power_off_observed)**"
-              "- POWER_OFF vs Cellular loss: **$([string]$research.power_off_vs_cellular_loss)**"
-              "- POWER_OFF vs airplane disable start: **$([string]$research.power_off_vs_airplane_disable_started)**"
-              "- loss -> disable start: **$([int64]$research.cellular_loss_to_disable_started_ms) ms**"
-              "- clock correlation window: **$([int64]$research.control_origin_correlation_window_ms) ms**"
-              '- PRODUCT mutation: **NO**'
-              '- Architecture decision: **NOT MADE**'
-            ) | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_STEP_SUMMARY
-          }
           }
 
       - name: Enforce observed result
