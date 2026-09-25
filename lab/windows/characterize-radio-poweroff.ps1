@@ -338,7 +338,7 @@ try {
     Write-Host "MISH_RADIO_POWEROFF_EVIDENCE=$fullPath"
 }
 finally {
-    if ($airplaneEnableAttempted -and (Get-MishAirplaneState) -ne 0) {
+    if ($airplaneEnableAttempted -and -not $restoreVerified) {
         try {
             $restoreAttempted = $true
             Set-MishAirplaneState -State 'disable'
@@ -346,7 +346,7 @@ finally {
             $restoreVerified = $true
         }
         catch {
-            Write-Error 'MISH_RADIO_POWEROFF_EMERGENCY_RESTORE=FAILED'
+            Write-Warning 'MISH_RADIO_POWEROFF_EMERGENCY_RESTORE=FAILED'
         }
     }
     if ($observerStarted -and -not $observerStopped) {
