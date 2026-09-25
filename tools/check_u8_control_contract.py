@@ -498,7 +498,7 @@ def main() -> None:
         "second_rotation_triggered = $false",
         "product_mutation_performed = $false",
         "radio_mutation_performed = $false",
-        "diagnostic_permission_revoke_performed = $false",
+        "runtime_permission_mutation_performed = $false",
     ):
         require(
             telephony_detach_observer,
@@ -513,6 +513,7 @@ def main() -> None:
         "airplane-mode disable",
         "Start-Sleep",
         "Thread.Sleep",
+        "'shell', 'pm', 'grant'",
         "'shell', 'pm', 'revoke'",
     ):
         forbid(
