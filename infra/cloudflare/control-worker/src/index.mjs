@@ -35,6 +35,7 @@ const PRODUCT_ROTATION_SAFETY_MS = 90_000;
 const CONTROL_DELIVERY_MARGIN_MS = 30_000;
 const ACCEPTED_RESULT_LEASE_MS = PRODUCT_ROTATION_SAFETY_MS + CONTROL_DELIVERY_MARGIN_MS;
 const DELIVERY_ACK_MS = 2_000;
+const NATURAL_RECONNECT_RECOVERY_MS = MANAGER_ROTATE_WAIT_TIMEOUT_MS - DELIVERY_ACK_MS;
 const FENCED_DRAIN_MS = PRODUCT_ROTATION_SAFETY_MS + CONTROL_DELIVERY_MARGIN_MS;
 const CONTROL_HEARTBEAT_REQUEST = "MISH_CONTROL_HEARTBEAT_V1";
 const CONTROL_HEARTBEAT_RESPONSE = "MISH_CONTROL_HEARTBEAT_ACK_V1";
@@ -284,10 +285,17 @@ export class DeviceControl {
         authenticated_at_ms: Date.now(),
       });
 
-      // Reconnect belongs to the Rust session owner. The broker only reconciles persisted
-      // uncertainty; it never redelivers a Manager command as a reconnect policy.
-      await this.reconcileActiveOperation(Date.now(), { fenceSockets: false });
+      // Reconnect belongs to the Rust session owner. A newly authenticated natural reconnect
+      // may recover one uncertain transport delivery by redelivering the SAME request_id once.
+      const reauthenticatedAtMs = Date.now();
+      const reconciled = await this.reconcileActiveOperation(
+        reauthenticatedAtMs,
+        { fenceSockets: false },
+      );
       ws.send(readyMessage());
+      if (reconciled?.status === "RECOVERING") {
+        await this.redeliverRecoveredOperation(ws, reconciled, reauthenticatedAtMs);
+      }
       return;
     }
 
@@ -306,10 +314,11 @@ export class DeviceControl {
       }
 
       active.operation_id = parsed.operation_id;
-      if (active.status === "DISPATCHED") {
+      if (active.status === "DISPATCHED" || active.status === "RECOVERING") {
         active.status = "ACCEPTED";
         active.accepted_at_ms = Date.now();
         active.delivery_deadline_ms = null;
+        active.recovery_deadline_ms = null;
         await this.ctx.storage.put("active_operation", active);
         await this.ctx.storage.setAlarm(active.accepted_at_ms + ACCEPTED_RESULT_LEASE_MS);
         this.resolveWaiters(parsed.request_id, active);
@@ -410,7 +419,10 @@ export class DeviceControl {
       result: null,
       created_at_ms: nowMs,
       accepted_at_ms: null,
+      delivery_attempts: 1,
+      delivery_sent_at_ms: nowMs,
       delivery_deadline_ms: nowMs + DELIVERY_ACK_MS,
+      recovery_deadline_ms: nowMs + NATURAL_RECONNECT_RECOVERY_MS,
       fenced_at_ms: null,
       release_at_ms: null,
       completed_at_ms: null,
@@ -435,47 +447,95 @@ export class DeviceControl {
     return { kind: "DISPATCHED", operation };
   }
 
+  async redeliverRecoveredOperation(ws, operation, nowMs) {
+    const active = await this.ctx.storage.get("active_operation");
+    if (!active ||
+        active.request_id !== operation.request_id ||
+        active.status !== "RECOVERING") {
+      return active || null;
+    }
+
+    const recoveryDeadlineMs = Number.isSafeInteger(active.recovery_deadline_ms)
+      ? active.recovery_deadline_ms
+      : active.created_at_ms + NATURAL_RECONNECT_RECOVERY_MS;
+    if (nowMs >= recoveryDeadlineMs) {
+      return this.reconcileActiveOperation(nowMs, { fenceSockets: true });
+    }
+
+    const redelivered = {
+      ...active,
+      status: "DISPATCHED",
+      delivery_attempts: 2,
+      delivery_sent_at_ms: nowMs,
+      delivery_deadline_ms: nowMs + DELIVERY_ACK_MS,
+      recovery_deadline_ms: recoveryDeadlineMs,
+    };
+    await this.ctx.storage.put("active_operation", redelivered);
+    await this.ctx.storage.setAlarm(redelivered.delivery_deadline_ms);
+
+    try {
+      ws.send(rotateMessage(active.request_id));
+    } catch {
+      return this.fenceOperation(redelivered, nowMs, { fenceSockets: true });
+    }
+
+    this.resolveWaiters(active.request_id, redelivered);
+    return redelivered;
+  }
+
   async waitForTerminal(requestId, operation) {
     const managerDeadlineMs = operation.created_at_ms + MANAGER_ROTATE_WAIT_TIMEOUT_MS;
 
-    // socket.send() is not delivery proof. A fresh session gets one short ACK boundary only.
-    // Reconnect is continuously owned by Rust/Tokio and is never initiated by this request.
-    let current = await this.currentOperationState(requestId);
-    if (current.terminal) return this.operationResponse(current.terminal);
-    if (current.active?.status !== "ACCEPTED") {
+    // socket.send() is not delivery proof. The initial delivery gets one short ACK window.
+    // If that races with a naturally occurring Rust/Tokio reconnect, the broker may redeliver
+    // only the SAME request_id once. The Worker never initiates reconnect.
+    while (Date.now() < managerDeadlineMs) {
+      const current = await this.currentOperationState(requestId);
+      if (current.terminal) return this.operationResponse(current.terminal);
       if (!current.active || current.active.status === "FENCED") {
         return this.managerTimeoutResponse(requestId, operation);
       }
 
-      const remainingMs = managerDeadlineMs - Date.now();
-      if (remainingMs <= 0) return this.managerTimeoutResponse(requestId, operation);
-      await this.waitForStateChange(
-        requestId,
-        current.active.status,
-        Math.min(DELIVERY_ACK_MS, remainingMs),
-      );
+      if (current.active.status === "ACCEPTED") {
+        await this.waitForStateChange(
+          requestId,
+          "ACCEPTED",
+          managerDeadlineMs - Date.now(),
+        );
+        continue;
+      }
 
-      current = await this.currentOperationState(requestId);
-      if (current.terminal) return this.operationResponse(current.terminal);
-      if (current.active?.status !== "ACCEPTED") {
+      if (current.active.status === "DISPATCHED") {
+        const deliveryDeadlineMs = Number.isSafeInteger(current.active.delivery_deadline_ms)
+          ? current.active.delivery_deadline_ms
+          : Date.now() + DELIVERY_ACK_MS;
+        const waitMs = Math.min(
+          deliveryDeadlineMs - Date.now(),
+          managerDeadlineMs - Date.now(),
+        );
+        if (waitMs > 0) {
+          await this.waitForStateChange(requestId, "DISPATCHED", waitMs);
+        }
         await this.reconcileActiveOperation(Date.now(), { fenceSockets: true });
-        return this.managerTimeoutResponse(requestId, operation);
+        continue;
       }
-    }
 
-    // ACCEPTED proves PRODUCT owns the mutation. Wait only to the 18 s public deadline;
-    // the durable 120 s result lease remains independent and preserves late correlation.
-    while (Date.now() < managerDeadlineMs) {
-      current = await this.currentOperationState(requestId);
-      if (current.terminal) return this.operationResponse(current.terminal);
-      if (!current.active || current.active.status !== "ACCEPTED") {
-        return this.managerTimeoutResponse(requestId, operation);
+      if (current.active.status === "RECOVERING") {
+        const recoveryDeadlineMs = Number.isSafeInteger(current.active.recovery_deadline_ms)
+          ? current.active.recovery_deadline_ms
+          : operation.created_at_ms + NATURAL_RECONNECT_RECOVERY_MS;
+        const waitMs = Math.min(
+          recoveryDeadlineMs - Date.now(),
+          managerDeadlineMs - Date.now(),
+        );
+        if (waitMs > 0) {
+          await this.waitForStateChange(requestId, "RECOVERING", waitMs);
+        }
+        await this.reconcileActiveOperation(Date.now(), { fenceSockets: true });
+        continue;
       }
-      await this.waitForStateChange(
-        requestId,
-        "ACCEPTED",
-        managerDeadlineMs - Date.now(),
-      );
+
+      return this.managerTimeoutResponse(requestId, operation);
     }
 
     const final = await this.currentOperationState(requestId);
@@ -620,10 +680,14 @@ export class DeviceControl {
     }
 
     if (active.status === "DISPATCHED") {
-      // Legacy delivery windows are never extended. New dispatches have one 2 s ACK deadline;
-      // old persisted records are capped to the same bound from their original creation time.
-      const canonicalDeadlineMs = Number.isSafeInteger(active.created_at_ms)
-        ? active.created_at_ms + DELIVERY_ACK_MS
+      const deliveryAttempts = Number.isSafeInteger(active.delivery_attempts)
+        ? active.delivery_attempts
+        : 1;
+      const deliverySentAtMs = Number.isSafeInteger(active.delivery_sent_at_ms)
+        ? active.delivery_sent_at_ms
+        : active.created_at_ms;
+      const canonicalDeadlineMs = Number.isSafeInteger(deliverySentAtMs)
+        ? deliverySentAtMs + DELIVERY_ACK_MS
         : nowMs;
       const persistedDeadlineMs = Number.isSafeInteger(active.delivery_deadline_ms)
         ? active.delivery_deadline_ms
@@ -631,7 +695,11 @@ export class DeviceControl {
       const deliveryDeadlineMs = Math.min(persistedDeadlineMs, canonicalDeadlineMs);
 
       if (nowMs < deliveryDeadlineMs) {
-        if (active.delivery_deadline_ms !== deliveryDeadlineMs) {
+        if (active.delivery_attempts !== deliveryAttempts ||
+            active.delivery_sent_at_ms !== deliverySentAtMs ||
+            active.delivery_deadline_ms !== deliveryDeadlineMs) {
+          active.delivery_attempts = deliveryAttempts;
+          active.delivery_sent_at_ms = deliverySentAtMs;
           active.delivery_deadline_ms = deliveryDeadlineMs;
           await this.ctx.storage.put("active_operation", active);
         }
@@ -639,18 +707,41 @@ export class DeviceControl {
         return active;
       }
 
-      const fenced = {
-        ...active,
-        status: "FENCED",
-        delivery_deadline_ms: null,
-        fenced_at_ms: nowMs,
-        release_at_ms: nowMs + FENCED_DRAIN_MS,
-      };
-      await this.ctx.storage.put("active_operation", fenced);
-      await this.ctx.storage.setAlarm(fenced.release_at_ms);
-      if (fenceSockets) this.fenceAuthenticatedSockets();
-      this.resolveWaiters(active.request_id, fenced);
-      return fenced;
+      if (deliveryAttempts < 2) {
+        const recoveryDeadlineMs = Number.isSafeInteger(active.recovery_deadline_ms)
+          ? active.recovery_deadline_ms
+          : active.created_at_ms + NATURAL_RECONNECT_RECOVERY_MS;
+        if (nowMs < recoveryDeadlineMs) {
+          const recovering = {
+            ...active,
+            status: "RECOVERING",
+            delivery_attempts: 1,
+            delivery_deadline_ms: null,
+            recovery_deadline_ms: recoveryDeadlineMs,
+          };
+          await this.ctx.storage.put("active_operation", recovering);
+          await this.ctx.storage.setAlarm(recoveryDeadlineMs);
+          this.resolveWaiters(active.request_id, recovering);
+          return recovering;
+        }
+      }
+
+      return this.fenceOperation(active, nowMs, { fenceSockets });
+    }
+
+    if (active.status === "RECOVERING") {
+      const recoveryDeadlineMs = Number.isSafeInteger(active.recovery_deadline_ms)
+        ? active.recovery_deadline_ms
+        : active.created_at_ms + NATURAL_RECONNECT_RECOVERY_MS;
+      if (nowMs < recoveryDeadlineMs) {
+        if (active.recovery_deadline_ms !== recoveryDeadlineMs) {
+          active.recovery_deadline_ms = recoveryDeadlineMs;
+          await this.ctx.storage.put("active_operation", active);
+        }
+        await this.ctx.storage.setAlarm(recoveryDeadlineMs);
+        return active;
+      }
+      return this.fenceOperation(active, nowMs, { fenceSockets });
     }
 
     if (active.status === "ACCEPTED") {
@@ -693,6 +784,22 @@ export class DeviceControl {
     }
 
     throw new Error("invalid persisted active operation state");
+  }
+
+  async fenceOperation(active, nowMs, { fenceSockets }) {
+    const fenced = {
+      ...active,
+      status: "FENCED",
+      delivery_deadline_ms: null,
+      recovery_deadline_ms: null,
+      fenced_at_ms: nowMs,
+      release_at_ms: nowMs + FENCED_DRAIN_MS,
+    };
+    await this.ctx.storage.put("active_operation", fenced);
+    await this.ctx.storage.setAlarm(fenced.release_at_ms);
+    if (fenceSockets) this.fenceAuthenticatedSockets();
+    this.resolveWaiters(active.request_id, fenced);
+    return fenced;
   }
 
   async finalizeUnknown(active, nowMs) {
