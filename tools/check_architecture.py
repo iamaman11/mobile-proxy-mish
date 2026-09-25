@@ -1831,6 +1831,8 @@ def main() -> None:
         "productRuntime.observeRadioPowerOff()",
         "radioPowerObserver.start()",
         "radioPowerObserver.close()",
+        "private fun cleanupPlatformObservation(): Boolean",
+        "productRuntime.invalidateCellularPlatformFacts()",
     ):
         require(
             cellular_bridge,
