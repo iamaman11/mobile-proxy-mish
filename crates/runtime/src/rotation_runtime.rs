@@ -72,6 +72,7 @@ pub struct RotationRuntimeTimingSnapshot {
     pub airplane_enable_effect_completed_ms: Option<u64>,
     pub airplane_on_observed_ms: Option<u64>,
     pub cellular_loss_observed_ms: Option<u64>,
+    pub radio_power_off_observed_ms: Option<u64>,
     pub airplane_disable_started_ms: Option<u64>,
     pub airplane_disable_effect_completed_ms: Option<u64>,
     pub airplane_off_observed_ms: Option<u64>,
@@ -497,6 +498,44 @@ impl RotationRuntimeCoordinator {
                         timing.fresh_cellular_generation = Some(generation);
                         timing.fresh_cellular_observed_ms = Some(elapsed_ms);
                     }
+                });
+            }
+            snapshot
+        };
+        self.after_transition(snapshot);
+    }
+
+    /// Accepts one positive typed Android telephony fact for the current Rotation operation.
+    ///
+    /// The platform boundary owns only observation. Rust remains the sole owner of whether that
+    /// fact is relevant and whether it completes the radio-down transition.
+    pub fn observe_radio_power_off(self: &Arc<Self>) {
+        let snapshot = {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            if state.closed {
+                return;
+            }
+            let current = state.machine.snapshot();
+            let Some(operation_id) = current.operation_id else {
+                return;
+            };
+            if current.phase.terminal() {
+                return;
+            }
+            let phase_before = current.phase;
+            let snapshot = match state.machine.observe_radio_power_off(operation_id) {
+                Ok(snapshot) => snapshot,
+                Err(_) => return,
+            };
+            if matches!(
+                phase_before,
+                RotationPhase::AirplaneEnabling | RotationPhase::WaitingRadioDown
+            ) && let Some(timing) = state.timing.as_mut()
+            {
+                let _ = timing.mark(operation_id, |timing, elapsed_ms| {
+                    set_once(&mut timing.radio_power_off_observed_ms, elapsed_ms);
                 });
             }
             snapshot
