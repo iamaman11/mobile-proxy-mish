@@ -109,16 +109,6 @@ internal static class RotateWireCodec
             wire.Schema == MishControlClient.RotateSchema,
             "unsupported schema.",
             statusCode);
-        Require(
-            wire.Terminal.HasValue &&
-            wire.Retryable.HasValue &&
-            wire.Timing is not null &&
-            wire.Timing.StartedAtMs.HasValue &&
-            wire.Timing.CompletedAtMs.HasValue &&
-            wire.Timing.DurationMs.HasValue,
-            "required fields are null.",
-            statusCode);
-
         if (wire.RequestId is not null)
         {
             Require(
@@ -138,9 +128,14 @@ internal static class RotateWireCodec
         var result = ParseResult(wire.Result, statusCode);
         var reason = ParseReason(wire.Reason, statusCode);
 
-        var startedAtMs = wire.Timing.StartedAtMs.Value;
-        var completedAtMs = wire.Timing.CompletedAtMs.Value;
-        var durationMs = wire.Timing.DurationMs.Value;
+        var timing = wire.Timing
+            ?? throw Protocol("timing is null.", statusCode);
+        var startedAtMs = timing.StartedAtMs
+            ?? throw Protocol("started_at_ms is null.", statusCode);
+        var completedAtMs = timing.CompletedAtMs
+            ?? throw Protocol("completed_at_ms is null.", statusCode);
+        var durationMs = timing.DurationMs
+            ?? throw Protocol("duration_ms is null.", statusCode);
 
         Require(
             startedAtMs >= 0 &&
@@ -150,8 +145,10 @@ internal static class RotateWireCodec
             "timing is inconsistent.",
             statusCode);
 
-        var terminal = wire.Terminal.Value;
-        var retryable = wire.Retryable.Value;
+        var terminal = wire.Terminal
+            ?? throw Protocol("terminal is null.", statusCode);
+        var retryable = wire.Retryable
+            ?? throw Protocol("retryable is null.", statusCode);
 
         Require(
             terminal == (result != RotateResult.Unknown),
