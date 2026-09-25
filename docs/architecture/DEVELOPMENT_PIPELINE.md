@@ -23,14 +23,16 @@ Current contract:
 PR to main opened / synchronized / reopened / ready-for-review
  -> Control Guards ----------------------┐
  -> Device Cycle Contracts --------------┤
-                                         ├-> Rust Workspace -----------┐
-                                         └-> Android Build/Test -------┤
-                                                                      └-> Android Compose Shell
-                                                                          final aggregate gate
-                                                                          -> publish canonical exact-head candidate
+                                         └-> Rust Workspace
+                                               ↓
+                                           Android Build/Test
+                                               ↓
+                                           Android Compose Shell
+                                               final aggregate gate
+                                               -> publish canonical exact-head candidate
 ```
 
-For PRODUCT/build changes, Rust Workspace and Android Build/Test run in parallel after the shared lightweight guards. They use distinct cache namespaces, so concurrent hosted work never races on one mutable cache key. Android Build/Test may publish a one-day, non-canonical staging artifact only; Device Cycle never resolves that name. The required `Android Compose Shell` context is the final aggregate gate and publishes the canonical `device-candidate-pr-<PR>-<SHA>` artifact only after both Rust and Android branches succeed.
+For PRODUCT/build changes, Rust Workspace runs after the shared lightweight guards and is the fail-fast prerequisite for Android Build/Test. A Rust format, lint or test failure therefore prevents checkout/JDK/Gradle/NDK/Android candidate work from starting. Android Build/Test may publish a one-day, non-canonical staging artifact only; Device Cycle never resolves that name. The required `Android Compose Shell` context remains the final aggregate gate and publishes the canonical `device-candidate-pr-<PR>-<SHA>` artifact only after Rust and Android validation succeed.
 
 The canonical candidate artifact is therefore produced only after the complete configured gate succeeds.
 

@@ -169,16 +169,16 @@ jobs:
 
   android-build:
     name: Android Build/Test
-    needs: [control, device-contracts]
+    needs: [control, device-contracts, rust]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Require control gates
-        if: ${{ needs.control.result != 'success' || needs.device-contracts.result != 'success' }}
+      - name: Require prerequisite gates
+        if: ${{ needs.control.result != 'success' || needs.device-contracts.result != 'success' || needs.rust.result != 'success' }}
         shell: bash
         run: |
-          echo 'Control Guards or Device Cycle Contracts did not pass; refusing Android build/test execution.' >&2
+          echo 'Control Guards, Device Cycle Contracts, or Rust Workspace did not pass; refusing Android build/test execution.' >&2
           exit 1
 
       - name: Checkout exact PR head
@@ -338,8 +338,9 @@ jobs:
             echo '### Android build/test'
             echo '- Source SHA: `${{ github.event.pull_request.head.sha }}`'
             echo '- Native + Android candidate verification: **PASS**'
+            echo '- Rust Workspace prerequisite: **PASS**'
             echo '- Canonical device candidate published here: **NO**'
-            echo '- Final publication waits for Rust Workspace: **YES**'
+            echo '- Final publication waits for Android Compose Shell: **YES**'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish static-only Android summary

@@ -124,8 +124,8 @@ def main() -> None:
         "cargo clippy --workspace --all-targets --locked -- -D warnings",
         "cargo test --workspace --locked",
         "name: Android Build/Test",
-        "needs: [control, device-contracts]",
-        "Require control gates",
+        "needs: [control, device-contracts, rust]",
+        "Require prerequisite gates",
         "Fast Kotlin compile and lint",
         "Unit test and assemble exact-head candidate",
         "Verify exact PRODUCT candidate contract",
@@ -154,8 +154,8 @@ def main() -> None:
     forbid(producer, "cargo build -p mish-android-ffi --locked", "Rust required-check must not duplicate the Android candidate native build")
     require_regex(
         producer,
-        r"(?s)android-build:\n.*?name: Android Build/Test\n\s+needs: \[control, device-contracts\]",
-        "Android Build/Test must run in parallel with Rust after shared lightweight gates",
+        r"(?s)android-build:\n.*?name: Android Build/Test\n\s+needs: \[control, device-contracts, rust\]",
+        "Android Build/Test must wait for Rust Workspace so expensive Android work cannot continue after a Rust gate failure",
     )
     require_regex(
         producer,
@@ -164,8 +164,8 @@ def main() -> None:
     )
     forbid(
         producer,
-        "android-build:\n    name: Android Build/Test\n    needs: [control, device-contracts, rust]",
-        "heavy Android build/test must not wait for Rust Workspace",
+        "android-build:\n    name: Android Build/Test\n    needs: [control, device-contracts]\n",
+        "heavy Android build/test must not run in parallel with Rust Workspace",
     )
 
     product_verifier = "tools/verify_android_candidate.py"
