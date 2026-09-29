@@ -162,6 +162,15 @@ export function parseManagerRotateBody(value) {
   return { request_id: value.request_id };
 }
 
+export function parseManagerProxyBody(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("invalid proxy body");
+  }
+  requireExactKeys(value, ["request_id"]);
+  if (!isRequestId(value.request_id)) throw new Error("invalid request id");
+  return { request_id: value.request_id };
+}
+
 export function parseEnrollmentBody(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("invalid enrollment body");
