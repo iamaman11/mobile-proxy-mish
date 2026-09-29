@@ -5,11 +5,19 @@ export const MAX_BODY_BYTES = 4096;
 export const MAX_RECENT_OPERATIONS = 32;
 export const DEVICE_AUTH_CHALLENGE_MAX_AGE_MS = 60_000;
 export const RESULT_CODES = new Set(["CHANGED", "UNCHANGED", "FAILED", "REJECTED"]);
+export const PROXY_REASONS = new Set([
+  "NOT_READY",
+  "PROXY_UNAVAILABLE",
+  "CREDENTIAL_UNAVAILABLE",
+  "INTERNAL_ERROR",
+]);
 
 const REQUEST_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const DEVICE_ID = /^[0-9a-f]{64}$/;
 const B64URL_32 = /^[A-Za-z0-9_-]{43}$/;
 const B64URL_SIG = /^[A-Za-z0-9_-]{86}$/;
+const PROXY_USERNAME = /^mish-[0-9a-f]{32}$/;
+const PROXY_PASSWORD = /^[0-9a-f]{64}$/;
 
 export function isDeviceId(value) {
   return typeof value === "string" && DEVICE_ID.test(value);
@@ -40,6 +48,11 @@ export function readyMessage() {
 export function rotateMessage(requestId) {
   if (!isRequestId(requestId)) throw new Error("invalid request id");
   return JSON.stringify({ type: "ROTATE_IP", v: PROTOCOL_VERSION, request_id: requestId });
+}
+
+export function proxyRequestMessage(requestId) {
+  if (!isRequestId(requestId)) throw new Error("invalid request id");
+  return JSON.stringify({ type: "GET_PROXY", v: PROTOCOL_VERSION, request_id: requestId });
 }
 
 export function resultAckMessage(requestId) {
@@ -96,6 +109,45 @@ export function parseDeviceMessage(raw) {
       throw new Error("terminal result requires operation id");
     }
     return value;
+  }
+
+  if (value.type === "PROXY") {
+    if (value.ready === true) {
+      requireExactKeys(value, [
+        "v",
+        "type",
+        "request_id",
+        "ready",
+        "host",
+        "mixed_port",
+        "socks5_port",
+        "http_port",
+        "username",
+        "password",
+      ]);
+      if (!isRequestId(value.request_id) ||
+          !isIpv4(value.host) ||
+          value.mixed_port !== 1080 ||
+          value.socks5_port !== 1081 ||
+          value.http_port !== 3128 ||
+          typeof value.username !== "string" ||
+          !PROXY_USERNAME.test(value.username) ||
+          typeof value.password !== "string" ||
+          !PROXY_PASSWORD.test(value.password)) {
+        throw new Error("invalid proxy connection");
+      }
+      return value;
+    }
+
+    if (value.ready === false) {
+      requireExactKeys(value, ["v", "type", "request_id", "ready", "reason"]);
+      if (!isRequestId(value.request_id) || !PROXY_REASONS.has(value.reason)) {
+        throw new Error("invalid proxy unavailable");
+      }
+      return value;
+    }
+
+    throw new Error("invalid proxy response");
   }
 
   throw new Error("unsupported device message");
@@ -195,6 +247,17 @@ export async function readBoundedJson(request) {
   const text = await request.text();
   if (text.length === 0 || text.length > MAX_BODY_BYTES) throw new Error("invalid body size");
   return JSON.parse(text);
+}
+
+function isIpv4(value) {
+  if (typeof value !== "string") return false;
+  const parts = value.split(".");
+  if (parts.length !== 4) return false;
+  return parts.every((part) => {
+    if (!/^(?:0|[1-9][0-9]{0,2})$/u.test(part)) return false;
+    const number = Number(part);
+    return Number.isInteger(number) && number >= 0 && number <= 255;
+  });
 }
 
 function requireExactKeys(value, keys) {
