@@ -6,13 +6,18 @@ namespace Mish.Control;
 public sealed class MishControlClient : IDisposable
 {
     public const string RotateSchema = "mish.control.rotate/v1";
+    public const string ProxySchema = "mish.proxy/v1";
 
     private const string RotateEndpoint =
         "https://mish.alegria.by/v1/rotate";
+    private const string ProxyEndpoint =
+        "https://mish.alegria.by/v1/proxy";
     private const int MaxResponseBytes = 64 * 1024;
 
-    private static readonly Uri Endpoint =
+    private static readonly Uri RotateUri =
         new(RotateEndpoint, UriKind.Absolute);
+    private static readonly Uri ProxyUri =
+        new(ProxyEndpoint, UriKind.Absolute);
     private static readonly TimeSpan RequestTimeout =
         TimeSpan.FromSeconds(20);
 
@@ -39,7 +44,7 @@ public sealed class MishControlClient : IDisposable
     public async Task<RotateIpResponse> RotateIpAsync(
         CancellationToken cancellationToken = default)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Post, Endpoint)
+        using var request = new HttpRequestMessage(HttpMethod.Post, RotateUri)
         {
             Content = new ByteArrayContent(Array.Empty<byte>()),
             Version = HttpVersion.Version11,
@@ -124,6 +129,93 @@ public sealed class MishControlClient : IDisposable
         }
     }
 
+    public async Task<ProxyConnectionResponse> GetProxyAsync(
+        CancellationToken cancellationToken = default)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, ProxyUri)
+        {
+            Version = HttpVersion.Version11,
+            VersionPolicy = HttpVersionPolicy.RequestVersionExact,
+        };
+        request.Headers.Authorization =
+            new AuthenticationHeaderValue("Bearer", _managerToken);
+        request.Headers.Accept.Add(
+            new MediaTypeWithQualityHeaderValue("application/json"));
+
+        using var deadline =
+            CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken);
+        deadline.CancelAfter(RequestTimeout);
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await _httpClient
+                .SendAsync(
+                    request,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    deadline.Token)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException exception)
+        {
+            throw ReadTransportFailure(
+                "Remote proxy read was cancelled or timed out.",
+                exception);
+        }
+        catch (HttpRequestException exception)
+        {
+            throw ReadTransportFailure(
+                "Remote proxy read transport failed.",
+                exception);
+        }
+
+        using (response)
+        {
+            if (!string.Equals(
+                    response.Content.Headers.ContentType?.MediaType,
+                    "application/json",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                throw new MishControlProtocolException(
+                    "Remote proxy response content type is not application/json.",
+                    response.StatusCode);
+            }
+
+            byte[] body;
+            try
+            {
+                body = await ReadBoundedBodyAsync(
+                    response.Content,
+                    deadline.Token).ConfigureAwait(false);
+            }
+            catch (MishControlProtocolException)
+            {
+                throw;
+            }
+            catch (OperationCanceledException exception)
+            {
+                throw ReadTransportFailure(
+                    "Remote proxy response body timed out.",
+                    exception);
+            }
+            catch (HttpRequestException exception)
+            {
+                throw ReadTransportFailure(
+                    "Remote proxy response body transport failed.",
+                    exception);
+            }
+            catch (IOException exception)
+            {
+                throw ReadTransportFailure(
+                    "Remote proxy response body transport failed.",
+                    exception);
+            }
+
+            return ProxyWireCodec.Parse(body, response.StatusCode);
+        }
+    }
+
     public void Dispose() => _httpClient.Dispose();
 
     private static SocketsHttpHandler CreateDefaultHandler() =>
@@ -181,6 +273,14 @@ public sealed class MishControlClient : IDisposable
             message +
             " Never replay automatically because the command may have been dispatched.",
             operationOutcomeMayBeUnknown: true,
+            innerException);
+
+    private static MishControlTransportException ReadTransportFailure(
+        string message,
+        Exception innerException) =>
+        new(
+            message,
+            operationOutcomeMayBeUnknown: false,
             innerException);
 
     private static string ValidateToken(string managerToken)
