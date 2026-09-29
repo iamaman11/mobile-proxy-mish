@@ -223,6 +223,11 @@ public sealed class MishControlClient : IDisposable
         {
             AllowAutoRedirect = false,
             UseCookies = false,
+            // CONTROL must never depend on an ambient/system proxy. The public
+            // MISH control path is the authority that returns the current proxy
+            // bundle, so routing it through an old or unrelated proxy can create
+            // a control/data-plane dependency cycle.
+            UseProxy = false,
         };
 
     private static async Task<byte[]> ReadBoundedBodyAsync(
