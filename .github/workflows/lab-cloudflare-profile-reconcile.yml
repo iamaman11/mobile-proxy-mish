@@ -82,6 +82,9 @@ jobs:
             -H 'Content-Type: application/json' \
             -H 'Accept: application/json' \
             --data '{"allow_mode_switch":false}')"
+          error_code="$(jq -r '.errors[0].code // "NONE"' "$patch" 2>/dev/null || printf 'UNPARSEABLE')"
+          echo "MISH_CF_RECONCILE_PATCH_HTTP=$status"
+          echo "MISH_CF_RECONCILE_ERROR_CODE=$error_code"
           test "$status" = "200"
           jq -e '.success == true and .result.allow_mode_switch == false' "$patch" >/dev/null
 
