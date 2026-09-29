@@ -2,11 +2,11 @@
 //!
 //! This crate owns the narrow v1 wire/auth vocabulary for MISH-initiated control sessions.
 //! It owns no socket, scheduler, Android Keystore effect, Cloudflare implementation or rotation
-//! mutation. The only v1 command is ROTATE_IP.
+//! mutation. The v1 command set is deliberately narrow: ROTATE_IP plus read-only GET_PROXY.
 
 use ring::digest;
 use serde::{Deserialize, Serialize};
-use std::fmt;
+use std::{fmt, net::Ipv4Addr};
 
 pub const CONTROL_PROTOCOL_VERSION: u8 = 1;
 pub const CONTROL_AUTH_DOMAIN: &str = "MISH_CONTROL_AUTH_V1";
@@ -55,6 +55,7 @@ pub enum ServerControlMessage {
     Challenge { nonce: String },
     Ready,
     RotateIp { request_id: String },
+    GetProxy { request_id: String },
     ResultAck { request_id: String },
 }
 
@@ -77,6 +78,25 @@ impl RemoteRotationResult {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteProxyReason {
+    NotReady,
+    ProxyUnavailable,
+    CredentialUnavailable,
+    InternalError,
+}
+
+impl RemoteProxyReason {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::NotReady => "NOT_READY",
+            Self::ProxyUnavailable => "PROXY_UNAVAILABLE",
+            Self::CredentialUnavailable => "CREDENTIAL_UNAVAILABLE",
+            Self::InternalError => "INTERNAL_ERROR",
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 enum WireServerMessage {
@@ -86,6 +106,8 @@ enum WireServerMessage {
     Ready { v: u8 },
     #[serde(rename = "ROTATE_IP")]
     RotateIp { v: u8, request_id: String },
+    #[serde(rename = "GET_PROXY")]
+    GetProxy { v: u8, request_id: String },
     #[serde(rename = "RESULT_ACK")]
     ResultAck { v: u8, request_id: String },
 }
@@ -119,6 +141,31 @@ struct WireResult<'a> {
     operation_id: Option<u64>,
 }
 
+#[derive(Debug, Serialize)]
+struct WireProxyReady<'a> {
+    v: u8,
+    #[serde(rename = "type")]
+    message_type: &'static str,
+    request_id: &'a str,
+    ready: bool,
+    host: &'a str,
+    mixed_port: u16,
+    socks5_port: u16,
+    http_port: u16,
+    username: &'a str,
+    password: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+struct WireProxyUnavailable<'a> {
+    v: u8,
+    #[serde(rename = "type")]
+    message_type: &'static str,
+    request_id: &'a str,
+    ready: bool,
+    reason: &'static str,
+}
+
 pub fn parse_server_message(raw: &str) -> Result<ServerControlMessage, ControlProtocolError> {
     validate_wire_text(raw)?;
     let message: WireServerMessage =
@@ -137,6 +184,11 @@ pub fn parse_server_message(raw: &str) -> Result<ServerControlMessage, ControlPr
             require_version(v)?;
             validate_request_id(&request_id)?;
             Ok(ServerControlMessage::RotateIp { request_id })
+        }
+        WireServerMessage::GetProxy { v, request_id } => {
+            require_version(v)?;
+            validate_request_id(&request_id)?;
+            Ok(ServerControlMessage::GetProxy { request_id })
         }
         WireServerMessage::ResultAck { v, request_id } => {
             require_version(v)?;
@@ -200,6 +252,53 @@ pub fn encode_result_message(
         request_id,
         result: result.code(),
         operation_id,
+    })
+}
+
+pub fn encode_proxy_ready_message(
+    request_id: &str,
+    host: &str,
+    mixed_port: u16,
+    socks5_port: u16,
+    http_port: u16,
+    username: &str,
+    password: &str,
+) -> Result<String, ControlProtocolError> {
+    validate_request_id(request_id)?;
+    if host.parse::<Ipv4Addr>().is_err()
+        || mixed_port == 0
+        || socks5_port == 0
+        || http_port == 0
+        || username.is_empty()
+        || password.is_empty()
+    {
+        return Err(ControlProtocolError::InvalidProxyConnection);
+    }
+    encode_wire(&WireProxyReady {
+        v: CONTROL_PROTOCOL_VERSION,
+        message_type: "PROXY",
+        request_id,
+        ready: true,
+        host,
+        mixed_port,
+        socks5_port,
+        http_port,
+        username,
+        password,
+    })
+}
+
+pub fn encode_proxy_unavailable_message(
+    request_id: &str,
+    reason: RemoteProxyReason,
+) -> Result<String, ControlProtocolError> {
+    validate_request_id(request_id)?;
+    encode_wire(&WireProxyUnavailable {
+        v: CONTROL_PROTOCOL_VERSION,
+        message_type: "PROXY",
+        request_id,
+        ready: false,
+        reason: reason.code(),
     })
 }
 
@@ -414,6 +513,7 @@ pub enum ControlProtocolError {
     InvalidBase64Url,
     InvalidRequestId,
     InvalidOperationId,
+    InvalidProxyConnection,
     InvalidSignature,
     MalformedWireMessage,
     WireMessageTooLarge,
@@ -428,6 +528,7 @@ impl fmt::Display for ControlProtocolError {
             Self::InvalidBase64Url => "control base64url field is invalid",
             Self::InvalidRequestId => "control request id is invalid",
             Self::InvalidOperationId => "control operation id is invalid",
+            Self::InvalidProxyConnection => "control proxy connection is invalid",
             Self::InvalidSignature => "control ECDSA signature encoding is invalid",
             Self::MalformedWireMessage => "control wire message is malformed",
             Self::WireMessageTooLarge => "control wire message exceeds the bounded size",
@@ -483,6 +584,12 @@ mod tests {
                 request_id: "req_1".to_owned()
             })
         );
+        assert_eq!(
+            parse_server_message(r#"{"type":"GET_PROXY","v":1,"request_id":"pxy_1"}"#),
+            Ok(ServerControlMessage::GetProxy {
+                request_id: "pxy_1".to_owned()
+            })
+        );
         assert!(parse_server_message(r#"{"type":"SHELL","v":1}"#).is_err());
         assert!(parse_server_message(r#"{"type":"READY","v":2}"#).is_err());
         assert!(parse_server_message(r#" {"type":"READY","v":1}"#).is_err());
@@ -510,6 +617,36 @@ mod tests {
             assert!(!message.contains("after_ip"));
             assert!(!message.contains("password"));
         }
+    }
+
+    #[test]
+    fn proxy_wire_is_explicit_bounded_read_shape() {
+        let ready = encode_proxy_ready_message(
+            "pxy_1",
+            "100.96.1.2",
+            1080,
+            1081,
+            3128,
+            "mish-user",
+            "secret-password",
+        )
+        .expect("ready proxy response");
+        assert_eq!(
+            ready,
+            r#"{"v":1,"type":"PROXY","request_id":"pxy_1","ready":true,"host":"100.96.1.2","mixed_port":1080,"socks5_port":1081,"http_port":3128,"username":"mish-user","password":"secret-password"}"#
+        );
+
+        let unavailable = encode_proxy_unavailable_message(
+            "pxy_2",
+            RemoteProxyReason::NotReady,
+        )
+        .expect("unavailable proxy response");
+        assert_eq!(
+            unavailable,
+            r#"{"v":1,"type":"PROXY","request_id":"pxy_2","ready":false,"reason":"NOT_READY"}"#
+        );
+        assert!(!unavailable.contains("password"));
+        assert!(!unavailable.contains("username"));
     }
 
     #[test]
