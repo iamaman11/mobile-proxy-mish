@@ -25,7 +25,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       WINDOWS_PROFILE_MATCH: ${{ secrets.CLOUDFLARE_WINDOWS_PROFILE_MATCH }}
     steps:
-      - name: Prove current Zero Trust settings
+      - name: Read current Zero Trust settings with bounded classification
         shell: bash
         run: |
           set -euo pipefail
@@ -33,14 +33,22 @@ jobs:
           test -n "$WINDOWS_PROFILE_MATCH"
 
           accounts="$RUNNER_TEMP/accounts.json"
-          curl --proto '=https' --tlsv1.2 --fail --silent --show-error             'https://api.cloudflare.com/client/v4/accounts?per_page=50&page=1'             -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}"             -H 'Accept: application/json' -o "$accounts"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+            'https://api.cloudflare.com/client/v4/accounts?per_page=50&page=1' \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H 'Accept: application/json' -o "$accounts"
           account_id="$(jq -r 'select(.success == true) | select((.result | length) == 1) | .result[0].id // empty' "$accounts")"
           test -n "$account_id"
           echo "::add-mask::$account_id"
 
           policies="$RUNNER_TEMP/policies.json"
-          curl --proto '=https' --tlsv1.2 --fail --silent --show-error             "https://api.cloudflare.com/client/v4/accounts/$account_id/devices/policies?per_page=100&page=1"             -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}"             -H 'Accept: application/json' -o "$policies"
-          jq -e             --arg expected_match "$WINDOWS_PROFILE_MATCH"             --arg expected_cidr "$MESH_DEVICE_CIDR" '
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+            "https://api.cloudflare.com/client/v4/accounts/$account_id/devices/policies?per_page=100&page=1" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H 'Accept: application/json' -o "$policies"
+          profile="$(jq -c \
+            --arg expected_match "$WINDOWS_PROFILE_MATCH" \
+            --arg expected_cidr "$MESH_DEVICE_CIDR" '
               [.result[] |
                 select(
                   .name == "adds" and
@@ -48,34 +56,63 @@ jobs:
                   ((.default // false) == false)
                 )
               ] as $p
-              | .success == true
-              and ($p | length) == 1
-              and $p[0].enabled == true
-              and $p[0].allow_mode_switch == false
-              and $p[0].disable_auto_fallback == true
-              and $p[0].tunnel_protocol == "masque"
-              and $p[0].service_mode_v2.mode == "warp_tunnel_only"
-              and (($p[0].include // []) | length) == 1
-              and $p[0].include[0].address == $expected_cidr
-            ' "$policies" >/dev/null
+              | {
+                  api_success: (.success == true),
+                  match_count: ($p | length),
+                  enabled: (($p | length) == 1 and $p[0].enabled == true),
+                  allow_mode_switch_false: (($p | length) == 1 and $p[0].allow_mode_switch == false),
+                  auto_fallback_disabled: (($p | length) == 1 and $p[0].disable_auto_fallback == true),
+                  masque: (($p | length) == 1 and $p[0].tunnel_protocol == "masque"),
+                  tunnel_only: (($p | length) == 1 and $p[0].service_mode_v2.mode == "warp_tunnel_only"),
+                  single_include: (($p | length) == 1 and (($p[0].include // []) | length) == 1),
+                  mesh_cidr_included: (($p | length) == 1 and (($p[0].include // []) | length) == 1 and $p[0].include[0].address == $expected_cidr)
+                }
+            ' "$policies")"
+          echo "MISH_CF_WINDOWS_PROFILE=$profile"
 
           settings="$RUNNER_TEMP/settings.json"
-          curl --proto '=https' --tlsv1.2 --fail --silent --show-error             "https://api.cloudflare.com/client/v4/accounts/$account_id/devices/settings"             -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}"             -H 'Accept: application/json' -o "$settings"
-          jq -e '
-            .success == true and
-            .result.use_zt_virtual_ip == true and
-            .result.gateway_proxy_enabled == true and
-            .result.gateway_udp_proxy_enabled == true
-          ' "$settings" >/dev/null
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+            "https://api.cloudflare.com/client/v4/accounts/$account_id/devices/settings" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H 'Accept: application/json' -o "$settings"
+          global="$(jq -c '{
+              api_success: (.success == true),
+              unique_virtual_ip: (.result.use_zt_virtual_ip == true),
+              gateway_tcp: (.result.gateway_proxy_enabled == true),
+              gateway_udp: (.result.gateway_udp_proxy_enabled == true)
+            }' "$settings")"
+          echo "MISH_CF_GLOBAL_SETTINGS=$global"
 
           connectivity="$RUNNER_TEMP/connectivity.json"
-          curl --proto '=https' --tlsv1.2 --fail --silent --show-error             "https://api.cloudflare.com/client/v4/accounts/$account_id/zerotrust/connectivity_settings"             -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}"             -H 'Accept: application/json' -o "$connectivity"
-          jq -e '.success == true and .result.offramp_warp_enabled == true' "$connectivity" >/dev/null
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+            "https://api.cloudflare.com/client/v4/accounts/$account_id/zerotrust/connectivity_settings" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H 'Accept: application/json' -o "$connectivity"
+          off_ramp="$(jq -c '{
+              api_success: (.success == true),
+              offramp_warp_enabled: (.result.offramp_warp_enabled == true)
+            }' "$connectivity")"
+          echo "MISH_CF_CONNECTIVITY=$off_ramp"
+
+          jq -e '
+            .api_success and
+            .match_count == 1 and
+            .enabled and
+            .allow_mode_switch_false and
+            .auto_fallback_disabled and
+            .masque and
+            .tunnel_only and
+            .single_include and
+            .mesh_cidr_included
+          ' <<<"$profile" >/dev/null
+          jq -e '.api_success and .unique_virtual_ip and .gateway_tcp and .gateway_udp' <<<"$global" >/dev/null
+          jq -e '.api_success and .offramp_warp_enabled' <<<"$off_ramp" >/dev/null
           echo 'MISH_ZERO_TRUST_CONTROL_PLANE=PASS'
 
   windows-peer:
     name: Exact Windows Mesh route and WARP recovery
     needs: control-plane
+    if: always()
     runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
     timeout-minutes: 20
     env:
