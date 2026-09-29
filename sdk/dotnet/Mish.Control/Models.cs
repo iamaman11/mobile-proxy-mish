@@ -51,6 +51,61 @@ public sealed record RotateIpResponse(
     bool Retryable,
     RotateIpTiming Timing);
 
+public enum ProxyConnectionReason
+{
+    None,
+    Unauthorized,
+    MethodNotAllowed,
+    InvalidRequest,
+    DeviceOffline,
+    NotReady,
+    ProxyUnavailable,
+    CredentialUnavailable,
+    Timeout,
+    InternalError,
+}
+
+public sealed record ProxyPorts(
+    int Mixed,
+    int Socks5,
+    int Http);
+
+public sealed class ProxyConnectionResponse
+{
+    internal ProxyConnectionResponse(
+        bool ready,
+        ProxyConnectionReason reason,
+        string? host,
+        ProxyPorts? ports,
+        string? username,
+        string? password)
+    {
+        Ready = ready;
+        Reason = reason;
+        Host = host;
+        Ports = ports;
+        Username = username;
+        Password = password;
+    }
+
+    public bool Ready { get; }
+
+    public ProxyConnectionReason Reason { get; }
+
+    public string? Host { get; }
+
+    public ProxyPorts? Ports { get; }
+
+    public string? Username { get; }
+
+    public string? Password { get; }
+
+    public override string ToString() =>
+        Ready
+            ? $"ProxyConnectionResponse(Ready=true,Host={Host},<credentials-redacted>)"
+            : $"ProxyConnectionResponse(Ready=false,Reason={Reason})";
+}
+
 public abstract class MishControlException : Exception
 {
     protected MishControlException(
