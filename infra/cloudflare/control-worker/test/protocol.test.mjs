@@ -14,7 +14,9 @@ import {
   managerAuthorized,
   parseDeviceMessage,
   parseEnrollmentBody,
+  parseManagerProxyBody,
   parseManagerRotateBody,
+  proxyRequestMessage,
   readyMessage,
   resultAckMessage,
   rotateMessage,
@@ -37,6 +39,9 @@ test("wire vocabulary is narrow and versioned", () => {
   assert.deepEqual(JSON.parse(rotateMessage("req_1")), {
     type: "ROTATE_IP", v: 1, request_id: "req_1",
   });
+  assert.deepEqual(JSON.parse(proxyRequestMessage("pxy_1")), {
+    type: "GET_PROXY", v: 1, request_id: "pxy_1",
+  });
   assert.deepEqual(JSON.parse(resultAckMessage("req_1")), {
     type: "RESULT_ACK", v: 1, request_id: "req_1",
   });
@@ -56,6 +61,54 @@ test("device parser rejects unknown commands, fields and bad operation ids", () 
     '{"v":1,"type":"ACCEPTED","request_id":"req","operation_id":7}',
   );
   assert.equal(accepted.operation_id, 7);
+});
+
+test("device parser accepts only strict proxy response shapes", () => {
+  const ready = parseDeviceMessage(JSON.stringify({
+    v: 1,
+    type: "PROXY",
+    request_id: "pxy_1",
+    ready: true,
+    host: "100.96.1.2",
+    mixed_port: 1080,
+    socks5_port: 1081,
+    http_port: 3128,
+    username: "mish-" + "a".repeat(32),
+    password: "b".repeat(64),
+  }));
+  assert.equal(ready.ready, true);
+  assert.equal(ready.host, "100.96.1.2");
+
+  const unavailable = parseDeviceMessage(JSON.stringify({
+    v: 1,
+    type: "PROXY",
+    request_id: "pxy_2",
+    ready: false,
+    reason: "NOT_READY",
+  }));
+  assert.equal(unavailable.ready, false);
+  assert.equal(unavailable.reason, "NOT_READY");
+
+  assert.throws(() => parseDeviceMessage(JSON.stringify({
+    v: 1,
+    type: "PROXY",
+    request_id: "pxy_3",
+    ready: false,
+    reason: "NOT_READY",
+    password: "b".repeat(64),
+  })));
+  assert.throws(() => parseDeviceMessage(JSON.stringify({
+    v: 1,
+    type: "PROXY",
+    request_id: "pxy_4",
+    ready: true,
+    host: "100.96.1.2",
+    mixed_port: 9999,
+    socks5_port: 1081,
+    http_port: 3128,
+    username: "mish-" + "a".repeat(32),
+    password: "b".repeat(64),
+  })));
 });
 
 test("terminal result permits rejected without mutation id only", () => {
@@ -80,7 +133,11 @@ test("manager bodies and identities are strict", () => {
   assert.deepEqual(parseManagerRotateBody({ request_id: "abc_123" }), {
     request_id: "abc_123",
   });
+  assert.deepEqual(parseManagerProxyBody({ request_id: "pxy_123" }), {
+    request_id: "pxy_123",
+  });
   assert.throws(() => parseManagerRotateBody({ request_id: "abc", command: "shell" }));
+  assert.throws(() => parseManagerProxyBody({ request_id: "abc", device_id: "hidden" }));
   assert.ok(isRequestId("abc-123"));
   assert.ok(!isRequestId("bad space"));
   assert.ok(isDeviceId("a".repeat(64)));
@@ -376,6 +433,72 @@ test("primary enrollment is idempotent and fail-closed against identity replacem
   assert.equal(response.status, 409);
   assert.equal((await response.json()).error, "IDENTITY_ALREADY_BOUND");
   assert.equal((await storage.get("device_identity")).device_id, first.deviceId);
+});
+
+test("proxy read is live-only, typed and never persisted", async () => {
+  const previousScheduler = globalThis.scheduler;
+  globalThis.scheduler = { wait: () => new Promise(() => {}) };
+  try {
+    const storage = new MemoryStorage();
+    let sentResolve;
+    const sent = new Promise((resolve) => { sentResolve = resolve; });
+    const socket = new FakeSocket(
+      { kind: "device", authenticated: true, device_id: "a".repeat(64) },
+      (message) => {
+        if (JSON.parse(message).type === "GET_PROXY") sentResolve();
+      },
+    );
+    const control = new DeviceControl(new FakeContext(storage, [socket]), {});
+    const responsePromise = control.proxyAndWait(proxyRequest("pxy_live"));
+    await sent;
+
+    assert.deepEqual(JSON.parse(socket.sent[0]), {
+      type: "GET_PROXY",
+      v: 1,
+      request_id: "pxy_live",
+    });
+    assert.equal(storage.data.size, 0);
+
+    await control.webSocketMessage(socket, JSON.stringify({
+      v: 1,
+      type: "PROXY",
+      request_id: "pxy_live",
+      ready: true,
+      host: "100.96.1.2",
+      mixed_port: 1080,
+      socks5_port: 1081,
+      http_port: 3128,
+      username: "mish-" + "a".repeat(32),
+      password: "b".repeat(64),
+    }));
+
+    const response = await responsePromise;
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.deepEqual(payload, {
+      schema: "mish.proxy/v1",
+      ready: true,
+      host: "100.96.1.2",
+      ports: { mixed: 1080, socks5: 1081, http: 3128 },
+      username: "mish-" + "a".repeat(32),
+      password: "b".repeat(64),
+    });
+    assert.equal(storage.data.size, 0);
+    assert.equal(control.proxyWaiters.size, 0);
+  } finally {
+    globalThis.scheduler = previousScheduler;
+  }
+});
+
+test("proxy read fails closed without partial credentials", async () => {
+  const offline = new DeviceControl(new FakeContext(new MemoryStorage(), []), {});
+  const response = await offline.proxyAndWait(proxyRequest("pxy_offline"));
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), {
+    schema: "mish.proxy/v1",
+    ready: false,
+    reason: "DEVICE_OFFLINE",
+  });
 });
 
 test("manager immediate rejection responses share the typed schema", async () => {
@@ -1060,6 +1183,13 @@ class FakeSocket {
   close(code, reason) {
     this.closed.push({ code, reason });
   }
+}
+
+function proxyRequest(requestId) {
+  return new Request("https://control.internal/manager/proxy-and-wait", {
+    method: "POST",
+    body: JSON.stringify({ request_id: requestId }),
+  });
 }
 
 function rotateRequest(requestId) {

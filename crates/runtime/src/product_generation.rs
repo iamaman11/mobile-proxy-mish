@@ -79,7 +79,13 @@ impl ProductGeneration {
             Arc::clone(&policy),
             Arc::clone(&proxy),
         );
-        let control = ControlRuntimeCoordinator::new(Arc::clone(&executor), Arc::clone(&rotation))?;
+        let control = ControlRuntimeCoordinator::new(
+            Arc::clone(&executor),
+            Arc::clone(&rotation),
+            Arc::clone(&proxy),
+            Arc::clone(&mesh),
+            Arc::clone(&readiness),
+        )?;
 
         Ok(Arc::new(Self {
             generation,

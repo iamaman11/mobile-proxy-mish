@@ -32,6 +32,11 @@ internal static class Program
             ("HTTP_BODY_STATUS_MISMATCH", TestStatusMismatchAsync),
             ("REDIRECT_NO_REPLAY", TestRedirectAsync),
             ("ONE_EMPTY_POST", TestOnePostAsync),
+            ("PROXY_READY", TestProxyReadyAsync),
+            ("PROXY_NOT_READY", TestProxyNotReadyAsync),
+            ("PROXY_AUTH_REJECTION", TestProxyUnauthorizedAsync),
+            ("PROXY_TRANSPORT_FAILURE_SAFE_TO_RETRY", TestProxyTransportFailureAsync),
+            ("PROXY_ONE_GET_NO_IDS", TestProxyOneGetAsync),
             ("PUBLIC_REQUEST_SURFACE", TestPublicRequestSurfaceAsync),
         };
 
@@ -389,6 +394,100 @@ internal static class Program
             "http_version_policy");
     }
 
+    private static async Task TestProxyReadyAsync()
+    {
+        var handler = JsonHandler(
+            HttpStatusCode.OK,
+            ProxyReadyPayload());
+
+        using var client = NewClient(handler);
+        var response = await client.GetProxyAsync();
+
+        Equal(true, response.Ready, "ready");
+        Equal(ProxyConnectionReason.None, response.Reason, "reason");
+        Equal("100.96.1.2", response.Host, "host");
+        Equal<int?>(1080, response.Ports?.Mixed, "mixed_port");
+        Equal<int?>(1081, response.Ports?.Socks5, "socks5_port");
+        Equal<int?>(3128, response.Ports?.Http, "http_port");
+        Equal("mish-" + new string('a', 32), response.Username, "username");
+        Equal(new string('b', 64), response.Password, "password");
+        Equal(false, response.ToString().Contains(new string('b', 64)), "to_string_redacted");
+        Equal(1, handler.SendCount, "send_count");
+    }
+
+    private static async Task TestProxyNotReadyAsync()
+    {
+        var handler = JsonHandler(
+            HttpStatusCode.ServiceUnavailable,
+            ProxyFailurePayload("NOT_READY"));
+
+        using var client = NewClient(handler);
+        var response = await client.GetProxyAsync();
+
+        Equal(false, response.Ready, "ready");
+        Equal(ProxyConnectionReason.NotReady, response.Reason, "reason");
+        Equal<string?>(null, response.Host, "host");
+        Equal<string?>(null, response.Username, "username");
+        Equal<string?>(null, response.Password, "password");
+        Equal(1, handler.SendCount, "send_count");
+    }
+
+    private static async Task TestProxyUnauthorizedAsync()
+    {
+        var handler = JsonHandler(
+            HttpStatusCode.Unauthorized,
+            ProxyFailurePayload("UNAUTHORIZED"));
+
+        using var client = NewClient(handler);
+        var response = await client.GetProxyAsync();
+
+        Equal(false, response.Ready, "ready");
+        Equal(ProxyConnectionReason.Unauthorized, response.Reason, "reason");
+        Equal(1, handler.SendCount, "send_count");
+    }
+
+    private static async Task TestProxyTransportFailureAsync()
+    {
+        var handler = new RecordingHandler(
+            (_, _) => throw new HttpRequestException(
+                "synthetic proxy transport failure"));
+        using var client = NewClient(handler);
+
+        var exception = await ThrowsAsync<MishControlTransportException>(
+            () => client.GetProxyAsync());
+
+        Equal(
+            false,
+            exception.OperationOutcomeMayBeUnknown,
+            "operation_outcome_may_be_unknown");
+        Equal(1, handler.SendCount, "send_count");
+    }
+
+    private static async Task TestProxyOneGetAsync()
+    {
+        var handler = JsonHandler(
+            HttpStatusCode.OK,
+            ProxyReadyPayload());
+
+        using var client = NewClient(handler);
+        _ = await client.GetProxyAsync();
+
+        Equal(1, handler.SendCount, "send_count");
+        Equal(HttpMethod.Get, handler.LastMethod, "method");
+        Equal(
+            "https://mish.alegria.by/v1/proxy",
+            handler.LastUri?.AbsoluteUri,
+            "uri");
+        Equal<int?>(null, handler.LastBodyLength, "body_length");
+        Equal("Bearer", handler.LastAuthorizationScheme, "auth_scheme");
+        Equal(Token, handler.LastAuthorizationParameter, "auth_token");
+        Equal(HttpVersion.Version11, handler.LastVersion, "http_version");
+        Equal(
+            HttpVersionPolicy.RequestVersionExact,
+            handler.LastVersionPolicy,
+            "http_version_policy");
+    }
+
     private static Task TestPublicRequestSurfaceAsync()
     {
         var requestType = typeof(RotateIpRequest);
@@ -402,6 +501,24 @@ internal static class Program
             requestType.GetProperties(
                 BindingFlags.Instance | BindingFlags.Public).Length,
             "request_instance_property_count");
+
+        var proxyMethods = typeof(MishControlClient)
+            .GetMethods(BindingFlags.Instance | BindingFlags.Public)
+            .Where(method =>
+                method.Name == nameof(MishControlClient.GetProxyAsync))
+            .ToArray();
+
+        Equal(1, proxyMethods.Length, "proxy_method_count");
+        var proxyParameters = proxyMethods[0].GetParameters();
+        Equal(1, proxyParameters.Length, "proxy_parameter_count");
+        Equal(
+            typeof(CancellationToken),
+            proxyParameters[0].ParameterType,
+            "proxy_parameter_type");
+        Equal(
+            true,
+            proxyParameters[0].HasDefaultValue,
+            "proxy_cancellation_has_default");
 
         var rotateMethods = typeof(MishControlClient)
             .GetMethods(BindingFlags.Instance | BindingFlags.Public)
@@ -437,6 +554,30 @@ internal static class Program
                 Encoding.UTF8,
                 "application/json"),
         }));
+
+    private static string ProxyReadyPayload() =>
+        JsonSerializer.Serialize(new
+        {
+            schema = MishControlClient.ProxySchema,
+            ready = true,
+            host = "100.96.1.2",
+            ports = new
+            {
+                mixed = 1080,
+                socks5 = 1081,
+                http = 3128,
+            },
+            username = "mish-" + new string('a', 32),
+            password = new string('b', 64),
+        });
+
+    private static string ProxyFailurePayload(string reason) =>
+        JsonSerializer.Serialize(new
+        {
+            schema = MishControlClient.ProxySchema,
+            ready = false,
+            reason,
+        });
 
     private static string Payload(
         bool terminal,

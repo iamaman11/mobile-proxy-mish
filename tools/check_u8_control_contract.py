@@ -50,6 +50,10 @@ def main() -> None:
         'CONTROL_PROTOCOL_VERSION: u8 = 1',
         'ServerControlMessage',
         'RotateIp',
+        'GetProxy',
+        'encode_proxy_ready_message',
+        'encode_proxy_unavailable_message',
+        'RemoteProxyReason',
         'encode_accepted_message',
         'operation_id: u64',
         'RemoteRotationResult',
@@ -63,7 +67,7 @@ def main() -> None:
     for forbidden in (
         "GenericCommand",
     ):
-        forbid(control, forbidden, "v1 must remain ROTATE_IP-only")
+        forbid(control, forbidden, "v1 must remain a narrow typed control vocabulary")
 
     for needle in (
         "RuntimeExecutor",
@@ -264,12 +268,16 @@ def main() -> None:
         '"recent_operations"',
         "MAX_RECENT_OPERATIONS",
         "resultAckMessage",
+        'const MANAGER_PROXY = "/v1/proxy"',
         'const MANAGER_ROTATE = "/v1/rotate"',
         'const CONTROL_HOST = "mish.alegria.by"',
         "url.hostname !== CONTROL_HOST",
         'const PRIMARY_DEVICE_OBJECT = "primary"',
+        '"https://control.internal/manager/proxy-and-wait"',
         '"https://control.internal/manager/rotate-and-wait"',
         "newManagerRequestId()",
+        "proxyAndWait",
+        "proxyWaiters",
         "rotateAndWait",
         "dispatchRotation",
         "waitForTerminal",
@@ -325,11 +333,14 @@ def main() -> None:
         "recoverAuthenticatedSockets",
         "delivery_recovery_count",
         "/manager/operation",
+        'this.ctx.storage.put("proxy',
         'match[2] === "rotate"',
     ):
         forbid(worker, forbidden, "Worker/DO must remain a narrow broker with no proxy secret/VPC/polling loop")
 
     for needle in (
+        'MANAGER_PROXY_SCHEMA = "mish.proxy/v1"',
+        'MANAGER_PROXY_WAIT_TIMEOUT_MS = 5_000',
         'MANAGER_ROTATE_SCHEMA = "mish.control.rotate/v1"',
         'MANAGER_ROTATE_WAIT_TIMEOUT_MS = 18_000',
         '"CHANGED"',
@@ -358,6 +369,10 @@ def main() -> None:
         forbid(manager_api, forbidden, "manager API schema must not acquire device routing, secrets or polling")
 
     for needle in (
+        'proxyRequestMessage',
+        'parseManagerProxyBody',
+        'PROXY_REASONS',
+        '"PROXY"',
         'AUTH_DOMAIN = "MISH_CONTROL_AUTH_V1"',
         "crypto.subtle.importKey",
         '"ECDSA"',

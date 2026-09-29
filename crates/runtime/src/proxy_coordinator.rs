@@ -52,6 +52,23 @@ pub(crate) struct ProxyCredentialGuard {
     material: ProxyCredentialMaterial,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct ProxyConnectionSnapshot {
+    serving_generation: u64,
+    credential_version: u64,
+    material: ProxyCredentialMaterial,
+}
+
+impl ProxyConnectionSnapshot {
+    pub(crate) fn username(&self) -> &str {
+        self.material.username()
+    }
+
+    pub(crate) fn password(&self) -> &str {
+        self.material.password()
+    }
+}
+
 pub struct ProxyRuntimeCoordinator {
     executor: Arc<RuntimeExecutor>,
     cellular: Arc<CellularRuntimeCoordinator>,
@@ -138,6 +155,30 @@ impl ProxyRuntimeCoordinator {
         self.state().is_ok_and(|state| {
             state.credential_version == Some(guard.version)
                 && state.credentials.as_ref() == Some(&guard.material)
+        })
+    }
+
+    pub(crate) fn connection_snapshot(&self) -> Option<ProxyConnectionSnapshot> {
+        let state = self.state().ok()?;
+        if state.closed || state.state != ProxyServingState::Running || state.failure.is_some() {
+            return None;
+        }
+
+        Some(ProxyConnectionSnapshot {
+            serving_generation: state.serving_generation?,
+            credential_version: state.credential_version?,
+            material: state.credentials.clone()?,
+        })
+    }
+
+    pub(crate) fn connection_snapshot_matches(&self, snapshot: &ProxyConnectionSnapshot) -> bool {
+        self.state().is_ok_and(|state| {
+            !state.closed
+                && state.state == ProxyServingState::Running
+                && state.failure.is_none()
+                && state.serving_generation == Some(snapshot.serving_generation)
+                && state.credential_version == Some(snapshot.credential_version)
+                && state.credentials.as_ref() == Some(&snapshot.material)
         })
     }
 

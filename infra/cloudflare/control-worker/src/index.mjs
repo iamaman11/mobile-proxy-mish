@@ -1,6 +1,8 @@
 import {
+  MANAGER_PROXY_WAIT_TIMEOUT_MS,
   MANAGER_ROTATE_WAIT_TIMEOUT_MS,
   managerJson,
+  managerProxyPayload,
   managerRotatePayload,
   newManagerRequestId,
   terminalOperationPayload,
@@ -15,7 +17,9 @@ import {
   managerAuthorized,
   parseDeviceMessage,
   parseEnrollmentBody,
+  parseManagerProxyBody,
   parseManagerRotateBody,
+  proxyRequestMessage,
   randomNonce,
   readBoundedJson,
   readyMessage,
@@ -25,6 +29,7 @@ import {
 } from "./protocol.mjs";
 
 const DEVICE_CONNECT = "/v1/device/connect";
+const MANAGER_PROXY = "/v1/proxy";
 const MANAGER_ROTATE = "/v1/rotate";
 const CONTROL_HOST = "mish.alegria.by";
 const PRIMARY_DEVICE_OBJECT = "primary";
@@ -57,6 +62,55 @@ export default {
       return primaryDeviceStub(env).fetch(
         new Request(`https://control.internal/device/connect?device_id=${deviceId}`, request),
       );
+    }
+
+    if (url.pathname === MANAGER_PROXY) {
+      if (url.hostname !== CONTROL_HOST) {
+        return json({ error: "NOT_FOUND" }, 404);
+      }
+      if (request.method !== "GET") {
+        return managerJson(managerProxyPayload({
+          ready: false,
+          reason: "METHOD_NOT_ALLOWED",
+        }), 405);
+      }
+      if (!(await managerAuthorized(request, env.MISH_MANAGER_TOKEN))) {
+        return managerJson(managerProxyPayload({
+          ready: false,
+          reason: "UNAUTHORIZED",
+        }), 401);
+      }
+      if (url.searchParams.size !== 0) {
+        return managerJson(managerProxyPayload({
+          ready: false,
+          reason: "INVALID_REQUEST",
+        }), 400);
+      }
+
+      const body = await request.text();
+      if (body.length !== 0) {
+        return managerJson(managerProxyPayload({
+          ready: false,
+          reason: "INVALID_REQUEST",
+        }), 400);
+      }
+
+      const requestId = newManagerRequestId();
+      try {
+        return await primaryDeviceStub(env).fetch(new Request(
+          "https://control.internal/manager/proxy-and-wait",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ request_id: requestId }),
+          },
+        ));
+      } catch {
+        return managerJson(managerProxyPayload({
+          ready: false,
+          reason: "INTERNAL_ERROR",
+        }), 502);
+      }
     }
 
     if (url.pathname === MANAGER_ROTATE) {
@@ -148,6 +202,7 @@ export class DeviceControl {
     this.ctx = ctx;
     this.env = env;
     this.waiters = new Map();
+    this.proxyWaiters = new Map();
 
     // Hibernation auto-response keeps heartbeat cost independent from Durable Object wakeups.
     // Fail closed if the runtime cannot provide the freshness primitive this design requires.
@@ -167,6 +222,9 @@ export class DeviceControl {
     if (url.pathname === "/device/connect") return this.connectDevice(request);
     if (url.pathname === "/manager/enroll" && request.method === "PUT") {
       return this.enroll(request, url);
+    }
+    if (url.pathname === "/manager/proxy-and-wait" && request.method === "POST") {
+      return this.proxyAndWait(request);
     }
     if (url.pathname === "/manager/rotate-and-wait" && request.method === "POST") {
       return this.rotateAndWait(request);
@@ -346,6 +404,11 @@ export class DeviceControl {
       return;
     }
 
+    if (parsed.type === "PROXY") {
+      this.resolveProxyWaiters(parsed.request_id, parsed);
+      return;
+    }
+
     ws.close(1008, "unsupported device message");
   }
 
@@ -355,6 +418,83 @@ export class DeviceControl {
 
   async webSocketError() {
     // The client owns bounded reconnect. No server-side retry/queue is created here.
+  }
+
+  async proxyAndWait(request) {
+    const command = parseManagerProxyBody(await readBoundedJson(request));
+    const socket = this.freshAuthenticatedSocket();
+    if (!socket) {
+      this.closeStaleAuthenticatedSockets();
+      return managerJson(managerProxyPayload({
+        ready: false,
+        reason: "DEVICE_OFFLINE",
+      }), 503);
+    }
+
+    let resolveResponse;
+    const responsePromise = new Promise((resolve) => {
+      resolveResponse = resolve;
+      let waiters = this.proxyWaiters.get(command.request_id);
+      if (!waiters) {
+        waiters = new Set();
+        this.proxyWaiters.set(command.request_id, waiters);
+      }
+      waiters.add(resolve);
+    });
+
+    try {
+      socket.send(proxyRequestMessage(command.request_id));
+    } catch {
+      this.removeProxyWaiter(command.request_id, resolveResponse);
+      this.closeStaleAuthenticatedSockets();
+      return managerJson(managerProxyPayload({
+        ready: false,
+        reason: "DEVICE_OFFLINE",
+      }), 503);
+    }
+
+    const timeoutController = new AbortController();
+    const timeoutPromise = scheduler
+      .wait(MANAGER_PROXY_WAIT_TIMEOUT_MS, { signal: timeoutController.signal })
+      .then(() => null)
+      .catch((error) => {
+        if (error?.name === "AbortError") return undefined;
+        throw error;
+      });
+
+    try {
+      const response = await Promise.race([responsePromise, timeoutPromise]);
+      if (!response) {
+        return managerJson(managerProxyPayload({
+          ready: false,
+          reason: "TIMEOUT",
+        }), 504);
+      }
+      return this.proxyResponse(response);
+    } finally {
+      timeoutController.abort();
+      this.removeProxyWaiter(command.request_id, resolveResponse);
+    }
+  }
+
+  proxyResponse(response) {
+    if (response.ready === true) {
+      return managerJson(managerProxyPayload({
+        ready: true,
+        host: response.host,
+        mixedPort: response.mixed_port,
+        socks5Port: response.socks5_port,
+        httpPort: response.http_port,
+        username: response.username,
+        password: response.password,
+      }), 200);
+    }
+
+    const status = response.reason === "INTERNAL_ERROR" ? 502 : 503;
+    return managerJson(managerProxyPayload({
+      ready: false,
+      reason: response.reason,
+    }), status);
   }
 
   async rotateAndWait(request) {
@@ -845,6 +985,20 @@ export class DeviceControl {
     if (!waiters) return;
     waiters.delete(resolve);
     if (waiters.size === 0) this.waiters.delete(requestId);
+  }
+
+  resolveProxyWaiters(requestId, response) {
+    const waiters = this.proxyWaiters.get(requestId);
+    if (!waiters) return;
+    this.proxyWaiters.delete(requestId);
+    for (const resolve of waiters) resolve(response);
+  }
+
+  removeProxyWaiter(requestId, resolve) {
+    const waiters = this.proxyWaiters.get(requestId);
+    if (!waiters) return;
+    waiters.delete(resolve);
+    if (waiters.size === 0) this.proxyWaiters.delete(requestId);
   }
 
   socketFreshnessAtMs(socket) {
