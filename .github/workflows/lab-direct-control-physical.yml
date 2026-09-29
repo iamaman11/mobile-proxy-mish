@@ -27,10 +27,16 @@ jobs:
           persist-credentials: false
           clean: true
 
-      - name: Set up .NET 8
-        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
-        with:
-          dotnet-version: '8.0.x'
+      - name: Verify local .NET 8 runtime
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dotnet = Get-Command dotnet -CommandType Application -ErrorAction Stop
+          $version = (& $dotnet.Source --version).Trim()
+          if ($LASTEXITCODE -ne 0 -or $version -notmatch '^8\.') {
+              throw "Local .NET 8 is required; observed version=$version"
+          }
+          Write-Host "MISH_LAB_DOTNET_VERSION=$version"
 
       - name: Build live acceptance harness
         shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
