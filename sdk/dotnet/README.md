@@ -1,8 +1,8 @@
 # MISH Control SDK (.NET 8)
 
-This is a thin consumer adapter for the accepted public remote-rotation API.
+This is the thin common client for the public MISH operator API at `mish.alegria.by`.
 
-It does not own Rotation, retries, polling, WSS, device identity, Android state, Cloudflare Durable Object lifecycle, or PRODUCT recovery.
+The same SDK contract is used by local Windows agents and remote clients. Normal operation does not use ADB and callers never provide device, request, operation, credential or WebSocket identifiers.
 
 ## Consumer API
 
@@ -11,40 +11,78 @@ using Mish.Control;
 
 using var client = new MishControlClient(managerToken);
 
-RotateIpResponse result = await client.RotateIpAsync();
+ProxyConnectionResponse proxy = await client.GetProxyAsync();
+RotateIpResponse rotation = await client.RotateIpAsync();
 ```
 
-The consumer supplies only the manager token. The endpoint, HTTP method, empty request body, wire schema, correlation details, and protocol mapping stay inside the SDK.
+The caller supplies only the manager Bearer token.
 
-## Result semantics
+## Get current proxy
+
+`GetProxyAsync()` performs exactly one read-only request:
 
 ```text
-CHANGED
-  rotation completed correctly and public egress changed
-
-UNCHANGED
-  rotation completed correctly but the carrier returned the same public egress
-
-FAILED
-  PRODUCT accepted the operation but could not complete it correctly
-
-REJECTED
-  operation was not accepted or PRODUCT explicitly rejected it
-
-UNKNOWN
-  the outcome cannot be established truthfully
+GET https://mish.alegria.by/v1/proxy
+Authorization: Bearer <token>
+body: none
+query: none
 ```
 
-`UNCHANGED` is a normal completed result. It is not a reason to retry.
+A ready response contains only connection data the consumer needs:
 
-`UNKNOWN` must never be replayed automatically.
+```text
+host
+ports.mixed = 1080
+ports.socks5 = 1081
+ports.http = 3128
+username
+password
+```
+
+The endpoint and credential material come from the current PRODUCT generation. The SDK does not cache, persist, rotate or synthesize them.
+
+An unavailable response is typed through `ProxyConnectionReason` and contains no partial credentials.
+
+`ProxyConnectionResponse.ToString()` deliberately redacts credentials.
+
+A proxy-read transport failure has `OperationOutcomeMayBeUnknown=false`: the read is non-mutating. The SDK still performs no hidden retry; a caller may explicitly issue a later read.
+
+## Rotate IP
+
+`RotateIpAsync()` performs exactly one mutation request:
+
+```text
+POST https://mish.alegria.by/v1/rotate
+Authorization: Bearer <token>
+body: empty
+```
+
+Result semantics:
+
+```text
+CHANGED    rotation completed and public egress changed
+UNCHANGED  rotation completed but carrier returned the same public egress
+FAILED     PRODUCT accepted the operation but could not complete it
+REJECTED   operation was not accepted or PRODUCT explicitly rejected it
+UNKNOWN    mutation outcome cannot be established truthfully
+```
+
+`UNCHANGED` is a normal completed result. `UNKNOWN` must never be replayed automatically.
+
+A rotation transport failure has `OperationOutcomeMayBeUnknown=true`, because the command may already have crossed the public API boundary.
 
 ## Safety contract
 
 ```text
-one RotateIpAsync()
- -> one SDK HTTP send
- -> POST https://mish.alegria.by/v1/rotate
+GetProxyAsync()
+ -> one GET
+ -> no body/query
+ -> no polling
+ -> no SDK retry
+ -> no redirect replay
+
+RotateIpAsync()
+ -> one POST
  -> empty body
  -> no polling
  -> no SDK retry
@@ -52,86 +90,32 @@ one RotateIpAsync()
  -> no replay after UNKNOWN
 ```
 
-The SDK uses exact HTTP/1.1 for this command and disables automatic redirects.
-
-`retryable=true` is information for the calling application only. The SDK does not act on it.
-
-A transport failure throws `MishControlTransportException` with `OperationOutcomeMayBeUnknown=true`. The caller must not automatically replay the operation because the request may already have crossed the public API boundary.
-
-## Typed response
-
-```csharp
-RotateIpResponse {
-    string? RequestId;
-    bool Terminal;
-    RotateResult Result;
-    RotateReason Reason;
-    long? OperationId;
-    bool? Changed;
-    bool? DeviceOnline;
-    bool? Dispatched;
-    bool Retryable;
-    RotateIpTiming Timing;
-}
-```
-
-The SDK recognizes exactly wire schema:
-
-```text
-mish.control.rotate/v1
-```
-
-and typed results:
-
-```text
-CHANGED
-UNCHANGED
-FAILED
-REJECTED
-UNKNOWN
-```
-
-with all currently supported `RotateReason` values.
-
-## Protocol errors
-
-The SDK fails closed with `MishControlProtocolException` for:
-
-- unknown schema/version;
-- malformed JSON;
-- unknown result/reason;
-- missing or mistyped required fields;
-- inconsistent terminal/changed/retryable semantics;
-- inconsistent timing;
-- HTTP status/body mismatch;
-- redirect or other non-JSON response;
-- oversized response body.
-
-Valid typed `FAILED`, `REJECTED`, and `UNKNOWN` responses are returned as `RotateIpResponse`; they are not converted into parsing exceptions.
-
-Authentication rejection is therefore represented as:
-
-```text
-Result = REJECTED
-Reason = UNAUTHORIZED
-Dispatched = false
-```
-
-## Request model
-
-`RotateIpRequest` is an intentionally parameterless marker. `RotateIpAsync()` accepts no public command payload.
+The SDK uses exact HTTP/1.1 and disables automatic redirects.
 
 The consumer cannot supply:
 
 - request_id;
 - operation_id;
 - device_id;
+- credential_id/version;
+- Mesh admission epoch;
 - WSS/session details;
 - Android/PRODUCT internals.
 
+## Wire schemas
+
+```text
+mish.proxy/v1
+mish.control.rotate/v1
+```
+
+Malformed JSON, unknown schemas/reasons, invalid fields, HTTP/body mismatches, redirects and oversized responses fail closed with `MishControlProtocolException`.
+
 ## Token handling
 
-The caller supplies the manager token. The SDK places it in the Authorization header and does not log or persist it.
+The caller supplies the manager token. The SDK places it only in the Authorization header and does not log or persist it.
+
+Proxy credentials returned by `GetProxyAsync()` are intentionally exposed to the calling process because they are the requested connection material. The SDK itself does not persist or log them.
 
 ## Tests
 
@@ -141,4 +125,4 @@ dotnet run \
   --configuration Release
 ```
 
-The deterministic harness uses no DEVICE-1 and sends no real rotation. It verifies typed result/error mapping and the one-send/no-replay client contract.
+The deterministic harness uses no physical device and verifies the one-send/no-replay request surfaces, typed responses, strict schemas and credential redaction behavior.
