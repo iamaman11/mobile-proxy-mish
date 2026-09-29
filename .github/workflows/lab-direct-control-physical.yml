@@ -1,0 +1,156 @@
+name: LAB Direct CONTROL Physical Acceptance
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/lab-direct-control-physical.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lab-direct-control-physical
+  cancel-in-progress: false
+
+jobs:
+  physical:
+    name: Ambient proxy poisoned -> SDK direct CONTROL -> DEVICE-1
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 15
+    environment: cloudflare-control
+    env:
+      MISH_MANAGER_TOKEN: ${{ secrets.MISH_MANAGER_TOKEN }}
+    steps:
+      - name: Checkout exact acceptance source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          clean: true
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build live acceptance harness
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = Join-Path $env:RUNNER_TEMP 'mish-direct-control-live'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+
+          @'
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup>
+              <OutputType>Exe</OutputType>
+              <TargetFramework>net8.0</TargetFramework>
+              <ImplicitUsings>enable</ImplicitUsings>
+              <Nullable>enable</Nullable>
+            </PropertyGroup>
+            <ItemGroup>
+              <ProjectReference Include="__SDK_PROJECT__" />
+            </ItemGroup>
+          </Project>
+          '@.Replace('__SDK_PROJECT__', ((Resolve-Path '.\sdk\dotnet\Mish.Control\Mish.Control.csproj').Path)) |
+            Set-Content -LiteralPath (Join-Path $dir 'Live.csproj') -Encoding UTF8
+
+          @'
+          using System.Net;
+          using Mish.Control;
+
+          static void Require(bool condition, string message)
+          {
+              if (!condition) throw new InvalidOperationException(message);
+          }
+
+          static bool InMeshCidr(string host)
+          {
+              if (!IPAddress.TryParse(host, out var address)) return false;
+              var bytes = address.GetAddressBytes();
+              return bytes.Length == 4 &&
+                  bytes[0] == 100 &&
+                  (bytes[1] & 0xF0) == 96;
+          }
+
+          static void ValidateBundle(ProxyConnectionResponse bundle)
+          {
+              Require(bundle.Ready, $"proxy not ready: {bundle.Reason}");
+              Require(bundle.Reason == ProxyConnectionReason.None, $"unexpected proxy reason: {bundle.Reason}");
+              Require(bundle.Host is not null && InMeshCidr(bundle.Host), "proxy host is outside Mesh CIDR");
+              Require(bundle.Ports is not null, "proxy ports unavailable");
+              Require(bundle.Ports.Mixed == 1080, "mixed port mismatch");
+              Require(bundle.Ports.Socks5 == 1081, "socks5 port mismatch");
+              Require(bundle.Ports.Http == 3128, "http port mismatch");
+              Require(!string.IsNullOrWhiteSpace(bundle.Username), "proxy username unavailable");
+              Require(!string.IsNullOrWhiteSpace(bundle.Password), "proxy password unavailable");
+          }
+
+          static async Task ProxyE2EAsync(ProxyConnectionResponse bundle)
+          {
+              var proxy = new WebProxy($"http://{bundle.Host}:{bundle.Ports!.Http}")
+              {
+                  Credentials = new NetworkCredential(bundle.Username, bundle.Password),
+              };
+              using var handler = new HttpClientHandler
+              {
+                  UseProxy = true,
+                  Proxy = proxy,
+                  AllowAutoRedirect = false,
+              };
+              using var http = new HttpClient(handler)
+              {
+                  Timeout = TimeSpan.FromSeconds(20),
+              };
+              using var response = await http.GetAsync("https://example.com/");
+              Require(response.IsSuccessStatusCode, $"proxy E2E HTTP {(int)response.StatusCode}");
+          }
+
+          var token = Environment.GetEnvironmentVariable("MISH_MANAGER_TOKEN");
+          Require(!string.IsNullOrWhiteSpace(token) && token.Length >= 32, "manager token unavailable");
+
+          const string poisoned = "http://127.0.0.1:9";
+          foreach (var name in new[] { "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy" })
+          {
+              Environment.SetEnvironmentVariable(name, poisoned);
+          }
+
+          Require(Environment.GetEnvironmentVariable("HTTPS_PROXY") == poisoned, "ambient proxy poison was not applied");
+
+          using var client = new MishControlClient(token);
+
+          var first = await client.GetProxyAsync();
+          ValidateBundle(first);
+          await ProxyE2EAsync(first);
+          Console.WriteLine("MISH_DIRECT_CONTROL_GET_BEFORE=PASS");
+          Console.WriteLine("MISH_DIRECT_CONTROL_PROXY_E2E_BEFORE=PASS");
+
+          var rotation = await client.RotateIpAsync();
+          Require(rotation.Terminal, "rotation was not terminal");
+          Require(rotation.Reason == RotateReason.None, $"rotation reason={rotation.Reason}");
+          Require(rotation.Result is RotateResult.Changed or RotateResult.Unchanged, $"rotation result={rotation.Result}");
+          Require(rotation.Timing.DurationMs <= 18000, $"rotation duration exceeded manager bound: {rotation.Timing.DurationMs}");
+          Console.WriteLine($"MISH_DIRECT_CONTROL_ROTATE={rotation.Result}/duration_ms={rotation.Timing.DurationMs}");
+
+          var second = await client.GetProxyAsync();
+          ValidateBundle(second);
+          await ProxyE2EAsync(second);
+          Console.WriteLine("MISH_DIRECT_CONTROL_GET_AFTER=PASS");
+          Console.WriteLine("MISH_DIRECT_CONTROL_PROXY_E2E_AFTER=PASS");
+          Console.WriteLine("MISH_DIRECT_CONTROL_AMBIENT_PROXY_BYPASS=PASS");
+          '@ | Set-Content -LiteralPath (Join-Path $dir 'Program.cs') -Encoding UTF8
+
+          dotnet build (Join-Path $dir 'Live.csproj') --configuration Release --nologo
+
+      - name: Run physical direct-CONTROL acceptance with poisoned ambient proxy
+        env:
+          HTTP_PROXY: http://127.0.0.1:9
+          HTTPS_PROXY: http://127.0.0.1:9
+          ALL_PROXY: http://127.0.0.1:9
+          http_proxy: http://127.0.0.1:9
+          https_proxy: http://127.0.0.1:9
+          all_proxy: http://127.0.0.1:9
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $project = Join-Path $env:RUNNER_TEMP 'mish-direct-control-live\Live.csproj'
+          dotnet run --project $project --configuration Release --no-build --nologo
