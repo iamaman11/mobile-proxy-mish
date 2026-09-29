@@ -90,7 +90,9 @@ RotateIpAsync()
  -> no replay after UNKNOWN
 ```
 
-The SDK uses exact HTTP/1.1 and disables automatic redirects.
+The SDK uses exact HTTP/1.1, disables automatic redirects and explicitly disables HTTP proxy use for the CONTROL transport. `GetProxyAsync()` and `RotateIpAsync()` therefore go directly to `mish.alegria.by` and do not inherit system or ambient proxy configuration.
+
+This separation is intentional: the CONTROL plane returns the current proxy bundle and must not itself depend on an older MISH proxy, `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` or another system proxy. Non-.NET clients implementing the same public contract must provide the equivalent direct-HTTPS behavior.
 
 The consumer cannot supply:
 
