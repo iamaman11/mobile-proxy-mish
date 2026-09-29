@@ -37,6 +37,7 @@ internal static class Program
             ("PROXY_AUTH_REJECTION", TestProxyUnauthorizedAsync),
             ("PROXY_TRANSPORT_FAILURE_SAFE_TO_RETRY", TestProxyTransportFailureAsync),
             ("PROXY_ONE_GET_NO_IDS", TestProxyOneGetAsync),
+            ("DEFAULT_HANDLER_DIRECT_CONTROL", TestDefaultHandlerDirectControlAsync),
             ("PUBLIC_REQUEST_SURFACE", TestPublicRequestSurfaceAsync),
         };
 
@@ -486,6 +487,25 @@ internal static class Program
             HttpVersionPolicy.RequestVersionExact,
             handler.LastVersionPolicy,
             "http_version_policy");
+    }
+
+    private static Task TestDefaultHandlerDirectControlAsync()
+    {
+        var factory = typeof(MishControlClient)
+            .GetMethod(
+                "CreateDefaultHandler",
+                BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException(
+                "Default HTTP handler factory is unavailable.");
+
+        using var handler = factory.Invoke(null, null) as SocketsHttpHandler
+            ?? throw new InvalidOperationException(
+                "Default HTTP handler is not SocketsHttpHandler.");
+
+        Equal(false, handler.AllowAutoRedirect, "default_allow_auto_redirect");
+        Equal(false, handler.UseCookies, "default_use_cookies");
+        Equal(false, handler.UseProxy, "default_use_proxy");
+        return Task.CompletedTask;
     }
 
     private static Task TestPublicRequestSurfaceAsync()
