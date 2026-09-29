@@ -1,0 +1,124 @@
+name: LAB Live Proxy Contract
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/lab-live-proxy-contract.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lab-live-proxy-contract
+  cancel-in-progress: false
+
+jobs:
+  live-proxy:
+    name: Token-only GET proxy plus real E2E
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 10
+    environment: cloudflare-control
+    env:
+      MISH_MANAGER_TOKEN: ${{ secrets.MISH_MANAGER_TOKEN }}
+    steps:
+      - name: Verify production token-only proxy contract without exposing secrets
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          if ([string]::IsNullOrWhiteSpace($env:MISH_MANAGER_TOKEN) -or $env:MISH_MANAGER_TOKEN.Length -lt 32) {
+              throw 'Manager token unavailable.'
+          }
+
+          $uri = [Uri]'https://mish.alegria.by/v1/proxy'
+
+          function Invoke-Bounded {
+              param([string]$Token)
+              $handler = [Net.Http.HttpClientHandler]::new()
+              $handler.AllowAutoRedirect = $false
+              $client = [Net.Http.HttpClient]::new($handler)
+              $client.Timeout = [TimeSpan]::FromSeconds(20)
+              try {
+                  $request = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::Get, $uri)
+                  $request.Version = [Version]'1.1'
+                  $request.VersionPolicy = [Net.Http.HttpVersionPolicy]::RequestVersionExact
+                  if (-not [string]::IsNullOrWhiteSpace($Token)) {
+                      $request.Headers.Authorization = [Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $Token)
+                  }
+                  $response = $client.Send($request)
+                  $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+                  return [pscustomobject]@{
+                      Status = [int]$response.StatusCode
+                      Body = $body
+                      Location = [string]$response.Headers.Location
+                      ContentType = [string]$response.Content.Headers.ContentType.MediaType
+                  }
+              }
+              finally {
+                  $client.Dispose()
+                  $handler.Dispose()
+              }
+          }
+
+          $unauthorized = Invoke-Bounded ''
+          if ($unauthorized.Status -ne 401) { throw "Unauthenticated GET expected 401, observed $($unauthorized.Status)." }
+          $u = $unauthorized.Body | ConvertFrom-Json
+          if ([string]$u.schema -cne 'mish.proxy/v1' -or [bool]$u.ready -ne $false -or [string]$u.reason -cne 'UNAUTHORIZED') {
+              throw 'Unauthenticated typed response mismatch.'
+          }
+          if ($unauthorized.Body -match '"username"|"password"') { throw 'Unauthenticated response exposed credential fields.' }
+
+          $wrong = Invoke-Bounded 'definitely-wrong-manager-token-for-live-proof'
+          if ($wrong.Status -ne 401) { throw "Wrong-token GET expected 401, observed $($wrong.Status)." }
+          if ($wrong.Body -match '"username"|"password"') { throw 'Wrong-token response exposed credential fields.' }
+
+          $ok = Invoke-Bounded $env:MISH_MANAGER_TOKEN
+          if ($ok.Status -ne 200) { throw "Authorized GET expected 200, observed $($ok.Status)." }
+          if ($ok.Location) { throw 'Authorized GET unexpectedly redirected.' }
+          if ($ok.ContentType -cne 'application/json') { throw "Unexpected content type: $($ok.ContentType)" }
+
+          $p = $ok.Body | ConvertFrom-Json
+          if ([string]$p.schema -cne 'mish.proxy/v1' -or [bool]$p.ready -ne $true) {
+              throw 'Authorized proxy response is not ready.'
+          }
+          if ([string]::IsNullOrWhiteSpace([string]$p.host) -or
+              [int]$p.ports.mixed -ne 1080 -or
+              [int]$p.ports.socks5 -ne 1081 -or
+              [int]$p.ports.http -ne 3128 -or
+              [string]::IsNullOrWhiteSpace([string]$p.username) -or
+              [string]::IsNullOrWhiteSpace([string]$p.password)) {
+              throw 'Authorized proxy bundle is incomplete.'
+          }
+          if ($p.PSObject.Properties.Name -contains 'request_id' -or
+              $p.PSObject.Properties.Name -contains 'device_id' -or
+              $p.PSObject.Properties.Name -contains 'credential_version' -or
+              $p.PSObject.Properties.Name -contains 'admission_epoch') {
+              throw 'Consumer-visible proxy response exposed an internal identifier.'
+          }
+
+          $proxy = [Net.WebProxy]::new("http://$([string]$p.host):$([int]$p.ports.http)")
+          $proxy.Credentials = [Net.NetworkCredential]::new([string]$p.username, [string]$p.password)
+          $handler = [Net.Http.HttpClientHandler]::new()
+          $handler.UseProxy = $true
+          $handler.Proxy = $proxy
+          $client = [Net.Http.HttpClient]::new($handler)
+          $client.Timeout = [TimeSpan]::FromSeconds(20)
+          try {
+              $probe = $client.GetAsync('https://example.com/').GetAwaiter().GetResult()
+              if (-not $probe.IsSuccessStatusCode) {
+                  throw "Proxy E2E returned HTTP $([int]$probe.StatusCode)."
+              }
+          }
+          finally {
+              $client.Dispose()
+              $handler.Dispose()
+              $p.password = $null
+              $p.username = $null
+              $ok = $null
+          }
+
+          Write-Host 'MISH_LIVE_PROXY_CONTRACT=PASS'
+          Write-Host 'MISH_LIVE_PROXY_AUTH_FAIL_CLOSED=PASS'
+          Write-Host 'MISH_LIVE_PROXY_CALLER_IDS_REQUIRED=false'
+          Write-Host 'MISH_LIVE_PROXY_CANONICAL_PORTS=PASS'
+          Write-Host 'MISH_LIVE_PROXY_RETURNED_BUNDLE_E2E=PASS'
