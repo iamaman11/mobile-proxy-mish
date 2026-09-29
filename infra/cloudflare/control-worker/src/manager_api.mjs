@@ -1,5 +1,7 @@
 export const MANAGER_ROTATE_SCHEMA = "mish.control.rotate/v1";
 export const MANAGER_ROTATE_WAIT_TIMEOUT_MS = 18_000;
+export const MANAGER_PROXY_SCHEMA = "mish.proxy/v1";
+export const MANAGER_PROXY_WAIT_TIMEOUT_MS = 5_000;
 
 const RESULTS = new Set(["CHANGED", "UNCHANGED", "FAILED", "REJECTED", "UNKNOWN"]);
 const REASONS = new Set([
@@ -69,6 +71,64 @@ export function managerRotatePayload({
       completed_at_ms: completedAtMs,
       duration_ms: completedAtMs - startedAtMs,
     },
+  };
+}
+
+
+export function managerProxyPayload({
+  ready,
+  reason = null,
+  host = null,
+  mixedPort = null,
+  socks5Port = null,
+  httpPort = null,
+  username = null,
+  password = null,
+}) {
+  if (typeof ready !== "boolean") throw new Error("invalid proxy ready value");
+
+  if (ready) {
+    if (reason !== null ||
+        typeof host !== "string" || host.length === 0 ||
+        mixedPort !== 1080 || socks5Port !== 1081 || httpPort !== 3128 ||
+        typeof username !== "string" || username.length === 0 ||
+        typeof password !== "string" || password.length === 0) {
+      throw new Error("invalid ready proxy payload");
+    }
+    return {
+      schema: MANAGER_PROXY_SCHEMA,
+      ready: true,
+      host,
+      ports: {
+        mixed: mixedPort,
+        socks5: socks5Port,
+        http: httpPort,
+      },
+      username,
+      password,
+    };
+  }
+
+  const failureReasons = new Set([
+    "UNAUTHORIZED",
+    "METHOD_NOT_ALLOWED",
+    "INVALID_REQUEST",
+    "DEVICE_OFFLINE",
+    "NOT_READY",
+    "PROXY_UNAVAILABLE",
+    "CREDENTIAL_UNAVAILABLE",
+    "TIMEOUT",
+    "INTERNAL_ERROR",
+  ]);
+  if (!failureReasons.has(reason) ||
+      host !== null || mixedPort !== null || socks5Port !== null || httpPort !== null ||
+      username !== null || password !== null) {
+    throw new Error("invalid unavailable proxy payload");
+  }
+  return {
+    schema: MANAGER_PROXY_SCHEMA,
+    ready: false,
+    reason,
   };
 }
 
