@@ -87,6 +87,14 @@ export default {
         }), 400);
       }
 
+      const body = await request.text();
+      if (body.length !== 0) {
+        return managerJson(managerProxyPayload({
+          ready: false,
+          reason: "INVALID_REQUEST",
+        }), 400);
+      }
+
       const requestId = newManagerRequestId();
       try {
         return await primaryDeviceStub(env).fetch(new Request(
