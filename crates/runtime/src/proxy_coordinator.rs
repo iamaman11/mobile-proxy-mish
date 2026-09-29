@@ -160,10 +160,7 @@ impl ProxyRuntimeCoordinator {
 
     pub(crate) fn connection_snapshot(&self) -> Option<ProxyConnectionSnapshot> {
         let state = self.state().ok()?;
-        if state.closed
-            || state.state != ProxyServingState::Running
-            || state.failure.is_some()
-        {
+        if state.closed || state.state != ProxyServingState::Running || state.failure.is_some() {
             return None;
         }
 
