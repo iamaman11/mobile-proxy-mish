@@ -60,14 +60,6 @@ pub(crate) struct ProxyConnectionSnapshot {
 }
 
 impl ProxyConnectionSnapshot {
-    pub(crate) const fn serving_generation(&self) -> u64 {
-        self.serving_generation
-    }
-
-    pub(crate) const fn credential_version(&self) -> u64 {
-        self.credential_version
-    }
-
     pub(crate) fn username(&self) -> &str {
         self.material.username()
     }
