@@ -16,8 +16,8 @@ const REQUEST_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const DEVICE_ID = /^[0-9a-f]{64}$/;
 const B64URL_32 = /^[A-Za-z0-9_-]{43}$/;
 const B64URL_SIG = /^[A-Za-z0-9_-]{86}$/;
-const PROXY_USERNAME = /^mish-[0-9a-f]{32}$/;
-const PROXY_PASSWORD = /^[0-9a-f]{64}$/;
+const PROXY_USERNAME_PATTERN = /^mish-[0-9a-f]{32}$/;
+const PROXY_PASSWORD_PATTERN = /^[0-9a-f]{64}$/;
 
 export function isDeviceId(value) {
   return typeof value === "string" && DEVICE_ID.test(value);
@@ -131,9 +131,9 @@ export function parseDeviceMessage(raw) {
           value.socks5_port !== 1081 ||
           value.http_port !== 3128 ||
           typeof value.username !== "string" ||
-          !PROXY_USERNAME.test(value.username) ||
+          !PROXY_USERNAME_PATTERN.test(value.username) ||
           typeof value.password !== "string" ||
-          !PROXY_PASSWORD.test(value.password)) {
+          !PROXY_PASSWORD_PATTERN.test(value.password)) {
         throw new Error("invalid proxy connection");
       }
       return value;
