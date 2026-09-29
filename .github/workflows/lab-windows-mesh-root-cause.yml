@@ -1,0 +1,260 @@
+name: LAB Windows Mesh Root Cause
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/lab-windows-mesh-root-cause.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lab-windows-mesh-root-cause
+  cancel-in-progress: false
+
+env:
+  MESH_DEVICE_CIDR: 100.96.0.0/12
+
+jobs:
+  control-plane:
+    name: Zero Trust control-plane readback
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: cloudflare-plan
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      WINDOWS_PROFILE_MATCH: ${{ secrets.CLOUDFLARE_WINDOWS_PROFILE_MATCH }}
+    steps:
+      - name: Prove current Zero Trust settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$WINDOWS_PROFILE_MATCH"
+
+          accounts="$RUNNER_TEMP/accounts.json"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error             'https://api.cloudflare.com/client/v4/accounts?per_page=50&page=1'             -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}"             -H 'Accept: application/json' -o "$accounts"
+          account_id="$(jq -r 'select(.success == true) | select((.result | length) == 1) | .result[0].id // empty' "$accounts")"
+          test -n "$account_id"
+          echo "::add-mask::$account_id"
+
+          policies="$RUNNER_TEMP/policies.json"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error             "https://api.cloudflare.com/client/v4/accounts/$account_id/devices/policies?per_page=100&page=1"             -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}"             -H 'Accept: application/json' -o "$policies"
+          jq -e             --arg expected_match "$WINDOWS_PROFILE_MATCH"             --arg expected_cidr "$MESH_DEVICE_CIDR" '
+              [.result[] |
+                select(
+                  .name == "adds" and
+                  .match == $expected_match and
+                  ((.default // false) == false)
+                )
+              ] as $p
+              | .success == true
+              and ($p | length) == 1
+              and $p[0].enabled == true
+              and $p[0].allow_mode_switch == false
+              and $p[0].disable_auto_fallback == true
+              and $p[0].tunnel_protocol == "masque"
+              and $p[0].service_mode_v2.mode == "warp_tunnel_only"
+              and (($p[0].include // []) | length) == 1
+              and $p[0].include[0].address == $expected_cidr
+            ' "$policies" >/dev/null
+
+          settings="$RUNNER_TEMP/settings.json"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error             "https://api.cloudflare.com/client/v4/accounts/$account_id/devices/settings"             -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}"             -H 'Accept: application/json' -o "$settings"
+          jq -e '
+            .success == true and
+            .result.use_zt_virtual_ip == true and
+            .result.gateway_proxy_enabled == true and
+            .result.gateway_udp_proxy_enabled == true
+          ' "$settings" >/dev/null
+
+          connectivity="$RUNNER_TEMP/connectivity.json"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error             "https://api.cloudflare.com/client/v4/accounts/$account_id/zerotrust/connectivity_settings"             -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}"             -H 'Accept: application/json' -o "$connectivity"
+          jq -e '.success == true and .result.offramp_warp_enabled == true' "$connectivity" >/dev/null
+          echo 'MISH_ZERO_TRUST_CONTROL_PLANE=PASS'
+
+  windows-peer:
+    name: Exact Windows Mesh route and WARP recovery
+    needs: control-plane
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 20
+    env:
+      ADB_EXE: C:\mish-lab\tools\android-sdk\platform-tools\adb.exe
+      PACKAGE_NAME: com.mobileproxymish.app.debug
+    steps:
+      - name: Checkout exact diagnostic branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          clean: true
+
+      - name: Diagnose and perform one bounded WARP reconnect
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+
+          function Test-Ipv4InCidr {
+              param([string]$Address, [string]$Cidr)
+              $parts = $Cidr.Split('/')
+              $addressBytes = [Net.IPAddress]::Parse($Address).GetAddressBytes()
+              $networkBytes = [Net.IPAddress]::Parse($parts[0]).GetAddressBytes()
+              $prefix = [int]$parts[1]
+              for ($i = 0; $i -lt 4; $i++) {
+                  $remaining = $prefix - ($i * 8)
+                  $bits = [Math]::Min(8, [Math]::Max(0, $remaining))
+                  if ($bits -eq 0) { continue }
+                  $mask = (0xff -shl (8 - $bits)) -band 0xff
+                  if ((([int]$addressBytes[$i]) -band $mask) -ne (([int]$networkBytes[$i]) -band $mask)) { return $false }
+              }
+              return $true
+          }
+
+          function Get-DeviceMeshEndpoint {
+              $devices = @(& $env:ADB_EXE devices | Select-Object -Skip 1 | Where-Object { $_ -match '\tdevice$' })
+              if ($LASTEXITCODE -ne 0 -or $devices.Count -ne 1) { throw 'Exactly one authorized DEVICE-1 is required.' }
+              $api = (& $env:ADB_EXE shell getprop ro.build.version.sdk).Trim()
+              $abi = (& $env:ADB_EXE shell getprop ro.product.cpu.abi).Trim()
+              if ($api -ne '30' -or $abi -ne 'armeabi-v7a') { throw "DEVICE-1 identity mismatch: API=$api ABI=$abi" }
+              $raw = ((& $env:ADB_EXE shell ip -o -4 addr show) -join [Environment]::NewLine)
+              $ips = @([regex]::Matches($raw, '\binet\s+(?<ip>\d{1,3}(?:\.\d{1,3}){3})/\d+') |
+                  ForEach-Object { $_.Groups['ip'].Value } |
+                  Where-Object { Test-Ipv4InCidr $_ $env:MESH_DEVICE_CIDR } |
+                  Sort-Object -Unique)
+              if ($ips.Count -ne 1) { throw "Expected exactly one DEVICE-1 Mesh endpoint; observed $($ips.Count)." }
+              return [string]$ips[0]
+          }
+
+          function Test-TcpPort {
+              param([string]$HostName, [int]$Port)
+              $client = [Net.Sockets.TcpClient]::new()
+              try {
+                  $task = $client.ConnectAsync($HostName, $Port)
+                  if (-not $task.Wait(3000)) { return $false }
+                  return $client.Connected
+              } catch { return $false } finally { $client.Dispose() }
+          }
+
+          function Get-ExactRoute {
+              param([string]$Endpoint, [string]$WarpAlias)
+              try { $route = @(Find-NetRoute -RemoteIPAddress $Endpoint -ErrorAction Stop) | Select-Object -Last 1 }
+              catch { $route = $null }
+              if ($null -eq $route) {
+                  return [pscustomobject]@{ Present=$false; InterfaceAlias=$null; InterfaceIndex=$null; CloudflareOwned=$false }
+              }
+              return [pscustomobject]@{
+                  Present = $true
+                  InterfaceAlias = [string]$route.InterfaceAlias
+                  InterfaceIndex = [int]$route.InterfaceIndex
+                  CloudflareOwned = ([string]$route.InterfaceAlias -ceq $WarpAlias)
+              }
+          }
+
+          function Get-TcpVector {
+              param([string]$Endpoint)
+              return [ordered]@{
+                  p1080 = Test-TcpPort $Endpoint 1080
+                  p1081 = Test-TcpPort $Endpoint 1081
+                  p3128 = Test-TcpPort $Endpoint 3128
+              }
+          }
+
+          Import-Module .\lab\windows\CloudflareProbe.psm1 -Force
+
+          $baselineDiagnosticPath = "$env:RUNNER_TEMP\mesh-root-baseline-diagnostic.json"
+          & .\lab\windows\collect-device-diagnostic.ps1 -AdbPath $env:ADB_EXE -PackageName $env:PACKAGE_NAME -MeshCidr $env:MESH_DEVICE_CIDR -EvidencePath $baselineDiagnosticPath
+          $baselineDiagnostic = Get-Content -Raw -LiteralPath $baselineDiagnosticPath | ConvertFrom-Json
+
+          $endpointBefore = Get-DeviceMeshEndpoint
+          $warpAdapters = @(Get-NetAdapter -IncludeHidden -ErrorAction Stop | Where-Object {
+              $_.Name -eq 'CloudflareWARP' -or $_.InterfaceDescription -eq 'Cloudflare WARP Interface Tunnel'
+          })
+          if ($warpAdapters.Count -ne 1) { throw "Expected one CloudflareWARP adapter; observed $($warpAdapters.Count)." }
+          $warpAlias = [string]$warpAdapters[0].Name
+
+          $readbackPath = "$env:RUNNER_TEMP\mesh-root-warp-readback.json"
+          $readback = Invoke-CloudflareWindowsProof -MeshDeviceCidr $env:MESH_DEVICE_CIDR -EvidencePath $readbackPath
+          $routeBefore = Get-ExactRoute $endpointBefore $warpAlias
+          $tcpBefore = Get-TcpVector $endpointBefore
+
+          $recoveryPath = "$env:RUNNER_TEMP\mesh-root-warp-recovery.json"
+          $recovery = Invoke-CloudflareWindowsProof -MeshDeviceCidr $env:MESH_DEVICE_CIDR -EvidencePath $recoveryPath -Recovery
+
+          $endpointAfter = Get-DeviceMeshEndpoint
+          $routeAfter = Get-ExactRoute $endpointAfter $warpAlias
+          $tcpAfter = Get-TcpVector $endpointAfter
+
+          $postDiagnosticPath = "$env:RUNNER_TEMP\mesh-root-post-diagnostic.json"
+          & .\lab\windows\collect-device-diagnostic.ps1 -AdbPath $env:ADB_EXE -PackageName $env:PACKAGE_NAME -MeshCidr $env:MESH_DEVICE_CIDR -EvidencePath $postDiagnosticPath
+          $postDiagnostic = Get-Content -Raw -LiteralPath $postDiagnosticPath | ConvertFrom-Json
+
+          $classification = if ([string]$postDiagnostic.classification -ceq 'PASS') {
+              if ([string]$baselineDiagnostic.classification -ceq 'PASS') { 'BASELINE_ALREADY_HEALTHY' }
+              elseif (-not [bool]$routeBefore.CloudflareOwned) { 'WRONG_ROUTE_OWNER_RECOVERED' }
+              else { 'WARP_SESSION_RECOVERED' }
+          } elseif (-not [bool]$routeAfter.Present) {
+              'WINDOWS_MESH_ROUTE_MISSING_AFTER_RECOVERY'
+          } elseif (-not [bool]$routeAfter.CloudflareOwned) {
+              'WINDOWS_MESH_ROUTE_WRONG_OWNER_AFTER_RECOVERY'
+          } elseif (-not [bool]$tcpAfter.p1080 -and -not [bool]$tcpAfter.p1081 -and -not [bool]$tcpAfter.p3128) {
+              'WARP_TO_WARP_DATAPLANE_UNREACHABLE_AFTER_RECOVERY'
+          } elseif (-not [bool]$tcpAfter.p3128) {
+              'SELECTIVE_PROXY_PORT_UNREACHABLE_AFTER_RECOVERY'
+          } else {
+              'PROXY_E2E_FAILURE_AFTER_TCP_RECOVERY'
+          }
+
+          $evidence = [ordered]@{
+              schema = 'mish.lab.windows-mesh-root-cause/v1'
+              result = if ([string]$postDiagnostic.classification -ceq 'PASS') { 'PASS' } else { 'FAIL' }
+              classification = $classification
+              baseline_product_classification = [string]$baselineDiagnostic.classification
+              post_product_classification = [string]$postDiagnostic.classification
+              endpoint_stable = ($endpointBefore -ceq $endpointAfter)
+              warp = [ordered]@{
+                  client_version = [string]$recovery.client_version
+                  mode = [string]$recovery.mode
+                  protocol = [string]$recovery.tunnel_protocol
+                  mesh_cidr_cloudflare_owned = [bool]$recovery.mesh_cloudflare_owned
+              }
+              before = [ordered]@{
+                  route_present = [bool]$routeBefore.Present
+                  route_interface = [string]$routeBefore.InterfaceAlias
+                  route_cloudflare_owned = [bool]$routeBefore.CloudflareOwned
+                  tcp = $tcpBefore
+              }
+              after_reconnect = [ordered]@{
+                  route_present = [bool]$routeAfter.Present
+                  route_interface = [string]$routeAfter.InterfaceAlias
+                  route_cloudflare_owned = [bool]$routeAfter.CloudflareOwned
+                  tcp = $tcpAfter
+              }
+          }
+          $evidencePath = "$env:RUNNER_TEMP\mish-windows-mesh-root-cause-v1.json"
+          [IO.File]::WriteAllText($evidencePath, (($evidence | ConvertTo-Json -Depth 8) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+
+          Write-Host "MISH_WINDOWS_MESH_ROOT_CAUSE=$classification"
+          Write-Host "MISH_WINDOWS_MESH_BASELINE=$([string]$baselineDiagnostic.classification)"
+          Write-Host "MISH_WINDOWS_MESH_POST=$([string]$postDiagnostic.classification)"
+          Write-Host "MISH_WINDOWS_MESH_ROUTE_BEFORE=$([bool]$routeBefore.Present)/cloudflare=$([bool]$routeBefore.CloudflareOwned)"
+          Write-Host "MISH_WINDOWS_MESH_TCP_BEFORE=1080:$([bool]$tcpBefore.p1080),1081:$([bool]$tcpBefore.p1081),3128:$([bool]$tcpBefore.p3128)"
+          Write-Host "MISH_WINDOWS_MESH_ROUTE_AFTER=$([bool]$routeAfter.Present)/cloudflare=$([bool]$routeAfter.CloudflareOwned)"
+          Write-Host "MISH_WINDOWS_MESH_TCP_AFTER=1080:$([bool]$tcpAfter.p1080),1081:$([bool]$tcpAfter.p1081),3128:$([bool]$tcpAfter.p3128)"
+
+          if ([string]$postDiagnostic.classification -cne 'PASS') {
+              throw "MISH_WINDOWS_MESH_ROOT_CAUSE_FAILURE|$classification|Post-recovery canonical diagnostic=$([string]$postDiagnostic.classification)"
+          }
+
+      - name: Upload bounded diagnosis evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-mesh-root-cause
+          path: |
+            ${{ runner.temp }}\mish-windows-mesh-root-cause-v1.json
+            ${{ runner.temp }}\mesh-root-baseline-diagnostic.json
+            ${{ runner.temp }}\mesh-root-post-diagnostic.json
+            ${{ runner.temp }}\mesh-root-warp-readback.json
+            ${{ runner.temp }}\mesh-root-warp-recovery.json
+          if-no-files-found: warn
+          retention-days: 7
