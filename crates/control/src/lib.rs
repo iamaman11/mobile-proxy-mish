@@ -141,7 +141,7 @@ struct WireResult<'a> {
     operation_id: Option<u64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 struct WireProxyReady<'a> {
     v: u8,
     #[serde(rename = "type")]
