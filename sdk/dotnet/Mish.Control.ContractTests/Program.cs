@@ -406,9 +406,9 @@ internal static class Program
         Equal(true, response.Ready, "ready");
         Equal(ProxyConnectionReason.None, response.Reason, "reason");
         Equal("100.96.1.2", response.Host, "host");
-        Equal(1080, response.Ports?.Mixed, "mixed_port");
-        Equal(1081, response.Ports?.Socks5, "socks5_port");
-        Equal(3128, response.Ports?.Http, "http_port");
+        Equal<int?>(1080, response.Ports?.Mixed, "mixed_port");
+        Equal<int?>(1081, response.Ports?.Socks5, "socks5_port");
+        Equal<int?>(3128, response.Ports?.Http, "http_port");
         Equal("mish-" + new string('a', 32), response.Username, "username");
         Equal(new string('b', 64), response.Password, "password");
         Equal(false, response.ToString().Contains(new string('b', 64)), "to_string_redacted");
