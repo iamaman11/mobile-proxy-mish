@@ -1,0 +1,206 @@
+name: LAB Proxy API Black Box
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/lab-proxy-api-blackbox.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lab-proxy-api-blackbox
+  cancel-in-progress: false
+
+jobs:
+  black-box:
+    name: Token-only GET proxy -> E2E -> rotate -> GET proxy
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 15
+    environment: cloudflare-control
+    env:
+      MISH_MANAGER_TOKEN: ${{ secrets.MISH_MANAGER_TOKEN }}
+    steps:
+      - name: Black-box unified client contract
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+
+          if ([string]::IsNullOrWhiteSpace($env:MISH_MANAGER_TOKEN) -or $env:MISH_MANAGER_TOKEN.Length -lt 32) {
+              throw 'Manager token is unavailable.'
+          }
+
+          function Invoke-Api {
+              param(
+                  [Parameter(Mandatory)][ValidateSet('GET','POST')][string]$Method,
+                  [Parameter(Mandatory)][string]$Url,
+                  [Parameter(Mandatory)][string]$Token
+              )
+              $handler = [Net.Http.HttpClientHandler]::new()
+              $handler.AllowAutoRedirect = $false
+              $client = [Net.Http.HttpClient]::new($handler)
+              $client.Timeout = [TimeSpan]::FromSeconds(22)
+              $request = [Net.Http.HttpRequestMessage]::new(
+                  $(if ($Method -ceq 'GET') { [Net.Http.HttpMethod]::Get } else { [Net.Http.HttpMethod]::Post }),
+                  $Url
+              )
+              $request.Version = [Version]::new(1, 1)
+              $request.VersionPolicy = [Net.Http.HttpVersionPolicy]::RequestVersionExact
+              $request.Headers.Authorization = [Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $Token)
+              $request.Headers.Accept.ParseAdd('application/json')
+              if ($Method -ceq 'POST') {
+                  $request.Content = [Net.Http.ByteArrayContent]::new([byte[]]::new(0))
+              }
+              try {
+                  $response = $client.SendAsync($request, [Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+                  $raw = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+                  try { $json = $raw | ConvertFrom-Json -ErrorAction Stop }
+                  catch { throw "Response is not valid JSON; HTTP=$([int]$response.StatusCode)." }
+                  return [pscustomobject]@{
+                      Status = [int]$response.StatusCode
+                      Json = $json
+                  }
+              }
+              finally {
+                  if ($null -ne $request) { $request.Dispose() }
+                  if ($null -ne $response) { $response.Dispose() }
+                  $client.Dispose()
+                  $handler.Dispose()
+                  $raw = $null
+              }
+          }
+
+          function Test-InMeshCidr {
+              param([string]$Address)
+              try { $b = [Net.IPAddress]::Parse($Address).GetAddressBytes() } catch { return $false }
+              if ($b.Length -ne 4) { return $false }
+              return ([int]$b[0] -eq 100 -and (([int]$b[1] -band 0xF0) -eq 96))
+          }
+
+          function Assert-ProxyResponse {
+              param($Response)
+              if ($Response.Status -ne 200) { throw "GET /v1/proxy returned HTTP $($Response.Status)." }
+              $j = $Response.Json
+              if ([string]$j.schema -cne 'mish.proxy/v1' -or [bool]$j.ready -ne $true) {
+                  throw 'GET /v1/proxy did not return a ready mish.proxy/v1 bundle.'
+              }
+              if (-not (Test-InMeshCidr ([string]$j.host))) { throw 'Proxy host is outside the canonical Mesh CIDR.' }
+              if ([int]$j.ports.mixed -ne 1080 -or [int]$j.ports.socks5 -ne 1081 -or [int]$j.ports.http -ne 3128) {
+                  throw 'Proxy ports do not match the canonical listener contract.'
+              }
+              if ([string]::IsNullOrWhiteSpace([string]$j.username) -or [string]::IsNullOrWhiteSpace([string]$j.password)) {
+                  throw 'Proxy credentials are unavailable.'
+              }
+              return $j
+          }
+
+          function Invoke-ProxyE2E {
+              param($Bundle)
+              $proxy = [Net.WebProxy]::new("http://$([string]$Bundle.host):$([int]$Bundle.ports.http)")
+              $proxy.Credentials = [Net.NetworkCredential]::new([string]$Bundle.username, [string]$Bundle.password)
+              $handler = [Net.Http.HttpClientHandler]::new()
+              $handler.UseProxy = $true
+              $handler.Proxy = $proxy
+              $client = [Net.Http.HttpClient]::new($handler)
+              $client.Timeout = [TimeSpan]::FromSeconds(15)
+              try {
+                  $response = $client.GetAsync('https://example.com/').GetAwaiter().GetResult()
+                  if (-not $response.IsSuccessStatusCode) {
+                      throw "Proxy E2E returned HTTP $([int]$response.StatusCode)."
+                  }
+              }
+              finally {
+                  if ($null -ne $response) { $response.Dispose() }
+                  $client.Dispose()
+                  $handler.Dispose()
+                  $proxy.Credentials = $null
+                  $proxy = $null
+              }
+          }
+
+          $proxyUrl = 'https://mish.alegria.by/v1/proxy'
+          $rotateUrl = 'https://mish.alegria.by/v1/rotate'
+
+          $wrong = Invoke-Api -Method GET -Url $proxyUrl -Token 'definitely-wrong-manager-token'
+          if ($wrong.Status -ne 401 -or [string]$wrong.Json.schema -cne 'mish.proxy/v1' -or
+              [bool]$wrong.Json.ready -ne $false -or [string]$wrong.Json.reason -cne 'UNAUTHORIZED') {
+              throw 'Wrong-token proxy request did not fail with the typed contract.'
+          }
+          foreach ($forbidden in @('host','ports','username','password')) {
+              if ($wrong.Json.PSObject.Properties.Name -contains $forbidden) {
+                  throw "Unauthorized response leaked field: $forbidden."
+              }
+          }
+
+          $first = Assert-ProxyResponse (Invoke-Api -Method GET -Url $proxyUrl -Token $env:MISH_MANAGER_TOKEN)
+          Invoke-ProxyE2E $first
+
+          $rotation = Invoke-Api -Method POST -Url $rotateUrl -Token $env:MISH_MANAGER_TOKEN
+          if ($rotation.Status -ne 200 -or [string]$rotation.Json.schema -cne 'mish.control.rotate/v1' -or
+              [bool]$rotation.Json.terminal -ne $true -or [string]$rotation.Json.reason -cne 'NONE' -or
+              [string]$rotation.Json.result -notin @('CHANGED','UNCHANGED')) {
+              throw 'Remote rotation did not return an accepted terminal contract.'
+          }
+          if ([int64]$rotation.Json.timing.duration_ms -gt 18000) {
+              throw 'Remote rotation exceeded the 18 second manager bound.'
+          }
+
+          $second = Assert-ProxyResponse (Invoke-Api -Method GET -Url $proxyUrl -Token $env:MISH_MANAGER_TOKEN)
+          Invoke-ProxyE2E $second
+
+          $evidence = [ordered]@{
+              schema = 'mish.lab.proxy-api-blackbox/v1'
+              result = 'PASS'
+              wrong_token = [ordered]@{
+                  http_status = $wrong.Status
+                  typed_unauthorized = $true
+                  secret_fields_absent = $true
+              }
+              initial_get = [ordered]@{
+                  http_status = 200
+                  ready = $true
+                  canonical_ports = $true
+                  mesh_host = $true
+                  proxy_e2e = 'PASS'
+              }
+              rotation = [ordered]@{
+                  http_status = $rotation.Status
+                  terminal_result = [string]$rotation.Json.result
+                  duration_ms = [int64]$rotation.Json.timing.duration_ms
+              }
+              post_rotation_get = [ordered]@{
+                  http_status = 200
+                  ready = $true
+                  canonical_ports = $true
+                  mesh_host = $true
+                  proxy_e2e = 'PASS'
+              }
+              caller_ids_required = $false
+              adb_used = $false
+              secrets_persisted = $false
+          }
+          $path = "$env:RUNNER_TEMP\mish-proxy-api-blackbox-v1.json"
+          [IO.File]::WriteAllText($path, (($evidence | ConvertTo-Json -Depth 6) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+
+          Write-Host 'MISH_PROXY_API_BLACKBOX=PASS'
+          Write-Host 'MISH_PROXY_API_GET=PASS'
+          Write-Host 'MISH_PROXY_API_WRONG_TOKEN=401_NO_SECRET_FIELDS'
+          Write-Host 'MISH_PROXY_API_INITIAL_E2E=PASS'
+          Write-Host "MISH_PROXY_API_ROTATION=$([string]$rotation.Json.result)/duration_ms=$([int64]$rotation.Json.timing.duration_ms)"
+          Write-Host 'MISH_PROXY_API_POST_ROTATION_E2E=PASS'
+
+          $first = $null
+          $second = $null
+          $wrong = $null
+          $rotation = $null
+          $env:MISH_MANAGER_TOKEN = $null
+
+      - name: Upload redacted evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: proxy-api-blackbox
+          path: ${{ runner.temp }}\mish-proxy-api-blackbox-v1.json
+          if-no-files-found: warn
+          retention-days: 7
