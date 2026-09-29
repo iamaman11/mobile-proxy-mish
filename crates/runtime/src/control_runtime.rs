@@ -1,22 +1,28 @@
 //! MISH-initiated authenticated remote-control transport on the one PRODUCT Tokio runtime.
 //!
 //! This coordinator owns only the outbound control-session lifecycle, reconnect budget and
-//! correlation of one remote ROTATE_IP request to the existing Rotation owner. It never mutates
-//! Android radio state itself, never retries a rotation until the IP changes, and never creates a
-//! second network/executor/lifecycle owner.
+//! correlation of remote requests to existing PRODUCT owners. ROTATE_IP delegates mutation to the
+//! existing Rotation owner; GET_PROXY is a read-only composition of current owner facts. CONTROL
+//! never mutates Android radio state itself, never retries a rotation until the IP changes, and
+//! never creates a second network/executor/lifecycle owner.
 
 use crate::control_transport::{ControlTransport, ControlTransportError, ControlTransportMessage};
 use crate::{
-    CellularRequestRearmEffect, RotationRuntimeCoordinator, RotationRuntimeStartError,
-    RotationRuntimeTimingSnapshot, RuntimeExecutionError, RuntimeExecutor,
+    CellularRequestRearmEffect, MeshCompositionCoordinator, ProxyRuntimeCoordinator,
+    RotationRuntimeCoordinator, RotationRuntimeStartError, RotationRuntimeTimingSnapshot,
+    ReadinessRuntimeCoordinator, RuntimeExecutionError, RuntimeExecutor,
 };
 use mish_configuration::ControlEndpoint;
 use mish_control::{
-    ControlDeviceIdentity, RemoteRotationResult, ServerControlMessage, canonical_auth_payload,
-    encode_accepted_message, encode_auth_message, encode_result_message,
+    ControlDeviceIdentity, RemoteProxyReason, RemoteRotationResult, ServerControlMessage,
+    canonical_auth_payload, encode_accepted_message, encode_auth_message,
+    encode_proxy_ready_message, encode_proxy_unavailable_message, encode_result_message,
     p256_der_signature_to_p1363_b64url, parse_server_message,
 };
+use mish_proxy::{HTTP_CONNECT_PORT, MIXED_PORT, SOCKS5_PORT};
+use mish_readiness::Readiness;
 use mish_rotation::{RotationSnapshot, RotationTerminalResult};
+use mish_transport::MeshAdmissionState;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
@@ -194,6 +200,9 @@ struct ControlState {
 pub struct ControlRuntimeCoordinator {
     executor: Arc<RuntimeExecutor>,
     rotation: Arc<RotationRuntimeCoordinator>,
+    proxy: Arc<ProxyRuntimeCoordinator>,
+    mesh: Arc<MeshCompositionCoordinator>,
+    readiness: Arc<ReadinessRuntimeCoordinator>,
     endpoint: ControlEndpoint,
     result_changed: Arc<Notify>,
     state: Mutex<ControlState>,
@@ -203,12 +212,18 @@ impl ControlRuntimeCoordinator {
     pub fn new(
         executor: Arc<RuntimeExecutor>,
         rotation: Arc<RotationRuntimeCoordinator>,
+        proxy: Arc<ProxyRuntimeCoordinator>,
+        mesh: Arc<MeshCompositionCoordinator>,
+        readiness: Arc<ReadinessRuntimeCoordinator>,
     ) -> Result<Arc<Self>, RuntimeExecutionError> {
         let endpoint =
             ControlEndpoint::deployment().map_err(|_| RuntimeExecutionError::StateUnavailable)?;
         let coordinator = Arc::new(Self {
             executor,
             rotation: Arc::clone(&rotation),
+            proxy,
+            mesh,
+            readiness,
             endpoint,
             result_changed: Arc::new(Notify::new()),
             state: Mutex::new(ControlState {
@@ -577,6 +592,9 @@ impl ControlRuntimeCoordinator {
                 self.handle_rotate_ip(transport, request_id, cellular_request_rearm)
                     .await
             }
+            ServerControlMessage::GetProxy { request_id } => {
+                self.handle_get_proxy(transport, request_id).await
+            }
             ServerControlMessage::ResultAck { request_id } => {
                 self.ack_result(&request_id);
                 Ok(())
@@ -585,6 +603,73 @@ impl ControlRuntimeCoordinator {
                 Err(ControlRunError::Protocol)
             }
         }
+    }
+
+    async fn handle_get_proxy(
+        &self,
+        transport: &mut ControlTransport,
+        request_id: String,
+    ) -> Result<(), ControlRunError> {
+        let message = self.proxy_connection_message(&request_id)?;
+        self.write_text_observed(transport, &message).await
+    }
+
+    fn proxy_connection_message(&self, request_id: &str) -> Result<String, ControlRunError> {
+        let unavailable = |reason| {
+            encode_proxy_unavailable_message(request_id, reason)
+                .map_err(|_| ControlRunError::Protocol)
+        };
+
+        if self.readiness.snapshot() != Readiness::Ready {
+            return unavailable(RemoteProxyReason::NotReady);
+        }
+
+        let mesh = match self.mesh.snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(_) => return unavailable(RemoteProxyReason::InternalError),
+        };
+        let admission = mesh.admission();
+        let Some(endpoint) = admission.admitted_endpoint() else {
+            return unavailable(RemoteProxyReason::ProxyUnavailable);
+        };
+        if admission.state() != MeshAdmissionState::Admitted || !mesh.ingress_running() {
+            return unavailable(RemoteProxyReason::ProxyUnavailable);
+        }
+
+        if self.proxy.snapshot().state != crate::ProxyServingState::Running {
+            return unavailable(RemoteProxyReason::ProxyUnavailable);
+        }
+        let Some(proxy) = self.proxy.connection_snapshot() else {
+            return unavailable(RemoteProxyReason::CredentialUnavailable);
+        };
+
+        // Revalidate the natural-owner keys after collecting the secret. Session counters are not
+        // part of connection identity, so they deliberately do not participate in this check.
+        let mesh_after = match self.mesh.snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(_) => return unavailable(RemoteProxyReason::InternalError),
+        };
+        let admission_after = mesh_after.admission();
+        if self.readiness.snapshot() != Readiness::Ready
+            || !mesh_after.ingress_running()
+            || admission_after.state() != MeshAdmissionState::Admitted
+            || admission_after.admitted_endpoint() != Some(endpoint)
+            || admission_after.admission_epoch() != admission.admission_epoch()
+            || !self.proxy.connection_snapshot_matches(&proxy)
+        {
+            return unavailable(RemoteProxyReason::NotReady);
+        }
+
+        encode_proxy_ready_message(
+            request_id,
+            &endpoint.to_string(),
+            MIXED_PORT,
+            SOCKS5_PORT,
+            HTTP_CONNECT_PORT,
+            proxy.username(),
+            proxy.password(),
+        )
+        .map_err(|_| ControlRunError::Protocol)
     }
 
     async fn handle_rotate_ip(
