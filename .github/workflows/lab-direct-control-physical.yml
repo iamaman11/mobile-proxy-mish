@@ -13,39 +13,31 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  physical:
-    name: Ambient proxy poisoned -> SDK direct CONTROL -> DEVICE-1
-    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
-    timeout-minutes: 15
-    environment: cloudflare-control
-    env:
-      MISH_MANAGER_TOKEN: ${{ secrets.MISH_MANAGER_TOKEN }}
+  build:
+    name: Build self-contained Windows acceptance harness
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout exact acceptance source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          clean: true
 
-      - name: Verify local .NET 8 runtime
-        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build self-contained live harness
+        shell: bash
         run: |
-          $ErrorActionPreference = 'Stop'
-          $dotnet = Get-Command dotnet -CommandType Application -ErrorAction Stop
-          $version = (& $dotnet.Source --version).Trim()
-          if ($LASTEXITCODE -ne 0 -or $version -notmatch '^8\.') {
-              throw "Local .NET 8 is required; observed version=$version"
-          }
-          Write-Host "MISH_LAB_DOTNET_VERSION=$version"
+          set -euo pipefail
+          dir="$RUNNER_TEMP/mish-direct-control-live"
+          out="$RUNNER_TEMP/mish-direct-control-publish"
+          mkdir -p "$dir" "$out"
+          sdk_project="$(realpath sdk/dotnet/Mish.Control/Mish.Control.csproj)"
 
-      - name: Build live acceptance harness
-        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $dir = Join-Path $env:RUNNER_TEMP 'mish-direct-control-live'
-          New-Item -ItemType Directory -Force -Path $dir | Out-Null
-
-          @'
+          cat >"$dir/Live.csproj" <<EOF
           <Project Sdk="Microsoft.NET.Sdk">
             <PropertyGroup>
               <OutputType>Exe</OutputType>
@@ -54,13 +46,12 @@ jobs:
               <Nullable>enable</Nullable>
             </PropertyGroup>
             <ItemGroup>
-              <ProjectReference Include="__SDK_PROJECT__" />
+              <ProjectReference Include="$sdk_project" />
             </ItemGroup>
           </Project>
-          '@.Replace('__SDK_PROJECT__', ((Resolve-Path '.\sdk\dotnet\Mish.Control\Mish.Control.csproj').Path)) |
-            Set-Content -LiteralPath (Join-Path $dir 'Live.csproj') -Encoding UTF8
+          EOF
 
-          @'
+          cat >"$dir/Program.cs" <<'EOF'
           using System.Net;
           using Mish.Control;
 
@@ -119,7 +110,6 @@ jobs:
           {
               Environment.SetEnvironmentVariable(name, poisoned);
           }
-
           Require(Environment.GetEnvironmentVariable("HTTPS_PROXY") == poisoned, "ambient proxy poison was not applied");
 
           using var client = new MishControlClient(token);
@@ -143,9 +133,34 @@ jobs:
           Console.WriteLine("MISH_DIRECT_CONTROL_GET_AFTER=PASS");
           Console.WriteLine("MISH_DIRECT_CONTROL_PROXY_E2E_AFTER=PASS");
           Console.WriteLine("MISH_DIRECT_CONTROL_AMBIENT_PROXY_BYPASS=PASS");
-          '@ | Set-Content -LiteralPath (Join-Path $dir 'Program.cs') -Encoding UTF8
+          EOF
 
-          dotnet build (Join-Path $dir 'Live.csproj') --configuration Release --nologo
+          dotnet publish "$dir/Live.csproj"             --configuration Release             --runtime win-x64             --self-contained true             --output "$out"             -p:PublishSingleFile=true             -p:PublishTrimmed=false             --nologo
+
+          test -f "$out/Live.exe"
+
+      - name: Upload exact live harness
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: direct-control-live-win-x64
+          path: ${{ runner.temp }}/mish-direct-control-publish
+          if-no-files-found: error
+          retention-days: 1
+
+  physical:
+    name: Ambient proxy poisoned -> SDK direct CONTROL -> DEVICE-1
+    needs: build
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 15
+    environment: cloudflare-control
+    env:
+      MISH_MANAGER_TOKEN: ${{ secrets.MISH_MANAGER_TOKEN }}
+    steps:
+      - name: Download exact live harness
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: direct-control-live-win-x64
+          path: ${{ runner.temp }}\mish-direct-control-live
 
       - name: Run physical direct-CONTROL acceptance with poisoned ambient proxy
         env:
@@ -155,5 +170,13 @@ jobs:
         shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
         run: |
           $ErrorActionPreference = 'Stop'
-          $project = Join-Path $env:RUNNER_TEMP 'mish-direct-control-live\Live.csproj'
-          dotnet run --project $project --configuration Release --no-build --nologo
+          $exe = Join-Path $env:RUNNER_TEMP 'mish-direct-control-live\Live.exe'
+          if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+              throw 'Self-contained live acceptance executable is missing.'
+          }
+          $hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "MISH_DIRECT_CONTROL_HARNESS_SHA256=$hash"
+          & $exe
+          if ($LASTEXITCODE -ne 0) {
+              throw "Live acceptance executable failed with exit code $LASTEXITCODE."
+          }
