@@ -636,11 +636,8 @@ mod tests {
             r#"{"v":1,"type":"PROXY","request_id":"pxy_1","ready":true,"host":"100.96.1.2","mixed_port":1080,"socks5_port":1081,"http_port":3128,"username":"mish-user","password":"secret-password"}"#
         );
 
-        let unavailable = encode_proxy_unavailable_message(
-            "pxy_2",
-            RemoteProxyReason::NotReady,
-        )
-        .expect("unavailable proxy response");
+        let unavailable = encode_proxy_unavailable_message("pxy_2", RemoteProxyReason::NotReady)
+            .expect("unavailable proxy response");
         assert_eq!(
             unavailable,
             r#"{"v":1,"type":"PROXY","request_id":"pxy_2","ready":false,"reason":"NOT_READY"}"#
