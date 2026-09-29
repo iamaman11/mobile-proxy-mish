@@ -1,0 +1,106 @@
+name: LAB Cloudflare Profile Reconcile
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/lab-cloudflare-profile-reconcile.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lab-cloudflare-profile-reconcile
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    name: Reconcile allow_mode_switch only
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: cloudflare-plan
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      WINDOWS_PROFILE_MATCH: ${{ secrets.CLOUDFLARE_WINDOWS_PROFILE_MATCH }}
+      MESH_DEVICE_CIDR: 100.96.0.0/12
+    steps:
+      - name: Patch one exact profile field and prove readback
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$WINDOWS_PROFILE_MATCH"
+
+          accounts="$RUNNER_TEMP/accounts.json"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+            'https://api.cloudflare.com/client/v4/accounts?per_page=50&page=1' \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H 'Accept: application/json' -o "$accounts"
+          account_id="$(jq -r 'select(.success == true) | select((.result | length) == 1) | .result[0].id // empty' "$accounts")"
+          test -n "$account_id"
+          echo "::add-mask::$account_id"
+
+          before="$RUNNER_TEMP/before.json"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+            "https://api.cloudflare.com/client/v4/accounts/$account_id/devices/policies?per_page=100&page=1" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H 'Accept: application/json' -o "$before"
+
+          policy_id="$(jq -r --arg m "$WINDOWS_PROFILE_MATCH" '
+            [.result[] | select(.name == "adds" and .match == $m and ((.default // false) == false))] as $p
+            | if ($p|length) == 1 then $p[0].id else empty end
+          ' "$before")"
+          test -n "$policy_id"
+          echo "::add-mask::$policy_id"
+
+          jq -e --arg m "$WINDOWS_PROFILE_MATCH" --arg cidr "$MESH_DEVICE_CIDR" '
+            [.result[] | select(.name == "adds" and .match == $m and ((.default // false) == false))] as $p
+            | ($p|length) == 1
+            and $p[0].enabled == true
+            and $p[0].disable_auto_fallback == true
+            and $p[0].tunnel_protocol == "masque"
+            and $p[0].service_mode_v2.mode == "warp_tunnel_only"
+            and (($p[0].include // []) | length) == 1
+            and $p[0].include[0].address == $cidr
+          ' "$before" >/dev/null
+
+          current="$(jq -r --arg m "$WINDOWS_PROFILE_MATCH" '
+            [.result[] | select(.name == "adds" and .match == $m and ((.default // false) == false))][0].allow_mode_switch
+          ' "$before")"
+
+          if [[ "$current" == "false" ]]; then
+            echo 'MISH_CF_PROFILE_RECONCILE=NOOP'
+            exit 0
+          fi
+          test "$current" = "true"
+
+          patch="$RUNNER_TEMP/patch.json"
+          status="$(curl --proto '=https' --tlsv1.2 --silent --show-error \
+            -o "$patch" -w '%{http_code}' \
+            -X PATCH \
+            "https://api.cloudflare.com/client/v4/accounts/$account_id/devices/policy/$policy_id" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json' \
+            --data '{"allow_mode_switch":false}')"
+          test "$status" = "200"
+          jq -e '.success == true and .result.allow_mode_switch == false' "$patch" >/dev/null
+
+          after="$RUNNER_TEMP/after.json"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+            "https://api.cloudflare.com/client/v4/accounts/$account_id/devices/policy/$policy_id" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H 'Accept: application/json' -o "$after"
+          jq -e --arg m "$WINDOWS_PROFILE_MATCH" '
+            .success == true
+            and .result.name == "adds"
+            and .result.match == $m
+            and ((.result.default // false) == false)
+            and .result.allow_mode_switch == false
+            and .result.enabled == true
+            and .result.disable_auto_fallback == true
+            and .result.tunnel_protocol == "masque"
+            and .result.service_mode_v2.mode == "warp_tunnel_only"
+          ' "$after" >/dev/null
+
+          echo 'MISH_CF_PROFILE_RECONCILE=CHANGED'
+          echo 'MISH_CF_ALLOW_MODE_SWITCH=false'
