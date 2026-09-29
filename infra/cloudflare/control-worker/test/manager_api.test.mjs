@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import worker from "../src/index.mjs";
 import {
+  MANAGER_PROXY_SCHEMA,
+  MANAGER_PROXY_WAIT_TIMEOUT_MS,
   MANAGER_ROTATE_SCHEMA,
   MANAGER_ROTATE_WAIT_TIMEOUT_MS,
   managerJson,
+  managerProxyPayload,
   managerRotatePayload,
   newManagerRequestId,
   terminalOperationPayload,
@@ -12,8 +15,44 @@ import {
 
 const TOKEN = "m".repeat(40);
 
-test("manager HTTP wait stays below Durable Object inactive-eviction territory", () => {
+test("manager HTTP waits stay bounded", () => {
   assert.equal(MANAGER_ROTATE_WAIT_TIMEOUT_MS, 18_000);
+  assert.equal(MANAGER_PROXY_WAIT_TIMEOUT_MS, 5_000);
+});
+
+test("proxy response schema exposes only useful connection data", () => {
+  const ready = managerProxyPayload({
+    ready: true,
+    host: "100.96.1.2",
+    mixedPort: 1080,
+    socks5Port: 1081,
+    httpPort: 3128,
+    username: "mish-" + "a".repeat(32),
+    password: "b".repeat(64),
+  });
+  assert.deepEqual(ready, {
+    schema: MANAGER_PROXY_SCHEMA,
+    ready: true,
+    host: "100.96.1.2",
+    ports: { mixed: 1080, socks5: 1081, http: 3128 },
+    username: "mish-" + "a".repeat(32),
+    password: "b".repeat(64),
+  });
+  assert.equal("request_id" in ready, false);
+  assert.equal("device_id" in ready, false);
+  assert.equal("credential_version" in ready, false);
+
+  const unavailable = managerProxyPayload({
+    ready: false,
+    reason: "DEVICE_OFFLINE",
+  });
+  assert.deepEqual(unavailable, {
+    schema: MANAGER_PROXY_SCHEMA,
+    ready: false,
+    reason: "DEVICE_OFFLINE",
+  });
+  assert.equal("username" in unavailable, false);
+  assert.equal("password" in unavailable, false);
 });
 
 test("manager response schema is stable and typed", () => {
@@ -96,6 +135,73 @@ test("terminal PRODUCT results map to the one manager schema", () => {
     terminalOperationPayload({ ...base, result: "REJECTED", operation_id: null }).reason,
     "PRODUCT_REJECTED",
   );
+});
+
+test("public proxy requires only manager token and no caller ids", async () => {
+  let calls = 0;
+  const env = managerEnv(async (request) => {
+    calls += 1;
+    const url = new URL(request.url);
+    assert.equal(url.pathname, "/manager/proxy-and-wait");
+    const body = await request.json();
+    assert.match(body.request_id, /^mgr_[0-9a-f]{32}$/u);
+    return managerJson(managerProxyPayload({
+      ready: true,
+      host: "100.96.1.2",
+      mixedPort: 1080,
+      socks5Port: 1081,
+      httpPort: 3128,
+      username: "mish-" + "a".repeat(32),
+      password: "b".repeat(64),
+    }));
+  });
+
+  let response = await worker.fetch(new Request("https://mish.alegria.by/v1/proxy"), env);
+  assert.equal(response.status, 401);
+  assert.deepEqual(await response.json(), {
+    schema: MANAGER_PROXY_SCHEMA,
+    ready: false,
+    reason: "UNAUTHORIZED",
+  });
+  assert.equal(calls, 0);
+
+  response = await worker.fetch(new Request("https://mish.alegria.by/v1/proxy", {
+    headers: { Authorization: `Bearer ${TOKEN}` },
+  }), env);
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.schema, MANAGER_PROXY_SCHEMA);
+  assert.equal(payload.ready, true);
+  assert.equal(payload.host, "100.96.1.2");
+  assert.equal(payload.username, "mish-" + "a".repeat(32));
+  assert.equal(payload.password, "b".repeat(64));
+  assert.equal("request_id" in payload, false);
+  assert.equal("device_id" in payload, false);
+  assert.equal(calls, 1);
+  assert.deepEqual(env.DEVICE_CONTROL.names, ["primary"]);
+});
+
+test("public proxy rejects method and query without touching broker", async () => {
+  let calls = 0;
+  const env = managerEnv(async () => {
+    calls += 1;
+    throw new Error("must not be called");
+  });
+
+  let response = await worker.fetch(new Request("https://mish.alegria.by/v1/proxy", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${TOKEN}` },
+  }), env);
+  assert.equal(response.status, 405);
+  assert.equal((await response.json()).reason, "METHOD_NOT_ALLOWED");
+
+  response = await worker.fetch(new Request(
+    "https://mish.alegria.by/v1/proxy?device_id=caller_owned",
+    { headers: { Authorization: `Bearer ${TOKEN}` } },
+  ), env);
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).reason, "INVALID_REQUEST");
+  assert.equal(calls, 0);
 });
 
 test("public rotate requires manager auth and does not touch the device broker on rejection", async () => {
