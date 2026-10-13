@@ -6,6 +6,10 @@ on:
       - 'lab/windows/DiagnosticConnectProbe.psm1'
       - 'lab/windows/test-diagnostic-connect-probe.ps1'
       - 'lab/windows/diagnose-loopback-connect.ps1'
+      - 'lab/windows/CloudflareProbe.psm1'
+      - 'lab/windows/test-cloudflare-probe.ps1'
+      - 'lab/windows/collect-warp-state-diagnostic.ps1'
+      - '.github/workflows/mish-warp-state-diagnostic.yml'
       - '.github/workflows/diagnostic-connect-probe-static.yml'
   push:
     branches: [main]
@@ -13,6 +17,10 @@ on:
       - 'lab/windows/DiagnosticConnectProbe.psm1'
       - 'lab/windows/test-diagnostic-connect-probe.ps1'
       - 'lab/windows/diagnose-loopback-connect.ps1'
+      - 'lab/windows/CloudflareProbe.psm1'
+      - 'lab/windows/test-cloudflare-probe.ps1'
+      - 'lab/windows/collect-warp-state-diagnostic.ps1'
+      - '.github/workflows/mish-warp-state-diagnostic.yml'
       - '.github/workflows/diagnostic-connect-probe-static.yml'
 
 permissions:
@@ -22,7 +30,7 @@ jobs:
   contract:
     name: Diagnostic CONNECT Probe Static
     runs-on: windows-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -36,7 +44,9 @@ jobs:
           foreach ($path in @(
             'lab/windows/DiagnosticConnectProbe.psm1',
             'lab/windows/test-diagnostic-connect-probe.ps1',
-            'lab/windows/diagnose-loopback-connect.ps1'
+            'lab/windows/diagnose-loopback-connect.ps1',
+            'lab/windows/CloudflareProbe.psm1',
+            'lab/windows/collect-warp-state-diagnostic.ps1'
           )) {
             $tokens = $null
             $errors = $null
@@ -57,11 +67,21 @@ jobs:
           $ErrorActionPreference = 'Stop'
           & 'lab/windows/test-diagnostic-connect-probe.ps1'
 
+      - name: Exercise Cloudflare observation and WARP-state contracts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & 'lab/windows/test-cloudflare-probe.ps1'
+          & 'lab/windows/collect-warp-state-diagnostic.ps1' -SelfTest
+          if ($LASTEXITCODE -ne 0) {
+            throw "WARP-state self-test failed with exit code $LASTEXITCODE."
+          }
+
       - name: Enforce read-only physical boundary
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $text = Get-Content -Raw -LiteralPath 'lab/windows/diagnose-loopback-connect.ps1'
+          $loopback = Get-Content -Raw -LiteralPath 'lab/windows/diagnose-loopback-connect.ps1'
           foreach ($forbidden in @(
             '(?i)adb\s+uninstall',
             '(?i)adb\s+install',
@@ -73,7 +93,63 @@ jobs:
             '(?i)gradle(?:\.bat|\.exe)?\s',
             '(?i)cargo(?:\.exe)?\s'
           )) {
-            if ($text -match $forbidden) {
+            if ($loopback -match $forbidden) {
               throw 'Loopback attribution diagnostic crossed its read-only/no-build boundary.'
+            }
+          }
+
+          $warpState = Get-Content -Raw -LiteralPath 'lab/windows/collect-warp-state-diagnostic.ps1'
+          foreach ($required in @(
+            'Get-MishWarpStateClassification',
+            'Import-Module $modulePath -Force',
+            'Resolve-WarpCli',
+            'Get-WarpVersion',
+            'Assert-WarpRegistration',
+            'Get-WarpSettingsProjection',
+            'Get-WarpConnected',
+            'Get-WarpAdapter',
+            'Get-SelectedRouteProjection',
+            'provider_write_attempted = $false',
+            'mutation_performed = $false',
+            'raw_registration_persisted = $false',
+            'raw_settings_persisted = $false'
+          )) {
+            if (-not $warpState.Contains($required)) {
+              throw "WARP-state diagnostic contract drifted: $required"
+            }
+          }
+          foreach ($forbidden in @(
+            '(?i)Invoke-WarpAction',
+            "(?i)@\('connect'\)",
+            "(?i)@\('disconnect'\)",
+            '(?i)registration\s+(new|token|delete)',
+            '(?i)tunnel\s+protocol\s+set',
+            '(?i)tunnel\s+ip\s+(add|remove)',
+            '(?i)Invoke-(RestMethod|WebRequest)',
+            '(?i)CLOUDFLARE_API_TOKEN',
+            '(?i)adb(?:\.exe)?\s+install',
+            '(?i)force-stop',
+            '(?i)\bam\s+start\b',
+            '(?i)Set-NetAdapter',
+            '(?i)(New|Remove|Set)-NetRoute'
+          )) {
+            if ($warpState -match $forbidden) {
+              throw "WARP-state diagnostic introduced a mutation/recovery path: $forbidden"
+            }
+          }
+
+          $workflow = Get-Content -Raw -LiteralPath '.github/workflows/mish-warp-state-diagnostic.yml'
+          foreach ($required in @(
+            "github.event.issue.number == 163",
+            "github.event.comment.user.login == 'iamaman11'",
+            "github.event.comment.body == '/mish-diag warp-state'",
+            'runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]',
+            'ref: main',
+            'persist-credentials: false',
+            '-PhysicalLab',
+            'Read-only only: no WARP connect/disconnect'
+          )) {
+            if (-not $workflow.Contains($required)) {
+              throw "WARP-state physical workflow trust contract drifted: $required"
             }
           }
