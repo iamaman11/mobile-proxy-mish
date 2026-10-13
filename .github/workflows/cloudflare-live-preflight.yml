@@ -98,7 +98,7 @@ jobs:
           echo "::add-mask::$account_id"
           echo "CLOUDFLARE_ACCOUNT_ID=$account_id" >> "$GITHUB_ENV"
 
-      - name: Assert exact Windows Mesh profile through official API
+      - name: Observe exact Windows Mesh profile through official API
         shell: bash
         run: |
           set -euo pipefail
@@ -143,7 +143,7 @@ jobs:
             ' "$response")"
           echo "Cloudflare profile safe projection: ${projection}"
 
-          if ! jq -e \
+          if jq -e \
             --arg expected_match "$WINDOWS_PROFILE_MATCH" \
             --arg expected_cidr "$EXPECTED_MESH_CIDR" '
               [.result[] |
@@ -164,13 +164,13 @@ jobs:
                 and $inc[0].address == $expected_cidr
                 and (($inc[0].host // "") == ""))
             ' "$response" >/dev/null; then
-            echo '::error::Exact Windows Mesh profile does not satisfy the accepted live contract.'
-            exit 1
+            echo 'PROFILE_OK=true' >> "$GITHUB_ENV"
+          else
+            echo 'PROFILE_OK=false' >> "$GITHUB_ENV"
+            echo '::warning::Exact Windows Mesh profile does not satisfy the accepted live contract.'
           fi
 
-          echo 'Cloudflare profile: PASS (exact protected selector, enabled, MASQUE, warp_tunnel_only, no DNS auto-fallback, canonical Mesh include).'
-
-      - name: Assert global Zero Trust device settings through official API
+      - name: Observe global Zero Trust device settings through official API
         shell: bash
         run: |
           set -euo pipefail
@@ -184,19 +184,30 @@ jobs:
             -H 'Accept: application/json' \
             -o "$response"
 
-          if ! jq -e '
-            .success == true and
+          if ! jq -e '.success == true and (.result | type == "object")' "$response" >/dev/null; then
+            echo '::error::Cloudflare global device settings could not be read.'
+            exit 1
+          fi
+
+          projection="$(jq -c '{
+            unique_virtual_ip: (.result.use_zt_virtual_ip == true),
+            gateway_tcp: (.result.gateway_proxy_enabled == true),
+            gateway_udp: (.result.gateway_udp_proxy_enabled == true)
+          }' "$response")"
+          echo "Cloudflare device-settings safe projection: ${projection}"
+
+          if jq -e '
             .result.use_zt_virtual_ip == true and
             .result.gateway_proxy_enabled == true and
             .result.gateway_udp_proxy_enabled == true
           ' "$response" >/dev/null; then
-            echo '::error::Cloudflare global device settings do not satisfy Mesh TCP/UDP/virtual-IP requirements.'
-            exit 1
+            echo 'DEVICE_SETTINGS_OK=true' >> "$GITHUB_ENV"
+          else
+            echo 'DEVICE_SETTINGS_OK=false' >> "$GITHUB_ENV"
+            echo '::warning::Cloudflare global device settings do not satisfy Mesh TCP/UDP/virtual-IP requirements.'
           fi
 
-          echo 'Cloudflare device settings: PASS (unique virtual IP + Gateway TCP + Gateway UDP).'
-
-      - name: Assert WARP-to-WARP connectivity through official API
+      - name: Observe WARP-to-WARP connectivity through official API
         shell: bash
         run: |
           set -euo pipefail
@@ -210,20 +221,40 @@ jobs:
             -H 'Accept: application/json' \
             -o "$response"
 
-          if ! jq -e '.success == true and .result.offramp_warp_enabled == true' "$response" >/dev/null; then
-            echo '::error::Cloudflare WARP-to-WARP/off-ramp is not enabled.'
+          if ! jq -e '.success == true and (.result | type == "object")' "$response" >/dev/null; then
+            echo '::error::Cloudflare connectivity settings could not be read.'
             exit 1
           fi
 
-          echo 'Cloudflare WARP-to-WARP/off-ramp: PASS.'
+          projection="$(jq -c '{offramp_warp_enabled: (.result.offramp_warp_enabled == true)}' "$response")"
+          echo "Cloudflare connectivity safe projection: ${projection}"
 
-      - name: Publish acceptance preflight summary
+          if jq -e '.result.offramp_warp_enabled == true' "$response" >/dev/null; then
+            echo 'CONNECTIVITY_OK=true' >> "$GITHUB_ENV"
+          else
+            echo 'CONNECTIVITY_OK=false' >> "$GITHUB_ENV"
+            echo '::warning::Cloudflare WARP-to-WARP/off-ramp is not enabled.'
+          fi
+
+      - name: Publish aggregate fail-closed verdict
         shell: bash
         run: |
           set -euo pipefail
+          profile_ok="${PROFILE_OK:-false}"
+          device_settings_ok="${DEVICE_SETTINGS_OK:-false}"
+          connectivity_ok="${CONNECTIVITY_OK:-false}"
           {
-            echo '### Cloudflare Live Preflight: PASS'
+            echo '### Cloudflare Live Preflight'
             echo '- Read-only official API observations only.'
             echo '- Read-only verification performs no Cloudflare configuration mutation.'
-            echo '- Exact Windows profile, Mesh CIDR, device TCP/UDP/virtual-IP settings, and WARP-to-WARP connectivity are accepted.'
+            echo "- Exact Windows profile: **${profile_ok}**"
+            echo "- Device TCP/UDP/virtual-IP settings: **${device_settings_ok}**"
+            echo "- WARP-to-WARP/off-ramp: **${connectivity_ok}**"
           } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "$profile_ok" != 'true' || "$device_settings_ok" != 'true' || "$connectivity_ok" != 'true' ]]; then
+            echo "::error::Cloudflare Live Preflight failed: profile=${profile_ok}, device_settings=${device_settings_ok}, connectivity=${connectivity_ok}."
+            exit 1
+          fi
+
+          echo 'Cloudflare Live Preflight: PASS.'
