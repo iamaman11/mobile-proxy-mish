@@ -124,6 +124,25 @@ jobs:
             exit 1
           fi
 
+          projection="$(jq -c \
+            --arg expected_match "$WINDOWS_PROFILE_MATCH" \
+            --arg expected_cidr "$EXPECTED_MESH_CIDR" '
+              [.result[] | select(.name == "adds" and .match == $expected_match)] as $p
+              | {
+                  matching_profile_count: ($p | length),
+                  non_default: (($p | length) == 1 and (($p[0].default // false) == false)),
+                  enabled: (($p | length) == 1 and ($p[0].enabled == true)),
+                  mode_switch_locked: (($p | length) == 1 and ($p[0].allow_mode_switch == false)),
+                  auto_fallback_disabled: (($p | length) == 1 and ($p[0].disable_auto_fallback == true)),
+                  protocol_masque: (($p | length) == 1 and ($p[0].tunnel_protocol == "masque")),
+                  tunnel_only: (($p | length) == 1 and ($p[0].service_mode_v2.mode == "warp_tunnel_only")),
+                  include_count: (if ($p | length) == 1 then (($p[0].include // []) | length) else 0 end),
+                  expected_cidr_present: (if ($p | length) == 1 then ([($p[0].include // [])[] | select(.address == $expected_cidr)] | length) > 0 else false end),
+                  expected_cidr_host_empty: (if ($p | length) == 1 then ([($p[0].include // [])[] | select(.address == $expected_cidr and ((.host // "") == ""))] | length) > 0 else false end)
+                }
+            ' "$response")"
+          echo "Cloudflare profile safe projection: ${projection}"
+
           if ! jq -e \
             --arg expected_match "$WINDOWS_PROFILE_MATCH" \
             --arg expected_cidr "$EXPECTED_MESH_CIDR" '
