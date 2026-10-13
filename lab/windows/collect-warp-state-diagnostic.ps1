@@ -43,16 +43,17 @@ function Get-MishWarpStateClassification {
 
 function Assert-MishWarpStateSelfTest {
     $cases = @(
-        @{ Args = @($false, $true,  $true,  $true,  $true,  $true);  Want = 'WARP_DISCONNECTED' },
-        @{ Args = @($true,  $false, $true,  $true,  $true,  $true);  Want = 'WARP_LOCAL_RUNTIME_DEGRADED' },
-        @{ Args = @($true,  $true,  $false, $true,  $true,  $true);  Want = 'WARP_LOCAL_RUNTIME_DEGRADED' },
-        @{ Args = @($true,  $true,  $true,  $false, $false, $true);  Want = 'WARP_MESH_ROUTE_NOT_OWNED' },
-        @{ Args = @($true,  $true,  $true,  $true,  $false, $true);  Want = 'WARP_MESH_ROUTE_NOT_OWNED' },
-        @{ Args = @($true,  $true,  $true,  $true,  $true,  $false); Want = 'WARP_MESH_TCP_3128_UNREACHABLE' },
-        @{ Args = @($true,  $true,  $true,  $true,  $true,  $true);  Want = 'READY' }
+        @{ Params = @{ Connected = $false; AdapterUp = $true;  ServiceRunning = $true;  RoutePresent = $true;  RouteCloudflareOwned = $true;  Tcp3128 = $true  }; Want = 'WARP_DISCONNECTED' },
+        @{ Params = @{ Connected = $true;  AdapterUp = $false; ServiceRunning = $true;  RoutePresent = $true;  RouteCloudflareOwned = $true;  Tcp3128 = $true  }; Want = 'WARP_LOCAL_RUNTIME_DEGRADED' },
+        @{ Params = @{ Connected = $true;  AdapterUp = $true;  ServiceRunning = $false; RoutePresent = $true;  RouteCloudflareOwned = $true;  Tcp3128 = $true  }; Want = 'WARP_LOCAL_RUNTIME_DEGRADED' },
+        @{ Params = @{ Connected = $true;  AdapterUp = $true;  ServiceRunning = $true;  RoutePresent = $false; RouteCloudflareOwned = $false; Tcp3128 = $true  }; Want = 'WARP_MESH_ROUTE_NOT_OWNED' },
+        @{ Params = @{ Connected = $true;  AdapterUp = $true;  ServiceRunning = $true;  RoutePresent = $true;  RouteCloudflareOwned = $false; Tcp3128 = $true  }; Want = 'WARP_MESH_ROUTE_NOT_OWNED' },
+        @{ Params = @{ Connected = $true;  AdapterUp = $true;  ServiceRunning = $true;  RoutePresent = $true;  RouteCloudflareOwned = $true;  Tcp3128 = $false }; Want = 'WARP_MESH_TCP_3128_UNREACHABLE' },
+        @{ Params = @{ Connected = $true;  AdapterUp = $true;  ServiceRunning = $true;  RoutePresent = $true;  RouteCloudflareOwned = $true;  Tcp3128 = $true  }; Want = 'READY' }
     )
     foreach ($case in $cases) {
-        $actual = Get-MishWarpStateClassification @case.Args
+        $params = $case.Params
+        $actual = Get-MishWarpStateClassification @params
         if ($actual -cne $case.Want) {
             throw "WARP-state classification self-test failed: expected $($case.Want), observed $actual."
         }
