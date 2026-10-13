@@ -1,0 +1,98 @@
+name: MISH WARP State Diagnostic
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mish-warp-state-diagnostic
+  cancel-in-progress: false
+
+env:
+  DIAGNOSTIC_PWSH_VERSION: '7.6.6'
+  ADB_EXE: C:\\mish-lab\\tools\\android-sdk\\platform-tools\\adb.exe
+  MESH_DEVICE_CIDR: 100.96.0.0/12
+
+jobs:
+  warp-state:
+    name: Read-only attached-device WARP state
+    if: >-
+      github.event.issue.number == 163 &&
+      github.event.comment.user.login == 'iamaman11' &&
+      github.event.comment.body == '/mish-diag warp-state'
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 5
+    steps:
+      - name: Checkout protected main diagnostics
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+          clean: true
+
+      - name: Verify pinned PowerShell 7 runtime
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($PSVersionTable.PSEdition -cne 'Core' -or $PSVersionTable.PSVersion.ToString() -cne $env:DIAGNOSTIC_PWSH_VERSION) {
+            throw "MISH_WARP_STATE_FAILURE|POWERSHELL_RUNTIME_MISMATCH|Expected PowerShell $env:DIAGNOSTIC_PWSH_VERSION; observed $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)"
+          }
+
+      - name: Verify physical LAB identity
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\labctl.ps1 host inspect -PhysicalLab
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Collect read-only WARP state
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\collect-warp-state-diagnostic.ps1 `
+            -AdbPath "$env:ADB_EXE" `
+            -PackageName 'com.mobileproxymish.app.debug' `
+            -MeshDeviceCidr "$env:MESH_DEVICE_CIDR" `
+            -EvidencePath "$env:RUNNER_TEMP\mish-warp-state-v1.json" `
+            -PhysicalLab
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Publish bounded WARP-state summary
+        if: ${{ always() }}
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $path = Join-Path $env:RUNNER_TEMP 'mish-warp-state-v1.json'
+          if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            "### Read-only WARP state`n`nEvidence was not produced." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            exit 0
+          }
+          $evidence = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json
+          @(
+            '### Read-only WARP state',
+            '',
+            "- Classification: **$($evidence.classification)**",
+            "- Connected: **$($evidence.cloudflare.connected)**",
+            "- Client version: **$($evidence.cloudflare.client_version)**",
+            "- Registration present: **$($evidence.cloudflare.registration_present)**",
+            "- Mode / protocol: **$($evidence.cloudflare.mode) / $($evidence.cloudflare.tunnel_protocol)**",
+            "- Split tunnel / Mesh CIDR: **$($evidence.cloudflare.split_tunnel_mode) / $($evidence.cloudflare.mesh_device_cidr_included)**",
+            "- Organization/profile projected: **$($evidence.cloudflare.organization_configured) / $($evidence.cloudflare.profile_applied)**",
+            "- WARP adapter: **$($evidence.windows.adapter.status)**",
+            "- WARP service: **$($evidence.windows.service.status) / $($evidence.windows.service.start_type)**",
+            "- Mesh route Cloudflare-owned: **$($evidence.windows.mesh_route.cloudflare_owned)**",
+            "- TCP :3128: **$($evidence.windows.tcp_3128)**",
+            '',
+            'Read-only only: no WARP connect/disconnect, registration/settings write, Cloudflare provider write, PRODUCT restart/install, network toggle or root-policy mutation.'
+          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Upload bounded WARP-state evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mish-warp-state-v1-${{ github.run_id }}
+          path: ${{ runner.temp }}\mish-warp-state-v1.json
+          if-no-files-found: warn
+          retention-days: 30
