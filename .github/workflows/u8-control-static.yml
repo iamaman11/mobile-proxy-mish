@@ -17,6 +17,8 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'infra/cloudflare/control-worker/**'
+      - 'lab/windows/collect-control-diagnostic.ps1'
+      - 'lab/windows/test-control-diagnostic-probe-contract.ps1'
       - 'tools/check_u8_control_contract.py'
       - '.github/workflows/u8-control-static.yml'
 
@@ -47,3 +49,12 @@ jobs:
           node --check infra/cloudflare/control-worker/src/index.mjs
           node --check infra/cloudflare/control-worker/src/protocol.mjs
           node --test infra/cloudflare/control-worker/test/*.test.mjs
+
+      - name: Verify installed-device CONTROL diagnostic contract
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & 'lab/windows/test-control-diagnostic-probe-contract.ps1'
+          if ($LASTEXITCODE -ne 0) {
+            throw "CONTROL diagnostic contract failed with exit code $LASTEXITCODE."
+          }

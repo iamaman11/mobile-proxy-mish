@@ -21,7 +21,9 @@ function Stop-MishControlDiagnostic {
 
 function Invoke-MishAdbText {
     param([Parameter(Mandatory)][string[]] $Arguments)
-    $rows = @(& $AdbPath @Arguments 2>&1 | ForEach-Object { [string]$_ })
+    # ADB daemon bootstrap diagnostics are written to stderr. Keep structured
+    # command stdout isolated so a cold daemon cannot contaminate PID/payload data.
+    $rows = @(& $AdbPath @Arguments 2>$null | ForEach-Object { [string]$_ })
     $exitCode = $LASTEXITCODE
     if ($null -eq $exitCode -or $exitCode -ne 0) {
         Stop-MishControlDiagnostic 'ADB_FAILED' "ADB command failed with exit code $exitCode."
