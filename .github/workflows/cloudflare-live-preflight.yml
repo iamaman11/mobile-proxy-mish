@@ -2,6 +2,8 @@ name: Cloudflare Live Preflight
 
 on:
   workflow_dispatch:
+  issue_comment:
+    types: [created]
   push:
     branches: [main]
     paths:
@@ -18,7 +20,16 @@ concurrency:
 jobs:
   preflight:
     name: Cloudflare Live Preflight
-    if: github.ref == 'refs/heads/main'
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (
+        github.event_name != 'issue_comment' ||
+        (
+          github.event.issue.number == 163 &&
+          github.event.comment.user.login == 'iamaman11' &&
+          github.event.comment.body == '/mish-diag cloudflare-live'
+        )
+      )
     runs-on: ubuntu-latest
     environment: cloudflare-plan
     env:
@@ -28,6 +39,7 @@ jobs:
       - name: Checkout accepted main
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: main
           persist-credentials: false
 
       - name: Verify accepted-main execution boundary
