@@ -1,0 +1,141 @@
+name: Candidate A Research
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-a-research
+  cancel-in-progress: false
+
+env:
+  RESEARCH_PWSH_VERSION: '7.6.6'
+  ADB_EXE: C:\mish-lab\tools\android-sdk\platform-tools\adb.exe
+  PRODUCT_PACKAGE: com.mobileproxymish.app.debug
+  MESH_DEVICE_CIDR: 100.96.0.0/12
+
+jobs:
+  candidate-a:
+    name: One bounded DEVICE-1 Candidate A pilot
+    if: >-
+      github.event.issue.number == 425 &&
+      github.event.comment.user.login == 'iamaman11' &&
+      github.event.comment.body == '/mish-research candidate-a'
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout current protected main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+          clean: true
+
+      - name: Verify pinned PowerShell and physical LAB identity
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($PSVersionTable.PSEdition -cne 'Core' -or $PSVersionTable.PSVersion.ToString() -cne $env:RESEARCH_PWSH_VERSION) {
+            throw "MISH_CANDIDATE_A_FAILURE|LAB_RESEARCH_POWERSHELL_RUNTIME_MISMATCH|Expected PowerShell $env:RESEARCH_PWSH_VERSION."
+          }
+          .\lab\windows\labctl.ps1 host inspect -PhysicalLab
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run exactly one Candidate A research pilot
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\research-cellular-data-detach-pilot.ps1 `
+            -AdbPath $env:ADB_EXE `
+            -PackageName $env:PRODUCT_PACKAGE `
+            -MeshCidr $env:MESH_DEVICE_CIDR `
+            -EvidencePath "$env:RUNNER_TEMP\mish-cellular-data-detach-pilot-v1.json"
+
+      - name: Enforce bounded research evidence
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = "$env:RUNNER_TEMP\mish-cellular-data-detach-pilot-v1.json"
+          if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            throw 'MISH_CANDIDATE_A_FAILURE|LAB_RESEARCH_EVIDENCE_MISSING|Candidate A evidence was not produced.'
+          }
+          $e = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json
+          if (
+            [string]$e.schema -cne 'mish.lab.cellular-data-detach-pilot/v1' -or
+            [string]$e.acceptance_result -cne 'PASS' -or
+            [string]$e.classification -notin @('CANDIDATE_A_CHANGED','CANDIDATE_A_UNCHANGED') -or
+            [string]$e.mutation_owner -cne 'diagnose-dns-lifetime-live.ps1' -or
+            [int]$e.cycles -ne 1 -or
+            [bool]$e.product_install_performed -or
+            [bool]$e.product_restart_performed -or
+            [bool]$e.product_rotation_triggered -or
+            [bool]$e.manager_command_issued -or
+            [bool]$e.automatic_repeat -or
+            [bool]$e.raw_public_ip_persisted -or
+            [bool]$e.secrets_persisted_in_evidence -or
+            -not [bool]$e.process.pid_stable -or
+            -not [bool]$e.process.runtime_generation_stable -or
+            -not [bool]$e.generation.advanced -or
+            -not [bool]$e.generation.exact_root_authorized -or
+            -not [bool]$e.generation.readiness_bound_to_fresh_owner -or
+            -not [bool]$e.control_effect.mobile_data_disable_requested -or
+            -not [bool]$e.control_effect.cellular_loss_observed -or
+            -not [bool]$e.control_effect.mobile_data_enable_requested -or
+            -not [bool]$e.control_effect.fresh_recovery_observed -or
+            [int]$e.external_public_egress.observations -ne 2 -or
+            [string]$e.external_public_egress.outcome -notin @('CHANGED','UNCHANGED') -or
+            [string]$e.before.product -cne 'PASS' -or
+            [string]$e.before.mesh_e2e -cne 'PASS' -or
+            [string]$e.before.control -cne 'READY' -or
+            [string]$e.after.product -cne 'PASS' -or
+            [string]$e.after.mesh_e2e -cne 'PASS' -or
+            [string]$e.after.control -cne 'READY' -or
+            [int64]$e.timings_ms.cellular_loss_to_recovery -lt 0
+          ) {
+            throw 'MISH_CANDIDATE_A_FAILURE|LAB_RESEARCH_EVIDENCE_INVALID|Candidate A evidence violated the one-cycle research contract.'
+          }
+
+      - name: Publish research summary
+        if: ${{ always() }}
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $path = "$env:RUNNER_TEMP\mish-cellular-data-detach-pilot-v1.json"
+          if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            "### Candidate A research`n`nNo valid terminal evidence was produced. STOP FOR ANALYSIS." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            exit 0
+          }
+          $e = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json
+          @(
+            '### Candidate A research',
+            '',
+            "- Result: **$($e.acceptance_result)**",
+            "- Classification: **$($e.classification)**",
+            "- Physical cycles: **$($e.cycles)**",
+            "- Existing mutation owner: **$($e.mutation_owner)**",
+            "- Public egress: **$($e.external_public_egress.outcome)**",
+            "- Cellular loss -> recovered exact generation: **$($e.timings_ms.cellular_loss_to_recovery) ms**",
+            "- PRODUCT PID/runtime stable: **$($e.process.pid_stable) / $($e.process.runtime_generation_stable)**",
+            "- Fresh owner/root/readiness binding: **$($e.generation.advanced) / $($e.generation.exact_root_authorized) / $($e.generation.readiness_bound_to_fresh_owner)**",
+            "- Before Mesh E2E / CONTROL: **$($e.before.mesh_e2e) / $($e.before.control)**",
+            "- After Mesh E2E / CONTROL: **$($e.after.mesh_e2e) / $($e.after.control)**",
+            '',
+            '**Next action: STOP FOR ANALYSIS. No automatic repeat and no PRODUCT implementation.**'
+          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Upload bounded research evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mish-candidate-a-research-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}\mish-cellular-data-detach-pilot-v1.json
+            ${{ runner.temp }}\mish-candidate-a-dns-owner.json
+            ${{ runner.temp }}\mish-candidate-a-before-device.json
+            ${{ runner.temp }}\mish-candidate-a-before-control.json
+            ${{ runner.temp }}\mish-candidate-a-after-device.json
+            ${{ runner.temp }}\mish-candidate-a-after-control.json
+          if-no-files-found: warn
+          retention-days: 30
