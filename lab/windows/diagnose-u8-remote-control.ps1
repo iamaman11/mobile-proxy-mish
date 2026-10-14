@@ -448,17 +448,12 @@ foreach ($field in @(
     'activated_ms',
     'pre_rotation_probe_started_ms',
     'pre_rotation_probe_completed_ms',
-    'airplane_enable_started_ms',
-    'airplane_enable_effect_completed_ms',
-    'airplane_on_observed_ms',
+    'mobile_data_precondition_observed_ms',
+    'data_disable_started_ms',
+    'data_disable_effect_completed_ms',
     'cellular_loss_observed_ms',
-    'radio_power_off_observed_ms',
-    'airplane_disable_started_ms',
-    'airplane_disable_effect_completed_ms',
-    'airplane_off_observed_ms',
-    'cellular_request_rearm_started_ms',
-    'cellular_request_rearm_completed_ms',
-    'first_platform_cellular_observation_ms',
+    'data_enable_started_ms',
+    'data_enable_effect_completed_ms',
     'fresh_cellular_observed_ms',
     'fresh_cellular_generation',
     'root_authorized_ms',
@@ -471,9 +466,8 @@ foreach ($field in @(
         Stop-MishRemoteControl 'DEVICE_TIMELINE_INCOMPLETE' "Missing/invalid Rotation timing field: $field."
     }
 }
-if ($null -eq $rotationTiming.platform_cellular_observations_after_rearm -or
-    [int64]$rotationTiming.platform_cellular_observations_after_rearm -lt 1) {
-    Stop-MishRemoteControl 'DEVICE_TIMELINE_INCOMPLETE' 'No Android Cellular observation entered Rust after request rearm.'
+if ($rotationTiming.mobile_data_precondition_enabled -ne $true) {
+    Stop-MishRemoteControl 'DEVICE_TIMELINE_INCOMPLETE' 'Candidate A requires an authoritative mobile-data ENABLED precondition.'
 }
 if ([bool]$controlTimeline.control.pending_operation) {
     Stop-MishRemoteControl 'DEVICE_TIMELINE_NOT_ACKED' 'RESULT correlation is still pending after the manager returned and post diagnostics completed.'
@@ -501,24 +495,20 @@ if ($null -ne $operationTiming.post_terminal_connect_started_ms -and
     Stop-MishRemoteControl 'DEVICE_TIMELINE_ORDER_INVALID' 'Post-terminal CONTROL transport connected before its recorded connect attempt.'
 }
 
-# Preserve the accepted event model. Independent observations are intentionally not ordered
-# against each other: airplane-ON/cellular-loss and fresh-Cellular/root-auth may arrive either way.
+# Preserve the Candidate A event model. Platform recovery facts may race with root-command
+# completion, so only order facts whose causal relationship is owned by Rotation.
 if ([int64]$operationTiming.operation_reserved_ms -gt [int64]$operationTiming.accepted_sent_ms -or
     [int64]$operationTiming.accepted_sent_ms -gt $rotationActivatedFromCommandMs -or
     [int64]$rotationTiming.activated_ms -gt [int64]$rotationTiming.pre_rotation_probe_started_ms -or
     [int64]$rotationTiming.pre_rotation_probe_started_ms -gt [int64]$rotationTiming.pre_rotation_probe_completed_ms -or
-    [int64]$rotationTiming.pre_rotation_probe_completed_ms -gt [int64]$rotationTiming.airplane_enable_started_ms -or
-    [int64]$rotationTiming.airplane_enable_started_ms -gt [int64]$rotationTiming.airplane_enable_effect_completed_ms -or
-    [int64]$rotationTiming.airplane_on_observed_ms -gt [int64]$rotationTiming.airplane_disable_started_ms -or
-    [int64]$rotationTiming.cellular_loss_observed_ms -gt [int64]$rotationTiming.airplane_disable_started_ms -or
-    [int64]$rotationTiming.radio_power_off_observed_ms -gt [int64]$rotationTiming.airplane_disable_started_ms -or
-    [int64]$rotationTiming.airplane_disable_started_ms -gt [int64]$rotationTiming.airplane_disable_effect_completed_ms -or
-    [int64]$rotationTiming.airplane_disable_effect_completed_ms -gt [int64]$rotationTiming.airplane_off_observed_ms -or
-    [int64]$rotationTiming.airplane_off_observed_ms -gt [int64]$rotationTiming.cellular_request_rearm_started_ms -or
-    [int64]$rotationTiming.cellular_request_rearm_started_ms -gt [int64]$rotationTiming.cellular_request_rearm_completed_ms -or
-    [int64]$rotationTiming.cellular_request_rearm_started_ms -gt [int64]$rotationTiming.first_platform_cellular_observation_ms -or
-    [int64]$rotationTiming.first_platform_cellular_observation_ms -gt [int64]$rotationTiming.fresh_cellular_observed_ms -or
-    [int64]$rotationTiming.airplane_off_observed_ms -gt [int64]$rotationTiming.post_rotation_probe_started_ms -or
+    [int64]$rotationTiming.pre_rotation_probe_completed_ms -gt [int64]$rotationTiming.mobile_data_precondition_observed_ms -or
+    [int64]$rotationTiming.mobile_data_precondition_observed_ms -gt [int64]$rotationTiming.data_disable_started_ms -or
+    [int64]$rotationTiming.data_disable_started_ms -gt [int64]$rotationTiming.data_disable_effect_completed_ms -or
+    [int64]$rotationTiming.data_disable_started_ms -gt [int64]$rotationTiming.cellular_loss_observed_ms -or
+    [int64]$rotationTiming.data_disable_effect_completed_ms -gt [int64]$rotationTiming.data_enable_started_ms -or
+    [int64]$rotationTiming.cellular_loss_observed_ms -gt [int64]$rotationTiming.data_enable_started_ms -or
+    [int64]$rotationTiming.data_enable_started_ms -gt [int64]$rotationTiming.data_enable_effect_completed_ms -or
+    [int64]$rotationTiming.data_enable_effect_completed_ms -gt [int64]$rotationTiming.post_rotation_probe_started_ms -or
     [int64]$rotationTiming.fresh_cellular_observed_ms -gt [int64]$rotationTiming.post_rotation_probe_started_ms -or
     [int64]$rotationTiming.root_authorized_ms -gt [int64]$rotationTiming.post_rotation_probe_started_ms -or
     [int64]$rotationTiming.post_rotation_probe_started_ms -gt [int64]$rotationTiming.post_rotation_probe_completed_ms -or
@@ -526,7 +516,7 @@ if ([int64]$operationTiming.operation_reserved_ms -gt [int64]$operationTiming.ac
     $rotationTerminalFromCommandMs -gt [int64]$operationTiming.rotation_terminal_ms -or
     [int64]$operationTiming.rotation_terminal_ms -gt [int64]$operationTiming.result_sent_ms -or
     [int64]$operationTiming.result_sent_ms -gt [int64]$operationTiming.result_ack_ms) {
-    Stop-MishRemoteControl 'DEVICE_TIMELINE_ORDER_INVALID' 'Remote rotation phase evidence violates the accepted event-driven ordering.'
+    Stop-MishRemoteControl 'DEVICE_TIMELINE_ORDER_INVALID' 'Remote Candidate A timing evidence violates the accepted event-driven ordering.'
 }
 
 if ($CollectTelephonyDetachEvidence) {
@@ -603,18 +593,13 @@ $evidence = [ordered]@{
             activated_ms = [int64]$rotationTiming.activated_ms
             pre_rotation_probe_started_ms = [int64]$rotationTiming.pre_rotation_probe_started_ms
             pre_rotation_probe_completed_ms = [int64]$rotationTiming.pre_rotation_probe_completed_ms
-            airplane_enable_started_ms = [int64]$rotationTiming.airplane_enable_started_ms
-            airplane_enable_effect_completed_ms = [int64]$rotationTiming.airplane_enable_effect_completed_ms
-            airplane_on_observed_ms = [int64]$rotationTiming.airplane_on_observed_ms
+            mobile_data_precondition_observed_ms = [int64]$rotationTiming.mobile_data_precondition_observed_ms
+            mobile_data_precondition_enabled = [bool]$rotationTiming.mobile_data_precondition_enabled
+            data_disable_started_ms = [int64]$rotationTiming.data_disable_started_ms
+            data_disable_effect_completed_ms = [int64]$rotationTiming.data_disable_effect_completed_ms
             cellular_loss_observed_ms = [int64]$rotationTiming.cellular_loss_observed_ms
-            radio_power_off_observed_ms = [int64]$rotationTiming.radio_power_off_observed_ms
-            airplane_disable_started_ms = [int64]$rotationTiming.airplane_disable_started_ms
-            airplane_disable_effect_completed_ms = [int64]$rotationTiming.airplane_disable_effect_completed_ms
-            airplane_off_observed_ms = [int64]$rotationTiming.airplane_off_observed_ms
-            cellular_request_rearm_started_ms = [int64]$rotationTiming.cellular_request_rearm_started_ms
-            cellular_request_rearm_completed_ms = [int64]$rotationTiming.cellular_request_rearm_completed_ms
-            first_platform_cellular_observation_ms = [int64]$rotationTiming.first_platform_cellular_observation_ms
-            platform_cellular_observations_after_rearm = [int64]$rotationTiming.platform_cellular_observations_after_rearm
+            data_enable_started_ms = [int64]$rotationTiming.data_enable_started_ms
+            data_enable_effect_completed_ms = [int64]$rotationTiming.data_enable_effect_completed_ms
             fresh_cellular_observed_ms = [int64]$rotationTiming.fresh_cellular_observed_ms
             fresh_cellular_generation = [int64]$rotationTiming.fresh_cellular_generation
             root_authorized_ms = [int64]$rotationTiming.root_authorized_ms
@@ -622,6 +607,7 @@ $evidence = [ordered]@{
             post_rotation_probe_started_ms = [int64]$rotationTiming.post_rotation_probe_started_ms
             post_rotation_probe_completed_ms = [int64]$rotationTiming.post_rotation_probe_completed_ms
             terminal_ms = [int64]$rotationTiming.terminal_ms
+            restore_completed_ms = if ($null -eq $rotationTiming.restore_completed_ms) { $null } else { [int64]$rotationTiming.restore_completed_ms }
         }
     }
     post_product_diagnostic = [string]$post.classification
@@ -655,7 +641,7 @@ Write-Host 'MISH_U8_REMOTE_CONTROL_MANAGER_POLLING=0'
 Write-Host "MISH_U8_REMOTE_CONTROL_IDLE_LIVENESS=PASS/heartbeat_delta=$heartbeatDelta/reconnect_delta=$($reconnectAfterIdle - $reconnectBeforeIdle)"
 Write-Host "MISH_U8_REMOTE_CONTROL_MANAGER_DURATION_MS=$managerDurationMs"
 Write-Host "MISH_U8_REMOTE_CONTROL_DEVICE_TIMELINE=PASS/terminal_from_command_ms=$rotationTerminalFromCommandMs/result_ack_ms=$([int64]$operationTiming.result_ack_ms)"
-Write-Host "MISH_U8_REMOTE_CONTROL_RADIO_POWEROFF_GATE=PASS/power_off_ms=$([int64]$rotationTiming.radio_power_off_observed_ms)/disable_ms=$([int64]$rotationTiming.airplane_disable_started_ms)"
+Write-Host "MISH_U8_REMOTE_CONTROL_MOBILE_DATA=PASS/precondition_enabled=$([bool]$rotationTiming.mobile_data_precondition_enabled)/disable_ms=$([int64]$rotationTiming.data_disable_started_ms)/loss_ms=$([int64]$rotationTiming.cellular_loss_observed_ms)/enable_ms=$([int64]$rotationTiming.data_enable_started_ms)"
 Write-Host "MISH_U8_REMOTE_CONTROL_EXTERNAL_PUBLIC_IP=PASS/outcome=$externalPublicIpOutcome/consensus=$externalPublicIpConsensus"
 if ($CollectTelephonyDetachEvidence) {
     Write-Host "MISH_U8_REMOTE_CONTROL_TELEPHONY_DETACH=PASS/power_off=$([bool]$radioDetachResearch.power_off_observed)/vs_disable=$([string]$radioDetachResearch.power_off_vs_airplane_disable_started)"
