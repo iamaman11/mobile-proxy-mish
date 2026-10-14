@@ -41,18 +41,54 @@ foreach ($required in @(
     'product_routes_or_iptables_mutated_by_lab = $false',
     'cloudflare_app_mutated = $false',
     'https://mish-dns-$RunTag-$Ordinal.example.com/',
-    '''forward'', ''--remove'''
+    '''forward'', ''--remove''',
+    '[System.Diagnostics.Stopwatch] $TimelineStopwatch',
+    "clock = 'System.Diagnostics.Stopwatch'",
+    'shared_external_clock = -not $timelineOwned',
+    'disable_start_ms',
+    'disable_complete_ms',
+    'loss_observed_ms',
+    'enable_start_ms',
+    'enable_complete_ms',
+    'first_post_enable_reconcile_ms',
+    'fresh_cellular_admitted_ms',
+    'root_authorized_ms',
+    'readiness_ready_ms',
+    'disable_start_to_readiness_ready',
+    'cellular_reconcile_requested',
+    'root_policy_authorized_generation',
+    'readiness_cellular_owner_generation'
 )) {
     if (-not $source.Contains($required)) {
         throw "DNS lifetime live probe lost required bounded evidence contract: $required"
     }
 }
 
-$disableIndex = $source.IndexOf("Invoke-MishMobileDataTransition -State 'disable'", [StringComparison]::Ordinal)
-$enableIndex = $source.IndexOf("Invoke-MishMobileDataTransition -State 'enable'", [StringComparison]::Ordinal)
+$disableNeedle = "Invoke-MishMobileDataTransition -State 'disable'"
+$enableNeedle = "Invoke-MishMobileDataTransition -State 'enable'"
+$disableIndex = $source.IndexOf($disableNeedle, [StringComparison]::Ordinal)
+$enableIndex = $source.IndexOf($enableNeedle, [StringComparison]::Ordinal)
 $recoveryIndex = $source.IndexOf('LAB_DNS_LIFETIME_RECOVERY_SEQUENCE_UNOBSERVED', [StringComparison]::Ordinal)
 if ($disableIndex -lt 0 -or $enableIndex -le $disableIndex -or $recoveryIndex -le $enableIndex) {
     throw 'DNS lifetime live probe must preserve one ordered disable -> enable -> fresh-sequence observation.'
+}
+if (($source.Split($disableNeedle).Count - 1) -ne 1 -or ($source.Split($enableNeedle).Count - 1) -ne 1) {
+    throw 'DNS lifetime live probe must keep exactly one primary disable and one primary enable transition.'
+}
+
+$disableStartIndex = $source.IndexOf('$disableStartMs = [int64]$TimelineStopwatch.ElapsedMilliseconds', [StringComparison]::Ordinal)
+$disableCompleteIndex = $source.IndexOf('$disableCompleteMs = [int64]$TimelineStopwatch.ElapsedMilliseconds', [StringComparison]::Ordinal)
+$enableStartIndex = $source.IndexOf('$enableStartMs = [int64]$TimelineStopwatch.ElapsedMilliseconds', [StringComparison]::Ordinal)
+$enableCompleteIndex = $source.IndexOf('$enableCompleteMs = [int64]$TimelineStopwatch.ElapsedMilliseconds', [StringComparison]::Ordinal)
+if (
+    $disableStartIndex -lt 0 -or
+    $disableStartIndex -ge $disableIndex -or
+    $disableCompleteIndex -le $disableIndex -or
+    $enableStartIndex -lt 0 -or
+    $enableStartIndex -ge $enableIndex -or
+    $enableCompleteIndex -le $enableIndex
+) {
+    throw 'DNS lifetime timing markers must observe the existing transition calls without moving or duplicating them.'
 }
 
 foreach ($forbidden in @(
