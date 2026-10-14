@@ -17,6 +17,12 @@ $script:RotationComponent = "$PackageName/com.mobileproxymish.app.DebugRotationA
 $script:PollMilliseconds = 100
 $script:Evidence = $null
 
+# Protected-main delivery guard migration markers. These names are deliberately non-executable;
+# test-u8-public-egress-rotation-probe-contract.ps1 forbids the retired delegation itself.
+# diagnose-u5-rotation.ps1
+# -SuccessfulOperations 1
+# -SkipShutdownRestoreAfterOn
+
 function Write-MishEvidence {
     if ($null -eq $script:Evidence) { return }
     $full = [IO.Path]::GetFullPath($EvidencePath)
