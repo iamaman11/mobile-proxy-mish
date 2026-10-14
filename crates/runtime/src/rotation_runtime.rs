@@ -1,10 +1,11 @@
 //! First-class PRODUCT IP rotation orchestration on the shared Tokio runtime.
 //!
 //! mish-rotation owns transition semantics. This coordinator executes exactly one operation using
-//! the existing Cellular owner, root session and U4 public-IP path. It never owns a second network,
-//! credential or runtime state machine.
+//! the existing Cellular owner, persistent root session and U4 public-IP path. Candidate A mutates
+//! only mobile-data attachment; it never toggles airplane mode, owns Android network requests, or
+//! introduces a second network, credential, retry, recovery or runtime state machine.
 
-use crate::airplane_effect::{AirplaneEffectError, AirplaneModeEffect, AirplaneModeState};
+use crate::mobile_data_effect::{MobileDataEffect, MobileDataEffectError, MobileDataState};
 use crate::{
     CellularPolicyCoordinator, CellularPolicyPublication, CellularRuntimeCoordinator,
     ProxyCredentialGuard, ProxyRuntimeCoordinator, RootPolicyResult, RuntimeExecutionError,
@@ -41,9 +42,11 @@ pub enum RotationRuntimeStartError {
 
 pub type RotationObserver = Arc<dyn Fn(RotationSnapshot) + Send + Sync + 'static>;
 
-/// One narrow platform effect used only after Rust has confirmed airplane OFF and entered
-/// Cellular recovery. The implementation may re-arm Android's existing CELLULAR+INTERNET
-/// request, but owns no retry/timing/currentness semantics.
+/// Compatibility-only Android boundary retained during the Candidate A transition.
+///
+/// Candidate A never calls this effect. Keeping the trait temporarily lets the exact PRODUCT slice
+/// land independently from generated UniFFI/Kotlin cleanup; any implementation is semantically
+/// inert. It is removed in the boundary-cleanup commit in the same PR.
 pub trait CellularRequestRearmEffect: Send + Sync + 'static {
     fn rearm_cellular_request(&self) -> bool;
 }
@@ -51,16 +54,17 @@ pub trait CellularRequestRearmEffect: Send + Sync + 'static {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum RotationAction {
     BeforeIp,
-    EnableAirplane,
-    DisableAirplane,
+    DisableData,
+    EnableData,
     AfterIp,
-    RestoreOff,
+    RestoreEnabled,
 }
 
-/// Read-only monotonic timing evidence for the single current/recent Rotation operation.
+/// Read-only monotonic timing evidence for one current/recent Rotation operation.
 ///
-/// These values are observations only. They never drive state transitions, retries or deadlines.
-/// Every phase timestamp is elapsed milliseconds from the successful prepare origin.
+/// These values never drive state transitions, retries or deadlines. The airplane/rearm fields are
+/// compatibility projection slots and remain empty for Candidate A until the generated boundary is
+/// cleaned up; the mobile-data fields are the new authoritative timing map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RotationRuntimeTimingSnapshot {
     pub operation_id: Option<u64>,
@@ -68,11 +72,17 @@ pub struct RotationRuntimeTimingSnapshot {
     pub activated_ms: Option<u64>,
     pub pre_rotation_probe_started_ms: Option<u64>,
     pub pre_rotation_probe_completed_ms: Option<u64>,
+    pub mobile_data_precondition_observed_ms: Option<u64>,
+    pub mobile_data_precondition_enabled: Option<bool>,
+    pub data_disable_started_ms: Option<u64>,
+    pub data_disable_effect_completed_ms: Option<u64>,
     pub airplane_enable_started_ms: Option<u64>,
     pub airplane_enable_effect_completed_ms: Option<u64>,
     pub airplane_on_observed_ms: Option<u64>,
     pub cellular_loss_observed_ms: Option<u64>,
     pub radio_power_off_observed_ms: Option<u64>,
+    pub data_enable_started_ms: Option<u64>,
+    pub data_enable_effect_completed_ms: Option<u64>,
     pub airplane_disable_started_ms: Option<u64>,
     pub airplane_disable_effect_completed_ms: Option<u64>,
     pub airplane_off_observed_ms: Option<u64>,
@@ -136,7 +146,6 @@ struct RotationRuntimeState {
     timing: Option<RotationRuntimeTiming>,
     deadline: Option<(u64, Instant)>,
     credential_guard: Option<ProxyCredentialGuard>,
-    cellular_request_rearm: Option<(u64, Arc<dyn CellularRequestRearmEffect>)>,
     claimed: HashSet<(u64, RotationAction)>,
     cancel: Option<Arc<Notify>>,
     tasks: Vec<JoinHandle<()>>,
@@ -150,7 +159,7 @@ pub struct RotationRuntimeCoordinator {
     cellular: Arc<CellularRuntimeCoordinator>,
     policy: Arc<CellularPolicyCoordinator>,
     proxy: Arc<ProxyRuntimeCoordinator>,
-    airplane: Arc<AirplaneModeEffect>,
+    mobile_data: Arc<MobileDataEffect>,
     state: Mutex<RotationRuntimeState>,
 }
 
@@ -164,7 +173,7 @@ impl RotationRuntimeCoordinator {
         let coordinator = Arc::new(Self {
             executor,
             cellular,
-            airplane: policy.airplane_effect(),
+            mobile_data: policy.mobile_data_effect(),
             policy: Arc::clone(&policy),
             proxy,
             state: Mutex::new(RotationRuntimeState {
@@ -172,7 +181,6 @@ impl RotationRuntimeCoordinator {
                 timing: None,
                 deadline: None,
                 credential_guard: None,
-                cellular_request_rearm: None,
                 claimed: HashSet::new(),
                 cancel: None,
                 tasks: Vec::new(),
@@ -244,7 +252,6 @@ impl RotationRuntimeCoordinator {
         notify(Some((observer, snapshot)));
     }
 
-    /// Internal native composition subscribers do not displace the Android projection observer.
     pub fn add_internal_observer(&self, observer: RotationObserver) {
         let snapshot = {
             let Ok(mut state) = self.state.lock() else {
@@ -258,9 +265,9 @@ impl RotationRuntimeCoordinator {
 
     pub fn start(
         self: &Arc<Self>,
-        cellular_request_rearm: Arc<dyn CellularRequestRearmEffect>,
+        _compat_rearm: Arc<dyn CellularRequestRearmEffect>,
     ) -> Result<u64, RotationRuntimeStartError> {
-        let operation_id = self.prepare(cellular_request_rearm)?;
+        let operation_id = self.prepare(_compat_rearm)?;
         if let Err(error) = self.activate_prepared(operation_id) {
             self.fail_prepared_before_mutation(operation_id);
             return Err(error);
@@ -268,14 +275,9 @@ impl RotationRuntimeCoordinator {
         Ok(operation_id)
     }
 
-    /// Reserves exactly one operation id after all PRODUCT preconditions have been validated.
-    ///
-    /// No timer, public-IP probe, airplane mutation or recovery task is started here. This narrow
-    /// two-phase seam exists so a remote controller can durably observe ACCEPTED(operation_id)
-    /// before the existing Rotation owner is allowed to begin the disruptive operation.
     pub fn prepare(
         self: &Arc<Self>,
-        cellular_request_rearm: Arc<dyn CellularRequestRearmEffect>,
+        _compat_rearm: Arc<dyn CellularRequestRearmEffect>,
     ) -> Result<u64, RotationRuntimeStartError> {
         let admission = self
             .cellular
@@ -313,15 +315,12 @@ impl RotationRuntimeCoordinator {
         state.timing = Some(RotationRuntimeTiming::new(operation_id));
         state.deadline = None;
         state.credential_guard = Some(credential_guard);
-        state.cellular_request_rearm = Some((operation_id, cellular_request_rearm));
         state.claimed.clear();
         state.cancel = None;
         state.tasks.retain(|task| !task.is_finished());
         Ok(operation_id)
     }
 
-    /// Activates one exact prepared operation. The caller must have completed any external
-    /// acceptance handshake before entering this method.
     pub fn activate_prepared(
         self: &Arc<Self>,
         operation_id: u64,
@@ -364,8 +363,6 @@ impl RotationRuntimeCoordinator {
         Ok(())
     }
 
-    /// Fails one reserved-but-not-yet-mutating operation. This never replays or starts a radio
-    /// effect and is safe after a failed remote ACCEPTED write.
     pub fn fail_prepared_before_mutation(&self, operation_id: u64) -> bool {
         let (cancel, snapshot) = {
             let Ok(mut state) = self.state.lock() else {
@@ -386,7 +383,6 @@ impl RotationRuntimeCoordinator {
             };
             state.deadline = None;
             state.credential_guard = None;
-            state.cellular_request_rearm = None;
             state.claimed.clear();
             (state.cancel.take(), snapshot)
         };
@@ -400,44 +396,9 @@ impl RotationRuntimeCoordinator {
         true
     }
 
-    /// Records the Android framework observation entering Rust after the single post-airplane
-    /// request rearm. This is read-only attribution evidence and does not affect admission,
-    /// currentness, retries or Rotation transitions.
-    pub(crate) fn observe_platform_cellular_observation(&self) {
-        let Ok(mut state) = self.state.lock() else {
-            return;
-        };
-        if state.closed {
-            return;
-        }
-        let current = state.machine.snapshot();
-        let Some(operation_id) = current.operation_id else {
-            return;
-        };
-        if current.phase.terminal()
-            || !matches!(
-                current.phase,
-                RotationPhase::WaitingCellularRecovery | RotationPhase::WaitingRootPolicy
-            )
-        {
-            return;
-        }
-        let Some(timing) = state.timing.as_mut() else {
-            return;
-        };
-        if timing.snapshot.cellular_request_rearm_started_ms.is_none() {
-            return;
-        }
-        let _ = timing.mark(operation_id, |timing, elapsed_ms| {
-            set_once(
-                &mut timing.first_platform_cellular_observation_ms,
-                elapsed_ms,
-            );
-            timing.platform_cellular_observations_after_rearm = timing
-                .platform_cellular_observations_after_rearm
-                .saturating_add(1);
-        });
-    }
+    /// Compatibility no-op. Candidate A relies on the already-running Android Cellular observer;
+    /// it never re-arms or owns that request.
+    pub(crate) fn observe_platform_cellular_observation(&self) {}
 
     pub fn observe_cellular(self: &Arc<Self>, admission: CellularAdmissionSnapshot) {
         let Some(generation) = admission.last_sequence().map(|sequence| sequence.raw()) else {
@@ -472,7 +433,7 @@ impl RotationRuntimeCoordinator {
                 && !admitted
                 && matches!(
                     current.phase,
-                    RotationPhase::AirplaneEnabling | RotationPhase::WaitingRadioDown
+                    RotationPhase::DataDisabling | RotationPhase::WaitingCellularLoss
                 )
                 && let Some(timing) = state.timing.as_mut()
             {
@@ -484,7 +445,7 @@ impl RotationRuntimeCoordinator {
                 && admitted
                 && matches!(
                     current.phase,
-                    RotationPhase::AirplaneDisabling
+                    RotationPhase::DataEnabling
                         | RotationPhase::WaitingCellularRecovery
                         | RotationPhase::WaitingRootPolicy
                 )
@@ -505,46 +466,11 @@ impl RotationRuntimeCoordinator {
         self.after_transition(snapshot);
     }
 
-    /// Accepts one positive typed Android telephony fact for the current Rotation operation.
-    ///
-    /// The platform boundary owns only observation. Rust remains the sole owner of whether that
-    /// fact is relevant and whether it completes the radio-down transition.
-    pub fn observe_radio_power_off(self: &Arc<Self>) {
-        let snapshot = {
-            let Ok(mut state) = self.state.lock() else {
-                return;
-            };
-            if state.closed {
-                return;
-            }
-            let current = state.machine.snapshot();
-            let Some(operation_id) = current.operation_id else {
-                return;
-            };
-            if current.phase.terminal() {
-                return;
-            }
-            let phase_before = current.phase;
-            let snapshot = match state.machine.observe_radio_power_off(operation_id) {
-                Ok(snapshot) => snapshot,
-                Err(_) => return,
-            };
-            if matches!(
-                phase_before,
-                RotationPhase::AirplaneEnabling | RotationPhase::WaitingRadioDown
-            ) && let Some(timing) = state.timing.as_mut()
-            {
-                let _ = timing.mark(operation_id, |timing, elapsed_ms| {
-                    set_once(&mut timing.radio_power_off_observed_ms, elapsed_ms);
-                });
-            }
-            snapshot
-        };
-        self.after_transition(snapshot);
-    }
+    /// Compatibility no-op for the old airplane-specific Android telephony observer.
+    pub fn observe_radio_power_off(self: &Arc<Self>) {}
 
     pub async fn shutdown(self: &Arc<Self>) -> bool {
-        let (operation_id, cancel, tasks, snapshot) = {
+        let (operation_id, cancel, tasks, snapshot, force_restore) = {
             let Ok(mut state) = self.state.lock() else {
                 return false;
             };
@@ -552,8 +478,13 @@ impl RotationRuntimeCoordinator {
                 return true;
             }
             state.closed = true;
-            state.cellular_request_rearm = None;
             let current = state.machine.snapshot();
+            let force_restore = matches!(
+                current.phase,
+                RotationPhase::DataDisabling
+                    | RotationPhase::WaitingCellularLoss
+                    | RotationPhase::DataEnabling
+            );
             let snapshot = if let Some(operation_id) = current.operation_id {
                 if current.phase.terminal() {
                     current
@@ -571,6 +502,7 @@ impl RotationRuntimeCoordinator {
                 state.cancel.take(),
                 std::mem::take(&mut state.tasks),
                 snapshot,
+                force_restore,
             )
         };
 
@@ -588,8 +520,10 @@ impl RotationRuntimeCoordinator {
 
         if let Some(operation_id) = operation_id {
             let current = self.snapshot();
-            if current.phase == RotationPhase::Failed && current.restore_required {
-                self.restore_off_direct(operation_id).await;
+            if current.phase == RotationPhase::Failed
+                && (current.restore_required || force_restore)
+            {
+                self.restore_enabled_direct(operation_id).await;
             }
         }
         clean
@@ -618,14 +552,13 @@ impl RotationRuntimeCoordinator {
             if current.phase.terminal() {
                 return;
             }
-            let snapshot =
-                match state
-                    .machine
-                    .observe_root_policy(operation_id, generation, authorized)
-                {
-                    Ok(snapshot) => snapshot,
-                    Err(_) => return,
-                };
+            let snapshot = match state
+                .machine
+                .observe_root_policy(operation_id, generation, authorized)
+            {
+                Ok(snapshot) => snapshot,
+                Err(_) => return,
+            };
             let is_fresh = current
                 .before_generation
                 .is_some_and(|before_generation| generation > before_generation);
@@ -633,7 +566,7 @@ impl RotationRuntimeCoordinator {
                 && authorized
                 && matches!(
                     current.phase,
-                    RotationPhase::AirplaneDisabling
+                    RotationPhase::DataEnabling
                         | RotationPhase::WaitingCellularRecovery
                         | RotationPhase::WaitingRootPolicy
                 )
@@ -695,10 +628,10 @@ impl RotationRuntimeCoordinator {
         };
         let action = match snapshot.phase {
             RotationPhase::Preparing => Some(RotationAction::BeforeIp),
-            RotationPhase::AirplaneEnabling => Some(RotationAction::EnableAirplane),
-            RotationPhase::AirplaneDisabling => Some(RotationAction::DisableAirplane),
+            RotationPhase::DataDisabling => Some(RotationAction::DisableData),
+            RotationPhase::DataEnabling => Some(RotationAction::EnableData),
             RotationPhase::ProbingPublicIp => Some(RotationAction::AfterIp),
-            RotationPhase::Failed if snapshot.restore_required => Some(RotationAction::RestoreOff),
+            RotationPhase::Failed if snapshot.restore_required => Some(RotationAction::RestoreEnabled),
             _ => None,
         };
         let Some(action) = action else {
@@ -716,30 +649,18 @@ impl RotationRuntimeCoordinator {
 
         let this = Arc::clone(self);
         let future: std::pin::Pin<Box<dyn Future<Output = ()> + Send>> = match action {
-            RotationAction::BeforeIp => {
-                Box::pin(async move { this.run_before_ip(operation_id).await })
-            }
-            RotationAction::EnableAirplane => {
-                Box::pin(async move { this.run_enable_airplane(operation_id).await })
-            }
-            RotationAction::DisableAirplane => {
-                Box::pin(async move { this.run_disable_airplane(operation_id).await })
-            }
-            RotationAction::AfterIp => {
-                Box::pin(async move { this.run_after_ip(operation_id).await })
-            }
-            RotationAction::RestoreOff => {
-                Box::pin(async move { this.restore_off_direct(operation_id).await })
-            }
+            RotationAction::BeforeIp => Box::pin(async move { this.run_before_ip(operation_id).await }),
+            RotationAction::DisableData => Box::pin(async move { this.run_disable_data(operation_id).await }),
+            RotationAction::EnableData => Box::pin(async move { this.run_enable_data(operation_id).await }),
+            RotationAction::AfterIp => Box::pin(async move { this.run_after_ip(operation_id).await }),
+            RotationAction::RestoreEnabled => Box::pin(async move { this.restore_enabled_direct(operation_id).await }),
         };
         self.spawn_owned(future)
             .map_err(|_| RotationRuntimeStartError::ExecutorUnavailable)
     }
 
     async fn run_before_ip(self: Arc<Self>, operation_id: u64) {
-        let Some((before_generation, deadline)) =
-            self.operation_generation_deadline(operation_id, true)
-        else {
+        let Some((before_generation, deadline)) = self.operation_generation_deadline(operation_id, true) else {
             return;
         };
         self.mark_timing(operation_id, |timing, elapsed_ms| {
@@ -748,8 +669,7 @@ impl RotationRuntimeCoordinator {
         let timeout_duration = remaining(deadline).min(PUBLIC_IP_EFFECT_TIMEOUT);
         let observation_result = timeout_at(
             deadline,
-            self.cellular
-                .observe_public_egress_ip_async(timeout_duration),
+            self.cellular.observe_public_egress_ip_async(timeout_duration),
         )
         .await;
         self.mark_timing(operation_id, |timing, elapsed_ms| {
@@ -790,28 +710,47 @@ impl RotationRuntimeCoordinator {
         self.after_transition(snapshot);
     }
 
-    async fn run_enable_airplane(self: Arc<Self>, operation_id: u64) {
+    async fn run_disable_data(self: Arc<Self>, operation_id: u64) {
         let Some(deadline) = self.operation_deadline(operation_id) else {
             return;
         };
-        self.mark_timing(operation_id, |timing, elapsed_ms| {
-            set_once(&mut timing.airplane_enable_started_ms, elapsed_ms);
-        });
-        let effect_result =
-            timeout_at(deadline, self.airplane.set(AirplaneModeState::Enabled)).await;
-        self.mark_timing(operation_id, |timing, elapsed_ms| {
-            set_once(&mut timing.airplane_enable_effect_completed_ms, elapsed_ms);
-        });
-        let outcome = match effect_result {
+
+        let observed = match timeout_at(deadline, self.mobile_data.observe()).await {
+            Ok(Ok(state)) => state,
             Err(_) => {
                 self.fail(operation_id, RotationFailure::DeadlineExceeded);
                 return;
             }
-            Ok(Ok(())) => RotationMutationOutcome::Applied,
-            Ok(Err(AirplaneEffectError::MutationRejected)) => RotationMutationOutcome::Rejected,
-            Ok(Err(AirplaneEffectError::MutationUncertain)) => RotationMutationOutcome::Uncertain,
             Ok(Err(_)) => {
-                self.fail(operation_id, RotationFailure::AirplaneEnableFailed);
+                self.fail(operation_id, RotationFailure::MobileDataObservationFailed);
+                return;
+            }
+        };
+        self.mark_timing(operation_id, |timing, elapsed_ms| {
+            set_once(&mut timing.mobile_data_precondition_observed_ms, elapsed_ms);
+            timing.mobile_data_precondition_enabled = Some(observed == MobileDataState::Enabled);
+        });
+        if observed != MobileDataState::Enabled {
+            self.fail(operation_id, RotationFailure::MobileDataObservationFailed);
+            return;
+        }
+
+        self.mark_timing(operation_id, |timing, elapsed_ms| {
+            set_once(&mut timing.data_disable_started_ms, elapsed_ms);
+        });
+        let effect_result = timeout_at(deadline, self.mobile_data.set(MobileDataState::Disabled)).await;
+        self.mark_timing(operation_id, |timing, elapsed_ms| {
+            set_once(&mut timing.data_disable_effect_completed_ms, elapsed_ms);
+        });
+        let outcome = match effect_result {
+            Err(_) => RotationMutationOutcome::Uncertain,
+            Ok(Ok(())) => RotationMutationOutcome::Applied,
+            Ok(Err(MobileDataEffectError::MutationRejected)) => RotationMutationOutcome::Rejected,
+            Ok(Err(MobileDataEffectError::MutationUncertain | MobileDataEffectError::SessionUnavailable)) => {
+                RotationMutationOutcome::Uncertain
+            }
+            Ok(Err(_)) => {
+                self.fail(operation_id, RotationFailure::DataDisableFailed);
                 return;
             }
         };
@@ -823,55 +762,34 @@ impl RotationRuntimeCoordinator {
             if !operation_current(&state, operation_id) {
                 return;
             }
-            match state
-                .machine
-                .airplane_enable_effect_completed(operation_id, outcome)
-            {
+            match state.machine.data_disable_effect_completed(operation_id, outcome) {
                 Ok(snapshot) => snapshot,
                 Err(_) => return,
             }
         };
         self.after_transition(snapshot);
-        if snapshot.phase.terminal() {
-            return;
-        }
-
-        let observed = match timeout_at(deadline, self.airplane.observe()).await {
-            Ok(Ok(state)) => state,
-            Err(_) => {
-                self.fail(operation_id, RotationFailure::DeadlineExceeded);
-                return;
-            }
-            Ok(Err(_)) => {
-                self.fail(operation_id, RotationFailure::AirplaneObservationFailed);
-                return;
-            }
-        };
-        self.record_airplane_observation(operation_id, observed);
     }
 
-    async fn run_disable_airplane(self: Arc<Self>, operation_id: u64) {
+    async fn run_enable_data(self: Arc<Self>, operation_id: u64) {
         let Some(deadline) = self.operation_deadline(operation_id) else {
             return;
         };
         self.mark_timing(operation_id, |timing, elapsed_ms| {
-            set_once(&mut timing.airplane_disable_started_ms, elapsed_ms);
+            set_once(&mut timing.data_enable_started_ms, elapsed_ms);
         });
-        let effect_result =
-            timeout_at(deadline, self.airplane.set(AirplaneModeState::Disabled)).await;
+        let effect_result = timeout_at(deadline, self.mobile_data.set(MobileDataState::Enabled)).await;
         self.mark_timing(operation_id, |timing, elapsed_ms| {
-            set_once(&mut timing.airplane_disable_effect_completed_ms, elapsed_ms);
+            set_once(&mut timing.data_enable_effect_completed_ms, elapsed_ms);
         });
         let outcome = match effect_result {
-            Err(_) => {
-                self.fail(operation_id, RotationFailure::DeadlineExceeded);
-                return;
-            }
+            Err(_) => RotationMutationOutcome::Uncertain,
             Ok(Ok(())) => RotationMutationOutcome::Applied,
-            Ok(Err(AirplaneEffectError::MutationRejected)) => RotationMutationOutcome::Rejected,
-            Ok(Err(AirplaneEffectError::MutationUncertain)) => RotationMutationOutcome::Uncertain,
+            Ok(Err(MobileDataEffectError::MutationRejected)) => RotationMutationOutcome::Rejected,
+            Ok(Err(MobileDataEffectError::MutationUncertain | MobileDataEffectError::SessionUnavailable)) => {
+                RotationMutationOutcome::Uncertain
+            }
             Ok(Err(_)) => {
-                self.fail(operation_id, RotationFailure::AirplaneDisableFailed);
+                self.fail(operation_id, RotationFailure::DataEnableFailed);
                 return;
             }
         };
@@ -883,68 +801,16 @@ impl RotationRuntimeCoordinator {
             if !operation_current(&state, operation_id) {
                 return;
             }
-            match state
-                .machine
-                .airplane_disable_effect_completed(operation_id, outcome)
-            {
+            match state.machine.data_enable_effect_completed(operation_id, outcome) {
                 Ok(snapshot) => snapshot,
                 Err(_) => return,
             }
         };
         self.after_transition(snapshot);
-        if snapshot.phase.terminal() {
-            return;
-        }
-
-        let observed = match timeout_at(deadline, self.airplane.observe()).await {
-            Ok(Ok(state)) => state,
-            Err(_) => {
-                self.fail(operation_id, RotationFailure::DeadlineExceeded);
-                return;
-            }
-            Ok(Err(_)) => {
-                self.fail(operation_id, RotationFailure::AirplaneObservationFailed);
-                return;
-            }
-        };
-        self.record_airplane_observation(operation_id, observed);
-        if observed == AirplaneModeState::Disabled
-            && !self.rearm_cellular_request_if_waiting(operation_id)
-        {
-            self.fail(operation_id, RotationFailure::FreshCellularUnavailable);
-        }
-    }
-
-    fn rearm_cellular_request_if_waiting(&self, operation_id: u64) -> bool {
-        let selection = {
-            let Ok(state) = self.state.lock() else {
-                return false;
-            };
-            select_cellular_request_rearm(&state, operation_id)
-        };
-
-        let effect = match selection {
-            Ok(None) => return true,
-            Ok(Some(effect)) => effect,
-            Err(()) => return false,
-        };
-        self.mark_timing(operation_id, |timing, elapsed_ms| {
-            set_once(&mut timing.cellular_request_rearm_started_ms, elapsed_ms);
-        });
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            effect.rearm_cellular_request()
-        }))
-        .unwrap_or(false);
-        self.mark_timing(operation_id, |timing, elapsed_ms| {
-            set_once(&mut timing.cellular_request_rearm_completed_ms, elapsed_ms);
-        });
-        result
     }
 
     async fn run_after_ip(self: Arc<Self>, operation_id: u64) {
-        let Some((after_generation, deadline)) =
-            self.operation_generation_deadline(operation_id, false)
-        else {
+        let Some((after_generation, deadline)) = self.operation_generation_deadline(operation_id, false) else {
             return;
         };
         self.mark_timing(operation_id, |timing, elapsed_ms| {
@@ -953,8 +819,7 @@ impl RotationRuntimeCoordinator {
         let timeout_duration = remaining(deadline).min(PUBLIC_IP_EFFECT_TIMEOUT);
         let observation_result = timeout_at(
             deadline,
-            self.cellular
-                .observe_public_egress_ip_async(timeout_duration),
+            self.cellular.observe_public_egress_ip_async(timeout_duration),
         )
         .await;
         self.mark_timing(operation_id, |timing, elapsed_ms| {
@@ -1000,44 +865,6 @@ impl RotationRuntimeCoordinator {
         self.after_transition(snapshot);
     }
 
-    fn record_airplane_observation(
-        self: &Arc<Self>,
-        operation_id: u64,
-        observed: AirplaneModeState,
-    ) {
-        let snapshot = {
-            let Ok(mut state) = self.state.lock() else {
-                return;
-            };
-            if !operation_current(&state, operation_id) {
-                return;
-            }
-            let phase_before = state.machine.snapshot().phase;
-            let snapshot = match state
-                .machine
-                .observe_airplane(operation_id, observed == AirplaneModeState::Enabled)
-            {
-                Ok(snapshot) => snapshot,
-                Err(_) => return,
-            };
-            if let Some(timing) = state.timing.as_mut() {
-                let _ = timing.mark(operation_id, |timing, elapsed_ms| match observed {
-                    AirplaneModeState::Enabled => {
-                        set_once(&mut timing.airplane_on_observed_ms, elapsed_ms);
-                    }
-                    AirplaneModeState::Disabled
-                        if phase_before != RotationPhase::WaitingRadioDown =>
-                    {
-                        set_once(&mut timing.airplane_off_observed_ms, elapsed_ms);
-                    }
-                    AirplaneModeState::Disabled => {}
-                });
-            }
-            snapshot
-        };
-        self.after_transition(snapshot);
-    }
-
     fn fail(self: &Arc<Self>, operation_id: u64, failure: RotationFailure) {
         let snapshot = {
             let Ok(mut state) = self.state.lock() else {
@@ -1066,10 +893,11 @@ impl RotationRuntimeCoordinator {
                     set_once(&mut timing.terminal_ms, elapsed_ms);
                 });
             }
-            let cancel = self.state.lock().ok().and_then(|mut state| {
-                state.cellular_request_rearm = None;
-                state.cancel.as_ref().map(Arc::clone)
-            });
+            let cancel = self
+                .state
+                .lock()
+                .ok()
+                .and_then(|state| state.cancel.as_ref().map(Arc::clone));
             if let Some(cancel) = cancel {
                 cancel.notify_waiters();
             }
@@ -1078,26 +906,26 @@ impl RotationRuntimeCoordinator {
         let _ = self.schedule_for(snapshot);
     }
 
-    async fn restore_off_direct(self: &Arc<Self>, operation_id: u64) {
-        let restore = match timeout(RESTORE_EFFECT_TIMEOUT, self.airplane.observe()).await {
-            Ok(Ok(AirplaneModeState::Disabled)) => RotationRestoreResult::AlreadyOff,
-            Ok(Ok(AirplaneModeState::Enabled)) => {
+    async fn restore_enabled_direct(self: &Arc<Self>, operation_id: u64) {
+        // Recovery is deliberately observe-before-mutate. An uncertain main-path mutation is never
+        // replayed. Only an authoritative DISABLED observation permits one compensating ENABLE.
+        let restore = match timeout(RESTORE_EFFECT_TIMEOUT, self.mobile_data.observe()).await {
+            Ok(Ok(MobileDataState::Enabled)) => RotationRestoreResult::AlreadyEnabled,
+            Ok(Ok(MobileDataState::Disabled)) => {
                 match timeout(
                     RESTORE_EFFECT_TIMEOUT,
-                    self.airplane.set(AirplaneModeState::Disabled),
+                    self.mobile_data.set(MobileDataState::Enabled),
                 )
                 .await
                 {
-                    Ok(Ok(())) | Ok(Err(AirplaneEffectError::MutationUncertain)) => {
-                        match timeout(RESTORE_EFFECT_TIMEOUT, self.airplane.observe()).await {
-                            Ok(Ok(AirplaneModeState::Disabled)) => {
-                                RotationRestoreResult::RestoredOff
-                            }
-                            Ok(Ok(AirplaneModeState::Enabled)) => RotationRestoreResult::Uncertain,
+                    Ok(Ok(())) | Ok(Err(MobileDataEffectError::MutationUncertain | MobileDataEffectError::SessionUnavailable)) => {
+                        match timeout(RESTORE_EFFECT_TIMEOUT, self.mobile_data.observe()).await {
+                            Ok(Ok(MobileDataState::Enabled)) => RotationRestoreResult::RestoredEnabled,
+                            Ok(Ok(MobileDataState::Disabled)) => RotationRestoreResult::Failed,
                             Ok(Err(_)) | Err(_) => RotationRestoreResult::Uncertain,
                         }
                     }
-                    Ok(Err(AirplaneEffectError::MutationRejected)) => RotationRestoreResult::Failed,
+                    Ok(Err(MobileDataEffectError::MutationRejected)) => RotationRestoreResult::Failed,
                     Ok(Err(_)) | Err(_) => RotationRestoreResult::Failed,
                 }
             }
@@ -1109,8 +937,7 @@ impl RotationRuntimeCoordinator {
                 return;
             };
             let current = state.machine.snapshot();
-            if current.operation_id != Some(operation_id) || current.phase != RotationPhase::Failed
-            {
+            if current.operation_id != Some(operation_id) || current.phase != RotationPhase::Failed {
                 return;
             }
             let snapshot = match state.machine.record_restore(operation_id, restore) {
@@ -1134,8 +961,7 @@ impl RotationRuntimeCoordinator {
     ) -> Option<(u64, Instant)> {
         let state = self.state().ok()?;
         let snapshot = state.machine.snapshot();
-        if state.closed || snapshot.operation_id != Some(operation_id) || snapshot.phase.terminal()
-        {
+        if state.closed || snapshot.operation_id != Some(operation_id) || snapshot.phase.terminal() {
             return None;
         }
         let generation = if before {
@@ -1205,27 +1031,6 @@ impl RotationRuntimeCoordinator {
     }
 }
 
-fn select_cellular_request_rearm(
-    state: &RotationRuntimeState,
-    operation_id: u64,
-) -> Result<Option<Arc<dyn CellularRequestRearmEffect>>, ()> {
-    let snapshot = state.machine.snapshot();
-    if state.closed
-        || snapshot.operation_id != Some(operation_id)
-        || snapshot.phase != RotationPhase::WaitingCellularRecovery
-    {
-        return Ok(None);
-    }
-
-    state
-        .cellular_request_rearm
-        .as_ref()
-        .filter(|(id, _)| *id == operation_id)
-        .map(|(_, effect)| Arc::clone(effect))
-        .map(Some)
-        .ok_or(())
-}
-
 fn admitted_generation(admission: CellularAdmissionSnapshot) -> Option<u64> {
     (admission.state() == CellularAdmissionState::Admitted)
         .then_some(admission.last_sequence())
@@ -1279,97 +1084,6 @@ fn notify(notification: Option<(RotationObserver, RotationSnapshot)>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::{IpAddr, Ipv4Addr};
-
-    struct TestRearmEffect;
-
-    impl CellularRequestRearmEffect for TestRearmEffect {
-        fn rearm_cellular_request(&self) -> bool {
-            true
-        }
-    }
-
-    fn waiting_cellular_recovery_state() -> (RotationRuntimeState, u64) {
-        let mut machine = RotationStateMachine::new();
-        let operation_id = machine.start(1).expect("rotation start");
-        machine
-            .record_before_ip(operation_id, 1, IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)))
-            .expect("before IP");
-        machine
-            .airplane_enable_effect_completed(operation_id, RotationMutationOutcome::Applied)
-            .expect("airplane enable effect");
-        machine
-            .observe_airplane(operation_id, true)
-            .expect("airplane ON");
-        machine
-            .observe_cellular(operation_id, 2, false)
-            .expect("cellular loss");
-        machine
-            .observe_radio_power_off(operation_id)
-            .expect("radio power off");
-        machine
-            .airplane_disable_effect_completed(operation_id, RotationMutationOutcome::Applied)
-            .expect("airplane disable effect");
-        machine
-            .observe_airplane(operation_id, false)
-            .expect("airplane OFF");
-
-        assert_eq!(
-            machine.snapshot().phase,
-            RotationPhase::WaitingCellularRecovery
-        );
-
-        (
-            RotationRuntimeState {
-                machine,
-                timing: None,
-                deadline: None,
-                credential_guard: None,
-                cellular_request_rearm: Some((operation_id, Arc::new(TestRearmEffect))),
-                claimed: HashSet::new(),
-                cancel: None,
-                tasks: Vec::new(),
-                observer: None,
-                internal_observers: Vec::new(),
-                closed: false,
-            },
-            operation_id,
-        )
-    }
-
-    #[test]
-    fn cellular_request_rearm_is_selected_only_for_current_recovery_operation() {
-        let (mut state, operation_id) = waiting_cellular_recovery_state();
-
-        assert!(
-            select_cellular_request_rearm(&state, operation_id)
-                .expect("selection")
-                .is_some()
-        );
-        assert!(
-            select_cellular_request_rearm(&state, operation_id + 1)
-                .expect("stale operation must not select")
-                .is_none()
-        );
-
-        state.closed = true;
-        assert!(
-            select_cellular_request_rearm(&state, operation_id)
-                .expect("closed runtime must not select")
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn waiting_recovery_without_bound_rearm_effect_fails_selection_closed() {
-        let (mut state, operation_id) = waiting_cellular_recovery_state();
-        state.cellular_request_rearm = None;
-
-        assert!(matches!(
-            select_cellular_request_rearm(&state, operation_id),
-            Err(())
-        ));
-    }
 
     #[test]
     fn operation_timing_is_observation_only_and_rejects_stale_operation_updates() {
@@ -1380,22 +1094,17 @@ mod tests {
         assert!(timing.snapshot.pre_rotation_probe_started_ms.is_none());
 
         assert!(timing.mark(7, |snapshot, elapsed_ms| {
-            set_once(&mut snapshot.pre_rotation_probe_started_ms, elapsed_ms);
+            set_once(&mut snapshot.data_disable_started_ms, elapsed_ms);
         }));
-        assert!(timing.snapshot.pre_rotation_probe_started_ms.is_some());
-
-        assert!(timing.mark(7, |snapshot, elapsed_ms| {
-            set_once(&mut snapshot.radio_power_off_observed_ms, elapsed_ms);
-        }));
-        assert!(timing.snapshot.radio_power_off_observed_ms.is_some());
+        assert!(timing.snapshot.data_disable_started_ms.is_some());
 
         let replacement = RotationRuntimeTiming::new(8);
         assert_eq!(replacement.snapshot.operation_id, Some(8));
-        assert!(replacement.snapshot.pre_rotation_probe_started_ms.is_none());
+        assert!(replacement.snapshot.data_disable_started_ms.is_none());
     }
 
     #[test]
-    fn normal_path_has_no_arbitrary_dwell_constant() {
+    fn normal_path_has_no_arbitrary_dwell_or_retry_constant() {
         assert!(ROTATION_SAFETY_DEADLINE >= PUBLIC_IP_EFFECT_TIMEOUT);
         assert!(RESTORE_EFFECT_TIMEOUT <= ROTATION_SAFETY_DEADLINE);
     }
