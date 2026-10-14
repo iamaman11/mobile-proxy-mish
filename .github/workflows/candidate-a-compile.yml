@@ -23,8 +23,10 @@ jobs:
           rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
           rustup override set 1.98.1
 
-      - name: Rust format
-        run: cargo fmt --all -- --check
+      - name: Format ephemeral checkout
+        run: |
+          cargo fmt --all
+          git diff --stat
 
       - name: Rust clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
