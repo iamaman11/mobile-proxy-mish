@@ -175,7 +175,7 @@ if ($launchFailed -and $launchFailureCategory -notmatch '^[A-Z0-9_]+$') { $launc
 $classification = switch ($Mode) {
     'install_only' { 'INSTALL_ONLY_PASS'; break }
     'probe_only' {
-        if ($RequestedProbe -notin @('loopback_connect', 'cellular_primitive_capabilities')) { 'LAB_PROBE_NOT_EXPLICIT' }
+        if ($RequestedProbe -notin @('loopback_connect', 'cellular_primitive_capabilities', 'cellular_data_detach_pilot')) { 'LAB_PROBE_NOT_EXPLICIT' }
         elseif ($targetedAcceptance -eq 'MISSING') { 'LAB_TARGETED_PROBE_COLLECTION_FAILED' }
         elseif ($targetedAcceptance -eq 'INVALID') { 'LAB_TARGETED_PROBE_SCHEMA_INVALID' }
         else { $targetedClassification }
