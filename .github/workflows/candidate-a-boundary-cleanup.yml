@@ -55,6 +55,25 @@ jobs:
           path.write_text(text, encoding="utf-8")
           PY
 
+      - name: Remove obsolete rearm test fixture
+        run: |
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+          path = Path("crates/runtime/src/product_runtime.rs")
+          text = path.read_text(encoding="utf-8")
+          fixture = r'''\n    struct TestControlRearmEffect;\n\n    impl CellularRequestRearmEffect for TestControlRearmEffect \{\n        fn rearm_cellular_request\(&self\) -> bool \{\n            true\n        \}\n    \}\n'''
+          text, fixture_count = re.subn(fixture, "\n", text, count=1)
+          if fixture_count != 1:
+              raise SystemExit(f"rearm test fixture drift: {fixture_count}")
+          arg = "                Arc::new(TestControlRearmEffect),\n"
+          arg_count = text.count(arg)
+          if arg_count != 3:
+              raise SystemExit(f"rearm test call count drift: {arg_count}")
+          text = text.replace(arg, "")
+          path.write_text(text, encoding="utf-8")
+          PY
+
       - name: Apply exact asserted boundary cleanup
         id: apply_cleanup
         continue-on-error: true
@@ -64,7 +83,7 @@ jobs:
         run: |
           if [ "${{ steps.apply_cleanup.outcome }}" != success ]; then
             echo '--- residual product runtime rearm tokens ---'
-            grep -n -C 3 -E 'CellularRequestRearmEffect|cellular_request_rearm|observe_radio_power_off|observe_platform_cellular_observation' crates/runtime/src/product_runtime.rs || true
+            grep -n -C 3 -E 'CellularRequestRearmEffect|cellular_request_rearm|observe_radio_power_off|observe_platform_cellular_observation|TestControlRearmEffect' crates/runtime/src/product_runtime.rs || true
             echo '--- residual control runtime rearm tokens ---'
             grep -n -C 3 -E 'CellularRequestRearmEffect|cellular_request_rearm' crates/runtime/src/control_runtime.rs || true
             exit 1
@@ -97,7 +116,7 @@ jobs:
           test ! -e .github/workflows/candidate-a-compile.yml
           test ! -e crates/runtime/src/airplane_effect.rs
           test ! -e android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRadioPowerObserver.kt
-          ! grep -R --line-number -E 'CellularRequestRearmEffect|observe_radio_power_off|observeRadioPowerOff|rearmNetworkRequest|AirplaneEnabling|WaitingRadioDown|AirplaneDisabling' crates/rotation crates/runtime crates/android-ffi android/app/src/main/java
+          ! grep -R --line-number -E 'CellularRequestRearmEffect|observe_radio_power_off|observeRadioPowerOff|rearmNetworkRequest|AirplaneEnabling|WaitingRadioDown|AirplaneDisabling|TestControlRearmEffect' crates/rotation crates/runtime crates/android-ffi android/app/src/main/java
           git status --short
 
       - name: Commit validated boundary cleanup
