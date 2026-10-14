@@ -1,0 +1,50 @@
+name: Candidate A U8 Guard Fix
+
+on:
+  push:
+    branches:
+      - rotation/candidate-a-product
+    paths:
+      - .github/workflows/candidate-a-u8-guard-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact feature branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: rotation/candidate-a-product
+          fetch-depth: 0
+
+      - name: Replace obsolete radio-outage literal with structural terminal invariants
+        run: >-
+          python3 -c 'from pathlib import Path; p=Path("tools/check_u8_control_contract.py"); s=p.read_text(encoding="utf-8"); old="        \"// Rotation terminal is a concrete owner event after the intentional radio outage.\",\n"; new="        \"let Some(terminal) = snapshot.terminal_result else {\",\n        \"pending.result = Some(result);\",\n"; assert s.count(old) == 1, f"obsolete U8 guard count={s.count(old)}"; p.write_text(s.replace(old,new,1), encoding="utf-8")'
+
+      - name: Verify U8 control contract
+        run: |
+          python3 tools/check_u8_control_contract.py
+          node --check infra/cloudflare/control-worker/src/index.mjs
+          node --check infra/cloudflare/control-worker/src/protocol.mjs
+          node --test infra/cloudflare/control-worker/test/*.test.mjs
+
+      - name: Verify bounded patch
+        run: |
+          git diff --check
+          ! grep -F 'intentional radio outage' tools/check_u8_control_contract.py
+          grep -F 'let Some(terminal) = snapshot.terminal_result else {' tools/check_u8_control_contract.py
+          grep -F 'pending.result = Some(result);' tools/check_u8_control_contract.py
+          rm .github/workflows/candidate-a-u8-guard-fix.yml
+
+      - name: Commit validated guard update
+        run: |
+          git config user.name "iamaman11"
+          git config user.email "44100369+iamaman11@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && { echo 'guard update produced no changes' >&2; exit 1; }
+          git commit -m "CI: align U8 guard with Candidate A rotation"
+          git push origin HEAD:rotation/candidate-a-product
