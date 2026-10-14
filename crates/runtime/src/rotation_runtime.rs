@@ -11,9 +11,7 @@ use crate::{
     ProxyCredentialGuard, ProxyRuntimeCoordinator, RootPolicyResult, RuntimeExecutionError,
     RuntimeExecutor,
 };
-use mish_cellular::{
-    CellularAdmissionReason, CellularAdmissionSnapshot, CellularAdmissionState,
-};
+use mish_cellular::{CellularAdmissionReason, CellularAdmissionSnapshot, CellularAdmissionState};
 use mish_rotation::{
     RotationFailure, RotationMutationOutcome, RotationPhase, RotationRestoreResult,
     RotationSnapshot, RotationStartError, RotationStateMachine,
