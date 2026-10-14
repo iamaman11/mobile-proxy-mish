@@ -11,7 +11,9 @@ use crate::{
     ProxyCredentialGuard, ProxyRuntimeCoordinator, RootPolicyResult, RuntimeExecutionError,
     RuntimeExecutor,
 };
-use mish_cellular::{CellularAdmissionSnapshot, CellularAdmissionState};
+use mish_cellular::{
+    CellularAdmissionReason, CellularAdmissionSnapshot, CellularAdmissionState,
+};
 use mish_rotation::{
     RotationFailure, RotationMutationOutcome, RotationPhase, RotationRestoreResult,
     RotationSnapshot, RotationStartError, RotationStateMachine,
@@ -374,6 +376,8 @@ impl RotationRuntimeCoordinator {
             return;
         };
         let admitted = admission.state() == CellularAdmissionState::Admitted;
+        let authoritative_loss =
+            !admitted && admission.reason() == Some(CellularAdmissionReason::NetworkLost);
         let snapshot = {
             let Ok(mut state) = self.state.lock() else {
                 return;
@@ -388,6 +392,22 @@ impl RotationRuntimeCoordinator {
             if current.phase.terminal() {
                 return;
             }
+
+            // Candidate A must not re-enable data merely because admission failed closed. A
+            // capability/validation downgrade can make the owner NotAdmitted before Android has
+            // actually destroyed the previous cellular Network. Only the typed NetworkLost reason
+            // originates from NetworkCallback.onLost(), which is the authoritative detach boundary
+            // for releasing the old platform network before the one data-enable mutation.
+            if !admitted
+                && !authoritative_loss
+                && matches!(
+                    current.phase,
+                    RotationPhase::DataDisabling | RotationPhase::WaitingCellularLoss
+                )
+            {
+                return;
+            }
+
             let snapshot = match state
                 .machine
                 .observe_cellular(operation_id, generation, admitted)
@@ -399,7 +419,7 @@ impl RotationRuntimeCoordinator {
                 .before_generation
                 .is_some_and(|before_generation| generation > before_generation);
             if is_fresh
-                && !admitted
+                && authoritative_loss
                 && matches!(
                     current.phase,
                     RotationPhase::DataDisabling | RotationPhase::WaitingCellularLoss
