@@ -18,9 +18,6 @@ pub use readiness_runtime::*;
 
 mod root_session;
 
-// Temporary compile-probe suppressions for the now-unreferenced airplane path. The module and its
-// coordinator factory are removed before physical acceptance; this does not add a runtime owner.
-#[allow(dead_code)]
 mod airplane_effect;
 mod mobile_data_effect;
 
@@ -40,7 +37,6 @@ mod control_transport;
 pub use cellular_runtime::*;
 pub use control_runtime::*;
 
-#[allow(dead_code)]
 mod cellular_policy_coordinator;
 pub use cellular_policy_coordinator::*;
 
