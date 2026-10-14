@@ -37,7 +37,7 @@ jobs:
         with:
           gradle-version: '9.6.0'
 
-      - name: Normalize stored CONTROL replay for asserted cleanup
+      - name: Remove stored CONTROL rearm for asserted cleanup
         run: |
           python3 - <<'PY'
           import re
@@ -46,9 +46,8 @@ jobs:
           text = path.read_text(encoding="utf-8")
           pattern = r'''            let _ = generation\.control\(\)\.start\(\n\s+control\.public_key_spki,\n\s+control\.signer,\n\s+control\.cellular_request_rearm,\n\s+\);'''
           replacement = '''            let _ = generation.control().start(
-                    control.public_key_spki.clone(),
-                    Arc::clone(&control.signer),
-                    Arc::clone(&control.cellular_request_rearm),
+                    control.public_key_spki,
+                    control.signer,
                 );'''
           text, count = re.subn(pattern, replacement, text, count=1)
           if count != 1:
