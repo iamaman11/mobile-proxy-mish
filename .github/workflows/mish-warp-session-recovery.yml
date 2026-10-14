@@ -1,0 +1,240 @@
+name: MISH WARP Session Recovery
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mish-warp-session-recovery
+  cancel-in-progress: false
+
+env:
+  MAINTENANCE_PWSH_VERSION: '7.6.6'
+  ADB_EXE: C:\\mish-lab\\tools\\android-sdk\\platform-tools\\adb.exe
+  PRODUCT_PACKAGE: com.mobileproxymish.app.debug
+  MESH_DEVICE_CIDR: 100.96.0.0/12
+
+jobs:
+  warp-reconnect:
+    name: Bounded Windows WARP session recovery
+    if: >-
+      github.event.issue.number == 163 &&
+      github.event.comment.user.login == 'iamaman11' &&
+      github.event.comment.body == '/mish-maint warp-reconnect'
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 10
+    steps:
+      - name: Checkout protected main maintenance authority
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+          clean: true
+
+      - name: Verify pinned PowerShell 7 runtime
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($PSVersionTable.PSEdition -cne 'Core' -or $PSVersionTable.PSVersion.ToString() -cne $env:MAINTENANCE_PWSH_VERSION) {
+            throw "MISH_WARP_RECOVERY_FAILURE|POWERSHELL_RUNTIME_MISMATCH|Expected PowerShell $env:MAINTENANCE_PWSH_VERSION; observed $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)"
+          }
+
+      - name: Verify physical LAB identity
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\labctl.ps1 host inspect -PhysicalLab
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Capture pre-recovery PRODUCT snapshot
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\collect-device-diagnostic.ps1 `
+            -AdbPath "$env:ADB_EXE" `
+            -PackageName "$env:PRODUCT_PACKAGE" `
+            -MeshCidr "$env:MESH_DEVICE_CIDR" `
+            -EvidencePath "$env:RUNNER_TEMP\mish-warp-recovery-before-device.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Capture pre-recovery WARP state
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\collect-warp-state-diagnostic.ps1 `
+            -AdbPath "$env:ADB_EXE" `
+            -PackageName "$env:PRODUCT_PACKAGE" `
+            -MeshDeviceCidr "$env:MESH_DEVICE_CIDR" `
+            -EvidencePath "$env:RUNNER_TEMP\mish-warp-recovery-before-warp.json" `
+            -PhysicalLab
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Require exact stale-session precondition
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $device = Get-Content -Raw -LiteralPath "$env:RUNNER_TEMP\mish-warp-recovery-before-device.json" | ConvertFrom-Json
+          $warp = Get-Content -Raw -LiteralPath "$env:RUNNER_TEMP\mish-warp-recovery-before-warp.json" | ConvertFrom-Json
+
+          if ([string]$device.classification -cne 'WINDOWS_MESH_TCP_3128_UNREACHABLE') {
+            throw "MISH_WARP_RECOVERY_FAILURE|PRECONDITION_NOT_MET|Expected DEVICE classification WINDOWS_MESH_TCP_3128_UNREACHABLE; observed $($device.classification)."
+          }
+          if (-not [bool]$device.android.runtime.running -or [string]$device.android.readiness.state -cne 'READY' -or
+              [string]$device.external.adb_loopback_proxy_e2e.result -cne 'PASS') {
+            throw 'MISH_WARP_RECOVERY_FAILURE|PRECONDITION_NOT_MET|PRODUCT must be RUNNING/READY with loopback proxy E2E PASS before WARP recovery.'
+          }
+          if ([string]$warp.classification -cne 'WARP_MESH_TCP_3128_UNREACHABLE' -or
+              -not [bool]$warp.cloudflare.connected -or
+              -not [bool]$warp.windows.mesh_route.cloudflare_owned -or
+              [bool]$warp.windows.tcp_3128) {
+            throw 'MISH_WARP_RECOVERY_FAILURE|PRECONDITION_NOT_MET|WARP must be connected with a Cloudflare-owned Mesh route and TCP :3128 unreachable.'
+          }
+
+      - name: Execute exactly one existing WARP recovery primitive
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\labctl.ps1 cloudflare prove `
+            -MeshDeviceCidr "$env:MESH_DEVICE_CIDR" `
+            -EvidencePath "$env:RUNNER_TEMP\mish-warp-recovery-primitive.json" `
+            -PhysicalLab `
+            -Recovery
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Capture post-recovery WARP state
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\collect-warp-state-diagnostic.ps1 `
+            -AdbPath "$env:ADB_EXE" `
+            -PackageName "$env:PRODUCT_PACKAGE" `
+            -MeshDeviceCidr "$env:MESH_DEVICE_CIDR" `
+            -EvidencePath "$env:RUNNER_TEMP\mish-warp-recovery-after-warp.json" `
+            -PhysicalLab
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Capture post-recovery PRODUCT snapshot
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\collect-device-diagnostic.ps1 `
+            -AdbPath "$env:ADB_EXE" `
+            -PackageName "$env:PRODUCT_PACKAGE" `
+            -MeshCidr "$env:MESH_DEVICE_CIDR" `
+            -EvidencePath "$env:RUNNER_TEMP\mish-warp-recovery-after-device.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Require recovered dataplane and write bounded result
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $beforeDevice = Get-Content -Raw -LiteralPath "$env:RUNNER_TEMP\mish-warp-recovery-before-device.json" | ConvertFrom-Json
+          $beforeWarp = Get-Content -Raw -LiteralPath "$env:RUNNER_TEMP\mish-warp-recovery-before-warp.json" | ConvertFrom-Json
+          $primitive = Get-Content -Raw -LiteralPath "$env:RUNNER_TEMP\mish-warp-recovery-primitive.json" | ConvertFrom-Json
+          $afterWarp = Get-Content -Raw -LiteralPath "$env:RUNNER_TEMP\mish-warp-recovery-after-warp.json" | ConvertFrom-Json
+          $afterDevice = Get-Content -Raw -LiteralPath "$env:RUNNER_TEMP\mish-warp-recovery-after-device.json" | ConvertFrom-Json
+
+          $recovered = (
+            [string]$primitive.result -ceq 'PASS' -and
+            [bool]$primitive.observations.recovery.requested -and
+            [bool]$primitive.observations.recovery.disconnect_observed -and
+            [bool]$primitive.observations.recovery.reconnect_observed -and
+            [string]$afterWarp.classification -ceq 'READY' -and
+            [bool]$afterWarp.cloudflare.connected -and
+            [bool]$afterWarp.windows.mesh_route.cloudflare_owned -and
+            [bool]$afterWarp.windows.tcp_3128 -and
+            [string]$afterDevice.classification -ceq 'PASS' -and
+            [bool]$afterDevice.external.tcp.port_1080 -and
+            [bool]$afterDevice.external.tcp.port_1081 -and
+            [bool]$afterDevice.external.tcp.port_3128 -and
+            [string]$afterDevice.external.mesh_proxy_e2e.result -ceq 'PASS'
+          )
+
+          $classification = if ($recovered) { 'WARP_SESSION_RECOVERED' } else { 'WARP_SESSION_RECOVERY_FAILED' }
+          $result = [ordered]@{
+            schema = 'mish.lab.warp-session-recovery/v1'
+            collected_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
+            repository = 'iamaman11/mobile-proxy-mish'
+            git_commit = [string]$env:GITHUB_SHA
+            result = if ($recovered) { 'PASS' } else { 'FAIL' }
+            classification = $classification
+            recovery_cycles = 1
+            mutation_scope = 'windows_warp_session_only'
+            provider_write_attempted = $false
+            product_mutation_performed = $false
+            android_network_mutation_performed = $false
+            root_policy_mutation_performed = $false
+            credential_mutation_performed = $false
+            before = [ordered]@{
+              product_ready = ([bool]$beforeDevice.android.runtime.running -and [string]$beforeDevice.android.readiness.state -ceq 'READY')
+              local_proxy_e2e = ([string]$beforeDevice.external.adb_loopback_proxy_e2e.result -ceq 'PASS')
+              warp_connected = [bool]$beforeWarp.cloudflare.connected
+              mesh_route_cloudflare_owned = [bool]$beforeWarp.windows.mesh_route.cloudflare_owned
+              tcp_1080 = [bool]$beforeDevice.external.tcp.port_1080
+              tcp_1081 = [bool]$beforeDevice.external.tcp.port_1081
+              tcp_3128 = [bool]$beforeDevice.external.tcp.port_3128
+              mesh_proxy_e2e = ([string]$beforeDevice.external.mesh_proxy_e2e.result -ceq 'PASS')
+            }
+            after = [ordered]@{
+              product_ready = ([bool]$afterDevice.android.runtime.running -and [string]$afterDevice.android.readiness.state -ceq 'READY')
+              warp_connected = [bool]$afterWarp.cloudflare.connected
+              mesh_route_cloudflare_owned = [bool]$afterWarp.windows.mesh_route.cloudflare_owned
+              tcp_1080 = [bool]$afterDevice.external.tcp.port_1080
+              tcp_1081 = [bool]$afterDevice.external.tcp.port_1081
+              tcp_3128 = [bool]$afterDevice.external.tcp.port_3128
+              mesh_proxy_e2e = ([string]$afterDevice.external.mesh_proxy_e2e.result -ceq 'PASS')
+            }
+          }
+
+          $path = "$env:RUNNER_TEMP\mish-warp-session-recovery-v1.json"
+          [IO.File]::WriteAllText($path, (($result | ConvertTo-Json -Depth 8) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+          Write-Host "MISH_WARP_RECOVERY_CLASSIFICATION=$classification"
+          Write-Host 'MISH_WARP_RECOVERY_CYCLES=1'
+          Write-Host 'MISH_WARP_RECOVERY_MUTATION_SCOPE=windows_warp_session_only'
+          if (-not $recovered) {
+            throw 'MISH_WARP_RECOVERY_FAILURE|RECOVERY_FAILED|One bounded Windows WARP session recovery did not restore the accepted Mesh dataplane.'
+          }
+
+      - name: Publish bounded recovery summary
+        if: ${{ always() }}
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $path = Join-Path $env:RUNNER_TEMP 'mish-warp-session-recovery-v1.json'
+          if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            "### WARP session recovery`n`nBounded result was not produced." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            exit 0
+          }
+          $evidence = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json
+          @(
+            '### WARP session recovery',
+            '',
+            "- Result: **$($evidence.result)**",
+            "- Classification: **$($evidence.classification)**",
+            "- Recovery cycles: **$($evidence.recovery_cycles)**",
+            "- Mutation scope: **$($evidence.mutation_scope)**",
+            "- Before PRODUCT ready / loopback E2E: **$($evidence.before.product_ready) / $($evidence.before.local_proxy_e2e)**",
+            "- Before TCP 1080 / 1081 / 3128: **$($evidence.before.tcp_1080) / $($evidence.before.tcp_1081) / $($evidence.before.tcp_3128)**",
+            "- After PRODUCT ready: **$($evidence.after.product_ready)**",
+            "- After TCP 1080 / 1081 / 3128: **$($evidence.after.tcp_1080) / $($evidence.after.tcp_1081) / $($evidence.after.tcp_3128)**",
+            "- After Mesh proxy E2E: **$($evidence.after.mesh_proxy_e2e)**",
+            '',
+            'No PRODUCT build/install/restart, Android network/root-policy mutation, credential mutation, or Cloudflare provider write is part of this maintenance command.'
+          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Upload bounded recovery evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mish-warp-session-recovery-v1-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}\mish-warp-session-recovery-v1.json
+            ${{ runner.temp }}\mish-warp-recovery-before-device.json
+            ${{ runner.temp }}\mish-warp-recovery-before-warp.json
+            ${{ runner.temp }}\mish-warp-recovery-primitive.json
+            ${{ runner.temp }}\mish-warp-recovery-after-warp.json
+            ${{ runner.temp }}\mish-warp-recovery-after-device.json
+          if-no-files-found: warn
+          retention-days: 30
