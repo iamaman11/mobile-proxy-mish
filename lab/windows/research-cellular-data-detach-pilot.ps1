@@ -157,6 +157,16 @@ $evidence = [ordered]@{
     after = [ordered]@{ product = 'UNKNOWN'; mesh_e2e = 'UNKNOWN'; control = 'UNKNOWN' }
     timings_ms = [ordered]@{
         cellular_loss_to_recovery = $null
+        disable_command = $null
+        disable_start_to_loss = $null
+        enable_command = $null
+        enable_complete_to_first_reconcile = $null
+        first_reconcile_to_fresh_cellular = $null
+        fresh_cellular_to_root_authorized = $null
+        root_authorized_to_readiness_ready = $null
+        disable_start_to_readiness_ready = $null
+        readiness_ready_to_public_egress_proof = $null
+        primitive_start_to_functional_public_egress = $null
         existing_owner_harness_total = $null
         full_pilot = $null
     }
@@ -197,7 +207,7 @@ try {
 
     $pilotWatch = [Diagnostics.Stopwatch]::StartNew()
     $ownerWatch = [Diagnostics.Stopwatch]::StartNew()
-    & $dnsHarness -AdbPath $AdbPath -PackageName $PackageName -EvidencePath $dnsEvidencePath | Out-Host
+    & $dnsHarness -AdbPath $AdbPath -PackageName $PackageName -EvidencePath $dnsEvidencePath -TimelineStopwatch $pilotWatch | Out-Host
     $ownerWatch.Stop()
     $evidence.timings_ms.existing_owner_harness_total = [int64]$ownerWatch.ElapsedMilliseconds
 
@@ -215,10 +225,36 @@ try {
         -not [bool]$dns.dns.owner_sequence_advanced -or
         [string]$dns.lab_effects.cellular_loss -cne 'adb shell cmd phone data disable/enable' -or
         [bool]$dns.lab_effects.cloudflare_app_mutated -or
-        [bool]$dns.lab_effects.product_routes_or_iptables_mutated_by_lab
+        [bool]$dns.lab_effects.product_routes_or_iptables_mutated_by_lab -or
+        [string]$dns.timing.clock -cne 'System.Diagnostics.Stopwatch' -or
+        -not [bool]$dns.timing.shared_external_clock
     ) {
-        Stop-MishCandidateA 'LAB_RESEARCH_OWNER_EVIDENCE_INVALID' 'Existing DNS-lifetime owner did not prove one bounded same-process data detach/attach recovery.'
+        Stop-MishCandidateA 'LAB_RESEARCH_OWNER_EVIDENCE_INVALID' 'Existing DNS-lifetime owner did not prove one bounded same-process data detach/attach recovery on the shared timing clock.'
     }
+
+    $disableStart = [int64]$dns.timing.disable_start_ms
+    $disableComplete = [int64]$dns.timing.disable_complete_ms
+    $lossObserved = [int64]$dns.timing.loss_observed_ms
+    $enableStart = [int64]$dns.timing.enable_start_ms
+    $enableComplete = [int64]$dns.timing.enable_complete_ms
+    $firstReconcile = [int64]$dns.timing.first_post_enable_reconcile_ms
+    $freshCellular = [int64]$dns.timing.fresh_cellular_admitted_ms
+    $rootAuthorized = [int64]$dns.timing.root_authorized_ms
+    $readinessReady = [int64]$dns.timing.readiness_ready_ms
+    if (
+        $disableStart -lt 0 -or
+        $disableComplete -lt $disableStart -or
+        $lossObserved -lt $disableComplete -or
+        $enableStart -lt $lossObserved -or
+        $enableComplete -lt $enableStart -or
+        $firstReconcile -lt $enableComplete -or
+        $freshCellular -lt $firstReconcile -or
+        $rootAuthorized -lt $freshCellular -or
+        $readinessReady -lt $rootAuthorized
+    ) {
+        Stop-MishCandidateA 'LAB_RESEARCH_OWNER_TIMELINE_INVALID' 'Shared Candidate A timing milestones are missing or non-monotonic.'
+    }
+
     $evidence.control_effect.mobile_data_disable_requested = $true
     $evidence.control_effect.cellular_loss_observed = $true
     $evidence.control_effect.mobile_data_enable_requested = $true
@@ -226,14 +262,28 @@ try {
     $lossElapsed = [int64]$dns.dns.loss.captured_elapsed_ms
     $recoveryElapsed = [int64]$dns.dns.recovery.captured_elapsed_ms
     if ($recoveryElapsed -lt $lossElapsed) {
-        Stop-MishCandidateA 'LAB_RESEARCH_OWNER_TIMELINE_INVALID' 'Existing owner evidence has a non-monotonic loss/recovery timeline.'
+        Stop-MishCandidateA 'LAB_RESEARCH_OWNER_TIMELINE_INVALID' 'Existing owner evidence has a non-monotonic Android loss/recovery timeline.'
     }
     $evidence.timings_ms.cellular_loss_to_recovery = $recoveryElapsed - $lossElapsed
+    $evidence.timings_ms.disable_command = [int64]$dns.timing.intervals_ms.disable_command
+    $evidence.timings_ms.disable_start_to_loss = [int64]$dns.timing.intervals_ms.disable_start_to_loss
+    $evidence.timings_ms.enable_command = [int64]$dns.timing.intervals_ms.enable_command
+    $evidence.timings_ms.enable_complete_to_first_reconcile = [int64]$dns.timing.intervals_ms.enable_complete_to_first_reconcile
+    $evidence.timings_ms.first_reconcile_to_fresh_cellular = [int64]$dns.timing.intervals_ms.first_reconcile_to_fresh_cellular
+    $evidence.timings_ms.fresh_cellular_to_root_authorized = [int64]$dns.timing.intervals_ms.fresh_cellular_to_root_authorized
+    $evidence.timings_ms.root_authorized_to_readiness_ready = [int64]$dns.timing.intervals_ms.root_authorized_to_readiness_ready
+    $evidence.timings_ms.disable_start_to_readiness_ready = [int64]$dns.timing.intervals_ms.disable_start_to_readiness_ready
 
     $afterPublic = Invoke-MishExternalPublicIpObservation -Context $publicContext -TimeoutSeconds $ExternalProbeTimeoutSeconds
+    $afterPublicProofMs = [int64]$pilotWatch.ElapsedMilliseconds
     $afterAddress = [string]$afterPublic.Address
     $evidence.external_public_egress.observations = 2
     $evidence.external_public_egress.outcome = if ($beforeAddress -cne $afterAddress) { 'CHANGED' } else { 'UNCHANGED' }
+    if ($afterPublicProofMs -lt $readinessReady) {
+        Stop-MishCandidateA 'LAB_RESEARCH_PUBLIC_EGRESS_TIMELINE_INVALID' 'Public-egress proof completed before the recorded readiness milestone.'
+    }
+    $evidence.timings_ms.readiness_ready_to_public_egress_proof = $afterPublicProofMs - $readinessReady
+    $evidence.timings_ms.primitive_start_to_functional_public_egress = $afterPublicProofMs - $disableStart
 
     & $deviceDiagnostic -AdbPath $AdbPath -PackageName $PackageName -MeshCidr $MeshCidr -EvidencePath $afterDevicePath | Out-Host
     $afterDevice = Read-RequiredJson $afterDevicePath 'LAB_RESEARCH_POST_DIAGNOSTIC_MISSING'
