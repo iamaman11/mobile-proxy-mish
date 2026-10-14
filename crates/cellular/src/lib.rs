@@ -154,7 +154,7 @@ pub enum CellularAdmissionReason {
     VpnDerivedNetwork,
     /// The observed candidate lacked Android's VALIDATED capability.
     NotValidated,
-    /// The currently admitted network was reported lost.
+    /// The currently observed network was reported lost by Android.
     NetworkLost,
 }
 
@@ -202,6 +202,7 @@ pub enum ApplyResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CellularEgress {
     admission: CellularAdmissionSnapshot,
+    last_observed_network: Option<NetworkHandle>,
 }
 
 impl Default for CellularEgress {
@@ -220,6 +221,7 @@ impl CellularEgress {
                 admitted_network: None,
                 last_sequence: None,
             },
+            last_observed_network: None,
         }
     }
 
@@ -286,11 +288,13 @@ impl CellularEgress {
                 || self.admission.admitted_network == Some(observation.handle);
 
             if invalidates_current {
+                self.last_observed_network = Some(observation.handle);
                 self.admission.state = CellularAdmissionState::NotAdmitted;
                 self.admission.reason = Some(reason);
                 self.admission.admitted_network = None;
             }
         } else {
+            self.last_observed_network = Some(observation.handle);
             self.admission.state = CellularAdmissionState::Admitted;
             self.admission.reason = None;
             self.admission.admitted_network = Some(observation.handle);
@@ -301,7 +305,9 @@ impl CellularEgress {
 
     /// Applies a platform `onLost`-equivalent event.
     ///
-    /// Losing an old superseded handle cannot evict a newer admitted cellular network.
+    /// Losing an old superseded handle cannot evict a newer admitted cellular network. If the
+    /// currently observed handle first failed admission (for example VALIDATED dropped), a later
+    /// `onLost` for that same handle upgrades the reason to `NetworkLost` without re-admitting it.
     pub fn lost(&mut self, sequence: ObservationSequence, handle: NetworkHandle) -> ApplyResult {
         if self.is_stale(sequence) {
             return ApplyResult::IgnoredStale(self.admission);
@@ -309,13 +315,16 @@ impl CellularEgress {
 
         self.admission.last_sequence = Some(sequence);
 
-        if self.admission.admitted_network == Some(handle) {
+        if self.admission.admitted_network == Some(handle)
+            || self.last_observed_network == Some(handle)
+            || self.admission.state == CellularAdmissionState::Unknown
+        {
             self.admission.state = CellularAdmissionState::NotAdmitted;
             self.admission.reason = Some(CellularAdmissionReason::NetworkLost);
             self.admission.admitted_network = None;
-        } else if self.admission.state == CellularAdmissionState::Unknown {
-            self.admission.state = CellularAdmissionState::NotAdmitted;
-            self.admission.reason = Some(CellularAdmissionReason::NetworkLost);
+            if self.last_observed_network == Some(handle) {
+                self.last_observed_network = None;
+            }
         }
 
         ApplyResult::Applied(self.admission)
@@ -436,6 +445,30 @@ mod tests {
         owner.observe(observation(1, 11, true, true, true, true));
 
         owner.lost(sequence(2), handle(11));
+
+        assert_eq!(
+            owner.admission().state(),
+            CellularAdmissionState::NotAdmitted
+        );
+        assert_eq!(
+            owner.admission().reason(),
+            Some(CellularAdmissionReason::NetworkLost)
+        );
+        assert_eq!(owner.admission().admitted_network(), None);
+    }
+
+    #[test]
+    fn loss_after_validation_drop_preserves_authoritative_network_lost_fact() {
+        let mut owner = CellularEgress::new();
+        owner.observe(observation(1, 11, true, true, true, true));
+        owner.observe(observation(2, 11, true, true, false, true));
+
+        assert_eq!(
+            owner.admission().reason(),
+            Some(CellularAdmissionReason::NotValidated)
+        );
+
+        owner.lost(sequence(3), handle(11));
 
         assert_eq!(
             owner.admission().state(),

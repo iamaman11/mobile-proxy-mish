@@ -10,9 +10,9 @@ use std::net::IpAddr;
 pub enum RotationPhase {
     Idle,
     Preparing,
-    AirplaneEnabling,
-    WaitingRadioDown,
-    AirplaneDisabling,
+    DataDisabling,
+    WaitingCellularLoss,
+    DataEnabling,
     WaitingCellularRecovery,
     WaitingRootPolicy,
     ProbingPublicIp,
@@ -47,9 +47,9 @@ pub enum RotationFailure {
     NoCurrentCellular,
     RootPolicyUnavailable,
     BeforeIpFailed,
-    AirplaneEnableFailed,
-    AirplaneObservationFailed,
-    AirplaneDisableFailed,
+    DataDisableFailed,
+    MobileDataObservationFailed,
+    DataEnableFailed,
     FreshCellularUnavailable,
     RootPolicyRecoveryFailed,
     AfterIpFailed,
@@ -61,8 +61,8 @@ pub enum RotationFailure {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RotationRestoreResult {
     NotRequired,
-    AlreadyOff,
-    RestoredOff,
+    AlreadyEnabled,
+    RestoredEnabled,
     Failed,
     Uncertain,
 }
@@ -121,10 +121,7 @@ struct RotationOperation {
     after_generation: Option<u64>,
     before_ip: Option<IpAddr>,
     after_ip: Option<IpAddr>,
-    airplane_on_observed: bool,
-    airplane_off_observed: bool,
     cellular_loss_observed: bool,
-    radio_power_off_observed: bool,
     latest_owner_generation: u64,
     fresh_cellular_generation: Option<u64>,
     root_authorized_generation: Option<u64>,
@@ -185,14 +182,9 @@ impl RotationOperation {
         }
     }
 
-    fn maybe_advance_radio_down(&mut self) {
-        if self.phase == RotationPhase::WaitingRadioDown
-            && self.airplane_on_observed
-            && self.cellular_loss_observed
-            && self.radio_power_off_observed
-        {
-            self.phase = RotationPhase::AirplaneDisabling;
-            self.restore_required = true;
+    fn maybe_advance_loss(&mut self) {
+        if self.phase == RotationPhase::WaitingCellularLoss && self.cellular_loss_observed {
+            self.phase = RotationPhase::DataEnabling;
         }
     }
 
@@ -212,13 +204,8 @@ impl RotationOperation {
             self.phase = RotationPhase::WaitingRootPolicy;
             return;
         }
-        if self.airplane_off_observed {
-            self.after_generation = Some(fresh);
-            self.restore_required = false;
-            self.phase = RotationPhase::ProbingPublicIp;
-        } else {
-            self.phase = RotationPhase::WaitingRootPolicy;
-        }
+        self.after_generation = Some(fresh);
+        self.phase = RotationPhase::ProbingPublicIp;
     }
 }
 
@@ -272,10 +259,7 @@ impl RotationStateMachine {
             after_generation: None,
             before_ip: None,
             after_ip: None,
-            airplane_on_observed: false,
-            airplane_off_observed: false,
             cellular_loss_observed: false,
-            radio_power_off_observed: false,
             latest_owner_generation: before_generation,
             fresh_cellular_generation: None,
             root_authorized_generation: None,
@@ -301,100 +285,77 @@ impl RotationStateMachine {
             return Err(RotationTransitionError::StaleGeneration);
         }
         operation.before_ip = Some(address);
-        operation.phase = RotationPhase::AirplaneEnabling;
+        // Recording the before-IP fact does not itself grant compensation authority. The runtime
+        // must first prove the expected precondition (mobile data ENABLED), then mark the exact
+        // point immediately before it submits the disable mutation.
+        operation.phase = RotationPhase::DataDisabling;
         Ok(operation.snapshot())
     }
 
-    pub fn airplane_enable_effect_completed(
+    pub fn data_disable_mutation_started(
+        &mut self,
+        operation_id: u64,
+    ) -> Result<RotationSnapshot, RotationTransitionError> {
+        let operation = self.active(operation_id)?;
+        if operation.phase != RotationPhase::DataDisabling {
+            return Err(RotationTransitionError::InvalidPhase);
+        }
+        operation.restore_required = true;
+        Ok(operation.snapshot())
+    }
+
+    pub fn data_disable_effect_completed(
         &mut self,
         operation_id: u64,
         outcome: RotationMutationOutcome,
     ) -> Result<RotationSnapshot, RotationTransitionError> {
         let operation = self.active(operation_id)?;
-        if operation.phase != RotationPhase::AirplaneEnabling {
+        if operation.phase != RotationPhase::DataDisabling {
             return Err(RotationTransitionError::InvalidPhase);
         }
         match outcome {
+            RotationMutationOutcome::Applied => {
+                operation.restore_required = true;
+                operation.phase = RotationPhase::WaitingCellularLoss;
+                operation.maybe_advance_loss();
+            }
             RotationMutationOutcome::Rejected => {
+                operation.restore_required = false;
                 return Ok(fail_operation(
                     operation,
-                    RotationFailure::AirplaneEnableFailed,
+                    RotationFailure::DataDisableFailed,
                 ));
             }
-            RotationMutationOutcome::Applied | RotationMutationOutcome::Uncertain => {
-                // Uncertain means ON may already have happened. Never replay blindly; an
-                // authoritative observation decides whether normal flow can continue.
+            RotationMutationOutcome::Uncertain => {
                 operation.restore_required = true;
-                operation.phase = RotationPhase::WaitingRadioDown;
-                operation.maybe_advance_radio_down();
+                return Ok(fail_operation(
+                    operation,
+                    RotationFailure::DataDisableFailed,
+                ));
             }
         }
         Ok(operation.snapshot())
     }
 
-    pub fn observe_airplane(
+    pub fn data_enable_effect_completed(
         &mut self,
         operation_id: u64,
-        enabled: bool,
+        outcome: RotationMutationOutcome,
     ) -> Result<RotationSnapshot, RotationTransitionError> {
         let operation = self.active(operation_id)?;
-        match operation.phase {
-            RotationPhase::WaitingRadioDown => {
-                if enabled {
-                    operation.airplane_on_observed = true;
-                    operation.restore_required = true;
-                    operation.maybe_advance_radio_down();
-                } else {
-                    // A separate authoritative observation disproves ON after either an applied
-                    // or uncertain mutation. There is nothing to replay and nothing to restore.
-                    operation.restore_required = false;
-                    return Ok(fail_operation(
-                        operation,
-                        RotationFailure::AirplaneEnableFailed,
-                    ));
-                }
-            }
-            RotationPhase::AirplaneDisabling => {
-                if !enabled {
-                    operation.airplane_off_observed = true;
-                }
-            }
-            RotationPhase::WaitingCellularRecovery | RotationPhase::WaitingRootPolicy => {
-                if enabled {
-                    operation.restore_required = true;
-                    return Ok(fail_operation(
-                        operation,
-                        RotationFailure::AirplaneDisableFailed,
-                    ));
-                }
-                operation.airplane_off_observed = true;
+        if operation.phase != RotationPhase::DataEnabling {
+            return Err(RotationTransitionError::InvalidPhase);
+        }
+        match outcome {
+            RotationMutationOutcome::Applied => {
+                operation.restore_required = false;
+                operation.phase = RotationPhase::WaitingCellularRecovery;
                 operation.maybe_advance_recovery();
             }
-            _ => return Err(RotationTransitionError::InvalidPhase),
-        }
-        Ok(operation.snapshot())
-    }
-
-    /// Records the positive Android telephony fact that the cellular radio is powered off.
-    ///
-    /// This is an operation-scoped framework observation, not a timer or carrier lease-release
-    /// claim. It may arrive before or after ConnectivityManager loss; normal disable starts only
-    /// after all required radio-down facts are present.
-    pub fn observe_radio_power_off(
-        &mut self,
-        operation_id: u64,
-    ) -> Result<RotationSnapshot, RotationTransitionError> {
-        let operation = self.active(operation_id)?;
-        match operation.phase {
-            RotationPhase::AirplaneEnabling | RotationPhase::WaitingRadioDown => {
-                operation.radio_power_off_observed = true;
-                operation.maybe_advance_radio_down();
+            RotationMutationOutcome::Rejected | RotationMutationOutcome::Uncertain => {
+                operation.restore_required = true;
+                return Ok(fail_operation(operation, RotationFailure::DataEnableFailed));
             }
-            RotationPhase::AirplaneDisabling => {
-                // A duplicate/late POWER_OFF callback carries no new transition authority.
-                operation.radio_power_off_observed = true;
-            }
-            _ => return Err(RotationTransitionError::InvalidPhase),
         }
         Ok(operation.snapshot())
     }
@@ -409,9 +370,9 @@ impl RotationStateMachine {
         if generation <= operation.before_generation {
             if matches!(
                 operation.phase,
-                RotationPhase::WaitingRadioDown
-                    | RotationPhase::AirplaneEnabling
-                    | RotationPhase::AirplaneDisabling
+                RotationPhase::DataDisabling
+                    | RotationPhase::WaitingCellularLoss
+                    | RotationPhase::DataEnabling
                     | RotationPhase::WaitingCellularRecovery
                     | RotationPhase::WaitingRootPolicy
             ) {
@@ -424,18 +385,13 @@ impl RotationStateMachine {
         }
 
         match operation.phase {
-            RotationPhase::AirplaneEnabling => {
+            RotationPhase::DataDisabling | RotationPhase::WaitingCellularLoss => {
                 if !admitted {
                     operation.cellular_loss_observed = true;
                 }
+                operation.maybe_advance_loss();
             }
-            RotationPhase::WaitingRadioDown => {
-                if !admitted {
-                    operation.cellular_loss_observed = true;
-                }
-                operation.maybe_advance_radio_down();
-            }
-            RotationPhase::AirplaneDisabling => {
+            RotationPhase::DataEnabling => {
                 operation.observe_recovery_cellular(generation, admitted);
             }
             RotationPhase::WaitingCellularRecovery | RotationPhase::WaitingRootPolicy => {
@@ -457,7 +413,7 @@ impl RotationStateMachine {
         if generation <= operation.before_generation {
             if matches!(
                 operation.phase,
-                RotationPhase::AirplaneDisabling
+                RotationPhase::DataEnabling
                     | RotationPhase::WaitingCellularRecovery
                     | RotationPhase::WaitingRootPolicy
             ) {
@@ -470,47 +426,19 @@ impl RotationStateMachine {
         }
 
         match operation.phase {
-            RotationPhase::AirplaneDisabling => {
+            RotationPhase::DataEnabling
+            | RotationPhase::WaitingCellularRecovery
+            | RotationPhase::WaitingRootPolicy => {
                 if authorized {
                     operation.root_authorized_generation = Some(generation);
                 } else {
                     operation.root_authorized_generation = None;
                 }
-            }
-            RotationPhase::WaitingCellularRecovery | RotationPhase::WaitingRootPolicy => {
-                if authorized {
-                    operation.root_authorized_generation = Some(generation);
-                } else {
-                    operation.root_authorized_generation = None;
+                if operation.phase != RotationPhase::DataEnabling {
+                    operation.maybe_advance_recovery();
                 }
-                operation.maybe_advance_recovery();
             }
             _ => return Err(RotationTransitionError::InvalidPhase),
-        }
-        Ok(operation.snapshot())
-    }
-
-    pub fn airplane_disable_effect_completed(
-        &mut self,
-        operation_id: u64,
-        outcome: RotationMutationOutcome,
-    ) -> Result<RotationSnapshot, RotationTransitionError> {
-        let operation = self.active(operation_id)?;
-        if operation.phase != RotationPhase::AirplaneDisabling {
-            return Err(RotationTransitionError::InvalidPhase);
-        }
-        match outcome {
-            RotationMutationOutcome::Rejected => {
-                return Ok(fail_operation(
-                    operation,
-                    RotationFailure::AirplaneDisableFailed,
-                ));
-            }
-            RotationMutationOutcome::Applied | RotationMutationOutcome::Uncertain => {
-                // Uncertain OFF is resolved by a fresh observation. It is never replayed here.
-                operation.phase = RotationPhase::WaitingCellularRecovery;
-                operation.maybe_advance_recovery();
-            }
         }
         Ok(operation.snapshot())
     }
@@ -572,8 +500,8 @@ impl RotationStateMachine {
         if matches!(
             restore,
             RotationRestoreResult::NotRequired
-                | RotationRestoreResult::AlreadyOff
-                | RotationRestoreResult::RestoredOff
+                | RotationRestoreResult::AlreadyEnabled
+                | RotationRestoreResult::RestoredEnabled
         ) {
             operation.restore_required = false;
         }
@@ -630,6 +558,26 @@ mod tests {
         (machine, id)
     }
 
+    fn detached(machine: &mut RotationStateMachine, id: u64) {
+        machine
+            .data_disable_effect_completed(id, RotationMutationOutcome::Applied)
+            .expect("disable");
+        let snapshot = machine.observe_cellular(id, 11, false).expect("loss");
+        assert_eq!(snapshot.phase, RotationPhase::DataEnabling);
+    }
+
+    fn recovered(machine: &mut RotationStateMachine, id: u64, generation: u64) {
+        machine
+            .data_enable_effect_completed(id, RotationMutationOutcome::Applied)
+            .expect("enable");
+        machine
+            .observe_cellular(id, generation, true)
+            .expect("fresh cellular");
+        machine
+            .observe_root_policy(id, generation, true)
+            .expect("root authorization");
+    }
+
     #[test]
     fn one_operation_only_and_terminal_allows_next_operation() {
         let mut machine = RotationStateMachine::new();
@@ -646,175 +594,144 @@ mod tests {
     }
 
     #[test]
-    fn raw_ip_facts_are_bounded_to_the_current_in_memory_rotation_snapshot() {
-        let mut machine = RotationStateMachine::new();
-        let id = machine.start(10).expect("start");
-        assert_eq!(machine.snapshot().before_ip, None);
-        assert_eq!(machine.snapshot().after_ip, None);
+    fn precondition_phase_does_not_claim_restore_before_disable_mutation() {
+        let (machine, _id) = started();
+        assert_eq!(machine.snapshot().phase, RotationPhase::DataDisabling);
+        assert!(!machine.snapshot().restore_required);
+    }
 
-        let before = ip("198.51.100.10");
-        let after = ip("198.51.100.11");
-        let snapshot = machine.record_before_ip(id, 10, before).expect("before");
-        assert_eq!(snapshot.before_ip, Some(before));
-        assert_eq!(snapshot.after_ip, None);
+    #[test]
+    fn disable_mutation_start_claims_restore_before_deadline_can_race() {
+        let (mut machine, id) = started();
+        let started = machine
+            .data_disable_mutation_started(id)
+            .expect("disable mutation start");
+        assert!(started.restore_required);
+        let failed = machine.deadline_exceeded(id).expect("deadline");
+        assert_eq!(failed.phase, RotationPhase::Failed);
+        assert!(failed.restore_required);
+    }
 
-        machine
-            .airplane_enable_effect_completed(id, RotationMutationOutcome::Applied)
-            .expect("enable");
-        machine.observe_airplane(id, true).expect("airplane on");
-        machine.observe_cellular(id, 11, false).expect("loss");
-        machine
-            .observe_radio_power_off(id)
-            .expect("radio power off");
-        machine
-            .airplane_disable_effect_completed(id, RotationMutationOutcome::Applied)
+    #[test]
+    fn disable_completion_alone_never_implies_cellular_loss() {
+        let (mut machine, id) = started();
+        let snapshot = machine
+            .data_disable_effect_completed(id, RotationMutationOutcome::Applied)
             .expect("disable");
-        machine.observe_airplane(id, false).expect("airplane off");
-        machine
-            .observe_cellular(id, 12, true)
-            .expect("fresh cellular");
-        machine.observe_root_policy(id, 12, true).expect("root");
-        let terminal = machine.record_after_ip(id, 12, after).expect("after");
-        assert_eq!(terminal.before_ip, Some(before));
-        assert_eq!(terminal.after_ip, Some(after));
-        assert_eq!(
-            terminal.terminal_result,
-            Some(RotationTerminalResult::Changed)
-        );
-
-        let next = machine.start(13).expect("next operation");
-        assert!(next > id);
-        assert_eq!(machine.snapshot().before_ip, None);
-        assert_eq!(machine.snapshot().after_ip, None);
+        assert_eq!(snapshot.phase, RotationPhase::WaitingCellularLoss);
+        assert!(snapshot.restore_required);
     }
 
     #[test]
-    fn command_completion_alone_never_implies_airplane_fact_or_radio_loss() {
-        let (mut machine, id) = started();
-        let snapshot = machine
-            .airplane_enable_effect_completed(id, RotationMutationOutcome::Applied)
-            .expect("enable");
-        assert_eq!(snapshot.phase, RotationPhase::WaitingRadioDown);
-
-        let snapshot = machine.observe_cellular(id, 11, false).expect("loss");
-        assert_eq!(snapshot.phase, RotationPhase::WaitingRadioDown);
-
-        let snapshot = machine.observe_airplane(id, true).expect("airplane on");
-        assert_eq!(snapshot.phase, RotationPhase::WaitingRadioDown);
-
-        let snapshot = machine
-            .observe_radio_power_off(id)
-            .expect("radio power off");
-        assert_eq!(snapshot.phase, RotationPhase::AirplaneDisabling);
-    }
-
-    #[test]
-    fn airplane_on_without_cellular_loss_does_not_advance() {
+    fn enable_is_reached_only_after_fresh_authoritative_loss() {
         let (mut machine, id) = started();
         machine
-            .airplane_enable_effect_completed(id, RotationMutationOutcome::Applied)
-            .expect("enable");
-        let snapshot = machine.observe_airplane(id, true).expect("airplane on");
-        assert_eq!(snapshot.phase, RotationPhase::WaitingRadioDown);
-        let snapshot = machine
-            .observe_radio_power_off(id)
-            .expect("radio power off");
-        assert_eq!(snapshot.phase, RotationPhase::WaitingRadioDown);
-    }
-
-    #[test]
-    fn disable_is_reached_once_all_required_facts_exist() {
-        let (mut machine, id) = started();
-        machine
-            .airplane_enable_effect_completed(id, RotationMutationOutcome::Applied)
-            .expect("enable");
-        machine.observe_airplane(id, true).expect("on");
-        let snapshot = machine.observe_cellular(id, 11, false).expect("loss");
-        assert_eq!(snapshot.phase, RotationPhase::WaitingRadioDown);
-        let snapshot = machine
-            .observe_radio_power_off(id)
-            .expect("radio power off");
-        assert_eq!(snapshot.phase, RotationPhase::AirplaneDisabling);
-        let still_disabling = machine
-            .observe_cellular(id, 12, false)
-            .expect("cellular event during disable");
-        assert_eq!(still_disabling.phase, RotationPhase::AirplaneDisabling);
-        assert_eq!(still_disabling.after_generation, None);
-    }
-
-    #[test]
-    fn radio_down_facts_can_arrive_in_any_order_without_a_timer() {
-        for order in 0..3 {
-            let (mut machine, id) = started();
-            machine
-                .airplane_enable_effect_completed(id, RotationMutationOutcome::Applied)
-                .expect("enable");
-            let first = match order {
-                0 => {
-                    machine.observe_airplane(id, true).expect("on");
-                    machine.observe_cellular(id, 11, false).expect("loss")
-                }
-                1 => {
-                    machine.observe_cellular(id, 11, false).expect("loss");
-                    machine
-                        .observe_radio_power_off(id)
-                        .expect("radio power off")
-                }
-                _ => {
-                    machine
-                        .observe_radio_power_off(id)
-                        .expect("radio power off");
-                    machine.observe_airplane(id, true).expect("on")
-                }
-            };
-            assert_eq!(first.phase, RotationPhase::WaitingRadioDown);
-            let terminal_fact = match order {
-                0 => machine
-                    .observe_radio_power_off(id)
-                    .expect("radio power off"),
-                1 => machine.observe_airplane(id, true).expect("on"),
-                _ => machine.observe_cellular(id, 11, false).expect("loss"),
-            };
-            assert_eq!(terminal_fact.phase, RotationPhase::AirplaneDisabling);
-        }
-    }
-
-    #[test]
-    fn generation_a_recovery_is_ignored_and_fresh_b_requires_exact_root_authorization() {
-        let (mut machine, id) = started();
-        machine
-            .airplane_enable_effect_completed(id, RotationMutationOutcome::Applied)
-            .expect("enable");
-        machine.observe_airplane(id, true).expect("on");
-        machine.observe_cellular(id, 11, false).expect("loss");
-        machine
-            .observe_radio_power_off(id)
-            .expect("radio power off");
-        machine
-            .airplane_disable_effect_completed(id, RotationMutationOutcome::Applied)
+            .data_disable_effect_completed(id, RotationMutationOutcome::Applied)
             .expect("disable");
-        machine.observe_airplane(id, false).expect("off");
+        let stale = machine
+            .observe_cellular(id, 10, false)
+            .expect("old ignored");
+        assert_eq!(stale.phase, RotationPhase::WaitingCellularLoss);
+        let fresh = machine.observe_cellular(id, 11, false).expect("fresh loss");
+        assert_eq!(fresh.phase, RotationPhase::DataEnabling);
+    }
 
-        let old = machine
-            .observe_cellular(id, 10, true)
-            .expect("old generation ignored");
-        assert_eq!(old.phase, RotationPhase::WaitingCellularRecovery);
+    #[test]
+    fn loss_can_arrive_during_disable_effect_without_being_lost() {
+        let (mut machine, id) = started();
+        let early = machine.observe_cellular(id, 11, false).expect("early loss");
+        assert_eq!(early.phase, RotationPhase::DataDisabling);
+        let ready = machine
+            .data_disable_effect_completed(id, RotationMutationOutcome::Applied)
+            .expect("disable complete");
+        assert_eq!(ready.phase, RotationPhase::DataEnabling);
+    }
 
+    #[test]
+    fn uncertain_disable_fails_main_path_and_requires_restore() {
+        let (mut machine, id) = started();
+        let failed = machine
+            .data_disable_effect_completed(id, RotationMutationOutcome::Uncertain)
+            .expect("uncertain disable");
+        assert_eq!(failed.phase, RotationPhase::Failed);
+        assert_eq!(failed.failure, Some(RotationFailure::DataDisableFailed));
+        assert!(failed.restore_required);
+    }
+
+    #[test]
+    fn rejected_disable_fails_without_claiming_restore() {
+        let (mut machine, id) = started();
+        let failed = machine
+            .data_disable_effect_completed(id, RotationMutationOutcome::Rejected)
+            .expect("rejected disable");
+        assert_eq!(failed.phase, RotationPhase::Failed);
+        assert!(!failed.restore_required);
+    }
+
+    #[test]
+    fn uncertain_enable_fails_main_path_and_preserves_restore_requirement() {
+        let (mut machine, id) = started();
+        detached(&mut machine, id);
+        let failed = machine
+            .data_enable_effect_completed(id, RotationMutationOutcome::Uncertain)
+            .expect("uncertain enable");
+        assert_eq!(failed.phase, RotationPhase::Failed);
+        assert_eq!(failed.failure, Some(RotationFailure::DataEnableFailed));
+        assert!(failed.restore_required);
+    }
+
+    #[test]
+    fn fresh_generation_requires_exact_root_authorization() {
+        let (mut machine, id) = started();
+        detached(&mut machine, id);
+        machine
+            .data_enable_effect_completed(id, RotationMutationOutcome::Applied)
+            .expect("enable");
         let fresh = machine
             .observe_cellular(id, 12, true)
             .expect("fresh cellular");
         assert_eq!(fresh.phase, RotationPhase::WaitingRootPolicy);
         assert_eq!(fresh.after_generation, None);
-
-        let authorized = machine
-            .observe_root_policy(id, 12, true)
-            .expect("root authorization");
+        let stale_root = machine
+            .observe_root_policy(id, 11, true)
+            .expect("stale root ignored");
+        assert_eq!(stale_root.phase, RotationPhase::WaitingRootPolicy);
+        let authorized = machine.observe_root_policy(id, 12, true).expect("root B");
         assert_eq!(authorized.phase, RotationPhase::ProbingPublicIp);
         assert_eq!(authorized.after_generation, Some(12));
     }
 
     #[test]
-    fn after_ip_is_generation_bound_and_distinguishes_changed_unchanged() {
+    fn root_fact_may_arrive_before_same_generation_cellular() {
+        let (mut machine, id) = started();
+        detached(&mut machine, id);
+        machine
+            .data_enable_effect_completed(id, RotationMutationOutcome::Applied)
+            .expect("enable");
+        let root_first = machine
+            .observe_root_policy(id, 12, true)
+            .expect("root first");
+        assert_eq!(root_first.phase, RotationPhase::WaitingCellularRecovery);
+        let recovered = machine.observe_cellular(id, 12, true).expect("cellular B");
+        assert_eq!(recovered.phase, RotationPhase::ProbingPublicIp);
+    }
+
+    #[test]
+    fn newer_owner_loss_invalidates_older_recovery_and_root_facts() {
+        let (mut machine, id) = started();
+        detached(&mut machine, id);
+        machine
+            .data_enable_effect_completed(id, RotationMutationOutcome::Applied)
+            .expect("enable");
+        machine.observe_root_policy(id, 12, true).expect("root B");
+        let newer = machine.observe_cellular(id, 13, false).expect("loss C");
+        assert_eq!(newer.phase, RotationPhase::WaitingCellularRecovery);
+        let stale = machine.observe_cellular(id, 12, true).expect("stale B");
+        assert_eq!(stale.phase, RotationPhase::WaitingCellularRecovery);
+    }
+
+    #[test]
+    fn after_ip_is_generation_bound_and_changed_or_unchanged_both_succeed() {
         for (after, expected_phase, expected_terminal) in [
             (
                 "198.51.100.10",
@@ -828,23 +745,8 @@ mod tests {
             ),
         ] {
             let (mut machine, id) = started();
-            machine
-                .airplane_enable_effect_completed(id, RotationMutationOutcome::Applied)
-                .expect("enable");
-            machine.observe_airplane(id, true).expect("on");
-            machine.observe_cellular(id, 11, false).expect("loss");
-            machine
-                .observe_radio_power_off(id)
-                .expect("radio power off");
-            machine
-                .airplane_disable_effect_completed(id, RotationMutationOutcome::Applied)
-                .expect("disable");
-            machine.observe_airplane(id, false).expect("off");
-            machine.observe_cellular(id, 12, true).expect("recovery");
-            machine
-                .observe_root_policy(id, 12, true)
-                .expect("root authorization");
-
+            detached(&mut machine, id);
+            recovered(&mut machine, id, 12);
             assert_eq!(
                 machine.record_after_ip(id, 11, ip(after)),
                 Err(RotationTransitionError::StaleGeneration)
@@ -857,251 +759,70 @@ mod tests {
     }
 
     #[test]
-    fn terminal_state_cannot_mutate_except_restore_bookkeeping_on_failure() {
+    fn raw_ip_facts_are_bounded_to_current_in_memory_operation() {
+        let mut machine = RotationStateMachine::new();
+        let id = machine.start(10).expect("start");
+        machine
+            .record_before_ip(id, 10, ip("198.51.100.10"))
+            .expect("before");
+        detached(&mut machine, id);
+        recovered(&mut machine, id, 12);
+        machine
+            .record_after_ip(id, 12, ip("203.0.113.20"))
+            .expect("after");
+        let next = machine.start(13).expect("next");
+        assert!(next > id);
+        assert_eq!(machine.snapshot().before_ip, None);
+        assert_eq!(machine.snapshot().after_ip, None);
+    }
+
+    #[test]
+    fn absolute_deadline_keeps_restore_requirement_only_while_data_may_be_disabled() {
+        let (mut machine, id) = started();
+        let failed_before_mutation = machine.deadline_exceeded(id).expect("deadline");
+        assert!(!failed_before_mutation.restore_required);
+
+        let (mut machine, id) = started();
+        machine
+            .data_disable_mutation_started(id)
+            .expect("disable mutation start");
+        let failed_during_disable = machine.deadline_exceeded(id).expect("deadline");
+        assert!(failed_during_disable.restore_required);
+
+        let (mut machine, id) = started();
+        machine
+            .data_disable_mutation_started(id)
+            .expect("disable mutation start");
+        detached(&mut machine, id);
+        machine
+            .data_enable_effect_completed(id, RotationMutationOutcome::Applied)
+            .expect("verified enable");
+        let failed_after_verified_enable = machine.deadline_exceeded(id).expect("deadline");
+        assert!(!failed_after_verified_enable.restore_required);
+    }
+
+    #[test]
+    fn terminal_state_only_accepts_restore_bookkeeping_on_failure() {
         let (mut machine, id) = started();
         let failed = machine
-            .fail(id, RotationFailure::DeadlineExceeded)
+            .fail(id, RotationFailure::StateUnavailable)
             .expect("fail");
         assert_eq!(failed.phase, RotationPhase::Failed);
-        assert_eq!(
-            machine.observe_airplane(id, false),
-            Err(RotationTransitionError::InvalidPhase)
-        );
         let restored = machine
-            .record_restore(id, RotationRestoreResult::AlreadyOff)
+            .record_restore(id, RotationRestoreResult::AlreadyEnabled)
             .expect("restore");
         assert_eq!(
-            restored.terminal_result,
-            Some(RotationTerminalResult::Failed)
-        );
-        assert_eq!(
             restored.restore_result,
-            Some(RotationRestoreResult::AlreadyOff)
+            Some(RotationRestoreResult::AlreadyEnabled)
         );
-    }
-
-    #[test]
-    fn uncertain_enable_requires_observation_and_is_never_replayed_by_owner() {
-        let (mut machine, id) = started();
-        let waiting = machine
-            .airplane_enable_effect_completed(id, RotationMutationOutcome::Uncertain)
-            .expect("uncertain enable");
-        assert_eq!(waiting.phase, RotationPhase::WaitingRadioDown);
-        assert!(waiting.restore_required);
-
-        let failed = machine.observe_airplane(id, false).expect("observed off");
-        assert_eq!(failed.phase, RotationPhase::Failed);
-        assert_eq!(failed.failure, Some(RotationFailure::AirplaneEnableFailed));
-        assert!(!failed.restore_required);
-    }
-
-    #[test]
-    fn uncertain_disable_requires_observation_and_preserves_restore_requirement() {
-        let (mut machine, id) = started();
-        machine
-            .airplane_enable_effect_completed(id, RotationMutationOutcome::Applied)
-            .expect("enable");
-        machine.observe_airplane(id, true).expect("on");
-        machine.observe_cellular(id, 11, false).expect("loss");
-        machine
-            .observe_radio_power_off(id)
-            .expect("radio power off");
-
-        let waiting = machine
-            .airplane_disable_effect_completed(id, RotationMutationOutcome::Uncertain)
-            .expect("uncertain disable");
-        assert_eq!(waiting.phase, RotationPhase::WaitingCellularRecovery);
-        assert!(waiting.restore_required);
-
-        let failed = machine.observe_airplane(id, true).expect("still on");
-        assert_eq!(failed.phase, RotationPhase::Failed);
-        assert_eq!(failed.failure, Some(RotationFailure::AirplaneDisableFailed));
-        assert!(failed.restore_required);
-    }
-
-    #[test]
-    fn root_authorization_is_an_independent_exact_generation_fact() {
-        let (mut machine, id) = started();
-        machine
-            .airplane_enable_effect_completed(id, RotationMutationOutcome::Applied)
-            .expect("enable");
-        machine.observe_airplane(id, true).expect("on");
-        machine.observe_cellular(id, 11, false).expect("loss");
-        machine
-            .observe_radio_power_off(id)
-            .expect("radio power off");
-        machine
-            .airplane_disable_effect_completed(id, RotationMutationOutcome::Applied)
-            .expect("disable");
-        machine.observe_airplane(id, false).expect("off");
-        machine.observe_cellular(id, 12, true).expect("fresh B");
-
-        let stale = machine
-            .observe_root_policy(id, 11, true)
-            .expect("stale root ignored");
-        assert_eq!(stale.phase, RotationPhase::WaitingRootPolicy);
-
-        let authorized = machine
-            .observe_root_policy(id, 12, true)
-            .expect("B root authorized");
-        assert_eq!(authorized.phase, RotationPhase::ProbingPublicIp);
-        assert_eq!(authorized.after_generation, Some(12));
-    }
-
-    #[test]
-    fn absolute_deadline_is_terminal_and_keeps_restore_requirement() {
-        let (mut machine, id) = started();
-        machine
-            .airplane_enable_effect_completed(id, RotationMutationOutcome::Applied)
-            .expect("enable");
-        machine.observe_airplane(id, true).expect("on");
-        let failed = machine.deadline_exceeded(id).expect("deadline");
-        assert_eq!(failed.phase, RotationPhase::Failed);
-        assert_eq!(failed.failure, Some(RotationFailure::DeadlineExceeded));
-        assert!(failed.restore_required);
-    }
-
-    #[test]
-    fn early_radio_down_facts_are_retained_until_all_required_facts_exist() {
-        let (mut machine, id) = started();
-        let early_loss = machine
-            .observe_cellular(id, 11, false)
-            .expect("loss during enable");
-        assert_eq!(early_loss.phase, RotationPhase::AirplaneEnabling);
-        let early_power_off = machine
-            .observe_radio_power_off(id)
-            .expect("radio power off during enable");
-        assert_eq!(early_power_off.phase, RotationPhase::AirplaneEnabling);
-        let waiting = machine
-            .airplane_enable_effect_completed(id, RotationMutationOutcome::Applied)
-            .expect("enable complete");
-        assert_eq!(waiting.phase, RotationPhase::WaitingRadioDown);
-        let ready_for_off = machine.observe_airplane(id, true).expect("airplane on");
-        assert_eq!(ready_for_off.phase, RotationPhase::AirplaneDisabling);
-    }
-
-    #[test]
-    fn newer_owner_loss_invalidates_older_recovery_candidate_and_root_authorization() {
-        let (mut machine, id) = started();
-        machine
-            .airplane_enable_effect_completed(id, RotationMutationOutcome::Applied)
-            .expect("enable");
-        machine.observe_airplane(id, true).expect("on");
-        machine.observe_cellular(id, 11, false).expect("loss");
-        machine
-            .observe_radio_power_off(id)
-            .expect("radio power off");
-        machine
-            .airplane_disable_effect_completed(id, RotationMutationOutcome::Applied)
-            .expect("disable");
-        machine.observe_airplane(id, false).expect("off");
-        machine.observe_root_policy(id, 12, true).expect("root B");
-        let waiting = machine.observe_cellular(id, 12, true).expect("cellular B");
-        assert_eq!(waiting.phase, RotationPhase::ProbingPublicIp);
-
-        // Build the same pre-probe state again, but inject a newer owner generation before
-        // authorization can complete. The older B facts must not survive C.
-        let (mut machine, id) = started();
-        machine
-            .airplane_enable_effect_completed(id, RotationMutationOutcome::Applied)
-            .expect("enable");
-        machine.observe_airplane(id, true).expect("on");
-        machine.observe_cellular(id, 11, false).expect("loss");
-        machine
-            .observe_radio_power_off(id)
-            .expect("radio power off");
-        machine
-            .airplane_disable_effect_completed(id, RotationMutationOutcome::Applied)
-            .expect("disable");
-        machine.observe_airplane(id, false).expect("off");
-        machine.observe_root_policy(id, 12, true).expect("root B");
-        let waiting = machine
-            .observe_cellular(id, 13, false)
-            .expect("newer loss C");
-        assert_eq!(waiting.phase, RotationPhase::WaitingCellularRecovery);
-        assert_eq!(waiting.after_generation, None);
-
-        let stale = machine
-            .observe_cellular(id, 12, true)
-            .expect("stale B ignored");
-        assert_eq!(stale.phase, RotationPhase::WaitingCellularRecovery);
-        assert_eq!(stale.after_generation, None);
-        let stale_root = machine
-            .observe_root_policy(id, 12, true)
-            .expect("stale root B ignored");
-        assert_eq!(stale_root.phase, RotationPhase::WaitingCellularRecovery);
-    }
-
-    #[test]
-    fn root_fact_can_arrive_before_same_generation_cellular_without_losing_currentness() {
-        let (mut machine, id) = started();
-        machine
-            .airplane_enable_effect_completed(id, RotationMutationOutcome::Applied)
-            .expect("enable");
-        machine.observe_airplane(id, true).expect("on");
-        machine.observe_cellular(id, 11, false).expect("loss");
-        machine
-            .observe_radio_power_off(id)
-            .expect("radio power off");
-        machine
-            .airplane_disable_effect_completed(id, RotationMutationOutcome::Applied)
-            .expect("disable");
-        machine.observe_airplane(id, false).expect("off");
-
-        let root_first = machine
-            .observe_root_policy(id, 12, true)
-            .expect("root B first");
-        assert_eq!(root_first.phase, RotationPhase::WaitingCellularRecovery);
-
-        let recovered = machine.observe_cellular(id, 12, true).expect("cellular B");
-        assert_eq!(recovered.phase, RotationPhase::ProbingPublicIp);
-        assert_eq!(recovered.after_generation, Some(12));
-    }
-
-    #[test]
-    fn radio_power_off_fact_is_not_reused_by_the_next_operation() {
-        let (mut machine, first_id) = started();
-        machine
-            .airplane_enable_effect_completed(first_id, RotationMutationOutcome::Applied)
-            .expect("enable first");
-        machine.observe_airplane(first_id, true).expect("on first");
-        machine
-            .observe_cellular(first_id, 11, false)
-            .expect("loss first");
-        machine
-            .observe_radio_power_off(first_id)
-            .expect("radio power off first");
-        assert_eq!(machine.snapshot().phase, RotationPhase::AirplaneDisabling);
-        machine
-            .fail(first_id, RotationFailure::StateUnavailable)
-            .expect("terminate first");
-
-        let second_id = machine.start(12).expect("start second");
-        machine
-            .record_before_ip(second_id, 12, ip("198.51.100.20"))
-            .expect("before second");
-        machine
-            .airplane_enable_effect_completed(second_id, RotationMutationOutcome::Applied)
-            .expect("enable second");
-        machine
-            .observe_airplane(second_id, true)
-            .expect("on second");
-        let waiting = machine
-            .observe_cellular(second_id, 13, false)
-            .expect("loss second");
-
-        assert_eq!(waiting.phase, RotationPhase::WaitingRadioDown);
+        assert!(!restored.restore_required);
     }
 
     #[test]
     fn stale_operation_id_is_rejected() {
         let (mut machine, id) = started();
         assert_eq!(
-            machine.observe_airplane(id + 1, true),
-            Err(RotationTransitionError::StaleOperation)
-        );
-        assert_eq!(
-            machine.observe_radio_power_off(id + 1),
+            machine.data_disable_effect_completed(id + 1, RotationMutationOutcome::Applied),
             Err(RotationTransitionError::StaleOperation)
         );
     }

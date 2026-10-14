@@ -20,11 +20,11 @@ use mish_rotation::{
 };
 use mish_runtime::{
     CellularPolicyObserver, CellularPolicyPublication, CellularReconcileDiagnostic,
-    CellularRequestRearmEffect, ControlAuthSignError, ControlAuthSigner,
-    ControlOperationTimingSnapshot, ControlRuntimeSnapshot, ControlRuntimeStartError,
-    ControlSessionState, MeshRuntimeObserver, ProductDiagnosticSnapshot, ProductRuntimeCoordinator,
-    ProductRuntimeSnapshot, ProxyRuntimeObserver, ProxyRuntimePublication,
-    ProxyServingState as OwnerProxyServingState, ReadinessDiagnosticSnapshot, ReadinessObserver,
+    ControlAuthSignError, ControlAuthSigner, ControlOperationTimingSnapshot,
+    ControlRuntimeSnapshot, ControlRuntimeStartError, ControlSessionState, MeshRuntimeObserver,
+    ProductDiagnosticSnapshot, ProductRuntimeCoordinator, ProductRuntimeSnapshot,
+    ProxyRuntimeObserver, ProxyRuntimePublication, ProxyServingState as OwnerProxyServingState,
+    ReadinessDiagnosticSnapshot, ReadinessObserver,
     RootAuthorityStatus as OwnerRootAuthorityStatus, RootPolicyFailure as OwnerRootPolicyFailure,
     RootPolicyPhaseDiagnostic, RootPolicyPhaseDiagnostics, RootPolicyReconcileDiagnostic,
     RootPolicyResult as OwnerRootPolicyResult, RootRecoveryDiagnostic, RotationObserver,
@@ -300,9 +300,9 @@ pub struct ProxyRuntimePublicationView {
 pub enum RotationPhaseView {
     Idle,
     Preparing,
-    AirplaneEnabling,
-    WaitingRadioDown,
-    AirplaneDisabling,
+    DataDisabling,
+    WaitingCellularLoss,
+    DataEnabling,
     WaitingCellularRecovery,
     WaitingRootPolicy,
     ProbingPublicIp,
@@ -324,9 +324,9 @@ pub enum RotationFailureView {
     NoCurrentCellular,
     RootPolicyUnavailable,
     BeforeIpFailed,
-    AirplaneEnableFailed,
-    AirplaneObservationFailed,
-    AirplaneDisableFailed,
+    DataDisableFailed,
+    MobileDataObservationFailed,
+    DataEnableFailed,
     FreshCellularUnavailable,
     RootPolicyRecoveryFailed,
     AfterIpFailed,
@@ -338,8 +338,8 @@ pub enum RotationFailureView {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum RotationRestoreResultView {
     NotRequired,
-    AlreadyOff,
-    RestoredOff,
+    AlreadyEnabled,
+    RestoredEnabled,
     Failed,
     Uncertain,
 }
@@ -401,18 +401,13 @@ pub struct RotationRuntimeTimingView {
     pub activated_ms: Option<u64>,
     pub pre_rotation_probe_started_ms: Option<u64>,
     pub pre_rotation_probe_completed_ms: Option<u64>,
-    pub airplane_enable_started_ms: Option<u64>,
-    pub airplane_enable_effect_completed_ms: Option<u64>,
-    pub airplane_on_observed_ms: Option<u64>,
+    pub mobile_data_precondition_observed_ms: Option<u64>,
+    pub mobile_data_precondition_enabled: Option<bool>,
+    pub data_disable_started_ms: Option<u64>,
+    pub data_disable_effect_completed_ms: Option<u64>,
     pub cellular_loss_observed_ms: Option<u64>,
-    pub radio_power_off_observed_ms: Option<u64>,
-    pub airplane_disable_started_ms: Option<u64>,
-    pub airplane_disable_effect_completed_ms: Option<u64>,
-    pub airplane_off_observed_ms: Option<u64>,
-    pub cellular_request_rearm_started_ms: Option<u64>,
-    pub cellular_request_rearm_completed_ms: Option<u64>,
-    pub first_platform_cellular_observation_ms: Option<u64>,
-    pub platform_cellular_observations_after_rearm: u64,
+    pub data_enable_started_ms: Option<u64>,
+    pub data_enable_effect_completed_ms: Option<u64>,
     pub fresh_cellular_observed_ms: Option<u64>,
     pub fresh_cellular_generation: Option<u64>,
     pub root_authorized_ms: Option<u64>,
@@ -532,24 +527,9 @@ pub trait NativeCellularPolicyObserver: Send + Sync {
 }
 
 #[uniffi::export(foreign)]
-pub trait NativeCellularRequestRearmEffect: Send + Sync {
-    fn rearm_cellular_request(&self) -> bool;
-}
-
-#[uniffi::export(foreign)]
 pub trait NativeControlAuthSigner: Send + Sync {
     /// Returns Android Keystore SHA256withECDSA DER bytes. Empty means signing failed closed.
     fn sign_control_auth(&self, payload: Vec<u8>) -> Vec<u8>;
-}
-
-struct ForeignCellularRequestRearmEffect {
-    effect: Arc<dyn NativeCellularRequestRearmEffect>,
-}
-
-impl CellularRequestRearmEffect for ForeignCellularRequestRearmEffect {
-    fn rearm_cellular_request(&self) -> bool {
-        self.effect.rearm_cellular_request()
-    }
 }
 
 struct ForeignControlAuthSigner {
@@ -627,15 +607,8 @@ impl NativeProductRuntime {
         self.runtime.request_stop().map(|_| ()).map_err(Into::into)
     }
 
-    pub fn start_public_ip_rotation(
-        self: &Arc<Self>,
-        cellular_request_rearm: Arc<dyn NativeCellularRequestRearmEffect>,
-    ) -> Result<u64, NativeRotationStartError> {
-        self.runtime
-            .start_public_ip_rotation(Arc::new(ForeignCellularRequestRearmEffect {
-                effect: cellular_request_rearm,
-            }))
-            .map_err(Into::into)
+    pub fn start_public_ip_rotation(self: &Arc<Self>) -> Result<u64, NativeRotationStartError> {
+        self.runtime.start_public_ip_rotation().map_err(Into::into)
     }
 
     pub fn rotation_snapshot(&self) -> RotationSnapshotView {
@@ -646,15 +619,11 @@ impl NativeProductRuntime {
         self: &Arc<Self>,
         public_key_spki: Vec<u8>,
         signer: Arc<dyn NativeControlAuthSigner>,
-        cellular_request_rearm: Arc<dyn NativeCellularRequestRearmEffect>,
     ) -> Result<String, NativeControlStartError> {
         self.runtime
             .start_remote_control(
                 public_key_spki,
                 Arc::new(ForeignControlAuthSigner { signer }),
-                Arc::new(ForeignCellularRequestRearmEffect {
-                    effect: cellular_request_rearm,
-                }),
             )
             .map_err(Into::into)
     }
@@ -785,12 +754,6 @@ impl NativeProductRuntime {
             .network_lost(sequence.raw(), network_handle)
             .map(map_snapshot)
             .map_err(|_| CellularBridgeError::OwnerUnavailable)
-    }
-
-    /// Positive Android telephony fact only. Rust decides whether it belongs to an active
-    /// Rotation and whether the radio-down gate is complete.
-    pub fn observe_radio_power_off(&self) -> Result<(), NativeProductRuntimeError> {
-        self.runtime.observe_radio_power_off().map_err(Into::into)
     }
 
     pub fn invalidate_cellular_platform_facts(&self) -> Result<(), NativeProductRuntimeError> {
@@ -1138,19 +1101,13 @@ fn map_rotation_runtime_timing(timing: RotationRuntimeTimingSnapshot) -> Rotatio
         activated_ms: timing.activated_ms,
         pre_rotation_probe_started_ms: timing.pre_rotation_probe_started_ms,
         pre_rotation_probe_completed_ms: timing.pre_rotation_probe_completed_ms,
-        airplane_enable_started_ms: timing.airplane_enable_started_ms,
-        airplane_enable_effect_completed_ms: timing.airplane_enable_effect_completed_ms,
-        airplane_on_observed_ms: timing.airplane_on_observed_ms,
+        mobile_data_precondition_observed_ms: timing.mobile_data_precondition_observed_ms,
+        mobile_data_precondition_enabled: timing.mobile_data_precondition_enabled,
+        data_disable_started_ms: timing.data_disable_started_ms,
+        data_disable_effect_completed_ms: timing.data_disable_effect_completed_ms,
         cellular_loss_observed_ms: timing.cellular_loss_observed_ms,
-        radio_power_off_observed_ms: timing.radio_power_off_observed_ms,
-        airplane_disable_started_ms: timing.airplane_disable_started_ms,
-        airplane_disable_effect_completed_ms: timing.airplane_disable_effect_completed_ms,
-        airplane_off_observed_ms: timing.airplane_off_observed_ms,
-        cellular_request_rearm_started_ms: timing.cellular_request_rearm_started_ms,
-        cellular_request_rearm_completed_ms: timing.cellular_request_rearm_completed_ms,
-        first_platform_cellular_observation_ms: timing.first_platform_cellular_observation_ms,
-        platform_cellular_observations_after_rearm: timing
-            .platform_cellular_observations_after_rearm,
+        data_enable_started_ms: timing.data_enable_started_ms,
+        data_enable_effect_completed_ms: timing.data_enable_effect_completed_ms,
         fresh_cellular_observed_ms: timing.fresh_cellular_observed_ms,
         fresh_cellular_generation: timing.fresh_cellular_generation,
         root_authorized_ms: timing.root_authorized_ms,
@@ -1181,9 +1138,9 @@ fn map_rotation_phase(phase: RotationPhase) -> RotationPhaseView {
     match phase {
         RotationPhase::Idle => RotationPhaseView::Idle,
         RotationPhase::Preparing => RotationPhaseView::Preparing,
-        RotationPhase::AirplaneEnabling => RotationPhaseView::AirplaneEnabling,
-        RotationPhase::WaitingRadioDown => RotationPhaseView::WaitingRadioDown,
-        RotationPhase::AirplaneDisabling => RotationPhaseView::AirplaneDisabling,
+        RotationPhase::DataDisabling => RotationPhaseView::DataDisabling,
+        RotationPhase::WaitingCellularLoss => RotationPhaseView::WaitingCellularLoss,
+        RotationPhase::DataEnabling => RotationPhaseView::DataEnabling,
         RotationPhase::WaitingCellularRecovery => RotationPhaseView::WaitingCellularRecovery,
         RotationPhase::WaitingRootPolicy => RotationPhaseView::WaitingRootPolicy,
         RotationPhase::ProbingPublicIp => RotationPhaseView::ProbingPublicIp,
@@ -1207,11 +1164,11 @@ fn map_rotation_failure(failure: RotationFailure) -> RotationFailureView {
         RotationFailure::NoCurrentCellular => RotationFailureView::NoCurrentCellular,
         RotationFailure::RootPolicyUnavailable => RotationFailureView::RootPolicyUnavailable,
         RotationFailure::BeforeIpFailed => RotationFailureView::BeforeIpFailed,
-        RotationFailure::AirplaneEnableFailed => RotationFailureView::AirplaneEnableFailed,
-        RotationFailure::AirplaneObservationFailed => {
-            RotationFailureView::AirplaneObservationFailed
+        RotationFailure::DataDisableFailed => RotationFailureView::DataDisableFailed,
+        RotationFailure::MobileDataObservationFailed => {
+            RotationFailureView::MobileDataObservationFailed
         }
-        RotationFailure::AirplaneDisableFailed => RotationFailureView::AirplaneDisableFailed,
+        RotationFailure::DataEnableFailed => RotationFailureView::DataEnableFailed,
         RotationFailure::FreshCellularUnavailable => RotationFailureView::FreshCellularUnavailable,
         RotationFailure::RootPolicyRecoveryFailed => RotationFailureView::RootPolicyRecoveryFailed,
         RotationFailure::AfterIpFailed => RotationFailureView::AfterIpFailed,
@@ -1224,8 +1181,8 @@ fn map_rotation_failure(failure: RotationFailure) -> RotationFailureView {
 fn map_rotation_restore(result: RotationRestoreResult) -> RotationRestoreResultView {
     match result {
         RotationRestoreResult::NotRequired => RotationRestoreResultView::NotRequired,
-        RotationRestoreResult::AlreadyOff => RotationRestoreResultView::AlreadyOff,
-        RotationRestoreResult::RestoredOff => RotationRestoreResultView::RestoredOff,
+        RotationRestoreResult::AlreadyEnabled => RotationRestoreResultView::AlreadyEnabled,
+        RotationRestoreResult::RestoredEnabled => RotationRestoreResultView::RestoredEnabled,
         RotationRestoreResult::Failed => RotationRestoreResultView::Failed,
         RotationRestoreResult::Uncertain => RotationRestoreResultView::Uncertain,
     }
@@ -1235,9 +1192,9 @@ fn rotation_phase_code(phase: RotationPhase) -> &'static str {
     match phase {
         RotationPhase::Idle => "IDLE",
         RotationPhase::Preparing => "PREPARING",
-        RotationPhase::AirplaneEnabling => "AIRPLANE_ENABLING",
-        RotationPhase::WaitingRadioDown => "WAITING_RADIO_DOWN",
-        RotationPhase::AirplaneDisabling => "AIRPLANE_DISABLING",
+        RotationPhase::DataDisabling => "DATA_DISABLING",
+        RotationPhase::WaitingCellularLoss => "WAITING_CELLULAR_LOSS",
+        RotationPhase::DataEnabling => "DATA_ENABLING",
         RotationPhase::WaitingCellularRecovery => "WAITING_CELLULAR_RECOVERY",
         RotationPhase::WaitingRootPolicy => "WAITING_ROOT_POLICY",
         RotationPhase::ProbingPublicIp => "PROBING_PUBLIC_IP",
@@ -1261,9 +1218,9 @@ fn rotation_failure_code(failure: RotationFailure) -> &'static str {
         RotationFailure::NoCurrentCellular => "NO_CURRENT_CELLULAR",
         RotationFailure::RootPolicyUnavailable => "ROOT_POLICY_UNAVAILABLE",
         RotationFailure::BeforeIpFailed => "BEFORE_IP_FAILED",
-        RotationFailure::AirplaneEnableFailed => "AIRPLANE_ENABLE_FAILED",
-        RotationFailure::AirplaneObservationFailed => "AIRPLANE_OBSERVATION_FAILED",
-        RotationFailure::AirplaneDisableFailed => "AIRPLANE_DISABLE_FAILED",
+        RotationFailure::DataDisableFailed => "DATA_DISABLE_FAILED",
+        RotationFailure::MobileDataObservationFailed => "MOBILE_DATA_OBSERVATION_FAILED",
+        RotationFailure::DataEnableFailed => "DATA_ENABLE_FAILED",
         RotationFailure::FreshCellularUnavailable => "FRESH_CELLULAR_UNAVAILABLE",
         RotationFailure::RootPolicyRecoveryFailed => "ROOT_POLICY_RECOVERY_FAILED",
         RotationFailure::AfterIpFailed => "AFTER_IP_FAILED",
@@ -1276,8 +1233,8 @@ fn rotation_failure_code(failure: RotationFailure) -> &'static str {
 fn rotation_restore_code(result: RotationRestoreResult) -> &'static str {
     match result {
         RotationRestoreResult::NotRequired => "NOT_REQUIRED",
-        RotationRestoreResult::AlreadyOff => "ALREADY_OFF",
-        RotationRestoreResult::RestoredOff => "RESTORED_OFF",
+        RotationRestoreResult::AlreadyEnabled => "ALREADY_ENABLED",
+        RotationRestoreResult::RestoredEnabled => "RESTORED_ENABLED",
         RotationRestoreResult::Failed => "FAILED",
         RotationRestoreResult::Uncertain => "UNCERTAIN",
     }

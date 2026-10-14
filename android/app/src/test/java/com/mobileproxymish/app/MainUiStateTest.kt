@@ -97,10 +97,10 @@ class MainUiStateTest {
     fun everyActiveBackendRotationPhaseHasSemanticProgressAndDisablesDuplicateStart() {
         val cases = mapOf(
             RotationPhaseView.PREPARING to RotationStageUi.STARTING,
-            RotationPhaseView.AIRPLANE_ENABLING to RotationStageUi.DISCONNECTING_CELLULAR,
-            RotationPhaseView.WAITING_RADIO_DOWN to
+            RotationPhaseView.DATA_DISABLING to RotationStageUi.DISCONNECTING_CELLULAR,
+            RotationPhaseView.WAITING_CELLULAR_LOSS to
                 RotationStageUi.WAITING_FOR_CELLULAR_DISCONNECT,
-            RotationPhaseView.AIRPLANE_DISABLING to RotationStageUi.RESTORING_RADIO,
+            RotationPhaseView.DATA_ENABLING to RotationStageUi.ENABLING_CELLULAR_DATA,
             RotationPhaseView.WAITING_CELLULAR_RECOVERY to
                 RotationStageUi.WAITING_FOR_CELLULAR_RECOVERY,
             RotationPhaseView.WAITING_ROOT_POLICY to RotationStageUi.APPLYING_NETWORK_POLICY,

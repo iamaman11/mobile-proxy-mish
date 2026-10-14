@@ -162,10 +162,6 @@ impl CellularPolicyCoordinator {
         }
     }
 
-    /// Registers an internal runtime observer without displacing the Android projection observer.
-    ///
-    /// Readiness and other native composition must subscribe here rather than polling or asking
-    /// Kotlin to relay already-native owner facts.
     pub fn add_internal_observer(&self, observer: CellularPolicyObserver) {
         let publication = {
             let Ok(mut state) = self.state.lock() else {
@@ -179,10 +175,6 @@ impl CellularPolicyCoordinator {
         }
     }
 
-    /// Registers a synchronous raw Cellular admission/currentness observer.
-    ///
-    /// This negative/currentness path invalidates stale readiness immediately on owner change/loss.
-    /// Root-policy authorization still comes exclusively from policy publications after reconcile.
     pub fn add_internal_admission_observer(&self, observer: CellularAdmissionObserver) {
         let admission = {
             let Ok(mut state) = self.state.lock() else {
@@ -292,7 +284,6 @@ impl CellularPolicyCoordinator {
             .and_then(|state| state.last_policy_result)
     }
 
-    /// Last fully published policy result bound to the exact owner admission it authorized/rejected.
     pub fn last_publication(&self) -> Option<CellularPolicyPublication> {
         self.state
             .lock()
@@ -300,11 +291,10 @@ impl CellularPolicyCoordinator {
             .and_then(|state| state.last_publication)
     }
 
-    pub(crate) fn airplane_effect(&self) -> Arc<crate::airplane_effect::AirplaneModeEffect> {
-        crate::airplane_effect::AirplaneModeEffect::new(Arc::clone(&self.root_session))
+    pub(crate) fn mobile_data_effect(&self) -> Arc<crate::mobile_data_effect::MobileDataEffect> {
+        crate::mobile_data_effect::MobileDataEffect::new(Arc::clone(&self.root_session))
     }
 
-    /// Current persistent root-session generation, when a live shell exists.
     pub fn root_session_generation_blocking(
         &self,
         executor: &RuntimeExecutor,

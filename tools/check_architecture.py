@@ -206,7 +206,6 @@ def main() -> None:
         "android/app/src/main/java/com/mobileproxymish/app/MishDiagnosticsProvider.kt",
         "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRuntimeBridge.kt",
         "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularNetworkObserver.kt",
-        "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRadioPowerObserver.kt",
     ):
         for forbidden in (
             "Executors.",
@@ -393,6 +392,87 @@ def main() -> None:
                 "architecture guard: only MishRuntimeController may construct NativeProductRuntime; "
                 f"{kotlin_relative} contains an alternate PRODUCT composition root"
             )
+
+    # Candidate A final PRODUCT boundary: one Rust-owned mobile-data detach/attach Rotation.
+    rotation_domain = "crates/rotation/src/lib.rs"
+    rotation_runtime = "crates/runtime/src/rotation_runtime.rs"
+    product_runtime = "crates/runtime/src/product_runtime.rs"
+    product_ffi = "crates/android-ffi/src/product_runtime_ffi.rs"
+    cellular_bridge = "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRuntimeBridge.kt"
+    for required in (
+        "DataDisabling",
+        "WaitingCellularLoss",
+        "DataEnabling",
+        "data_disable_mutation_started(",
+        "data_disable_effect_completed(",
+        "data_enable_effect_completed(",
+    ):
+        require(rotation_domain, required, "Candidate A transition semantics must remain Rust-owned")
+    for required in (
+        "settings get global mobile_data",
+        "cmd phone data disable",
+        "cmd phone data enable",
+        "compensation_owned: AtomicBool",
+    ):
+        require(
+            "crates/runtime/src/mobile_data_effect.rs",
+            required,
+            "Candidate A must use one sealed typed effect on the persistent root session",
+        )
+    for target in (rotation_domain, rotation_runtime, product_runtime, product_ffi):
+        for obsolete in (
+            "AirplaneEnabling",
+            "WaitingRadioDown",
+            "AirplaneDisabling",
+            "AirplaneEnableFailed",
+            "AirplaneObservationFailed",
+            "AirplaneDisableFailed",
+            "CellularRequestRearmEffect",
+            "observe_radio_power_off",
+            "observe_platform_cellular_observation",
+        ):
+            forbid(target, obsolete, "Candidate A must not retain an airplane/rearm compatibility path")
+    for target in (rotation_runtime, product_ffi):
+        for obsolete in (
+            "airplane_enable_",
+            "airplane_on_observed",
+            "radio_power_off_observed",
+            "airplane_disable_",
+            "airplane_off_observed",
+            "cellular_request_rearm_",
+            "platform_cellular_observations_after_rearm",
+        ):
+            forbid(target, obsolete, "Candidate A timing vocabulary must describe only the active mobile-data path")
+    for required in (
+        "mobile_data_precondition_observed_ms",
+        "mobile_data_precondition_enabled",
+        "data_disable_started_ms",
+        "data_disable_effect_completed_ms",
+        "cellular_loss_observed_ms",
+        "data_enable_started_ms",
+        "data_enable_effect_completed_ms",
+        "fresh_cellular_observed_ms",
+        "root_authorized_ms",
+    ):
+        require(product_ffi, required, "Android diagnostics must receive the native Candidate A timing projection")
+    forbid_exists(
+        "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRadioPowerObserver.kt",
+        "Candidate A must delete the obsolete Android POWER_OFF observer",
+    )
+    for obsolete in ("NativeCellularRequestRearmEffect", "cellularRequestRearmEffect"):
+        forbid(runtime_controller, obsolete, "Kotlin must not retain a Rotation platform-effect owner")
+    for obsolete in ("CellularRadioPowerObserver", "observeRadioPowerOff", "rearmNetworkRequest"):
+        forbid(cellular_bridge, obsolete, "Kotlin Cellular boundary must remain observation-only")
+    require(
+        runtime_controller,
+        "productRuntime.startPublicIpRotation()",
+        "Kotlin Rotate command must delegate directly to the Rust owner without a platform effect",
+    )
+    require(
+        runtime_controller,
+        "productRuntime.startRemoteControl(spki, controlAuthSigner)",
+        "Kotlin CONTROL startup must not transport a Rotation effect",
+    )
 
     # Native Mesh serving may be stopped by readiness/proxy callbacks already running on the
     # shared PRODUCT Tokio runtime. A direct Handle::block_on from that worker panics and poisons
@@ -1607,21 +1687,26 @@ def main() -> None:
             "presentation/platform adapters must not expose parallel diagnostic composition APIs",
         )
 
-    # G first-class rotation is one-way: mish-rotation owns semantics, mish-runtime executes
-    # the operation on the existing RuntimeExecutor and persistent root session. Kotlin gets only
-    # a typed start command/projection; it owns no phase, timer, airplane command or retry policy.
+    # Candidate A first-class Rotation remains one-way: mish-rotation owns semantics,
+    # mish-runtime executes sealed mobile-data effects over the existing persistent root session,
+    # and Android remains a typed command/projection boundary with no PRODUCT timing or retry owner.
     rotation_semantics = "crates/rotation/src/lib.rs"
     rotation_runtime = "crates/runtime/src/rotation_runtime.rs"
-    airplane_effect = "crates/runtime/src/airplane_effect.rs"
+    mobile_data_effect = "crates/runtime/src/mobile_data_effect.rs"
     product_generation = "crates/runtime/src/product_generation.rs"
     proxy_owner = "crates/runtime/src/proxy_coordinator.rs"
 
     for required in (
         "pub struct RotationStateMachine",
         "pub enum RotationMutationOutcome",
+        "DataDisabling",
+        "WaitingCellularLoss",
+        "DataEnabling",
+        "pub fn data_disable_mutation_started(",
+        "pub fn data_disable_effect_completed(",
+        "pub fn data_enable_effect_completed(",
+        "pub fn observe_cellular(",
         "pub fn observe_root_policy(",
-        "pub fn observe_radio_power_off(",
-        "radio_power_off_observed",
         "pub fn deadline_exceeded(",
         "RotationTerminalResult::Changed",
         "RotationTerminalResult::Unchanged",
@@ -1631,20 +1716,25 @@ def main() -> None:
         require_product(
             rotation_semantics,
             required,
-            "mish-rotation must remain the sole IP-rotation semantic owner",
+            "mish-rotation must remain the sole Candidate A IP-rotation semantic owner",
         )
     for required in (
-        "uncertain_enable_requires_observation_and_is_never_replayed_by_owner",
-        "uncertain_disable_requires_observation_and_preserves_restore_requirement",
-        "root_authorization_is_an_independent_exact_generation_fact",
-        "absolute_deadline_is_terminal_and_keeps_restore_requirement",
-        "early_radio_down_facts_are_retained_until_all_required_facts_exist",
-        "radio_down_facts_can_arrive_in_any_order_without_a_timer",
+        "precondition_phase_does_not_claim_restore_before_disable_mutation",
+        "disable_mutation_start_claims_restore_before_deadline_can_race",
+        "disable_completion_alone_never_implies_cellular_loss",
+        "enable_is_reached_only_after_fresh_authoritative_loss",
+        "loss_can_arrive_during_disable_effect_without_being_lost",
+        "uncertain_disable_fails_main_path_and_requires_restore",
+        "uncertain_enable_fails_main_path_and_preserves_restore_requirement",
+        "fresh_generation_requires_exact_root_authorization",
+        "root_fact_may_arrive_before_same_generation_cellular",
+        "newer_owner_loss_invalidates_older_recovery_and_root_facts",
+        "absolute_deadline_keeps_restore_requirement_only_while_data_may_be_disabled",
     ):
         require(
             rotation_semantics,
             required,
-            "rotation pure tests must pin uncertainty/currentness/deadline semantics",
+            "Candidate A pure tests must pin currentness, uncertainty, ordering and deadline semantics",
         )
 
     for required in (
@@ -1653,18 +1743,20 @@ def main() -> None:
         "timeout_at(deadline, cancel.notified())",
         "observe_public_egress_ip_async",
         "policy.add_internal_observer",
-        "RotationAction::RestoreOff",
-        "AirplaneModeState::Enabled",
-        "AirplaneModeState::Disabled",
-        "pub fn observe_radio_power_off(",
-        "radio_power_off_observed_ms",
+        "policy.mobile_data_effect()",
+        "RotationAction::DisableData",
+        "RotationAction::EnableData",
+        "RotationAction::RestoreEnabled",
+        "MobileDataState::Disabled",
+        "MobileDataState::Enabled",
+        "restore_enabled_direct",
         "credential_guard_current",
         "RESTORE_EFFECT_TIMEOUT",
     ):
         require_product(
             rotation_runtime,
             required,
-            "mish-runtime must execute one event-driven rotation on the shared Tokio runtime",
+            "mish-runtime must execute one event-driven Candidate A rotation on the shared Tokio runtime",
         )
     for forbidden in (
         "Runtime::new",
@@ -1673,36 +1765,71 @@ def main() -> None:
         "thread::sleep",
         "tokio::time::sleep(",
         "retry_until_changed",
+        "AirplaneModeState::",
+        "airplane_effect()",
     ):
         forbid_product(
             rotation_runtime,
             forbidden,
-            "rotation runtime must not create a second executor or arbitrary normal-path dwell/retry loop",
+            "Candidate A runtime must not create a second executor, dwell/retry loop, or runtime airplane fallback",
         )
 
     for required in (
         "RootSessionManager",
-        'RootCommand::observation("cmd connectivity airplane-mode")',
-        'RootCommand::mutation("cmd connectivity airplane-mode enable")',
-        'RootCommand::mutation("cmd connectivity airplane-mode disable")',
+        'RootCommand::observation("settings get global mobile_data")',
+        'RootCommand::mutation("cmd phone data disable")',
+        'RootCommand::mutation("cmd phone data enable")',
         "MutationUncertain",
+        '"1" => Some(MobileDataState::Enabled)',
+        '"0" => Some(MobileDataState::Disabled)',
     ):
         require_product(
-            airplane_effect,
+            mobile_data_effect,
             required,
-            "airplane observe/ON/OFF must be sealed typed effects over the one persistent root session",
+            "Candidate A mobile-data observation/disable/enable must be sealed typed effects over the one persistent root session",
         )
+    forbid_product(
+        mobile_data_effect,
+        "sleep(",
+        "mobile-data effect must not own recovery timing",
+    )
+    forbid_exists(
+        "crates/runtime/src/airplane_effect.rs",
+        "Candidate A must delete the obsolete Rust airplane mutation effect rather than retain a dormant fallback",
+    )
+    forbid_product(
+        "crates/runtime/src/entry.rs",
+        "mod airplane_effect;",
+        "Candidate A runtime composition must not retain the obsolete airplane effect module",
+    )
+    require_product_count(
+        mobile_data_effect,
+        'RootCommand::mutation("cmd phone data disable")',
+        1,
+        "Candidate A must have one sealed disable command construction site",
+    )
+    require_product_count(
+        mobile_data_effect,
+        'RootCommand::mutation("cmd phone data enable")',
+        1,
+        "Candidate A must have one sealed enable command construction site",
+    )
 
+    require_product(
+        "crates/runtime/src/cellular_policy_coordinator.rs",
+        "crate::mobile_data_effect::MobileDataEffect::new(Arc::clone(&self.root_session))",
+        "Candidate A must borrow the existing persistent RootSessionManager rather than create a second root owner",
+    )
     require_product(
         "crates/runtime/Cargo.toml",
         'mish-rotation = { path = "../rotation" }',
         "mish-runtime must depend on the rotation semantic owner",
     )
-    for required in ("mod airplane_effect;", "mod rotation_runtime;"):
+    for required in ("mod mobile_data_effect;", "mod rotation_runtime;"):
         require_product(
             "crates/runtime/src/entry.rs",
             required,
-            "rotation execution modules must compile inside mish-runtime",
+            "Candidate A execution modules must compile inside mish-runtime",
         )
     for required in (
         "rotation: Arc<RotationRuntimeCoordinator>",
@@ -1712,19 +1839,17 @@ def main() -> None:
         require_product(
             product_generation,
             required,
-            "ProductGeneration must own and drain exactly one rotation runtime",
+            "ProductGeneration must own and drain exactly one Rotation runtime",
         )
     for required in (
         "pub fn start_public_ip_rotation(",
         "generation.rotation().observe_cellular(admission)",
-        "pub fn observe_radio_power_off(&self)",
-        "generation.rotation().observe_radio_power_off()",
         "pub fn rotation_snapshot(",
     ):
         require_product(
             "crates/runtime/src/product_runtime.rs",
             required,
-            "stable PRODUCT runtime must expose and feed the Rust-owned rotation operation",
+            "stable PRODUCT runtime must expose and feed the Rust-owned Rotation operation",
         )
     for required in (
         "struct ProxyCredentialGuard",
@@ -1736,12 +1861,12 @@ def main() -> None:
             required,
             "network rotation must prove external proxy credential version/material stability",
         )
+
+    product_ffi = "crates/android-ffi/src/product_runtime_ffi.rs"
     for required in (
         "pub struct RotationSnapshotView",
         "pub fn start_public_ip_rotation(",
-        "pub fn observe_radio_power_off(&self)",
         "pub fn rotation_snapshot(",
-        "radio_power_off_observed_ms",
         "rotation_operation_id",
         "rotation_before_generation",
         "rotation_after_generation",
@@ -1752,7 +1877,7 @@ def main() -> None:
         require_product(
             product_ffi,
             required,
-            "Android must receive only typed first-class rotation command/projection",
+            "Android must receive only typed first-class Rotation command/projection",
         )
 
     controller = "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt"
@@ -1763,114 +1888,32 @@ def main() -> None:
     require(
         controller,
         "internal fun startPublicIpRotation(): ULong =",
-        "Android may expose only a thin command facade into the Rust-owned rotation operation",
+        "Android may expose only a thin command facade into the Rust-owned Rotation operation",
     )
     require(
         controller,
         "productRuntime.startPublicIpRotation(",
-        "rotation command facade must delegate directly to native PRODUCT ownership",
+        "Rotation command facade must delegate directly to native PRODUCT ownership",
     )
-    require(
-        controller,
-        "object : NativeCellularRequestRearmEffect",
-        "Android rotation facade may supply only the typed framework re-arm effect requested by Rust",
-    )
-    require(
-        cellular_bridge,
-        "internal fun rearmNetworkRequest(): Boolean",
-        "Android Cellular bridge must expose only the bounded framework request re-arm effect",
-    )
-    radio_power_observer = (
-        "android/app/src/main/java/com/mobileproxymish/app/cellular/"
-        "CellularRadioPowerObserver.kt"
-    )
-    for required in (
-        "PhoneStateListener(directExecutor)",
-        "PhoneStateListener.LISTEN_SERVICE_STATE",
-        "ServiceState.STATE_POWER_OFF",
-        "SubscriptionManager.getActiveDataSubscriptionId()",
-        "SubscriptionManager.getDefaultDataSubscriptionId()",
-        "createForSubscriptionId(subscriptionId)",
-        "onRadioPowerOff()",
-        "PhoneStateListener.LISTEN_NONE",
-    ):
-        require(
-            radio_power_observer,
-            required,
-            "Android radio-power boundary must remain one typed ServiceState observer",
-        )
-    for forbidden in (
-        "SystemClock",
-        "Thread.sleep",
-        "SystemClock.sleep",
-        "Handler(",
-        "postDelayed(",
-        "Timer(",
-        "Executors.",
-        "ScheduledExecutorService",
-        "kotlinx.coroutines",
-        "airplane-mode",
-        "startPublicIpRotation",
-        "retry",
-        "backoff",
-        "delay",
-        "RotationPhase",
-    ):
-        forbid(
-            radio_power_observer,
-            forbidden,
-            "Kotlin radio-power boundary must not own Rotation semantics, timing, retry or mutation",
-        )
-    forbid(
-        "android/app/src/main/AndroidManifest.xml",
-        "android.permission.READ_PHONE_STATE",
-        "typed ServiceState POWER_OFF observation must not add phone-identity permission",
-    )
-    for required in (
-        "private val radioPowerObserver = CellularRadioPowerObserver(context)",
-        "productRuntime.observeRadioPowerOff()",
-        "radioPowerObserver.start()",
-        "radioPowerObserver.close()",
-        "private fun cleanupPlatformObservation(): Boolean",
-        "productRuntime.invalidateCellularPlatformFacts()",
-    ):
-        require(
-            cellular_bridge,
-            required,
-            "CellularRuntimeBridge must own radio observer lifetime while Rust owns the transition",
-        )
-    require(
+    for kotlin_path in (
+        "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/MainViewModel.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/MainActivity.kt",
+        "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRuntimeBridge.kt",
         "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularNetworkObserver.kt",
-        "fun rearm()",
-        "Android Cellular observer must support one explicit request re-registration effect",
-    )
-    require_product(
-        rotation_runtime,
-        "snapshot.phase != RotationPhase::WaitingCellularRecovery",
-        "Rust rotation owner must gate Cellular request re-arm to the exact recovery phase",
-    )
-    require_product(
-        rotation_runtime,
-        "effect.rearm_cellular_request()",
-        "Rust rotation owner must invoke the typed Cellular request re-arm effect",
-    )
-    require_product(
-        rotation_runtime,
-        "RotationFailure::FreshCellularUnavailable",
-        "a failed Cellular request re-arm must fail the Rust-owned rotation closed",
-    )
-    require_product_count(
-        rotation_runtime,
-        "effect.rearm_cellular_request()",
-        1,
-        "Cellular request re-arm must have one PRODUCT invocation site and no retry loop",
-    )
-    require_product_count(
-        rotation_runtime,
-        "!self.rearm_cellular_request_if_waiting(operation_id)",
-        1,
-        "confirmed airplane OFF must trigger exactly one Rust-owned re-arm decision",
-    )
+    ):
+        for forbidden in (
+            "cmd phone data",
+            "svc data",
+            "kotlinx.coroutines.delay",
+            "Thread.sleep",
+        ):
+            forbid(
+                kotlin_path,
+                forbidden,
+                "Kotlin must not regain Candidate A mutation, retry or normal-path timing ownership",
+            )
+
     for required in (
         "class DebugRotationActivity : Activity()",
         "runCatching(runtime::startPublicIpRotation)",
@@ -1879,7 +1922,7 @@ def main() -> None:
         require(
             debug_rotation,
             required,
-            "H acceptance trigger must remain a zero-input debug-only PRODUCT command",
+            "physical acceptance trigger must remain a zero-input debug-only PRODUCT command",
         )
     for required in (
         "class DebugRuntimeStopActivity : Activity()",
@@ -1889,7 +1932,7 @@ def main() -> None:
         require(
             debug_stop,
             required,
-            "H restore acceptance must use only the normal PRODUCT stop path",
+            "restore acceptance must use only the normal PRODUCT stop path",
         )
     for required in (
         "class DebugRuntimeStartActivity : Activity()",
@@ -1899,25 +1942,21 @@ def main() -> None:
         require(
             debug_start,
             required,
-            "H restore acceptance start trigger must remain a zero-input debug-only service-lifetime request",
+            "restore acceptance start trigger must remain a zero-input debug-only service-lifetime request",
         )
     for debug_path in (debug_rotation, debug_stop, debug_start):
         for forbidden in (
+            "cmd phone data",
+            "svc data",
             "cmd connectivity airplane-mode",
             "Thread.sleep",
             "SystemClock.sleep",
             "kotlinx.coroutines.delay",
-            "AIRPLANE_ENABLING",
-            "WAITING_RADIO_DOWN",
-            "AIRPLANE_DISABLING",
-            "WAITING_CELLULAR_RECOVERY",
-            "WAITING_ROOT_POLICY",
-            "PROBING_PUBLIC_IP",
         ):
             forbid(
                 debug_path,
                 forbidden,
-                "debug H trigger must never become a second rotation/platform-effect owner",
+                "debug acceptance trigger must never become a second Rotation/platform-effect owner",
             )
     for required in (
         'android:name=".DebugRotationActivity"',
@@ -1927,39 +1966,16 @@ def main() -> None:
         require(
             debug_manifest,
             required,
-            "H acceptance triggers must be packaged only by the debug source set",
+            "acceptance triggers must be packaged only by the debug source set",
         )
     for forbidden in ("DebugRotationActivity", "DebugRuntimeStopActivity", "DebugRuntimeStartActivity"):
         forbid(
             "android/app/src/main/AndroidManifest.xml",
             forbidden,
-            "H acceptance trigger must not leak into release PRODUCT manifest",
+            "acceptance trigger must not leak into release PRODUCT manifest",
         )
 
-    for kotlin_path in (
-        "android/app/src/main/java/com/mobileproxymish/app/MishRuntimeController.kt",
-        "android/app/src/main/java/com/mobileproxymish/app/MainViewModel.kt",
-        "android/app/src/main/java/com/mobileproxymish/app/MainActivity.kt",
-        "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRuntimeBridge.kt",
-        "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularNetworkObserver.kt",
-    ):
-        for forbidden in (
-            "cmd connectivity airplane-mode",
-            "AIRPLANE_ENABLING",
-            "WAITING_RADIO_DOWN",
-            "AIRPLANE_DISABLING",
-            "WAITING_CELLULAR_RECOVERY",
-            "WAITING_ROOT_POLICY",
-            "PROBING_PUBLIC_IP",
-            "kotlinx.coroutines.delay",
-            "Thread.sleep",
-        ):
-            forbid(
-                kotlin_path,
-                forbidden,
-                "Kotlin must not regain rotation semantics, airplane commands or normal-path timing",
-            )
-
+    diagnostics = "android/app/src/main/java/com/mobileproxymish/app/MishDiagnosticsProvider.kt"
     for forbidden in ("before_ip", "after_ip", "beforeIp", "afterIp"):
         forbid(
             diagnostics,
@@ -1969,7 +1985,7 @@ def main() -> None:
     require(
         diagnostics,
         'put("raw_ip_persisted", false)',
-        "rotation diagnostics must explicitly prove raw IP is not persisted",
+        "Rotation diagnostics must explicitly prove raw IP is not persisted",
     )
 
     # U5 root ownership is one-way: policy semantics live in mish-cellular, while the one
