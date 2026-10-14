@@ -44,15 +44,15 @@ jobs:
           path = Path("crates/runtime/src/product_runtime.rs")
           text = path.read_text(encoding="utf-8")
           old = '''            let _ = generation.control().start(
-                          control.public_key_spki,
-                          control.signer,
-                          control.cellular_request_rearm,
-                      );'''
+              control.public_key_spki,
+              control.signer,
+              control.cellular_request_rearm,
+            );'''
           new = '''            let _ = generation.control().start(
-                          control.public_key_spki.clone(),
-                          Arc::clone(&control.signer),
-                          Arc::clone(&control.cellular_request_rearm),
-                      );'''
+              control.public_key_spki.clone(),
+              Arc::clone(&control.signer),
+              Arc::clone(&control.cellular_request_rearm),
+            );'''
           if text.count(old) != 1:
               raise SystemExit(f"stored CONTROL replay shape drift: {text.count(old)}")
           path.write_text(text.replace(old, new, 1), encoding="utf-8")
