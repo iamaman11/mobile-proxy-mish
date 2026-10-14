@@ -38,55 +38,7 @@ jobs:
           rustup override set 1.98.1
 
       - name: Migrate diagnostics timing fixture
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path('android/app/src/test/java/com/mobileproxymish/app/MishDiagnosticsSerializationTest.kt')
-          text = path.read_text(encoding='utf-8')
-          old = '''                airplaneEnableStartedMs = 611uL,
-                airplaneEnableEffectCompletedMs = 720uL,
-                airplaneOnObservedMs = 880uL,
-                cellularLossObservedMs = 900uL,
-                radioPowerOffObservedMs = 1_400uL,
-                airplaneDisableStartedMs = 1_401uL,
-                airplaneDisableEffectCompletedMs = 1_520uL,
-                airplaneOffObservedMs = 1_650uL,
-                cellularRequestRearmStartedMs = 1_651uL,
-                cellularRequestRearmCompletedMs = 1_653uL,
-                firstPlatformCellularObservationMs = 4_800uL,
-                platformCellularObservationsAfterRearm = 2uL,
-'''
-          new = '''                mobileDataPreconditionObservedMs = 611uL,
-                mobileDataPreconditionEnabled = true,
-                dataDisableStartedMs = 612uL,
-                dataDisableEffectCompletedMs = 720uL,
-                cellularLossObservedMs = 900uL,
-                dataEnableStartedMs = 901uL,
-                dataEnableEffectCompletedMs = 1_020uL,
-'''
-          if text.count(old) != 1:
-              raise SystemExit(f'old timing fixture count={text.count(old)}')
-          text = text.replace(old, new, 1)
-
-          old_asserts = '''        assertEquals(1_400L, rotationTiming.getLong("radio_power_off_observed_ms"))
-        assertEquals(1_651L, rotationTiming.getLong("cellular_request_rearm_started_ms"))
-        assertEquals(1_653L, rotationTiming.getLong("cellular_request_rearm_completed_ms"))
-        assertEquals(4_800L, rotationTiming.getLong("first_platform_cellular_observation_ms"))
-        assertEquals(2L, rotationTiming.getLong("platform_cellular_observations_after_rearm"))
-'''
-          new_asserts = '''        assertEquals(611L, rotationTiming.getLong("mobile_data_precondition_observed_ms"))
-        assertTrue(rotationTiming.getBoolean("mobile_data_precondition_enabled"))
-        assertEquals(612L, rotationTiming.getLong("data_disable_started_ms"))
-        assertEquals(720L, rotationTiming.getLong("data_disable_effect_completed_ms"))
-        assertEquals(900L, rotationTiming.getLong("cellular_loss_observed_ms"))
-        assertEquals(901L, rotationTiming.getLong("data_enable_started_ms"))
-        assertEquals(1_020L, rotationTiming.getLong("data_enable_effect_completed_ms"))
-'''
-          if text.count(old_asserts) != 1:
-              raise SystemExit(f'old timing assertions count={text.count(old_asserts)}')
-          text = text.replace(old_asserts, new_asserts, 1)
-          path.write_text(text, encoding='utf-8')
-          PY
+        run: python3 tools/fix_candidate_a_diag_fixture.py
 
       - name: Verify migrated unit test
         run: gradle --no-daemon -p android :app:testDebugUnitTest
@@ -94,9 +46,13 @@ jobs:
       - name: Verify bounded patch
         run: |
           git diff --check
-          ! grep -E 'airplaneEnable|radioPowerOff|cellularRequestRearm|firstPlatformCellularObservation|platformCellularObservationsAfterRearm' android/app/src/test/java/com/mobileproxymish/app/MishDiagnosticsSerializationTest.kt
+          if grep -E 'airplaneEnable|radioPowerOff|cellularRequestRearm|firstPlatformCellularObservation|platformCellularObservationsAfterRearm' android/app/src/test/java/com/mobileproxymish/app/MishDiagnosticsSerializationTest.kt; then
+            echo 'obsolete diagnostics timing fixture remains' >&2
+            exit 1
+          fi
           grep -F 'mobileDataPreconditionObservedMs = 611uL' android/app/src/test/java/com/mobileproxymish/app/MishDiagnosticsSerializationTest.kt
           grep -F 'dataEnableEffectCompletedMs = 1_020uL' android/app/src/test/java/com/mobileproxymish/app/MishDiagnosticsSerializationTest.kt
+          rm tools/fix_candidate_a_diag_fixture.py
           rm .github/workflows/candidate-a-diagnostics-test-fix.yml
 
       - name: Commit validated fixture migration
