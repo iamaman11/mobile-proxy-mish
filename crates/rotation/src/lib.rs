@@ -25,15 +25,6 @@ impl RotationPhase {
     pub const fn terminal(self) -> bool {
         matches!(self, Self::Changed | Self::Unchanged | Self::Failed)
     }
-
-    // Transitional source-compatibility aliases for the Android projection. They are not active
-    // state-machine vocabulary and can be removed when the generated boundary is regenerated.
-    #[allow(non_upper_case_globals)]
-    pub const AirplaneEnabling: Self = Self::DataDisabling;
-    #[allow(non_upper_case_globals)]
-    pub const WaitingRadioDown: Self = Self::WaitingCellularLoss;
-    #[allow(non_upper_case_globals)]
-    pub const AirplaneDisabling: Self = Self::DataEnabling;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,16 +58,6 @@ pub enum RotationFailure {
     StateUnavailable,
 }
 
-impl RotationFailure {
-    // Transitional source-compatibility aliases for the Android projection only.
-    #[allow(non_upper_case_globals)]
-    pub const AirplaneEnableFailed: Self = Self::DataDisableFailed;
-    #[allow(non_upper_case_globals)]
-    pub const AirplaneObservationFailed: Self = Self::MobileDataObservationFailed;
-    #[allow(non_upper_case_globals)]
-    pub const AirplaneDisableFailed: Self = Self::DataEnableFailed;
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RotationRestoreResult {
     NotRequired,
@@ -84,14 +65,6 @@ pub enum RotationRestoreResult {
     RestoredEnabled,
     Failed,
     Uncertain,
-}
-
-impl RotationRestoreResult {
-    // Transitional source-compatibility aliases for the Android projection only.
-    #[allow(non_upper_case_globals)]
-    pub const AlreadyOff: Self = Self::AlreadyEnabled;
-    #[allow(non_upper_case_globals)]
-    pub const RestoredOff: Self = Self::RestoredEnabled;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

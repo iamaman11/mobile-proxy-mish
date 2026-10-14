@@ -6,7 +6,6 @@ import com.mobileproxymish.app.cellular.CellularRuntimeBridge
 import com.mobileproxymish.app.cellular.CellularRuntimeSnapshot
 import com.mobileproxymish.ffi.ControlRuntimeSnapshotView
 import com.mobileproxymish.ffi.MeshAdmissionView
-import com.mobileproxymish.ffi.NativeCellularRequestRearmEffect
 import com.mobileproxymish.ffi.NativeControlAuthSigner
 import com.mobileproxymish.ffi.NativeMeshRuntimeObserver
 import com.mobileproxymish.ffi.NativeProductRuntime
@@ -45,9 +44,6 @@ class MishRuntimeController internal constructor(
     private val proxyRuntime = ProxyRuntimeSupervisor(productRuntime)
     private val meshRuntime = MeshIngressRuntimeBridge(appContext, productRuntime)
     private val controlIdentity = AndroidControlIdentity()
-    private val cellularRequestRearmEffect = object : NativeCellularRequestRearmEffect {
-        override fun rearmCellularRequest(): Boolean = cellularRuntime.rearmNetworkRequest()
-    }
     private val controlAuthSigner = object : NativeControlAuthSigner {
         override fun signControlAuth(payload: ByteArray): ByteArray =
             runCatching { controlIdentity.sign(payload) }.getOrElse { byteArrayOf() }
@@ -136,7 +132,7 @@ class MishRuntimeController internal constructor(
 
     /** Thin PRODUCT command seam. Rust owns the operation, sequencing, effects and result. */
     internal fun startPublicIpRotation(): ULong =
-        productRuntime.startPublicIpRotation(cellularRequestRearmEffect)
+        productRuntime.startPublicIpRotation()
 
     val isRunning: Boolean
         get() = productRuntime.runtimeLifecycleSnapshot().state != RuntimeLifecycleState.STOPPED
@@ -168,11 +164,7 @@ class MishRuntimeController internal constructor(
     private fun startRemoteControlBestEffort() {
         val spki = runCatching { controlIdentity.publicKeySpki() }.getOrNull() ?: return
         val deviceId = runCatching {
-            productRuntime.startRemoteControl(
-                spki,
-                controlAuthSigner,
-                cellularRequestRearmEffect,
-            )
+            productRuntime.startRemoteControl(spki, controlAuthSigner)
         }.getOrNull() ?: return
         controlDeviceId = deviceId
     }

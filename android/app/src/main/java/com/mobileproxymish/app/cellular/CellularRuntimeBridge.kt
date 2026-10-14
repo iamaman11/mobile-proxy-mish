@@ -52,10 +52,6 @@ class CellularRuntimeBridge(
     private val productRuntime: NativeProductRuntime,
 ) : CellularObservationSink, Closeable {
     private val observer = CellularNetworkObserver(context, this)
-    private val radioPowerObserver = CellularRadioPowerObserver(context) {
-        // A callback outside a live Rotation is intentionally a no-op in Rust.
-        runCatching { productRuntime.observeRadioPowerOff() }
-    }
     private val started = AtomicBoolean(false)
     private val closed = AtomicBoolean(false)
     private val mutableSnapshot = MutableStateFlow(initialSnapshot())
@@ -98,23 +94,13 @@ class CellularRuntimeBridge(
         return productRuntime.observePublicEgressIp(timeoutMs.toULong())
     }
 
-    /** Android framework effect only; Rust owns if/when a rotation requests this once. */
-    internal fun rearmNetworkRequest(): Boolean {
-        if (closed.get() || !started.get()) return false
-        return runCatching {
-            observer.rearm()
-            true
-        }.getOrDefault(false)
-    }
 
     fun start() {
         if (closed.get() || !started.compareAndSet(false, true)) return
 
         try {
             observer.start()
-            radioPowerObserver.start()
             if (closed.get()) {
-                radioPowerObserver.close()
                 observer.close()
             }
         } catch (error: LinkageError) {
@@ -232,8 +218,7 @@ class CellularRuntimeBridge(
      * callback may already have reached Rust.
      */
     private fun cleanupPlatformObservation(): Boolean {
-        var clean = runCatching(radioPowerObserver::close).isSuccess
-        clean = runCatching(observer::close).isSuccess && clean
+        var clean = runCatching(observer::close).isSuccess
         clean = runCatching { productRuntime.invalidateCellularPlatformFacts() }.isSuccess && clean
         return clean
     }

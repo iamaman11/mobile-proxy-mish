@@ -374,52 +374,32 @@ internal fun renderMishControlDiagnosticSnapshotV1(
                 putNullableLong("pre_rotation_probe_started_ms", snapshot.rotationTiming.preRotationProbeStartedMs)
                 putNullableLong("pre_rotation_probe_completed_ms", snapshot.rotationTiming.preRotationProbeCompletedMs)
                 putNullableLong(
-                    "airplane_enable_started_ms",
-                    snapshot.rotationTiming.airplaneEnableStartedMs,
+                    "mobile_data_precondition_observed_ms",
+                    snapshot.rotationTiming.mobileDataPreconditionObservedMs,
+                )
+                put(
+                    "mobile_data_precondition_enabled",
+                    snapshot.rotationTiming.mobileDataPreconditionEnabled ?: JSONObject.NULL,
                 )
                 putNullableLong(
-                    "airplane_enable_effect_completed_ms",
-                    snapshot.rotationTiming.airplaneEnableEffectCompletedMs,
+                    "data_disable_started_ms",
+                    snapshot.rotationTiming.dataDisableStartedMs,
                 )
                 putNullableLong(
-                    "airplane_on_observed_ms",
-                    snapshot.rotationTiming.airplaneOnObservedMs,
+                    "data_disable_effect_completed_ms",
+                    snapshot.rotationTiming.dataDisableEffectCompletedMs,
                 )
                 putNullableLong(
                     "cellular_loss_observed_ms",
                     snapshot.rotationTiming.cellularLossObservedMs,
                 )
                 putNullableLong(
-                    "radio_power_off_observed_ms",
-                    snapshot.rotationTiming.radioPowerOffObservedMs,
+                    "data_enable_started_ms",
+                    snapshot.rotationTiming.dataEnableStartedMs,
                 )
                 putNullableLong(
-                    "airplane_disable_started_ms",
-                    snapshot.rotationTiming.airplaneDisableStartedMs,
-                )
-                putNullableLong(
-                    "airplane_disable_effect_completed_ms",
-                    snapshot.rotationTiming.airplaneDisableEffectCompletedMs,
-                )
-                putNullableLong(
-                    "airplane_off_observed_ms",
-                    snapshot.rotationTiming.airplaneOffObservedMs,
-                )
-                putNullableLong(
-                    "cellular_request_rearm_started_ms",
-                    snapshot.rotationTiming.cellularRequestRearmStartedMs,
-                )
-                putNullableLong(
-                    "cellular_request_rearm_completed_ms",
-                    snapshot.rotationTiming.cellularRequestRearmCompletedMs,
-                )
-                putNullableLong(
-                    "first_platform_cellular_observation_ms",
-                    snapshot.rotationTiming.firstPlatformCellularObservationMs,
-                )
-                put(
-                    "platform_cellular_observations_after_rearm",
-                    snapshot.rotationTiming.platformCellularObservationsAfterRearm.toLong(),
+                    "data_enable_effect_completed_ms",
+                    snapshot.rotationTiming.dataEnableEffectCompletedMs,
                 )
                 putNullableLong(
                     "fresh_cellular_observed_ms",

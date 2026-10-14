@@ -5,11 +5,10 @@
 //! it never constructs, numbers or replaces PRODUCT generations.
 
 use crate::{
-    CellularDnsResolver, CellularPolicyObserver, CellularRequestRearmEffect, ControlAuthSigner,
-    ControlRuntimeSnapshot, ControlRuntimeStartError, MeshRuntimeObserver, ProductGeneration,
-    ProxyRuntimeObserver, ReadinessObserver, RotationObserver, RuntimeExecutionError,
-    RuntimeExecutor, RuntimeLifecycle, RuntimeLifecycleState, RuntimeStartAction,
-    RuntimeStopAction,
+    CellularDnsResolver, CellularPolicyObserver, ControlAuthSigner, ControlRuntimeSnapshot,
+    ControlRuntimeStartError, MeshRuntimeObserver, ProductGeneration, ProxyRuntimeObserver,
+    ReadinessObserver, RotationObserver, RuntimeExecutionError, RuntimeExecutor, RuntimeLifecycle,
+    RuntimeLifecycleState, RuntimeStartAction, RuntimeStopAction,
 };
 use mish_cellular::{
     CellularAdmissionSnapshot, NetworkHandle, NetworkObservation, RootPolicyNamespace,
@@ -40,7 +39,6 @@ struct ProductStartInput {
 struct ControlStartInput {
     public_key_spki: Vec<u8>,
     signer: Arc<dyn ControlAuthSigner>,
-    cellular_request_rearm: Arc<dyn CellularRequestRearmEffect>,
 }
 
 #[derive(Clone, Default)]
@@ -245,12 +243,11 @@ impl ProductRuntimeCoordinator {
 
     pub fn start_public_ip_rotation(
         self: &Arc<Self>,
-        cellular_request_rearm: Arc<dyn crate::CellularRequestRearmEffect>,
     ) -> Result<u64, crate::RotationRuntimeStartError> {
         let generation = self
             .active_generation()
             .map_err(|_| crate::RotationRuntimeStartError::RuntimeNotRunning)?;
-        generation.rotation().start(cellular_request_rearm)
+        generation.rotation().start()
     }
 
     pub fn rotation_snapshot(&self) -> mish_rotation::RotationSnapshot {
@@ -263,7 +260,6 @@ impl ProductRuntimeCoordinator {
         self: &Arc<Self>,
         public_key_spki: Vec<u8>,
         signer: Arc<dyn ControlAuthSigner>,
-        cellular_request_rearm: Arc<dyn CellularRequestRearmEffect>,
     ) -> Result<String, ControlRuntimeStartError> {
         let identity = ControlDeviceIdentity::from_public_key_spki(public_key_spki.clone())
             .map_err(|_| ControlRuntimeStartError::InvalidIdentity)?;
@@ -271,7 +267,6 @@ impl ProductRuntimeCoordinator {
         let input = ControlStartInput {
             public_key_spki,
             signer,
-            cellular_request_rearm,
         };
         let (generation, previous, start_now) = {
             let mut state = self
@@ -309,11 +304,9 @@ impl ProductRuntimeCoordinator {
             return Ok(device_id);
         }
 
-        let result = generation.control().start(
-            input.public_key_spki.clone(),
-            Arc::clone(&input.signer),
-            Arc::clone(&input.cellular_request_rearm),
-        );
+        let result = generation
+            .control()
+            .start(input.public_key_spki.clone(), Arc::clone(&input.signer));
         if result.is_err()
             && let Ok(mut state) = self.state.lock()
         {
@@ -370,9 +363,6 @@ impl ProductRuntimeCoordinator {
             }
             Arc::clone(&state.generation)
         };
-        generation
-            .rotation()
-            .observe_platform_cellular_observation();
         let admission =
             generation
                 .policy()
@@ -409,25 +399,6 @@ impl ProductRuntimeCoordinator {
             .network_lost(sequence_value, observed_handle)?;
         generation.rotation().observe_cellular(admission);
         Ok(admission)
-    }
-
-    /// Forwards one transient typed Android radio POWER_OFF fact to the current Rust Rotation.
-    ///
-    /// This fact is deliberately not persisted in ProductPlatformFacts or replayed across runtime
-    /// generation replacement. It is meaningful only to the single active Rotation operation.
-    pub fn observe_radio_power_off(&self) -> Result<(), RuntimeExecutionError> {
-        let generation = {
-            let state = self.state()?;
-            if !matches!(
-                state.lifecycle.state(),
-                RuntimeLifecycleState::Starting | RuntimeLifecycleState::Running
-            ) {
-                return Err(RuntimeExecutionError::StateUnavailable);
-            }
-            Arc::clone(&state.generation)
-        };
-        generation.rotation().observe_radio_power_off();
-        Ok(())
     }
 
     pub fn observe_mesh_vpn(
@@ -763,11 +734,9 @@ impl ProductRuntimeCoordinator {
         };
 
         if let Some(control) = control_start {
-            let _ = generation.control().start(
-                control.public_key_spki,
-                control.signer,
-                control.cellular_request_rearm,
-            );
+            let _ = generation
+                .control()
+                .start(control.public_key_spki, control.signer);
         }
     }
 
@@ -1163,14 +1132,6 @@ mod tests {
         }
     }
 
-    struct TestControlRearmEffect;
-
-    impl CellularRequestRearmEffect for TestControlRearmEffect {
-        fn rearm_cellular_request(&self) -> bool {
-            true
-        }
-    }
-
     #[test]
     fn remote_control_is_deferred_until_product_start_completes() {
         let runtime = ProductRuntimeCoordinator::new(
@@ -1189,11 +1150,7 @@ mod tests {
         }
 
         let device_id = runtime
-            .start_remote_control(
-                vec![1, 2, 3, 4],
-                Arc::new(TestControlSigner),
-                Arc::new(TestControlRearmEffect),
-            )
+            .start_remote_control(vec![1, 2, 3, 4], Arc::new(TestControlSigner))
             .expect("deferred control");
 
         assert_eq!(device_id.len(), 64);
@@ -1231,18 +1188,10 @@ mod tests {
         }
 
         runtime
-            .start_remote_control(
-                vec![1, 2, 3, 4],
-                Arc::new(TestControlSigner),
-                Arc::new(TestControlRearmEffect),
-            )
+            .start_remote_control(vec![1, 2, 3, 4], Arc::new(TestControlSigner))
             .expect("first control");
         assert_eq!(
-            runtime.start_remote_control(
-                vec![9, 8, 7, 6],
-                Arc::new(TestControlSigner),
-                Arc::new(TestControlRearmEffect),
-            ),
+            runtime.start_remote_control(vec![9, 8, 7, 6], Arc::new(TestControlSigner),),
             Err(ControlRuntimeStartError::AlreadyStarted)
         );
 

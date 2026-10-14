@@ -206,7 +206,6 @@ def main() -> None:
         "android/app/src/main/java/com/mobileproxymish/app/MishDiagnosticsProvider.kt",
         "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRuntimeBridge.kt",
         "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularNetworkObserver.kt",
-        "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRadioPowerObserver.kt",
     ):
         for forbidden in (
             "Executors.",
@@ -393,6 +392,87 @@ def main() -> None:
                 "architecture guard: only MishRuntimeController may construct NativeProductRuntime; "
                 f"{kotlin_relative} contains an alternate PRODUCT composition root"
             )
+
+    # Candidate A final PRODUCT boundary: one Rust-owned mobile-data detach/attach Rotation.
+    rotation_domain = "crates/rotation/src/lib.rs"
+    rotation_runtime = "crates/runtime/src/rotation_runtime.rs"
+    product_runtime = "crates/runtime/src/product_runtime.rs"
+    product_ffi = "crates/android-ffi/src/product_runtime_ffi.rs"
+    cellular_bridge = "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRuntimeBridge.kt"
+    for required in (
+        "DataDisabling",
+        "WaitingCellularLoss",
+        "DataEnabling",
+        "data_disable_mutation_started(",
+        "data_disable_effect_completed(",
+        "data_enable_effect_completed(",
+    ):
+        require(rotation_domain, required, "Candidate A transition semantics must remain Rust-owned")
+    for required in (
+        "settings get global mobile_data",
+        "cmd phone data disable",
+        "cmd phone data enable",
+        "compensation_owned: AtomicBool",
+    ):
+        require(
+            "crates/runtime/src/mobile_data_effect.rs",
+            required,
+            "Candidate A must use one sealed typed effect on the persistent root session",
+        )
+    for target in (rotation_domain, rotation_runtime, product_runtime, product_ffi):
+        for obsolete in (
+            "AirplaneEnabling",
+            "WaitingRadioDown",
+            "AirplaneDisabling",
+            "AirplaneEnableFailed",
+            "AirplaneObservationFailed",
+            "AirplaneDisableFailed",
+            "CellularRequestRearmEffect",
+            "observe_radio_power_off",
+            "observe_platform_cellular_observation",
+        ):
+            forbid(target, obsolete, "Candidate A must not retain an airplane/rearm compatibility path")
+    for target in (rotation_runtime, product_ffi):
+        for obsolete in (
+            "airplane_enable_",
+            "airplane_on_observed",
+            "radio_power_off_observed",
+            "airplane_disable_",
+            "airplane_off_observed",
+            "cellular_request_rearm_",
+            "platform_cellular_observations_after_rearm",
+        ):
+            forbid(target, obsolete, "Candidate A timing vocabulary must describe only the active mobile-data path")
+    for required in (
+        "mobile_data_precondition_observed_ms",
+        "mobile_data_precondition_enabled",
+        "data_disable_started_ms",
+        "data_disable_effect_completed_ms",
+        "cellular_loss_observed_ms",
+        "data_enable_started_ms",
+        "data_enable_effect_completed_ms",
+        "fresh_cellular_observed_ms",
+        "root_authorized_ms",
+    ):
+        require(product_ffi, required, "Android diagnostics must receive the native Candidate A timing projection")
+    forbid_exists(
+        "android/app/src/main/java/com/mobileproxymish/app/cellular/CellularRadioPowerObserver.kt",
+        "Candidate A must delete the obsolete Android POWER_OFF observer",
+    )
+    for obsolete in ("NativeCellularRequestRearmEffect", "cellularRequestRearmEffect"):
+        forbid(runtime_controller, obsolete, "Kotlin must not retain a Rotation platform-effect owner")
+    for obsolete in ("CellularRadioPowerObserver", "observeRadioPowerOff", "rearmNetworkRequest"):
+        forbid(cellular_bridge, obsolete, "Kotlin Cellular boundary must remain observation-only")
+    require(
+        runtime_controller,
+        "productRuntime.startPublicIpRotation()",
+        "Kotlin Rotate command must delegate directly to the Rust owner without a platform effect",
+    )
+    require(
+        runtime_controller,
+        "productRuntime.startRemoteControl(spki, controlAuthSigner)",
+        "Kotlin CONTROL startup must not transport a Rotation effect",
+    )
 
     # Native Mesh serving may be stopped by readiness/proxy callbacks already running on the
     # shared PRODUCT Tokio runtime. A direct Handle::block_on from that worker panics and poisons

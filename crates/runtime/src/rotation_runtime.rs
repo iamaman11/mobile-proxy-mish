@@ -42,15 +42,6 @@ pub enum RotationRuntimeStartError {
 
 pub type RotationObserver = Arc<dyn Fn(RotationSnapshot) + Send + Sync + 'static>;
 
-/// Compatibility-only Android boundary retained during the Candidate A transition.
-///
-/// Candidate A never calls this effect. Keeping the trait temporarily lets the exact PRODUCT slice
-/// land independently from generated UniFFI/Kotlin cleanup; any implementation is semantically
-/// inert. It is removed in the boundary-cleanup commit in the same PR.
-pub trait CellularRequestRearmEffect: Send + Sync + 'static {
-    fn rearm_cellular_request(&self) -> bool;
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum RotationAction {
     BeforeIp,
@@ -62,9 +53,8 @@ enum RotationAction {
 
 /// Read-only monotonic timing evidence for one current/recent Rotation operation.
 ///
-/// These values never drive state transitions, retries or deadlines. The airplane/rearm fields are
-/// compatibility projection slots and remain empty for Candidate A until the generated boundary is
-/// cleaned up; the mobile-data fields are the new authoritative timing map.
+/// These values never drive state transitions, retries or deadlines. Every field describes the
+/// active Candidate A mobile-data detach/attach path or its generation-bound recovery proof.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RotationRuntimeTimingSnapshot {
     pub operation_id: Option<u64>,
@@ -76,20 +66,9 @@ pub struct RotationRuntimeTimingSnapshot {
     pub mobile_data_precondition_enabled: Option<bool>,
     pub data_disable_started_ms: Option<u64>,
     pub data_disable_effect_completed_ms: Option<u64>,
-    pub airplane_enable_started_ms: Option<u64>,
-    pub airplane_enable_effect_completed_ms: Option<u64>,
-    pub airplane_on_observed_ms: Option<u64>,
     pub cellular_loss_observed_ms: Option<u64>,
-    pub radio_power_off_observed_ms: Option<u64>,
     pub data_enable_started_ms: Option<u64>,
     pub data_enable_effect_completed_ms: Option<u64>,
-    pub airplane_disable_started_ms: Option<u64>,
-    pub airplane_disable_effect_completed_ms: Option<u64>,
-    pub airplane_off_observed_ms: Option<u64>,
-    pub cellular_request_rearm_started_ms: Option<u64>,
-    pub cellular_request_rearm_completed_ms: Option<u64>,
-    pub first_platform_cellular_observation_ms: Option<u64>,
-    pub platform_cellular_observations_after_rearm: u64,
     pub fresh_cellular_observed_ms: Option<u64>,
     pub fresh_cellular_generation: Option<u64>,
     pub root_authorized_ms: Option<u64>,
@@ -263,11 +242,8 @@ impl RotationRuntimeCoordinator {
         notify(Some((observer, snapshot)));
     }
 
-    pub fn start(
-        self: &Arc<Self>,
-        _compat_rearm: Arc<dyn CellularRequestRearmEffect>,
-    ) -> Result<u64, RotationRuntimeStartError> {
-        let operation_id = self.prepare(_compat_rearm)?;
+    pub fn start(self: &Arc<Self>) -> Result<u64, RotationRuntimeStartError> {
+        let operation_id = self.prepare()?;
         if let Err(error) = self.activate_prepared(operation_id) {
             self.fail_prepared_before_mutation(operation_id);
             return Err(error);
@@ -275,10 +251,7 @@ impl RotationRuntimeCoordinator {
         Ok(operation_id)
     }
 
-    pub fn prepare(
-        self: &Arc<Self>,
-        _compat_rearm: Arc<dyn CellularRequestRearmEffect>,
-    ) -> Result<u64, RotationRuntimeStartError> {
+    pub fn prepare(self: &Arc<Self>) -> Result<u64, RotationRuntimeStartError> {
         let admission = self
             .cellular
             .admission_snapshot()
@@ -396,10 +369,6 @@ impl RotationRuntimeCoordinator {
         true
     }
 
-    /// Compatibility no-op. Candidate A relies on the already-running Android Cellular observer;
-    /// it never re-arms or owns that request.
-    pub(crate) fn observe_platform_cellular_observation(&self) {}
-
     pub fn observe_cellular(self: &Arc<Self>, admission: CellularAdmissionSnapshot) {
         let Some(generation) = admission.last_sequence().map(|sequence| sequence.raw()) else {
             return;
@@ -465,9 +434,6 @@ impl RotationRuntimeCoordinator {
         };
         self.after_transition(snapshot);
     }
-
-    /// Compatibility no-op for the old airplane-specific Android telephony observer.
-    pub fn observe_radio_power_off(self: &Arc<Self>) {}
 
     pub async fn shutdown(self: &Arc<Self>) -> bool {
         let (operation_id, cancel, tasks, snapshot, force_restore) = {
