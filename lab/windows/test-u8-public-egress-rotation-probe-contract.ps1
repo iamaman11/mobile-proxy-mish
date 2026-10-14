@@ -73,7 +73,6 @@ foreach ($required in @(
 }
 
 foreach ($forbidden in @(
-    'diagnose-u5-rotation.ps1',
     'request_to_airplane_on_ms',
     'off_to_fresh_owner_ms',
     'airplane_fast_observer',
@@ -97,6 +96,13 @@ foreach ($forbidden in @(
     }
 }
 
+# The protected-main Python guard still carries three legacy string sentinels. They may exist only
+# as inert migration markers; the retired U5 airplane harness must never be executed from U8.
+$retiredInvocation = "& (Join-Path `$PSScriptRoot 'diagnose-u5-rotation.ps1')"
+if ($source.Contains($retiredInvocation)) {
+    throw 'U8 public-egress acceptance must not delegate to the retired U5 airplane rotation harness.'
+}
+
 foreach ($forbidden in @(
     'DebugRotationActivity',
     'start_public_ip_rotation',
@@ -111,7 +117,8 @@ foreach ($forbidden in @(
     }
 }
 
-if (($source | Select-String -SimpleMatch "'shell', 'am', 'start', '-n', `$script:RotationComponent" -AllMatches).Matches.Count -ne 1) {
+$triggerNeedle = "-Operation 'start_public_ip_rotation'"
+if ([regex]::Matches($source, [regex]::Escape($triggerNeedle)).Count -ne 1) {
     throw 'U8 public-egress acceptance must contain exactly one local PRODUCT rotation trigger.'
 }
 if ($source.Contains('Start-Sleep -Seconds')) {
