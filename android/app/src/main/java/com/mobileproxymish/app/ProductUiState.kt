@@ -38,7 +38,7 @@ enum class RotationStageUi {
     STARTING,
     DISCONNECTING_CELLULAR,
     WAITING_FOR_CELLULAR_DISCONNECT,
-    RESTORING_RADIO,
+    ENABLING_CELLULAR_DATA,
     WAITING_FOR_CELLULAR_RECOVERY,
     APPLYING_NETWORK_POLICY,
     CHECKING_PUBLIC_IP,
@@ -52,9 +52,9 @@ enum class RotationFailureUi {
     NO_CURRENT_CELLULAR,
     ROOT_POLICY_UNAVAILABLE,
     BEFORE_IP_FAILED,
-    AIRPLANE_ENABLE_FAILED,
-    AIRPLANE_OBSERVATION_FAILED,
-    AIRPLANE_DISABLE_FAILED,
+    DATA_DISABLE_FAILED,
+    MOBILE_DATA_OBSERVATION_FAILED,
+    DATA_ENABLE_FAILED,
     FRESH_CELLULAR_UNAVAILABLE,
     ROOT_POLICY_RECOVERY_FAILED,
     AFTER_IP_FAILED,
@@ -200,10 +200,10 @@ private fun RotationSnapshotView.toUi(): RotationUiState {
         stage = when (phase) {
             RotationPhaseView.IDLE -> RotationStageUi.IDLE
             RotationPhaseView.PREPARING -> RotationStageUi.STARTING
-            RotationPhaseView.AIRPLANE_ENABLING -> RotationStageUi.DISCONNECTING_CELLULAR
-            RotationPhaseView.WAITING_RADIO_DOWN ->
+            RotationPhaseView.DATA_DISABLING -> RotationStageUi.DISCONNECTING_CELLULAR
+            RotationPhaseView.WAITING_CELLULAR_LOSS ->
                 RotationStageUi.WAITING_FOR_CELLULAR_DISCONNECT
-            RotationPhaseView.AIRPLANE_DISABLING -> RotationStageUi.RESTORING_RADIO
+            RotationPhaseView.DATA_ENABLING -> RotationStageUi.ENABLING_CELLULAR_DATA
             RotationPhaseView.WAITING_CELLULAR_RECOVERY ->
                 RotationStageUi.WAITING_FOR_CELLULAR_RECOVERY
             RotationPhaseView.WAITING_ROOT_POLICY -> RotationStageUi.APPLYING_NETWORK_POLICY
@@ -232,10 +232,10 @@ private fun RotationFailureView.toUi(): RotationFailureUi = when (this) {
     RotationFailureView.NO_CURRENT_CELLULAR -> RotationFailureUi.NO_CURRENT_CELLULAR
     RotationFailureView.ROOT_POLICY_UNAVAILABLE -> RotationFailureUi.ROOT_POLICY_UNAVAILABLE
     RotationFailureView.BEFORE_IP_FAILED -> RotationFailureUi.BEFORE_IP_FAILED
-    RotationFailureView.AIRPLANE_ENABLE_FAILED -> RotationFailureUi.AIRPLANE_ENABLE_FAILED
-    RotationFailureView.AIRPLANE_OBSERVATION_FAILED ->
-        RotationFailureUi.AIRPLANE_OBSERVATION_FAILED
-    RotationFailureView.AIRPLANE_DISABLE_FAILED -> RotationFailureUi.AIRPLANE_DISABLE_FAILED
+    RotationFailureView.DATA_DISABLE_FAILED -> RotationFailureUi.DATA_DISABLE_FAILED
+    RotationFailureView.MOBILE_DATA_OBSERVATION_FAILED ->
+        RotationFailureUi.MOBILE_DATA_OBSERVATION_FAILED
+    RotationFailureView.DATA_ENABLE_FAILED -> RotationFailureUi.DATA_ENABLE_FAILED
     RotationFailureView.FRESH_CELLULAR_UNAVAILABLE ->
         RotationFailureUi.FRESH_CELLULAR_UNAVAILABLE
     RotationFailureView.ROOT_POLICY_RECOVERY_FAILED ->
@@ -423,7 +423,7 @@ fun rotationStageText(stage: RotationStageUi): String = when (stage) {
     RotationStageUi.STARTING -> "Starting"
     RotationStageUi.DISCONNECTING_CELLULAR -> "Disconnecting cellular"
     RotationStageUi.WAITING_FOR_CELLULAR_DISCONNECT -> "Waiting for cellular disconnect"
-    RotationStageUi.RESTORING_RADIO -> "Restoring radio"
+    RotationStageUi.ENABLING_CELLULAR_DATA -> "Enabling cellular data"
     RotationStageUi.WAITING_FOR_CELLULAR_RECOVERY -> "Waiting for cellular recovery"
     RotationStageUi.APPLYING_NETWORK_POLICY -> "Applying network policy"
     RotationStageUi.CHECKING_PUBLIC_IP -> "Checking public IP"
@@ -441,9 +441,9 @@ fun rotationFailureText(failure: RotationFailureUi): String = when (failure) {
     RotationFailureUi.NO_CURRENT_CELLULAR -> "No current mobile network is available."
     RotationFailureUi.ROOT_POLICY_UNAVAILABLE -> "Network policy is unavailable."
     RotationFailureUi.BEFORE_IP_FAILED -> "Could not read the current public IP."
-    RotationFailureUi.AIRPLANE_ENABLE_FAILED -> "Could not disconnect the mobile radio."
-    RotationFailureUi.AIRPLANE_OBSERVATION_FAILED -> "Could not confirm the radio state."
-    RotationFailureUi.AIRPLANE_DISABLE_FAILED -> "Could not restore the mobile radio."
+    RotationFailureUi.DATA_DISABLE_FAILED -> "Could not disable mobile data."
+    RotationFailureUi.MOBILE_DATA_OBSERVATION_FAILED -> "Could not read the mobile-data state."
+    RotationFailureUi.DATA_ENABLE_FAILED -> "Could not enable mobile data."
     RotationFailureUi.FRESH_CELLULAR_UNAVAILABLE -> "Mobile network did not recover."
     RotationFailureUi.ROOT_POLICY_RECOVERY_FAILED -> "Network policy did not recover."
     RotationFailureUi.AFTER_IP_FAILED -> "Could not verify the new public IP."

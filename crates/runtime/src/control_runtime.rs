@@ -8,9 +8,9 @@
 
 use crate::control_transport::{ControlTransport, ControlTransportError, ControlTransportMessage};
 use crate::{
-    CellularRequestRearmEffect, MeshCompositionCoordinator, ProxyRuntimeCoordinator,
-    ReadinessRuntimeCoordinator, RotationRuntimeCoordinator, RotationRuntimeStartError,
-    RotationRuntimeTimingSnapshot, RuntimeExecutionError, RuntimeExecutor,
+    MeshCompositionCoordinator, ProxyRuntimeCoordinator, ReadinessRuntimeCoordinator,
+    RotationRuntimeCoordinator, RotationRuntimeStartError, RotationRuntimeTimingSnapshot,
+    RuntimeExecutionError, RuntimeExecutor,
 };
 use mish_configuration::ControlEndpoint;
 use mish_control::{
@@ -313,7 +313,6 @@ impl ControlRuntimeCoordinator {
         self: &Arc<Self>,
         public_key_spki: Vec<u8>,
         signer: Arc<dyn ControlAuthSigner>,
-        cellular_request_rearm: Arc<dyn CellularRequestRearmEffect>,
     ) -> Result<String, ControlRuntimeStartError> {
         let identity = ControlDeviceIdentity::from_public_key_spki(public_key_spki)
             .map_err(|_| ControlRuntimeStartError::InvalidIdentity)?;
@@ -352,9 +351,7 @@ impl ControlRuntimeCoordinator {
         let task = self
             .executor
             .spawn(async move {
-                owner
-                    .run_loop(identity, signer, cellular_request_rearm, cancel_rx)
-                    .await;
+                owner.run_loop(identity, signer, cancel_rx).await;
             })
             .map_err(|_| ControlRuntimeStartError::ExecutorUnavailable)?;
 
@@ -400,7 +397,6 @@ impl ControlRuntimeCoordinator {
         self: Arc<Self>,
         identity: ControlDeviceIdentity,
         signer: Arc<dyn ControlAuthSigner>,
-        cellular_request_rearm: Arc<dyn CellularRequestRearmEffect>,
         mut cancel: watch::Receiver<bool>,
     ) {
         let mut failures = 0_u32;
@@ -412,12 +408,7 @@ impl ControlRuntimeCoordinator {
             self.record_post_terminal_connect_attempt();
 
             let result = self
-                .connect_and_run(
-                    &identity,
-                    Arc::clone(&signer),
-                    Arc::clone(&cellular_request_rearm),
-                    &mut cancel,
-                )
+                .connect_and_run(&identity, Arc::clone(&signer), &mut cancel)
                 .await;
             if matches!(result, Err(ControlRunError::Cancelled)) {
                 break;
@@ -440,7 +431,7 @@ impl ControlRuntimeCoordinator {
                         break;
                     }
                 }
-                // Rotation terminal is a concrete owner event after the intentional radio outage.
+                // Rotation terminal is a concrete owner event after the intentional Cellular detach.
                 // Do not spend the remaining public response budget sleeping on a backoff that was
                 // accumulated while the network was intentionally unavailable. The same CONTROL
                 // task immediately retries; if that retry still fails, the normal bounded sequence
@@ -462,7 +453,6 @@ impl ControlRuntimeCoordinator {
         self: &Arc<Self>,
         identity: &ControlDeviceIdentity,
         signer: Arc<dyn ControlAuthSigner>,
-        cellular_request_rearm: Arc<dyn CellularRequestRearmEffect>,
         cancel: &mut watch::Receiver<bool>,
     ) -> Result<(), ControlRunError> {
         let mut transport = tokio::select! {
@@ -525,11 +515,7 @@ impl ControlRuntimeCoordinator {
                             self.record_heartbeat();
                         }
                         ControlTransportMessage::Text(text) => {
-                            self.handle_server_message(
-                                &mut transport,
-                                &text,
-                                Arc::clone(&cellular_request_rearm),
-                            ).await?;
+                            self.handle_server_message(&mut transport, &text).await?;
                         }
                         ControlTransportMessage::Closed => return Err(ControlRunError::Transport),
                     }
@@ -585,12 +571,10 @@ impl ControlRuntimeCoordinator {
         self: &Arc<Self>,
         transport: &mut ControlTransport,
         text: &str,
-        cellular_request_rearm: Arc<dyn CellularRequestRearmEffect>,
     ) -> Result<(), ControlRunError> {
         match parse_server_message(text).map_err(|_| ControlRunError::Protocol)? {
             ServerControlMessage::RotateIp { request_id } => {
-                self.handle_rotate_ip(transport, request_id, cellular_request_rearm)
-                    .await
+                self.handle_rotate_ip(transport, request_id).await
             }
             ServerControlMessage::GetProxy { request_id } => {
                 self.handle_get_proxy(transport, request_id).await
@@ -676,7 +660,6 @@ impl ControlRuntimeCoordinator {
         self: &Arc<Self>,
         transport: &mut ControlTransport,
         request_id: String,
-        cellular_request_rearm: Arc<dyn CellularRequestRearmEffect>,
     ) -> Result<(), ControlRunError> {
         let command_received_at = Instant::now();
         let (active, recent) = self
@@ -711,7 +694,7 @@ impl ControlRuntimeCoordinator {
 
         // Reserve an operation id only after PRODUCT preconditions have passed. prepare() owns
         // no timer/network/radio effect, so a rejected/busy request cannot mutate Cellular.
-        let operation_id = match self.rotation.prepare(Arc::clone(&cellular_request_rearm)) {
+        let operation_id = match self.rotation.prepare() {
             Ok(operation_id) => operation_id,
             Err(error) => {
                 let result = map_rotation_start_error(error);
