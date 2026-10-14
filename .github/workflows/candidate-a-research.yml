@@ -27,10 +27,10 @@ jobs:
     runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
     timeout-minutes: 15
     steps:
-      - name: Checkout current protected main
+      - name: Checkout trigger-time protected main
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: main
+          ref: ${{ github.sha }}
           persist-credentials: false
           clean: true
 
