@@ -312,6 +312,10 @@ impl RotationStateMachine {
             return Err(RotationTransitionError::StaleGeneration);
         }
         operation.before_ip = Some(address);
+        // From this point a disable mutation may already be in flight when a concurrent absolute
+        // deadline fires. Mark restore intent before scheduling the mutation so timeout/shutdown
+        // can only recover by authoritative observe -> at-most-one enable, never by blind replay.
+        operation.restore_required = true;
         operation.phase = RotationPhase::DataDisabling;
         Ok(operation.snapshot())
     }
@@ -327,15 +331,14 @@ impl RotationStateMachine {
         }
         match outcome {
             RotationMutationOutcome::Applied => {
-                operation.restore_required = true;
                 operation.phase = RotationPhase::WaitingCellularLoss;
                 operation.maybe_advance_loss();
             }
             RotationMutationOutcome::Rejected => {
+                operation.restore_required = false;
                 return Ok(fail_operation(operation, RotationFailure::DataDisableFailed));
             }
             RotationMutationOutcome::Uncertain => {
-                operation.restore_required = true;
                 return Ok(fail_operation(operation, RotationFailure::DataDisableFailed));
             }
         }
@@ -599,6 +602,16 @@ mod tests {
     }
 
     #[test]
+    fn entering_disable_phase_marks_restore_before_mutation_can_race_deadline() {
+        let (mut machine, id) = started();
+        assert_eq!(machine.snapshot().phase, RotationPhase::DataDisabling);
+        assert!(machine.snapshot().restore_required);
+        let failed = machine.deadline_exceeded(id).expect("deadline");
+        assert_eq!(failed.phase, RotationPhase::Failed);
+        assert!(failed.restore_required);
+    }
+
+    #[test]
     fn disable_completion_alone_never_implies_cellular_loss() {
         let (mut machine, id) = started();
         let snapshot = machine
@@ -763,9 +776,6 @@ mod tests {
     #[test]
     fn absolute_deadline_keeps_restore_requirement_only_while_data_may_be_disabled() {
         let (mut machine, id) = started();
-        machine
-            .data_disable_effect_completed(id, RotationMutationOutcome::Applied)
-            .expect("disable");
         let failed = machine.deadline_exceeded(id).expect("deadline");
         assert!(failed.restore_required);
 
@@ -788,7 +798,10 @@ mod tests {
         let restored = machine
             .record_restore(id, RotationRestoreResult::AlreadyEnabled)
             .expect("restore");
-        assert_eq!(restored.restore_result, Some(RotationRestoreResult::AlreadyEnabled));
+        assert_eq!(
+            restored.restore_result,
+            Some(RotationRestoreResult::AlreadyEnabled)
+        );
         assert!(!restored.restore_required);
     }
 
