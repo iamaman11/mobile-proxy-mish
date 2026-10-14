@@ -1,0 +1,109 @@
+name: Candidate A Diagnostics Fixture Fix
+
+on:
+  push:
+    branches:
+      - rotation/candidate-a-product
+    paths:
+      - .github/workflows/candidate-a-diagnostics-test-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact feature branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: rotation/candidate-a-product
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up pinned Gradle
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb
+        with:
+          gradle-version: '9.6.0'
+
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal
+          rustup override set 1.98.1
+
+      - name: Migrate diagnostics timing fixture
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('android/app/src/test/java/com/mobileproxymish/app/MishDiagnosticsSerializationTest.kt')
+          text = path.read_text(encoding='utf-8')
+          old = '''                airplaneEnableStartedMs = 611uL,
+                airplaneEnableEffectCompletedMs = 720uL,
+                airplaneOnObservedMs = 880uL,
+                cellularLossObservedMs = 900uL,
+                radioPowerOffObservedMs = 1_400uL,
+                airplaneDisableStartedMs = 1_401uL,
+                airplaneDisableEffectCompletedMs = 1_520uL,
+                airplaneOffObservedMs = 1_650uL,
+                cellularRequestRearmStartedMs = 1_651uL,
+                cellularRequestRearmCompletedMs = 1_653uL,
+                firstPlatformCellularObservationMs = 4_800uL,
+                platformCellularObservationsAfterRearm = 2uL,
+'''
+          new = '''                mobileDataPreconditionObservedMs = 611uL,
+                mobileDataPreconditionEnabled = true,
+                dataDisableStartedMs = 612uL,
+                dataDisableEffectCompletedMs = 720uL,
+                cellularLossObservedMs = 900uL,
+                dataEnableStartedMs = 901uL,
+                dataEnableEffectCompletedMs = 1_020uL,
+'''
+          if text.count(old) != 1:
+              raise SystemExit(f'old timing fixture count={text.count(old)}')
+          text = text.replace(old, new, 1)
+
+          old_asserts = '''        assertEquals(1_400L, rotationTiming.getLong("radio_power_off_observed_ms"))
+        assertEquals(1_651L, rotationTiming.getLong("cellular_request_rearm_started_ms"))
+        assertEquals(1_653L, rotationTiming.getLong("cellular_request_rearm_completed_ms"))
+        assertEquals(4_800L, rotationTiming.getLong("first_platform_cellular_observation_ms"))
+        assertEquals(2L, rotationTiming.getLong("platform_cellular_observations_after_rearm"))
+'''
+          new_asserts = '''        assertEquals(611L, rotationTiming.getLong("mobile_data_precondition_observed_ms"))
+        assertTrue(rotationTiming.getBoolean("mobile_data_precondition_enabled"))
+        assertEquals(612L, rotationTiming.getLong("data_disable_started_ms"))
+        assertEquals(720L, rotationTiming.getLong("data_disable_effect_completed_ms"))
+        assertEquals(900L, rotationTiming.getLong("cellular_loss_observed_ms"))
+        assertEquals(901L, rotationTiming.getLong("data_enable_started_ms"))
+        assertEquals(1_020L, rotationTiming.getLong("data_enable_effect_completed_ms"))
+'''
+          if text.count(old_asserts) != 1:
+              raise SystemExit(f'old timing assertions count={text.count(old_asserts)}')
+          text = text.replace(old_asserts, new_asserts, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Verify migrated unit test
+        run: gradle --no-daemon -p android :app:testDebugUnitTest
+
+      - name: Verify bounded patch
+        run: |
+          git diff --check
+          ! grep -E 'airplaneEnable|radioPowerOff|cellularRequestRearm|firstPlatformCellularObservation|platformCellularObservationsAfterRearm' android/app/src/test/java/com/mobileproxymish/app/MishDiagnosticsSerializationTest.kt
+          grep -F 'mobileDataPreconditionObservedMs = 611uL' android/app/src/test/java/com/mobileproxymish/app/MishDiagnosticsSerializationTest.kt
+          grep -F 'dataEnableEffectCompletedMs = 1_020uL' android/app/src/test/java/com/mobileproxymish/app/MishDiagnosticsSerializationTest.kt
+          rm .github/workflows/candidate-a-diagnostics-test-fix.yml
+
+      - name: Commit validated fixture migration
+        run: |
+          git config user.name "iamaman11"
+          git config user.email "44100369+iamaman11@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && { echo 'fixture migration produced no changes' >&2; exit 1; }
+          git commit -m "Tests: align diagnostics timing with Candidate A"
+          git push origin HEAD:rotation/candidate-a-product
