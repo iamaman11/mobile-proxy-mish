@@ -3,6 +3,8 @@
 //! Command construction is sealed here. Callers can only observe the authoritative global
 //! mobile-data setting or request one enable/disable mutation; no arbitrary shell string crosses
 //! this capability and RootSessionManager never replays an uncertain mutation.
+//! Fresh Cellular generation/currentness and terminal Rotation decisions remain outside this
+//! effect with their existing Rust owners; this capability owns only the sealed Android mutation.
 //!
 //! The one bit of state in this effect is not a second Rotation state machine. It records only
 //! whether this exact effect instance has crossed the point where its own disable mutation may
