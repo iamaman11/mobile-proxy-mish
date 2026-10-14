@@ -2,7 +2,8 @@
 param(
     [string] $AdbPath = 'C:\mish-lab\tools\android-sdk\platform-tools\adb.exe',
     [string] $PackageName = 'com.mobileproxymish.app.debug',
-    [string] $EvidencePath = (Join-Path $env:TEMP 'mish-dns-lifetime-live-v1.json')
+    [string] $EvidencePath = (Join-Path $env:TEMP 'mish-dns-lifetime-live-v1.json'),
+    [System.Diagnostics.Stopwatch] $TimelineStopwatch = $null
 )
 
 Set-StrictMode -Version Latest
@@ -118,11 +119,15 @@ function Get-MishDnsObservation {
         captured_elapsed_ms = [int64]$Snapshot.captured_elapsed_ms
         cellular_state = [string]$Snapshot.cellular.state
         cellular_admitted = [bool]$Snapshot.cellular.admitted
+        cellular_owner_sequence = $Snapshot.cellular.owner_sequence
+        cellular_reconcile_requested = [int64]$Snapshot.cellular.reconcile.requested
         root_policy_authorized = [bool]$Snapshot.root.policy_authorized
+        root_policy_authorized_generation = $Snapshot.root.policy_authorized_generation
         proxy_state = [string]$Snapshot.proxy.state
         proxy_healthy = [bool]$Snapshot.proxy.healthy
         credential_active = [bool]$Snapshot.credential.active
         readiness_state = [string]$Snapshot.readiness.state
+        readiness_cellular_owner_generation = $Snapshot.readiness.binding.cellular_owner_generation
         slow_threshold_ms = [int64]$dns.slow_threshold_ms
         started = [int64]$dns.started
         completed = [int64]$dns.completed
@@ -261,7 +266,7 @@ function Start-OneMishDnsRequestIfPossible {
     }
 
     $StartedCount.Value++
-    $entry = Start-MishDnsRequest -Ordinal $StartedCount.Value -ProxyPort $ProxyPort -Lease $Lease -RunTag $RunTag
+    $entry = Start-MishDnsRequest -Ordinal $StartedCount.Value -ProxyPort $ProxyPort -Lease $Lease -RunTag $runTag
     [void]$ActiveRequests.Add($entry)
 }
 
@@ -305,11 +310,26 @@ function New-MishDnsDelta {
     }
 }
 
+function Get-MishTimelineDelta {
+    param($From, $To)
+    if ($null -eq $From -or $null -eq $To) { return $null }
+    return [int64]$To - [int64]$From
+}
+
 if (-not (Test-Path -LiteralPath $AdbPath -PathType Leaf)) {
     Stop-MishDnsLifetime 'LAB_DNS_LIFETIME_ADB_MISSING' 'Canonical ADB executable is unavailable.'
 }
 
 Import-Module (Join-Path $PSScriptRoot 'CredentialProvisioning.psm1') -Force
+
+$timelineOwned = $false
+if ($null -eq $TimelineStopwatch) {
+    $TimelineStopwatch = [Diagnostics.Stopwatch]::StartNew()
+    $timelineOwned = $true
+}
+elseif (-not $TimelineStopwatch.IsRunning) {
+    Stop-MishDnsLifetime 'LAB_DNS_LIFETIME_TIMELINE_INVALID' 'Supplied monotonic timeline must already be running.'
+}
 
 $baselineSnapshot = Read-MishSnapshot
 $baseline = Get-MishDnsObservation -Snapshot $baselineSnapshot
@@ -326,6 +346,10 @@ if (
 }
 
 $productPid = [int]$baseline.pid
+$baselineCellularOwnerSequence = if ($null -eq $baseline.cellular_owner_sequence) { $null } else { [int64]$baseline.cellular_owner_sequence }
+if ($null -eq $baselineCellularOwnerSequence) {
+    Stop-MishDnsLifetime 'LAB_DNS_LIFETIME_BASELINE_INVALID' 'Canonical baseline lacks Cellular owner generation.'
+}
 $tempRoot = if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) { $env:RUNNER_TEMP } else { $env:TEMP }
 if ([string]::IsNullOrWhiteSpace($tempRoot)) {
     Stop-MishDnsLifetime 'LAB_DNS_LIFETIME_TEMP_UNAVAILABLE' 'A temporary directory is unavailable.'
@@ -349,6 +373,16 @@ $finalObservation = $null
 $quiescent = $false
 $quiescenceElapsedMs = [int64]0
 $classification = 'LAB_DNS_LIFETIME_NOT_COMPLETED'
+$disableStartMs = $null
+$disableCompleteMs = $null
+$lossObservedMs = $null
+$enableStartMs = $null
+$enableCompleteMs = $null
+$firstPostEnableReconcileMs = $null
+$freshCellularAdmittedMs = $null
+$rootAuthorizedMs = $null
+$readinessReadyMs = $null
+$freshCellularOwnerSequence = $null
 
 try {
     [void](Invoke-MishExternalProxyCredentialProvisioning -AdbPath $AdbPath -PackageName $PackageName -StorePath $credentialStorePath)
@@ -385,7 +419,9 @@ try {
     $beforeOwnerSequence = [int64]$beforeLoss.last_started_owner_sequence
 
     $mobileDataMayBeDisabled = $true
+    $disableStartMs = [int64]$TimelineStopwatch.ElapsedMilliseconds
     Invoke-MishMobileDataTransition -State 'disable'
+    $disableCompleteMs = [int64]$TimelineStopwatch.ElapsedMilliseconds
 
     $watch = [Diagnostics.Stopwatch]::StartNew()
     do {
@@ -396,6 +432,7 @@ try {
             Start-OneMishDnsRequestIfPossible -Observation $observation -ActiveRequests $activeRequests -Lease $lease -ProxyPort $forwardPort -RunTag $runTag -StartedCount ([ref]$requestStarted)
             if (-not [bool]$observation.cellular_admitted) {
                 $loss = $observation
+                $lossObservedMs = [int64]$TimelineStopwatch.ElapsedMilliseconds
                 break
             }
         }
@@ -407,8 +444,11 @@ try {
     if ($null -eq $loss) {
         Stop-MishDnsLifetime 'LAB_DNS_LIFETIME_LOSS_NOT_OBSERVED' 'Canonical owner facts did not observe cellular loss within the bounded window.'
     }
+    $lossReconcileRequested = [int64]$loss.cellular_reconcile_requested
 
+    $enableStartMs = [int64]$TimelineStopwatch.ElapsedMilliseconds
     Invoke-MishMobileDataTransition -State 'enable'
+    $enableCompleteMs = [int64]$TimelineStopwatch.ElapsedMilliseconds
     $mobileDataMayBeDisabled = $false
 
     $watch = [Diagnostics.Stopwatch]::StartNew()
@@ -418,6 +458,39 @@ try {
         if ($null -ne $observation) {
             Update-MishSampleSummary -Observation $observation -SampleCount ([ref]$sampleCount) -MaxObservedActive ([ref]$maxObservedActive) -OwnerSequences $ownerSequences
             Start-OneMishDnsRequestIfPossible -Observation $observation -ActiveRequests $activeRequests -Lease $lease -ProxyPort $forwardPort -RunTag $runTag -StartedCount ([ref]$requestStarted)
+
+            $timelineNowMs = [int64]$TimelineStopwatch.ElapsedMilliseconds
+            if ($null -eq $firstPostEnableReconcileMs -and [int64]$observation.cellular_reconcile_requested -gt $lossReconcileRequested) {
+                $firstPostEnableReconcileMs = $timelineNowMs
+            }
+            if (
+                $null -eq $freshCellularAdmittedMs -and
+                [bool]$observation.cellular_admitted -and
+                $null -ne $observation.cellular_owner_sequence -and
+                [int64]$observation.cellular_owner_sequence -gt $baselineCellularOwnerSequence
+            ) {
+                $freshCellularOwnerSequence = [int64]$observation.cellular_owner_sequence
+                $freshCellularAdmittedMs = $timelineNowMs
+            }
+            if (
+                $null -ne $freshCellularOwnerSequence -and
+                $null -eq $rootAuthorizedMs -and
+                [bool]$observation.root_policy_authorized -and
+                $null -ne $observation.root_policy_authorized_generation -and
+                [int64]$observation.root_policy_authorized_generation -eq $freshCellularOwnerSequence
+            ) {
+                $rootAuthorizedMs = $timelineNowMs
+            }
+            if (
+                $null -ne $freshCellularOwnerSequence -and
+                $null -ne $rootAuthorizedMs -and
+                $null -eq $readinessReadyMs -and
+                [string]$observation.readiness_state -ceq 'READY' -and
+                $null -ne $observation.readiness_cellular_owner_generation -and
+                [int64]$observation.readiness_cellular_owner_generation -eq $freshCellularOwnerSequence
+            ) {
+                $readinessReadyMs = $timelineNowMs
+            }
 
             if (
                 [bool]$observation.cellular_admitted -and
@@ -485,6 +558,30 @@ try {
             mobile_data_enable_requested = $true
             recovery_observed = $true
         }
+        timing = [ordered]@{
+            clock = 'System.Diagnostics.Stopwatch'
+            shared_external_clock = -not $timelineOwned
+            disable_start_ms = $disableStartMs
+            disable_complete_ms = $disableCompleteMs
+            loss_observed_ms = $lossObservedMs
+            enable_start_ms = $enableStartMs
+            enable_complete_ms = $enableCompleteMs
+            first_post_enable_reconcile_ms = $firstPostEnableReconcileMs
+            fresh_cellular_admitted_ms = $freshCellularAdmittedMs
+            root_authorized_ms = $rootAuthorizedMs
+            readiness_ready_ms = $readinessReadyMs
+            fresh_cellular_owner_sequence = $freshCellularOwnerSequence
+            intervals_ms = [ordered]@{
+                disable_command = Get-MishTimelineDelta $disableStartMs $disableCompleteMs
+                disable_start_to_loss = Get-MishTimelineDelta $disableStartMs $lossObservedMs
+                enable_command = Get-MishTimelineDelta $enableStartMs $enableCompleteMs
+                enable_complete_to_first_reconcile = Get-MishTimelineDelta $enableCompleteMs $firstPostEnableReconcileMs
+                first_reconcile_to_fresh_cellular = Get-MishTimelineDelta $firstPostEnableReconcileMs $freshCellularAdmittedMs
+                fresh_cellular_to_root_authorized = Get-MishTimelineDelta $freshCellularAdmittedMs $rootAuthorizedMs
+                root_authorized_to_readiness_ready = Get-MishTimelineDelta $rootAuthorizedMs $readinessReadyMs
+                disable_start_to_readiness_ready = Get-MishTimelineDelta $disableStartMs $readinessReadyMs
+            }
+        }
         stimulus = [ordered]@{
             requested_max = $script:MaxRequests
             max_concurrency = $script:MaxConcurrency
@@ -542,5 +639,8 @@ finally {
     $lease = $null
     if (Test-Path -LiteralPath $credentialStorePath -PathType Leaf) {
         Remove-Item -LiteralPath $credentialStorePath -Force -ErrorAction SilentlyContinue
+    }
+    if ($timelineOwned -and $null -ne $TimelineStopwatch -and $TimelineStopwatch.IsRunning) {
+        $TimelineStopwatch.Stop()
     }
 }
