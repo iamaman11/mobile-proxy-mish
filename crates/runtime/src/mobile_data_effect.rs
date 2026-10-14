@@ -3,8 +3,14 @@
 //! Command construction is sealed here. Callers can only observe the authoritative global
 //! mobile-data setting or request one enable/disable mutation; no arbitrary shell string crosses
 //! this capability and RootSessionManager never replays an uncertain mutation.
+//!
+//! The one bit of state in this effect is not a second Rotation state machine. It records only
+//! whether this exact effect instance has crossed the point where its own disable mutation may
+//! have changed Android state. Compensation is therefore physically impossible before ownership
+//! exists, and enable success is released only after an authoritative readback proves `1`.
 
 use crate::root_session::{RootCommand, RootSessionError, RootSessionManager};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,15 +27,20 @@ pub enum MobileDataEffectError {
     InvalidObservation,
     MutationRejected,
     MutationUncertain,
+    MutationNotOwned,
 }
 
 pub(crate) struct MobileDataEffect {
     session: Arc<RootSessionManager>,
+    compensation_owned: AtomicBool,
 }
 
 impl MobileDataEffect {
     pub(crate) fn new(session: Arc<RootSessionManager>) -> Arc<Self> {
-        Arc::new(Self { session })
+        Arc::new(Self {
+            session,
+            compensation_owned: AtomicBool::new(false),
+        })
     }
 
     pub(crate) async fn observe(&self) -> Result<MobileDataState, MobileDataEffectError> {
@@ -50,23 +61,74 @@ impl MobileDataEffect {
     }
 
     pub(crate) async fn set(&self, state: MobileDataState) -> Result<(), MobileDataEffectError> {
-        let command = match state {
-            MobileDataState::Enabled => RootCommand::mutation("cmd phone data enable"),
-            MobileDataState::Disabled => RootCommand::mutation("cmd phone data disable"),
+        match state {
+            MobileDataState::Disabled => self.disable().await,
+            MobileDataState::Enabled => self.enable_and_verify().await,
         }
-        .map_err(map_session_error)?;
-        let result = self
-            .session
-            .execute(command)
-            .await
-            .map_err(map_session_error)?;
+    }
+
+    async fn disable(&self) -> Result<(), MobileDataEffectError> {
+        // Rotation is single-operation, so a second outstanding compensation owner is always an
+        // inconsistent/uncertain state. Never issue another disable in that condition.
+        if self
+            .compensation_owned
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(MobileDataEffectError::MutationUncertain);
+        }
+
+        // Ownership is recorded immediately before the mutation is handed to the root transport.
+        // If the caller deadline races before this point, a later restore cannot mutate Android.
+        let command = RootCommand::mutation("cmd phone data disable").map_err(|error| {
+            self.compensation_owned.store(false, Ordering::Release);
+            map_session_error(error)
+        })?;
+        let result = match self.session.execute(command).await {
+            Ok(result) => result,
+            Err(_) => return Err(MobileDataEffectError::MutationUncertain),
+        };
         if result.timed_out || !result.output_complete {
             return Err(MobileDataEffectError::MutationUncertain);
         }
         if result.exit_code != 0 {
+            // A complete non-zero result is a rejected mutation, not an uncertain mutation. This
+            // effect therefore never acquired a state that needs compensating.
+            self.compensation_owned.store(false, Ordering::Release);
             return Err(MobileDataEffectError::MutationRejected);
         }
         Ok(())
+    }
+
+    async fn enable_and_verify(&self) -> Result<(), MobileDataEffectError> {
+        // Do not let a generic recovery path turn a pre-existing user-disabled state on. Only this
+        // effect's own prior disable attempt grants permission for one enable mutation.
+        if !self.compensation_owned.load(Ordering::Acquire) {
+            return Err(MobileDataEffectError::MutationNotOwned);
+        }
+
+        let command = RootCommand::mutation("cmd phone data enable").map_err(map_session_error)?;
+        let mutation = self.session.execute(command).await;
+
+        let mutation_outcome = match mutation {
+            Ok(result) if result.timed_out || !result.output_complete => {
+                MobileDataEffectError::MutationUncertain
+            }
+            Ok(result) if result.exit_code != 0 => MobileDataEffectError::MutationRejected,
+            Ok(_) => MobileDataEffectError::MutationUncertain,
+            Err(_) => MobileDataEffectError::MutationUncertain,
+        };
+
+        // Command completion alone never proves recovery. A fresh read-only observation is allowed
+        // after a certain or uncertain root mutation and does not replay the mutation.
+        match self.observe().await {
+            Ok(MobileDataState::Enabled) => {
+                self.compensation_owned.store(false, Ordering::Release);
+                Ok(())
+            }
+            Ok(MobileDataState::Disabled) => Err(mutation_outcome),
+            Err(_) => Err(MobileDataEffectError::MutationUncertain),
+        }
     }
 }
 
