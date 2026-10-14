@@ -56,7 +56,19 @@ jobs:
           PY
 
       - name: Apply exact asserted boundary cleanup
+        id: apply_cleanup
+        continue-on-error: true
         run: python3 tools/apply_candidate_a_boundary_cleanup.py
+
+      - name: Require complete asserted transform
+        run: |
+          if [ "${{ steps.apply_cleanup.outcome }}" != success ]; then
+            echo '--- residual product runtime rearm tokens ---'
+            grep -n -C 3 -E 'CellularRequestRearmEffect|cellular_request_rearm|observe_radio_power_off|observe_platform_cellular_observation' crates/runtime/src/product_runtime.rs || true
+            echo '--- residual control runtime rearm tokens ---'
+            grep -n -C 3 -E 'CellularRequestRearmEffect|cellular_request_rearm' crates/runtime/src/control_runtime.rs || true
+            exit 1
+          fi
 
       - name: Format Rust
         run: cargo fmt --all
