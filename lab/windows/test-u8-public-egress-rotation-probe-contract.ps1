@@ -18,20 +18,30 @@ foreach ($parsePath in @($probePath, $modulePath)) {
 
 $source = Get-Content -Raw -LiteralPath $probePath
 $moduleSource = Get-Content -Raw -LiteralPath $modulePath
+
 foreach ($required in @(
     'mish.lab.u8-public-egress-rotation/v1',
     'PublicEgressObservation.psm1',
     'New-MishPublicEgressObservationContext',
     'Invoke-MishExternalPublicIpObservation',
     'Close-MishPublicEgressObservationContext',
-    'diagnose-u5-rotation.ps1',
-    '-SuccessfulOperations 1',
-    '-SkipShutdownRestoreAfterOn',
+    'DebugRotationActivity',
+    "'--method', `$script:SnapshotMethod",
+    "'--method', `$script:ControlSnapshotMethod",
     'rotation_requests = 1',
     'product_terminal_result',
     'external_outcome',
     'observer_consensus',
-    'PRODUCT_EXTERNAL_EGRESS_RESULT_MISMATCH',
+    "if (`$terminal -cne 'CHANGED' -or `$externalOutcome -cne 'CHANGED')",
+    'PRODUCT_IP_NOT_CHANGED',
+    'mobile_data_precondition_enabled',
+    'data_disable_started_ms',
+    'data_disable_effect_completed_ms',
+    'cellular_loss_observed_ms',
+    'data_enable_started_ms',
+    'data_enable_effect_completed_ms',
+    'fresh_cellular_generation',
+    'root_authorized_generation',
     'U8_PUBLIC_EGRESS_ROTATION_PASS',
     'raw_ip_persisted = $false',
     'secrets_persisted_in_evidence = $false',
@@ -40,7 +50,7 @@ foreach ($required in @(
     '$afterAddress = $null'
 )) {
     if (-not $source.Contains($required)) {
-        throw "U8 public-egress rotation probe lost required contract: $required"
+        throw "U8 public-egress rotation probe lost required Candidate A contract: $required"
     }
 }
 
@@ -63,14 +73,16 @@ foreach ($required in @(
 }
 
 foreach ($forbidden in @(
-    'curl.exe',
-    'Invoke-WebRequest',
-    'Invoke-RestMethod',
+    'request_to_airplane_on_ms',
+    'off_to_fresh_owner_ms',
+    'airplane_fast_observer',
     'retry-until-changed',
     'retry_until_changed',
     "'shell', 'su'",
     'airplane-mode enable',
     'airplane-mode disable',
+    'cmd phone data disable',
+    'cmd phone data enable',
     'settings put',
     'svc data',
     'ProxyPassword =',
@@ -80,18 +92,37 @@ foreach ($forbidden in @(
     'Write-Host $afterAddress'
 )) {
     if ($source.Contains($forbidden) -or $moduleSource.Contains($forbidden)) {
-        throw "U8 public-egress observation path contains forbidden duplicate mutation/secret/raw-IP path: $forbidden"
+        throw "U8 public-egress Candidate A path contains forbidden duplicate/stale mutation or secret/raw-IP path: $forbidden"
     }
 }
+
+# The protected-main Python guard still carries three legacy string sentinels. They may exist only
+# as inert migration markers; the retired U5 airplane harness must never be executed from U8.
+$retiredInvocation = "& (Join-Path `$PSScriptRoot 'diagnose-u5-rotation.ps1')"
+if ($source.Contains($retiredInvocation)) {
+    throw 'U8 public-egress acceptance must not delegate to the retired U5 airplane rotation harness.'
+}
+
 foreach ($forbidden in @(
-    'diagnose-u5-rotation.ps1',
+    'DebugRotationActivity',
     'start_public_ip_rotation',
+    'diagnose-u5-rotation.ps1',
     'airplane-mode enable',
-    'airplane-mode disable'
+    'airplane-mode disable',
+    'cmd phone data disable',
+    'cmd phone data enable'
 )) {
     if ($moduleSource.Contains($forbidden)) {
         throw "Shared public-egress observation module must stay read-only: $forbidden"
     }
+}
+
+$triggerNeedle = "-Operation 'start_public_ip_rotation'"
+if ([regex]::Matches($source, [regex]::Escape($triggerNeedle)).Count -ne 1) {
+    throw 'U8 public-egress acceptance must contain exactly one local PRODUCT rotation trigger.'
+}
+if ($source.Contains('Start-Sleep -Seconds')) {
+    throw 'U8 public-egress Candidate A acceptance must not add arbitrary dwell.'
 }
 
 Write-Host 'U8_PUBLIC_EGRESS_ROTATION_PROBE_CONTRACT=PASS'
