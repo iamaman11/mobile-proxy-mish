@@ -520,8 +520,7 @@ impl RotationRuntimeCoordinator {
 
         if let Some(operation_id) = operation_id {
             let current = self.snapshot();
-            if current.phase == RotationPhase::Failed
-                && (current.restore_required || force_restore)
+            if current.phase == RotationPhase::Failed && (current.restore_required || force_restore)
             {
                 self.restore_enabled_direct(operation_id).await;
             }
@@ -552,13 +551,14 @@ impl RotationRuntimeCoordinator {
             if current.phase.terminal() {
                 return;
             }
-            let snapshot = match state
-                .machine
-                .observe_root_policy(operation_id, generation, authorized)
-            {
-                Ok(snapshot) => snapshot,
-                Err(_) => return,
-            };
+            let snapshot =
+                match state
+                    .machine
+                    .observe_root_policy(operation_id, generation, authorized)
+                {
+                    Ok(snapshot) => snapshot,
+                    Err(_) => return,
+                };
             let is_fresh = current
                 .before_generation
                 .is_some_and(|before_generation| generation > before_generation);
@@ -631,7 +631,9 @@ impl RotationRuntimeCoordinator {
             RotationPhase::DataDisabling => Some(RotationAction::DisableData),
             RotationPhase::DataEnabling => Some(RotationAction::EnableData),
             RotationPhase::ProbingPublicIp => Some(RotationAction::AfterIp),
-            RotationPhase::Failed if snapshot.restore_required => Some(RotationAction::RestoreEnabled),
+            RotationPhase::Failed if snapshot.restore_required => {
+                Some(RotationAction::RestoreEnabled)
+            }
             _ => None,
         };
         let Some(action) = action else {
@@ -649,18 +651,30 @@ impl RotationRuntimeCoordinator {
 
         let this = Arc::clone(self);
         let future: std::pin::Pin<Box<dyn Future<Output = ()> + Send>> = match action {
-            RotationAction::BeforeIp => Box::pin(async move { this.run_before_ip(operation_id).await }),
-            RotationAction::DisableData => Box::pin(async move { this.run_disable_data(operation_id).await }),
-            RotationAction::EnableData => Box::pin(async move { this.run_enable_data(operation_id).await }),
-            RotationAction::AfterIp => Box::pin(async move { this.run_after_ip(operation_id).await }),
-            RotationAction::RestoreEnabled => Box::pin(async move { this.restore_enabled_direct(operation_id).await }),
+            RotationAction::BeforeIp => {
+                Box::pin(async move { this.run_before_ip(operation_id).await })
+            }
+            RotationAction::DisableData => {
+                Box::pin(async move { this.run_disable_data(operation_id).await })
+            }
+            RotationAction::EnableData => {
+                Box::pin(async move { this.run_enable_data(operation_id).await })
+            }
+            RotationAction::AfterIp => {
+                Box::pin(async move { this.run_after_ip(operation_id).await })
+            }
+            RotationAction::RestoreEnabled => {
+                Box::pin(async move { this.restore_enabled_direct(operation_id).await })
+            }
         };
         self.spawn_owned(future)
             .map_err(|_| RotationRuntimeStartError::ExecutorUnavailable)
     }
 
     async fn run_before_ip(self: Arc<Self>, operation_id: u64) {
-        let Some((before_generation, deadline)) = self.operation_generation_deadline(operation_id, true) else {
+        let Some((before_generation, deadline)) =
+            self.operation_generation_deadline(operation_id, true)
+        else {
             return;
         };
         self.mark_timing(operation_id, |timing, elapsed_ms| {
@@ -669,7 +683,8 @@ impl RotationRuntimeCoordinator {
         let timeout_duration = remaining(deadline).min(PUBLIC_IP_EFFECT_TIMEOUT);
         let observation_result = timeout_at(
             deadline,
-            self.cellular.observe_public_egress_ip_async(timeout_duration),
+            self.cellular
+                .observe_public_egress_ip_async(timeout_duration),
         )
         .await;
         self.mark_timing(operation_id, |timing, elapsed_ms| {
@@ -735,10 +750,31 @@ impl RotationRuntimeCoordinator {
             return;
         }
 
+        // The precondition is now authoritative. Mark compensation authority immediately before
+        // submitting the one disable mutation so a concurrent absolute deadline cannot either
+        // mutate a pre-existing disabled state or leave our own uncertain disable uncompensated.
+        let mutation_started = {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            if !operation_current(&state, operation_id) {
+                return;
+            }
+            match state.machine.data_disable_mutation_started(operation_id) {
+                Ok(snapshot) => snapshot,
+                Err(_) => return,
+            }
+        };
+        self.after_transition(mutation_started);
+        if self.snapshot().phase.terminal() {
+            return;
+        }
+
         self.mark_timing(operation_id, |timing, elapsed_ms| {
             set_once(&mut timing.data_disable_started_ms, elapsed_ms);
         });
-        let effect_result = timeout_at(deadline, self.mobile_data.set(MobileDataState::Disabled)).await;
+        let effect_result =
+            timeout_at(deadline, self.mobile_data.set(MobileDataState::Disabled)).await;
         self.mark_timing(operation_id, |timing, elapsed_ms| {
             set_once(&mut timing.data_disable_effect_completed_ms, elapsed_ms);
         });
@@ -746,9 +782,10 @@ impl RotationRuntimeCoordinator {
             Err(_) => RotationMutationOutcome::Uncertain,
             Ok(Ok(())) => RotationMutationOutcome::Applied,
             Ok(Err(MobileDataEffectError::MutationRejected)) => RotationMutationOutcome::Rejected,
-            Ok(Err(MobileDataEffectError::MutationUncertain | MobileDataEffectError::SessionUnavailable)) => {
-                RotationMutationOutcome::Uncertain
-            }
+            Ok(Err(
+                MobileDataEffectError::MutationUncertain
+                | MobileDataEffectError::SessionUnavailable,
+            )) => RotationMutationOutcome::Uncertain,
             Ok(Err(_)) => {
                 self.fail(operation_id, RotationFailure::DataDisableFailed);
                 return;
@@ -762,7 +799,10 @@ impl RotationRuntimeCoordinator {
             if !operation_current(&state, operation_id) {
                 return;
             }
-            match state.machine.data_disable_effect_completed(operation_id, outcome) {
+            match state
+                .machine
+                .data_disable_effect_completed(operation_id, outcome)
+            {
                 Ok(snapshot) => snapshot,
                 Err(_) => return,
             }
@@ -777,7 +817,8 @@ impl RotationRuntimeCoordinator {
         self.mark_timing(operation_id, |timing, elapsed_ms| {
             set_once(&mut timing.data_enable_started_ms, elapsed_ms);
         });
-        let effect_result = timeout_at(deadline, self.mobile_data.set(MobileDataState::Enabled)).await;
+        let effect_result =
+            timeout_at(deadline, self.mobile_data.set(MobileDataState::Enabled)).await;
         self.mark_timing(operation_id, |timing, elapsed_ms| {
             set_once(&mut timing.data_enable_effect_completed_ms, elapsed_ms);
         });
@@ -785,9 +826,10 @@ impl RotationRuntimeCoordinator {
             Err(_) => RotationMutationOutcome::Uncertain,
             Ok(Ok(())) => RotationMutationOutcome::Applied,
             Ok(Err(MobileDataEffectError::MutationRejected)) => RotationMutationOutcome::Rejected,
-            Ok(Err(MobileDataEffectError::MutationUncertain | MobileDataEffectError::SessionUnavailable)) => {
-                RotationMutationOutcome::Uncertain
-            }
+            Ok(Err(
+                MobileDataEffectError::MutationUncertain
+                | MobileDataEffectError::SessionUnavailable,
+            )) => RotationMutationOutcome::Uncertain,
             Ok(Err(_)) => {
                 self.fail(operation_id, RotationFailure::DataEnableFailed);
                 return;
@@ -801,7 +843,10 @@ impl RotationRuntimeCoordinator {
             if !operation_current(&state, operation_id) {
                 return;
             }
-            match state.machine.data_enable_effect_completed(operation_id, outcome) {
+            match state
+                .machine
+                .data_enable_effect_completed(operation_id, outcome)
+            {
                 Ok(snapshot) => snapshot,
                 Err(_) => return,
             }
@@ -810,7 +855,9 @@ impl RotationRuntimeCoordinator {
     }
 
     async fn run_after_ip(self: Arc<Self>, operation_id: u64) {
-        let Some((after_generation, deadline)) = self.operation_generation_deadline(operation_id, false) else {
+        let Some((after_generation, deadline)) =
+            self.operation_generation_deadline(operation_id, false)
+        else {
             return;
         };
         self.mark_timing(operation_id, |timing, elapsed_ms| {
@@ -819,7 +866,8 @@ impl RotationRuntimeCoordinator {
         let timeout_duration = remaining(deadline).min(PUBLIC_IP_EFFECT_TIMEOUT);
         let observation_result = timeout_at(
             deadline,
-            self.cellular.observe_public_egress_ip_async(timeout_duration),
+            self.cellular
+                .observe_public_egress_ip_async(timeout_duration),
         )
         .await;
         self.mark_timing(operation_id, |timing, elapsed_ms| {
@@ -918,14 +966,18 @@ impl RotationRuntimeCoordinator {
                 )
                 .await
                 {
-                    Ok(Ok(())) | Ok(Err(MobileDataEffectError::MutationUncertain | MobileDataEffectError::SessionUnavailable)) => {
-                        match timeout(RESTORE_EFFECT_TIMEOUT, self.mobile_data.observe()).await {
-                            Ok(Ok(MobileDataState::Enabled)) => RotationRestoreResult::RestoredEnabled,
-                            Ok(Ok(MobileDataState::Disabled)) => RotationRestoreResult::Failed,
-                            Ok(Err(_)) | Err(_) => RotationRestoreResult::Uncertain,
-                        }
+                    Ok(Ok(()))
+                    | Ok(Err(
+                        MobileDataEffectError::MutationUncertain
+                        | MobileDataEffectError::SessionUnavailable,
+                    )) => match timeout(RESTORE_EFFECT_TIMEOUT, self.mobile_data.observe()).await {
+                        Ok(Ok(MobileDataState::Enabled)) => RotationRestoreResult::RestoredEnabled,
+                        Ok(Ok(MobileDataState::Disabled)) => RotationRestoreResult::Failed,
+                        Ok(Err(_)) | Err(_) => RotationRestoreResult::Uncertain,
+                    },
+                    Ok(Err(MobileDataEffectError::MutationRejected)) => {
+                        RotationRestoreResult::Failed
                     }
-                    Ok(Err(MobileDataEffectError::MutationRejected)) => RotationRestoreResult::Failed,
                     Ok(Err(_)) | Err(_) => RotationRestoreResult::Failed,
                 }
             }
@@ -937,7 +989,8 @@ impl RotationRuntimeCoordinator {
                 return;
             };
             let current = state.machine.snapshot();
-            if current.operation_id != Some(operation_id) || current.phase != RotationPhase::Failed {
+            if current.operation_id != Some(operation_id) || current.phase != RotationPhase::Failed
+            {
                 return;
             }
             let snapshot = match state.machine.record_restore(operation_id, restore) {
@@ -961,7 +1014,8 @@ impl RotationRuntimeCoordinator {
     ) -> Option<(u64, Instant)> {
         let state = self.state().ok()?;
         let snapshot = state.machine.snapshot();
-        if state.closed || snapshot.operation_id != Some(operation_id) || snapshot.phase.terminal() {
+        if state.closed || snapshot.operation_id != Some(operation_id) || snapshot.phase.terminal()
+        {
             return None;
         }
         let generation = if before {

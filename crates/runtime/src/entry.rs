@@ -18,7 +18,6 @@ pub use readiness_runtime::*;
 
 mod root_session;
 
-mod airplane_effect;
 mod mobile_data_effect;
 
 mod root_policy_effect;

@@ -10,8 +10,8 @@
 //! exists, and enable success is released only after an authoritative readback proves `1`.
 
 use crate::root_session::{RootCommand, RootSessionError, RootSessionManager};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MobileDataState {
@@ -150,8 +150,14 @@ mod tests {
 
     #[test]
     fn observation_parser_accepts_only_authoritative_android_setting_values() {
-        assert_eq!(parse_mobile_data_state("1\n"), Some(MobileDataState::Enabled));
-        assert_eq!(parse_mobile_data_state("0\n"), Some(MobileDataState::Disabled));
+        assert_eq!(
+            parse_mobile_data_state("1\n"),
+            Some(MobileDataState::Enabled)
+        );
+        assert_eq!(
+            parse_mobile_data_state("0\n"),
+            Some(MobileDataState::Disabled)
+        );
         assert_eq!(parse_mobile_data_state("true"), None);
         assert_eq!(parse_mobile_data_state("enabled"), None);
         assert_eq!(parse_mobile_data_state("null"), None);

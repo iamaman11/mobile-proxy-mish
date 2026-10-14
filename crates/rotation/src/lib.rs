@@ -312,11 +312,22 @@ impl RotationStateMachine {
             return Err(RotationTransitionError::StaleGeneration);
         }
         operation.before_ip = Some(address);
-        // From this point a disable mutation may already be in flight when a concurrent absolute
-        // deadline fires. Mark restore intent before scheduling the mutation so timeout/shutdown
-        // can only recover by authoritative observe -> at-most-one enable, never by blind replay.
-        operation.restore_required = true;
+        // Recording the before-IP fact does not itself grant compensation authority. The runtime
+        // must first prove the expected precondition (mobile data ENABLED), then mark the exact
+        // point immediately before it submits the disable mutation.
         operation.phase = RotationPhase::DataDisabling;
+        Ok(operation.snapshot())
+    }
+
+    pub fn data_disable_mutation_started(
+        &mut self,
+        operation_id: u64,
+    ) -> Result<RotationSnapshot, RotationTransitionError> {
+        let operation = self.active(operation_id)?;
+        if operation.phase != RotationPhase::DataDisabling {
+            return Err(RotationTransitionError::InvalidPhase);
+        }
+        operation.restore_required = true;
         Ok(operation.snapshot())
     }
 
@@ -331,15 +342,23 @@ impl RotationStateMachine {
         }
         match outcome {
             RotationMutationOutcome::Applied => {
+                operation.restore_required = true;
                 operation.phase = RotationPhase::WaitingCellularLoss;
                 operation.maybe_advance_loss();
             }
             RotationMutationOutcome::Rejected => {
                 operation.restore_required = false;
-                return Ok(fail_operation(operation, RotationFailure::DataDisableFailed));
+                return Ok(fail_operation(
+                    operation,
+                    RotationFailure::DataDisableFailed,
+                ));
             }
             RotationMutationOutcome::Uncertain => {
-                return Ok(fail_operation(operation, RotationFailure::DataDisableFailed));
+                operation.restore_required = true;
+                return Ok(fail_operation(
+                    operation,
+                    RotationFailure::DataDisableFailed,
+                ));
             }
         }
         Ok(operation.snapshot())
@@ -602,10 +621,19 @@ mod tests {
     }
 
     #[test]
-    fn entering_disable_phase_marks_restore_before_mutation_can_race_deadline() {
-        let (mut machine, id) = started();
+    fn precondition_phase_does_not_claim_restore_before_disable_mutation() {
+        let (machine, _id) = started();
         assert_eq!(machine.snapshot().phase, RotationPhase::DataDisabling);
-        assert!(machine.snapshot().restore_required);
+        assert!(!machine.snapshot().restore_required);
+    }
+
+    #[test]
+    fn disable_mutation_start_claims_restore_before_deadline_can_race() {
+        let (mut machine, id) = started();
+        let started = machine
+            .data_disable_mutation_started(id)
+            .expect("disable mutation start");
+        assert!(started.restore_required);
         let failed = machine.deadline_exceeded(id).expect("deadline");
         assert_eq!(failed.phase, RotationPhase::Failed);
         assert!(failed.restore_required);
@@ -627,7 +655,9 @@ mod tests {
         machine
             .data_disable_effect_completed(id, RotationMutationOutcome::Applied)
             .expect("disable");
-        let stale = machine.observe_cellular(id, 10, false).expect("old ignored");
+        let stale = machine
+            .observe_cellular(id, 10, false)
+            .expect("old ignored");
         assert_eq!(stale.phase, RotationPhase::WaitingCellularLoss);
         let fresh = machine.observe_cellular(id, 11, false).expect("fresh loss");
         assert_eq!(fresh.phase, RotationPhase::DataEnabling);
@@ -684,16 +714,16 @@ mod tests {
         machine
             .data_enable_effect_completed(id, RotationMutationOutcome::Applied)
             .expect("enable");
-        let fresh = machine.observe_cellular(id, 12, true).expect("fresh cellular");
+        let fresh = machine
+            .observe_cellular(id, 12, true)
+            .expect("fresh cellular");
         assert_eq!(fresh.phase, RotationPhase::WaitingRootPolicy);
         assert_eq!(fresh.after_generation, None);
         let stale_root = machine
             .observe_root_policy(id, 11, true)
             .expect("stale root ignored");
         assert_eq!(stale_root.phase, RotationPhase::WaitingRootPolicy);
-        let authorized = machine
-            .observe_root_policy(id, 12, true)
-            .expect("root B");
+        let authorized = machine.observe_root_policy(id, 12, true).expect("root B");
         assert_eq!(authorized.phase, RotationPhase::ProbingPublicIp);
         assert_eq!(authorized.after_generation, Some(12));
     }
@@ -776,16 +806,26 @@ mod tests {
     #[test]
     fn absolute_deadline_keeps_restore_requirement_only_while_data_may_be_disabled() {
         let (mut machine, id) = started();
-        let failed = machine.deadline_exceeded(id).expect("deadline");
-        assert!(failed.restore_required);
+        let failed_before_mutation = machine.deadline_exceeded(id).expect("deadline");
+        assert!(!failed_before_mutation.restore_required);
 
         let (mut machine, id) = started();
+        machine
+            .data_disable_mutation_started(id)
+            .expect("disable mutation start");
+        let failed_during_disable = machine.deadline_exceeded(id).expect("deadline");
+        assert!(failed_during_disable.restore_required);
+
+        let (mut machine, id) = started();
+        machine
+            .data_disable_mutation_started(id)
+            .expect("disable mutation start");
         detached(&mut machine, id);
         machine
             .data_enable_effect_completed(id, RotationMutationOutcome::Applied)
-            .expect("enable");
-        let failed = machine.deadline_exceeded(id).expect("deadline");
-        assert!(!failed.restore_required);
+            .expect("verified enable");
+        let failed_after_verified_enable = machine.deadline_exceeded(id).expect("deadline");
+        assert!(!failed_after_verified_enable.restore_required);
     }
 
     #[test]

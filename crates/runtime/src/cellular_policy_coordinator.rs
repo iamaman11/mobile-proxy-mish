@@ -201,7 +201,9 @@ impl CellularPolicyCoordinator {
                 .lock()
                 .map_err(|_| CellularRuntimeError::StateUnavailable)?;
             if let Some(interface_name) = interface_name {
-                state.interface_hints.insert(observed_handle, interface_name);
+                state
+                    .interface_hints
+                    .insert(observed_handle, interface_name);
             }
         }
         self.publish_admission(admission);
@@ -276,15 +278,17 @@ impl CellularPolicyCoordinator {
     }
 
     pub fn last_policy_result(&self) -> Option<RootPolicyResult> {
-        self.state.lock().ok().and_then(|state| state.last_policy_result)
+        self.state
+            .lock()
+            .ok()
+            .and_then(|state| state.last_policy_result)
     }
 
     pub fn last_publication(&self) -> Option<CellularPolicyPublication> {
-        self.state.lock().ok().and_then(|state| state.last_publication)
-    }
-
-    pub(crate) fn airplane_effect(&self) -> Arc<crate::airplane_effect::AirplaneModeEffect> {
-        crate::airplane_effect::AirplaneModeEffect::new(Arc::clone(&self.root_session))
+        self.state
+            .lock()
+            .ok()
+            .and_then(|state| state.last_publication)
     }
 
     pub(crate) fn mobile_data_effect(&self) -> Arc<crate::mobile_data_effect::MobileDataEffect> {
@@ -409,7 +413,8 @@ impl CellularPolicyCoordinator {
                 }
                 match state.latest.take() {
                     Some(request) => {
-                        let enqueued_at = state.latest_enqueued_at.take().unwrap_or_else(Instant::now);
+                        let enqueued_at =
+                            state.latest_enqueued_at.take().unwrap_or_else(Instant::now);
                         (request, enqueued_at)
                     }
                     None => {
@@ -445,7 +450,10 @@ impl CellularPolicyCoordinator {
         }
 
         if let Ok(mut state) = self.state.lock() {
-            state.last_owner_sequence = request.admission.last_sequence().map(|sequence| sequence.raw());
+            state.last_owner_sequence = request
+                .admission
+                .last_sequence()
+                .map(|sequence| sequence.raw());
             state.last_dequeue_wait_ms = dequeue_wait_ms;
             state.max_dequeue_wait_ms = state.max_dequeue_wait_ms.max(dequeue_wait_ms);
             state.last_quiesce_wait_ms = quiesce_wait_ms;
@@ -464,7 +472,8 @@ impl CellularPolicyCoordinator {
             RootPolicyReconcileOutcome::Completed(result) => result,
             RootPolicyReconcileOutcome::Superseded => {
                 if let Ok(mut state) = self.state.lock() {
-                    state.superseded_during_reconcile = state.superseded_during_reconcile.saturating_add(1);
+                    state.superseded_during_reconcile =
+                        state.superseded_during_reconcile.saturating_add(1);
                 }
                 return;
             }
@@ -485,7 +494,11 @@ impl CellularPolicyCoordinator {
                 let Some(handle) = request.admission.admitted_network() else {
                     return;
                 };
-                if self.cellular.authorize_root_policy(sequence, handle).unwrap_or(false) {
+                if self
+                    .cellular
+                    .authorize_root_policy(sequence, handle)
+                    .unwrap_or(false)
+                {
                     self.reset_recovery();
                     self.publish(request.admission, result);
                 }
@@ -537,7 +550,9 @@ impl CellularPolicyCoordinator {
             }
             this.fire_recovery(scheduled.0, request);
         });
-        if spawn.is_err() && let Ok(mut state) = self.state.lock() {
+        if spawn.is_err()
+            && let Ok(mut state) = self.state.lock()
+        {
             state.recovery_pending = false;
         }
     }
@@ -623,13 +638,18 @@ fn notify_observer(notification: Option<(CellularPolicyObserver, CellularPolicyP
     }
 }
 
-fn notify_admission_observer(notification: Option<(CellularAdmissionObserver, CellularAdmissionSnapshot)>) {
+fn notify_admission_observer(
+    notification: Option<(CellularAdmissionObserver, CellularAdmissionSnapshot)>,
+) {
     if let Some((observer, admission)) = notification {
         let _ = catch_unwind(AssertUnwindSafe(|| observer(admission)));
     }
 }
 
-fn same_generation(expected: CellularAdmissionSnapshot, current: CellularAdmissionSnapshot) -> bool {
+fn same_generation(
+    expected: CellularAdmissionSnapshot,
+    current: CellularAdmissionSnapshot,
+) -> bool {
     if expected.last_sequence().is_none() {
         return expected.state() == CellularAdmissionState::Unknown
             && current.state() == CellularAdmissionState::Unknown
