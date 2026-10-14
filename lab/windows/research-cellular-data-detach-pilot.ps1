@@ -205,7 +205,7 @@ $evidence = [ordered]@{
     schema = $script:Schema
     collected_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
     acceptance_result = 'FAIL'
-    classification = 'CANDIDATE_A_NOT_COMPLETED'
+    classification = 'LAB_RESEARCH_CANDIDATE_A_NOT_COMPLETED'
     candidate = 'A_MOBILE_DATA_DETACH_ATTACH'
     primitive = 'cmd phone data disable -> cmd phone data enable'
     cycles = 1
@@ -457,9 +457,10 @@ catch {
     $fatal = $_
     $message = [string]$_
     if ($message -match 'MISH_CANDIDATE_A_FAILURE\|([A-Z0-9_]+)\|') {
-        $evidence.classification = $Matches[1]
+        $inner = [string]$Matches[1]
+        $evidence.classification = if ($inner.StartsWith('LAB_')) { "LAB_RESEARCH_$inner" } else { "LAB_RESEARCH_$inner" }
     } else {
-        $evidence.classification = 'CANDIDATE_A_UNEXPECTED_FAILURE'
+        $evidence.classification = 'LAB_RESEARCH_CANDIDATE_A_UNEXPECTED_FAILURE'
     }
 }
 finally {
