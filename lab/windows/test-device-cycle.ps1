@@ -1,4 +1,38 @@
 $ErrorActionPreference = 'Stop'
+# Guard the operator-only, fail-closed installed-identity readback contract.
+$workflowPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\.github\workflows\mish-lab-diagnostic.yml'))
+$workflow = Get-Content -Raw -LiteralPath $workflowPath
+$start = $workflow.IndexOf("  installed-identity:", [StringComparison]::Ordinal)
+$end = $workflow.IndexOf("  control-snapshot:", [StringComparison]::Ordinal)
+if ($start -lt 0 -or $end -le $start) {
+    throw 'Installed identity diagnostic must remain a separate operator-only job.'
+}
+$identityJob = $workflow.Substring($start, $end - $start)
+foreach ($required in @(
+    "github.event.issue.number == 163",
+    "github.event.comment.user.login == 'iamaman11'",
+    "startsWith(github.event.comment.body, '/mish-diag installed-identity ')",
+    'labctl.ps1 host inspect -PhysicalLab',
+    '^/mish-diag installed-identity (?<source>[0-9a-f]{40}) (?<artifact>[1-9][0-9]{0,18})$',
+    'mish.device-candidate-local/v1',
+    'mish.device-candidate-install/v2',
+    'Get-FileHash -LiteralPath $signedApkPath -Algorithm SHA256',
+    'verify-installed-candidate.ps1',
+    'exact_installed_bytes_verified',
+    'mish-installed-identity-v1.json',
+    'MISH_INSTALLED_IDENTITY_MUTATION=NONE'
+)) {
+    if (-not $identityJob.Contains($required)) {
+        throw "Installed-identity diagnostic contract is missing: $required"
+    }
+}
+foreach ($forbidden in @('install-device-candidate.ps1', 'adb install', 'force-stop', 'warp-cli disconnect', 'cmd phone data', 'su -c', 'Start-Process')) {
+    if ($identityJob.Contains($forbidden)) {
+        throw "Installed-identity diagnostic may not mutate PRODUCT or Windows networking: $forbidden"
+    }
+}
+Write-Host 'INSTALLED_IDENTITY_STATIC_CONTRACT=PASS'
+
 & (Join-Path $PSScriptRoot 'test-u8-reboot-install-probe-contract.ps1')
 & (Join-Path $PSScriptRoot 'test-u8-public-egress-rotation-probe-contract.ps1')
 & (Join-Path $PSScriptRoot 'test-u8-remote-control-probe-contract.ps1')
