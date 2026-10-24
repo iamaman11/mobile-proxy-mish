@@ -79,7 +79,14 @@ def run():
     results = []
     failure = None
     try:
-        for item in entries:
+        # Fetch all open PRs in bounded pages, not one API call per branch.
+        # Periodically refresh to account for new PRs while staying inside
+        # the 1,000-requests/hour GITHUB_TOKEN per-repository API budget.
+        for index, item in enumerate(entries):
+            if index % 20 == 0:
+                open_prs = api("GET", "/pulls?state=open&per_page=100", token)
+                if len(open_prs) == 100:
+                    raise RuntimeError("Open PR list may be truncated; refuse deletion")
             name, sha, pr_num = item["branch"], item["expected_sha"], item["merged_pr"]
             result = {"branch": name, "expected_sha": sha, "merged_pr": pr_num}
             if (not SAFE_NAME.fullmatch(name) or name.startswith("/") or ".." in name
@@ -111,10 +118,10 @@ def run():
                     and head.get("sha") == sha and head.get("ref") == name
                     and (head.get("repo") or {}).get("full_name") == REPOSITORY):
                 raise RuntimeError("GitHub merged PR no longer proves tip: " + name)
-            active = api("GET", "/pulls?state=open&head="
-                         + urllib.parse.quote("iamaman11:" + name), token)
-            if active:
-                raise RuntimeError("New open PR references branch: " + name)
+            if any(p.get("head", {}).get("ref") == name and
+                   (p.get("head", {}).get("repo") or {}).get("full_name") == REPOSITORY
+                   for p in open_prs):
+                raise RuntimeError("Open PR references branch: " + name)
             if mode == "prune":
                 api("DELETE", "/git/refs/heads/" + encoded, token)
                 result["status"] = "DELETED"
