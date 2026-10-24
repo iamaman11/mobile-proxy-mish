@@ -21,9 +21,11 @@ When an older issue body/comment conflicts with a later accepted implementation 
 
 # Current accepted authority
 
+The live `PROTECTED_MAIN` SHA/tree is read directly from GitHub; Issue #135 is the sole exact execution checkpoint. Do not freeze a moving branch pointer in this roadmap. The fixed SHA below is the historical **final accepted PRODUCT-changing commit**, not today's `main` ref.
+
 ```text
-PROTECTED_MAIN = 523f5d1c616bd92b404ad30c136308d2a0ae0e40
-PROTECTED_MAIN_TREE = 9676b88a418682d497249225552f6b4fe370cdf0
+FINAL_ACCEPTED_PRODUCT = 523f5d1c616bd92b404ad30c136308d2a0ae0e40
+FINAL_ACCEPTED_PRODUCT_TREE = 9676b88a418682d497249225552f6b4fe370cdf0
 CURRENT_STAGE = Candidate A rotation authority accepted; no active PRODUCT implementation stage
 CURRENT_IMPLEMENTATION_ISSUE = #450 CLOSED / PASS
 CURRENT_IMPLEMENTATION_PR = #451 MERGED
@@ -341,7 +343,8 @@ There is **no active PRODUCT implementation stage after Candidate A acceptance**
 Do not invent another optimization stage. The next PRODUCT slice starts only from a concrete user/product requirement, observed defect, or explicitly chosen roadmap goal. Until then:
 
 ```text
-protected main 523f5d1c... = canonical PRODUCT authority
+protected main = latest accepted PRODUCT + CONTROL authority (fetch live SHA)
+523f5d1c... = historical final PRODUCT-changing commit at this checkpoint
 Candidate A = active IP-rotation primitive
 #425 = closed research history
 #450/#451 = closed accepted implementation
@@ -349,4 +352,4 @@ Candidate A = active IP-rotation primitive
 #925 = post-change health proof
 ```
 
-Issue #135 is the only dynamic execution cursor and must mirror these exact identities without replaying the historical roadmap.
+Issue #135 is the only dynamic execution cursor for the current `main` SHA, accepted PRODUCT lineage and active PR, without replaying historical evidence in this roadmap.

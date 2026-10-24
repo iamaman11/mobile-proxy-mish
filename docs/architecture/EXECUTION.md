@@ -139,7 +139,7 @@ The local agent does not own architecture or current product state. Record mater
 
 Development exact-head debug candidates may establish stage-specific physical facts when #135 records them with exact provenance. They are not formal release identity.
 
-Formal RC/release acceptance and promotion continue to follow `RELEASE.md` and build-once/hash/sign/attest/test/promote semantics.
+`RELEASE.md` defines current debug-candidate provenance and physical acceptance; there is no active RC/release promotion pipeline. A later production distribution decision must preserve exact source/artifact/signature provenance and add its own bounded acceptance, without inventing a second accepted PRODUCT authority.
 
 ## Stop rule
 
