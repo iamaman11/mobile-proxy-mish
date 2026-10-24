@@ -141,11 +141,6 @@
       "merged_pr": 142
     },
     {
-      "branch": "ci/device-candidate-artifact",
-      "expected_sha": "622e000e6cb3ada32e448094532b286331362069",
-      "merged_pr": 146
-    },
-    {
       "branch": "ci/device-candidate-physical-consumer",
       "expected_sha": "4b59bc9b645a2830e55f74a807a665f9f629e057",
       "merged_pr": 147
@@ -159,11 +154,6 @@
       "branch": "ci/fail-fast-rust-before-android",
       "expected_sha": "b2096f67bf3269ec4c3deb155c9d65342b3aefa3",
       "merged_pr": 396
-    },
-    {
-      "branch": "ci/integration-android-preflight",
-      "expected_sha": "f41bb3e1a7ae61e2e73a41c2fb6de090fdad643a",
-      "merged_pr": 141
     },
     {
       "branch": "ci/main-post-merge-smoke",
@@ -546,16 +536,6 @@
       "merged_pr": 412
     },
     {
-      "branch": "docs/135-current-checkpoint-policy",
-      "expected_sha": "d02aacab8deae3a6879d3539071f97e2b3bfec77",
-      "merged_pr": 136
-    },
-    {
-      "branch": "docs/135-product-engineering-rule",
-      "expected_sha": "f67bbbe223219d3054d9dcdee9db06b3ebf50a76",
-      "merged_pr": 137
-    },
-    {
       "branch": "docs/candidate-a-authority-alignment",
       "expected_sha": "77c49b53a77f971475c1747d2668e9b23aea84c9",
       "merged_pr": 455
@@ -661,41 +641,6 @@
       "merged_pr": 164
     },
     {
-      "branch": "feat/rust-proxy-serving",
-      "expected_sha": "d7998e7035372c1306d45de57a7c9566a483088d",
-      "merged_pr": 184
-    },
-    {
-      "branch": "feat/rust-proxy-serving-l2",
-      "expected_sha": "df6640f87c5758179fb8c6dbd420d85d9d1cafaa",
-      "merged_pr": 185
-    },
-    {
-      "branch": "feat/rust-proxy-serving-l3",
-      "expected_sha": "c1b062714d53a6b10f5d39fcb83970cb1c72ce56",
-      "merged_pr": 186
-    },
-    {
-      "branch": "feat/rust-proxy-serving-l4",
-      "expected_sha": "0bc85cfb982bef0f9d311c46b9bf6ca51a273328",
-      "merged_pr": 187
-    },
-    {
-      "branch": "feat/rust-proxy-serving-l5",
-      "expected_sha": "8f081be8296859ab2091e3a5a89ba31fc2461f85",
-      "merged_pr": 188
-    },
-    {
-      "branch": "feat/rust-proxy-serving-l6",
-      "expected_sha": "9027e16c6809cb4a7f64a2e1852059a3b47fb771",
-      "merged_pr": 189
-    },
-    {
-      "branch": "feat/rust-proxy-serving-l7",
-      "expected_sha": "6b42621d9763788741a65da642421202a35d7325",
-      "merged_pr": 190
-    },
-    {
       "branch": "feat/u2-owner-backed-capacity-observability",
       "expected_sha": "9c1af678a6a3ffb312d07a786a731d82c4d1a12d",
       "merged_pr": 208
@@ -709,11 +654,6 @@
       "branch": "fix/435-control-cold-adb",
       "expected_sha": "a478e272a2e91f46d30d77fd1a39daf10ea110c5",
       "merged_pr": 436
-    },
-    {
-      "branch": "fix/android-api30-floor",
-      "expected_sha": "611c3ad74957c0886a3f6e5d1cb37bb50e129d96",
-      "merged_pr": 140
     },
     {
       "branch": "fix/capacity-probe-concurrent-live",
@@ -836,11 +776,6 @@
       "merged_pr": 168
     },
     {
-      "branch": "fix/p0-root-session-simplification",
-      "expected_sha": "ce102c0727f39324b628edb66bc6bd8a744bd17e",
-      "merged_pr": 157
-    },
-    {
       "branch": "fix/root-policy-reconciliation",
       "expected_sha": "a29d76f783e9a0798a755f98a32730320234873c",
       "merged_pr": 204
@@ -869,11 +804,6 @@
       "branch": "fix/u2-e3-evidence-debug-policy",
       "expected_sha": "fe24c8d566b5448ed19f179d81753313ff49552e",
       "merged_pr": 237
-    },
-    {
-      "branch": "fix/u2-remove-pre-l8-product-runtime",
-      "expected_sha": "5f7ca6366050e0b2b2f74f0e5acea2964fedda57",
-      "merged_pr": 197
     },
     {
       "branch": "fix/u2-root-policy-cleanup",
@@ -1056,159 +986,14 @@
       "merged_pr": 69
     },
     {
-      "branch": "m1/arch-ci-dispatch-bridge",
-      "expected_sha": "cc1f5964c18d288e5e4d83e3127535852a193ca2",
-      "merged_pr": 105
-    },
-    {
-      "branch": "m1/arch-ci-enforcement",
-      "expected_sha": "b48bda80045fb614de460ffced5a448d7e791d8d",
-      "merged_pr": 103
-    },
-    {
-      "branch": "m1/arch-clippy-test-resolver",
-      "expected_sha": "7da25164f2760f41173b4e64909e310dfba2eb26",
-      "merged_pr": 108
-    },
-    {
-      "branch": "m1/arch-credential-protobuf",
-      "expected_sha": "663a9b2ac94af42141be22e02e0fb24e714683d2",
-      "merged_pr": 100
-    },
-    {
-      "branch": "m1/arch-dns-inversion",
-      "expected_sha": "e2da49940dfaf6f8454ce4197c710f038dbc865f",
-      "merged_pr": 99
-    },
-    {
-      "branch": "m1/arch-final-corrections",
-      "expected_sha": "55caa64e14957e2ab85cc793cd69e75f88ec79d9",
-      "merged_pr": 107
-    },
-    {
-      "branch": "m1/arch-mesh-config-source",
-      "expected_sha": "caca7dbf211df207381f14f6761c8adcf1117d99",
-      "merged_pr": 102
-    },
-    {
-      "branch": "m1/arch-proxy-port-source",
-      "expected_sha": "b936dbf6b9cf1609c9faee0b5522970005f91f1e",
-      "merged_pr": 101
-    },
-    {
-      "branch": "m1/arch-runtime-android-adapter",
-      "expected_sha": "27e67ec07dcdc79c1df705538baa0a92a4194efb",
-      "merged_pr": 98
-    },
-    {
-      "branch": "m1/arch-runtime-lifecycle",
-      "expected_sha": "4b0bbd113586f8884ebc292f4368d7b123cd8163",
-      "merged_pr": 97
-    },
-    {
-      "branch": "m1/arch-rustfmt-cleanup",
-      "expected_sha": "c2dcbaeb5a0a72a01143852496e06c5f606ff076",
-      "merged_pr": 106
-    },
-    {
-      "branch": "m1/arch-transport-runtime-owner",
-      "expected_sha": "cb6c737ef652425345c67356892dc206e0eb6ba3",
-      "merged_pr": 104
-    },
-    {
-      "branch": "m1/credential-provisioning-hosted-fix",
-      "expected_sha": "5bdf1ec4df88b8ad767297b53beaac488a465ddf",
-      "merged_pr": 109
-    },
-    {
-      "branch": "m1/credentials",
-      "expected_sha": "b3380aceb7fb729e06a97500e4ef20434197ebe2",
-      "merged_pr": 90
-    },
-    {
-      "branch": "m1/credentials-provisioning",
-      "expected_sha": "8345a3c36b8ecf343a54e946c4465a330a6dd021",
-      "merged_pr": 93
-    },
-    {
-      "branch": "m1/d1-ci-test-race-correction",
-      "expected_sha": "94940dcdbadc30a1100ad5183388dfdaf433feb7",
-      "merged_pr": 116
-    },
-    {
-      "branch": "m1/d2-ci-correction-2",
-      "expected_sha": "3cbb4764041f8369a16452a2d08ed7132fc5bdb4",
-      "merged_pr": 120
-    },
-    {
-      "branch": "m1/d2-ci-guard-correction",
-      "expected_sha": "1eb290b493f21020cc772654a446c788e39e7441",
-      "merged_pr": 121
-    },
-    {
-      "branch": "m1/d2-product-readiness-wiring",
-      "expected_sha": "0d365cf9efea99e0a4efd4d720aed033e083d462",
-      "merged_pr": 119
-    },
-    {
-      "branch": "m1/d2-rustfmt-correction",
-      "expected_sha": "eb79c6b01c4b4245ea369fac789f5c7b46b480d9",
-      "merged_pr": 118
-    },
-    {
-      "branch": "m1/d3-tcp-only-external-client-fixture",
-      "expected_sha": "bd4afa8421f9b1185722b744c17d5b08f035d8b7",
-      "merged_pr": 122
-    },
-    {
-      "branch": "m1/dns-code-contract",
-      "expected_sha": "a4212011c0411dbe5fa42ed29b6c39ffff3b9e48",
-      "merged_pr": 115
-    },
-    {
-      "branch": "m1/mesh-ingress",
-      "expected_sha": "b44a68ebdbe353f3d847d61f33dc03ac7874fe89",
-      "merged_pr": 94
-    },
-    {
-      "branch": "m1/mesh-vpn-observation-provenance",
-      "expected_sha": "0c46555ce81c3abc3d0fb0d129b9221c7a652cb7",
-      "merged_pr": 112
-    },
-    {
-      "branch": "m1/r2-rustfmt-correction",
-      "expected_sha": "7cc29ea164d1179f431769f4cea98480d4e543a2",
-      "merged_pr": 113
-    },
-    {
-      "branch": "m1/readiness-generation-bound-probe",
-      "expected_sha": "61a2217eda726aefd78354ec177bb3060eab0448",
-      "merged_pr": 117
-    },
-    {
-      "branch": "m1/root-policy-output-reachability",
-      "expected_sha": "9686e017915eda99d6174358de5108d5e87e8296",
-      "merged_pr": 111
-    },
-    {
       "branch": "maint/445-warp-session-recovery",
       "expected_sha": "c32e0659de0023d1998252efde00987cb07012c9",
       "merged_pr": 446
     },
     {
-      "branch": "optimize/android-build-pipeline",
-      "expected_sha": "ca0a6476ac27999ff6edd8157b5087744d21abaa",
-      "merged_pr": 143
-    },
-    {
       "branch": "optimize/integration-android-ci",
       "expected_sha": "862b57d6d9fc493fa9bcfe952bd3bded4af42c11",
       "merged_pr": 144
-    },
-    {
-      "branch": "optimize/integration-android-ci-lineage",
-      "expected_sha": "907582d3199c4a7866bc858935ee664965b7843e",
-      "merged_pr": 145
     },
     {
       "branch": "perf/root-stale-safe-abort-main-388",
@@ -1261,11 +1046,6 @@
       "merged_pr": 82
     },
     {
-      "branch": "refactor/l8-tokio-runtime-architecture",
-      "expected_sha": "d15037983db0212da55e47888be7c71e0e30bd74",
-      "merged_pr": 192
-    },
-    {
       "branch": "refactor/u2-mesh-existing-tokio",
       "expected_sha": "c1649cab5ff25559e9ed93895c71a8453ff821b8",
       "merged_pr": 213
@@ -1314,16 +1094,6 @@
       "branch": "sdk-410-typed-rotate-client",
       "expected_sha": "c1a712d376d7cdf6b5b2f0bf4adb75f614ae9cb9",
       "merged_pr": 411
-    },
-    {
-      "branch": "sync/diagnostics-foundation-integration",
-      "expected_sha": "528ecbfc3f10ec4c146433df5e4bdfad191356ca",
-      "merged_pr": 165
-    },
-    {
-      "branch": "sync/p0-telemetry-root-session",
-      "expected_sha": "7de5f8834ae91e28481da1f086896fe2643e6bdc",
-      "merged_pr": 161
     },
     {
       "branch": "test/control-terminal-attribution-contract-390",
