@@ -202,7 +202,7 @@ jobs:
             '### Installed-identity proof (no installation)',
             '',
             "- Result: **$($proof.result)**",
-            "- Source SHA: `$($proof.source_sha)`",
+            "- Source SHA: **$($proof.source_sha)**",
             "- Installed matches LAB-signed exact candidate: **$($proof.installed_matches_lab_signed_candidate)**",
             "- Installed bytes/signature verified: **$($proof.exact_installed_bytes_verified)**",
             '',
