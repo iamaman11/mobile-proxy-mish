@@ -80,7 +80,8 @@ Prefer an existing natural owner plus one narrow adapter. Do not add a framework
 - [Development execution policy](docs/architecture/EXECUTION.md)
 - [Development CI and DEVICE-1 contract](docs/architecture/DEVELOPMENT_PIPELINE.md)
 - [Readiness and acceptance](docs/architecture/ACCEPTANCE.md)
-- [Build/release contract](docs/architecture/RELEASE.md)
+- [Development artifact identity / release boundary](docs/architecture/RELEASE.md)
+- [Windows Mesh outage and WARP recovery runbook](docs/operations/WINDOWS_MESH_RUNBOOK.md)
 - [Managed physical lab plan](docs/lab/PLAN.md)
 
 Issue #135 is the single live execution/checkpoint pointer. Issue #134 is historical research/rationale.
@@ -104,4 +105,4 @@ A successful build, merge, label or artifact publication never starts DEVICE-1 a
 
 For a pre-merge physical cycle, evidence records the exact candidate `PRODUCT_SHA` and protected-main `CONTROL_SHA`. That is provenance only; after acceptance and merge, protected `main` is again the single accepted PRODUCT + CONTROL source.
 
-Development debug candidates are not formal RC/release identity. Formal promotion follows the immutable release contract in `RELEASE.md`.
+Development debug candidates are not production-release identity. `RELEASE.md` defines the current exact-artifact development/physical-acceptance chain and explicitly does **not** define a production distribution or promotion process; such a process requires a separate, explicit decision.

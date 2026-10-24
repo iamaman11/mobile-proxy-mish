@@ -136,7 +136,7 @@ Weaker evidence cannot close a stronger claim.
 
 An exact-head debug candidate can establish a stage-specific physical development fact when #135 explicitly records that evidence. It is not formal release identity and cannot be promoted as RC/release bytes.
 
-Formal release/promotion follows `docs/architecture/RELEASE.md`.
+`docs/architecture/RELEASE.md` currently defines development artifact identity and physical acceptance, **not** a production release or promotion process. A future production delivery path requires an explicit requirement and its own bounded acceptance; never relabel LAB-signed debug bytes as production artifacts.
 
 Do not persist secrets, raw public IPs, unrelated logcat, device identifiers or credential material in durable evidence.
 
