@@ -1,0 +1,1369 @@
+{
+  "schema": "mish.merged-pr-branch-allowlist/v1",
+  "inventory_file": "docs/audits/branch-inventory-2026-10-25.json",
+  "baseline_main_sha": "cf82ee600e4ce8a6b0996db2075e3690e9d5f7cb",
+  "one_time": true,
+  "approved_by": "User explicitly requested removal of unneeded branches on 2026-10-25",
+  "entries": [
+    {
+      "branch": "acceptance/e4-stateless-runner",
+      "expected_sha": "7eb4b6700997191d0f5268b8273a229622ca4aaf",
+      "merged_pr": 132
+    },
+    {
+      "branch": "architecture/minimal-layer-invariant",
+      "expected_sha": "40ce3968e104cf9da488cb811ece36ebb60f3d7c",
+      "merged_pr": 73
+    },
+    {
+      "branch": "audit/128-regression-closure",
+      "expected_sha": "ac5ccbc3ae90bf7716f961caa45aafcc540f1dbf",
+      "merged_pr": 130
+    },
+    {
+      "branch": "b1/bootstrap-repository-skeleton",
+      "expected_sha": "76a0f14885dcd762ce1744e589e4d57f9720ad20",
+      "merged_pr": 8
+    },
+    {
+      "branch": "b2/android-uniffi-runtime",
+      "expected_sha": "8519361ee191c0e3a40eaef7c0a2111872be59c1",
+      "merged_pr": 13
+    },
+    {
+      "branch": "b2/cellular-egress-owner",
+      "expected_sha": "3850b31fe083f519547fb6c50b0b1d118cb1819f",
+      "merged_pr": 11
+    },
+    {
+      "branch": "b2/device1-request-network",
+      "expected_sha": "3c84f630463fcb5f26b0b382625d9ed60e31517a",
+      "merged_pr": 65
+    },
+    {
+      "branch": "b2/e3-physical-harness",
+      "expected_sha": "ccc68e9bc720c0d5ca9a1668795d7c6c6fe84de5",
+      "merged_pr": 15
+    },
+    {
+      "branch": "b2/e3-pin-rc4",
+      "expected_sha": "800d07cb4619b70bc8e5fb53f1800c42d1c8d6c0",
+      "merged_pr": 62
+    },
+    {
+      "branch": "b2/fixed-phone-armv7-target",
+      "expected_sha": "d58482d8530b7dc6211eeb6bd7d400eb920c1f14",
+      "merged_pr": 61
+    },
+    {
+      "branch": "b2/native-explicit-network",
+      "expected_sha": "3e1fff18e42ac978eff897370c675463a90503ca",
+      "merged_pr": 14
+    },
+    {
+      "branch": "b2/uniffi-contract",
+      "expected_sha": "7fb4e3e09f42692377eb689401b9cfad56a05156",
+      "merged_pr": 12
+    },
+    {
+      "branch": "b3/proxy-sing-box-contract",
+      "expected_sha": "7bf0fe8eb8ff3d69461074d716499c3901b82ecf",
+      "merged_pr": 17
+    },
+    {
+      "branch": "b4a/cellular-egress-bridge",
+      "expected_sha": "7abf856acfd5f4628f0193c3d1bd99f537c5e296",
+      "merged_pr": 19
+    },
+    {
+      "branch": "b4b1/android-network-owner-extraction",
+      "expected_sha": "749f9f26a80981a80f53f8f26b344e6f00297787",
+      "merged_pr": 20
+    },
+    {
+      "branch": "b4b2/cellular-outbound-connector",
+      "expected_sha": "46f345a33e4849373f5aaed7657e0ba0ede410c5",
+      "merged_pr": 21
+    },
+    {
+      "branch": "cf/cf1-cloudflare-iac-bootstrap",
+      "expected_sha": "ccaa683d7c12ffddad091bb57b2812c27c695a6d",
+      "merged_pr": 31
+    },
+    {
+      "branch": "cf/cf1-connectivity-readback-fix",
+      "expected_sha": "5c49756f0c95bcc5469d0bbe53d921bd5716443b",
+      "merged_pr": 35
+    },
+    {
+      "branch": "cf/cf1-credential-naming-cleanup",
+      "expected_sha": "594dcb9d90286fe40ececa3260bac482492c3473",
+      "merged_pr": 32
+    },
+    {
+      "branch": "cf/cf1-hosted-adoption",
+      "expected_sha": "7ba695773cda94bc001b6fa6a81527e9c1d9dc4c",
+      "merged_pr": 33
+    },
+    {
+      "branch": "cf/cf1-icmp-observation-only",
+      "expected_sha": "5fdb57e2a726f4cf1b7d9c70210bf6b6f52fa5fa",
+      "merged_pr": 36
+    },
+    {
+      "branch": "cf/cf1-one-click",
+      "expected_sha": "d3deb0d1e2f5c1a3649492f1f857f6f9e6cc68e7",
+      "merged_pr": 34
+    },
+    {
+      "branch": "cf/cf1-sensitive-match-plan-hygiene",
+      "expected_sha": "c84da7b182285fee6e3af031964cb1c53ab3123a",
+      "merged_pr": 37
+    },
+    {
+      "branch": "cf/cf2-windows-one-client-proof",
+      "expected_sha": "3c11fcde17238679f028dc5bae775a94aa197b7a",
+      "merged_pr": 52
+    },
+    {
+      "branch": "chore/ci-product-contract-alignment",
+      "expected_sha": "d08aedbe26023510592b664b741a24a2d9a667e9",
+      "merged_pr": 182
+    },
+    {
+      "branch": "ci/canonical-device-candidate-store",
+      "expected_sha": "a519519352d6af91e7c04e154e6be84a912afdc2",
+      "merged_pr": 268
+    },
+    {
+      "branch": "ci/default-integration-android-preflight",
+      "expected_sha": "86eac5a73dab53884dd1ce6df1f53491e3fe6365",
+      "merged_pr": 142
+    },
+    {
+      "branch": "ci/device-candidate-physical-consumer",
+      "expected_sha": "4b59bc9b645a2830e55f74a807a665f9f629e057",
+      "merged_pr": 147
+    },
+    {
+      "branch": "ci/device-candidate-windows-powershell",
+      "expected_sha": "88d66aeecbfb47dfcae441ab2b0d7c3bf537da12",
+      "merged_pr": 150
+    },
+    {
+      "branch": "ci/fail-fast-rust-before-android",
+      "expected_sha": "b2096f67bf3269ec4c3deb155c9d65342b3aefa3",
+      "merged_pr": 396
+    },
+    {
+      "branch": "ci/main-post-merge-smoke",
+      "expected_sha": "9a4d6691a903fa9ae4e16459f9141f873495c6b4",
+      "merged_pr": 148
+    },
+    {
+      "branch": "ci/path-aware-required-gates",
+      "expected_sha": "8fae04ed4a2108a6337f872be875064fed5c2e1f",
+      "merged_pr": 151
+    },
+    {
+      "branch": "ci/selective-android-impact",
+      "expected_sha": "447b5a30485faf5368b3b085eb4b97f85c25b57d",
+      "merged_pr": 38
+    },
+    {
+      "branch": "ci/skip-docs-only-android-build",
+      "expected_sha": "d987566a2481b3d1f37374cdcdb825b8079d14e4",
+      "merged_pr": 266
+    },
+    {
+      "branch": "control-413-unified-mish",
+      "expected_sha": "b650ce8ce5ddc9cc7bce2e7f2ebd12fe739576d4",
+      "merged_pr": 416
+    },
+    {
+      "branch": "control-419-same-request-recovery",
+      "expected_sha": "222eaf79b3187a8b516414cc21127a0d6204ce17",
+      "merged_pr": 420
+    },
+    {
+      "branch": "control/376-recovery-budget",
+      "expected_sha": "8700b75d60ff65f8f000bd4ab2690d283384c333",
+      "merged_pr": 377
+    },
+    {
+      "branch": "control/379-heartbeat-liveness-clean",
+      "expected_sha": "b2b022d66a7ddd8501502b981cad4058ae668bf5",
+      "merged_pr": 380
+    },
+    {
+      "branch": "control/bound-device-candidate-install",
+      "expected_sha": "33366e8b74e6fa34a681244d3a31a1dcd069f42e",
+      "merged_pr": 224
+    },
+    {
+      "branch": "control/bounded-stale-rotation-lease",
+      "expected_sha": "84dd82ee699a1122be0e3b37fd04eaa73179c32c",
+      "merged_pr": 371
+    },
+    {
+      "branch": "control/candidate-a-acceptance-harness",
+      "expected_sha": "7dfa750d46ce3a0807bf58c0f02d7bc58e9d2225",
+      "merged_pr": 452
+    },
+    {
+      "branch": "control/candidate-a-local-egress-acceptance",
+      "expected_sha": "a76b8e35b1b8419d729840618da0acf4ab769180",
+      "merged_pr": 453
+    },
+    {
+      "branch": "control/classify-codex-sandbox-block",
+      "expected_sha": "4243cfcd4591732c4aeda2119b02849c3ab3e08f",
+      "merged_pr": 227
+    },
+    {
+      "branch": "control/classify-codex-sandbox-displayname",
+      "expected_sha": "ef7f8e710a039fe1c0cdf1958011e4f689ac516c",
+      "merged_pr": 228
+    },
+    {
+      "branch": "control/close-u5-roadmap",
+      "expected_sha": "1db7ce0521d024d338f75b17a2426e1c4646f977",
+      "merged_pr": 293
+    },
+    {
+      "branch": "control/delivery-ack-short-manager-wait",
+      "expected_sha": "a6ef593bcd4c9572f0040a41379cbef59fecf561",
+      "merged_pr": 374
+    },
+    {
+      "branch": "control/fix-merged-worker-gate-resolution",
+      "expected_sha": "cc3e212a2f3a2a763b7305ab45f026bf8dc9844f",
+      "merged_pr": 368
+    },
+    {
+      "branch": "control/fix-provider-diagnostic-pid",
+      "expected_sha": "a77a1d5ac74c65fd33c5f93be512a64f774a5e95",
+      "merged_pr": 326
+    },
+    {
+      "branch": "control/fix-provider-diagnostic-shell",
+      "expected_sha": "2a97bce0ffaf8510cd4d51401ccd95a634816e74",
+      "merged_pr": 325
+    },
+    {
+      "branch": "control/manual-device-cycle-dispatch",
+      "expected_sha": "6c9f3231e4f934a05aded5ca67900f88c70eeac2",
+      "merged_pr": 288
+    },
+    {
+      "branch": "control/manual-operator-device-cycle-command",
+      "expected_sha": "d2c20fc31397d59f2fe40146438c3c8ec73c4868",
+      "merged_pr": 292
+    },
+    {
+      "branch": "control/parallel-product-gates-final-candidate",
+      "expected_sha": "e911b10cf0ad1a6e11a0e3ff3f34c811b650cd09",
+      "merged_pr": 290
+    },
+    {
+      "branch": "control/post-merge-main-device-proof",
+      "expected_sha": "e5f92d5f8e08718bbfdaceabfd7ad0c76e461cb2",
+      "merged_pr": 205
+    },
+    {
+      "branch": "control/remote-radio-poweroff-timing",
+      "expected_sha": "efb101f073c1e3946640bf90af71884a9c7fad56",
+      "merged_pr": 407
+    },
+    {
+      "branch": "control/remote-rotation-timeline-acceptance",
+      "expected_sha": "af282d219fe08623a85f17dc11f4ceef9d8506f8",
+      "merged_pr": 385
+    },
+    {
+      "branch": "control/remove-stale-uniffi-duplicate-gate",
+      "expected_sha": "ce44af00b25e8c8d8d1ee508dc3d81a77b1f4e44",
+      "merged_pr": 289
+    },
+    {
+      "branch": "control/retire-obsolete-integration-full-ci-20261024",
+      "expected_sha": "a40a6e3b26346bfaa9de322a74c0f0546cde6913",
+      "merged_pr": 460
+    },
+    {
+      "branch": "control/retire-stale-u2-parity-20261024",
+      "expected_sha": "e884522ec6117480de31816557440a98e92537ab",
+      "merged_pr": 459
+    },
+    {
+      "branch": "control/simple-remote-rotate-api",
+      "expected_sha": "d8e09d04970df00382c3edc1c12eb2ae17a20fa6",
+      "merged_pr": 367
+    },
+    {
+      "branch": "control/single-pr-validation-pipeline",
+      "expected_sha": "b269b0da36c301677ab972c405c2c6e8820be790",
+      "merged_pr": 287
+    },
+    {
+      "branch": "control/stop-post-merge-rebuild",
+      "expected_sha": "1839d249326bf99c8b176538d5919ece240a4b60",
+      "merged_pr": 206
+    },
+    {
+      "branch": "control/u2-accept-rust-owned-preflight-producer",
+      "expected_sha": "2acbcea4dc34a612770f715c0d697b839e9eca0a",
+      "merged_pr": 200
+    },
+    {
+      "branch": "control/u2-acceptance-boundary",
+      "expected_sha": "1770cea7b9d73daeab41565ba56c2cd39b16bb36",
+      "merged_pr": 222
+    },
+    {
+      "branch": "control/u2-e3-instrumentation-evidence",
+      "expected_sha": "1d83cf59acb335221512d15aef15cc2d32daa43b",
+      "merged_pr": 234
+    },
+    {
+      "branch": "control/u2-external-mesh-gate-separation",
+      "expected_sha": "2230b98a49f8013868db8afca5b1679a1f5d1d44",
+      "merged_pr": 229
+    },
+    {
+      "branch": "control/u2-generic-listener-ownership",
+      "expected_sha": "21158b5402d66187cdb22457c9f7e38174142b15",
+      "merged_pr": 202
+    },
+    {
+      "branch": "control/u2-lifecycle-finalize",
+      "expected_sha": "bbb13a69dae6b60cac0636b29a8edb4e41a8a9a3",
+      "merged_pr": 223
+    },
+    {
+      "branch": "control/u2-listener-state-probe",
+      "expected_sha": "70611b7f6b105200eb8a510fe15018779bdc75f3",
+      "merged_pr": 201
+    },
+    {
+      "branch": "control/u2-report-sandbox-baseline",
+      "expected_sha": "76f3833c4b08d3d4e40981a462d40f4ac5370496",
+      "merged_pr": 230
+    },
+    {
+      "branch": "control/u2-signed-test-harness",
+      "expected_sha": "f3104d6fb3d62bb3fcbf5def7deb37d3a089ad37",
+      "merged_pr": 225
+    },
+    {
+      "branch": "control/u2-test-harness-self-heal",
+      "expected_sha": "90c9a9c4a2ce9f0192dc8a13ff2a089f009bcab0",
+      "merged_pr": 233
+    },
+    {
+      "branch": "control/u2-typed-proxy-fixture",
+      "expected_sha": "9bfea8d4d9ec47839329323322d6af9cd2f37b93",
+      "merged_pr": 199
+    },
+    {
+      "branch": "control/u5-thread-namespace-observation-current-main",
+      "expected_sha": "d89788b33ca820bc61cdfc771bed909609b81319",
+      "merged_pr": 291
+    },
+    {
+      "branch": "control/u6-resource-quiescence",
+      "expected_sha": "5547dc1a22b2b88a727fa16da74e98bc7b4860e0",
+      "merged_pr": 297
+    },
+    {
+      "branch": "control/u6-restore-after-stop-evidence-failure-v2",
+      "expected_sha": "815afb11b4975935e0dbbd37cb456bc86b268ef7",
+      "merged_pr": 300
+    },
+    {
+      "branch": "control/u6-rotation-snapshot-cadence",
+      "expected_sha": "a3ff07454d6c581d3504c036878affedf8bf1976",
+      "merged_pr": 296
+    },
+    {
+      "branch": "control/u8-architecture-audit-closure",
+      "expected_sha": "28044ac6829c9c4c05e2cc63ef3b1f3591b7df39",
+      "merged_pr": 328
+    },
+    {
+      "branch": "control/u8-provider-state-diagnostic",
+      "expected_sha": "f3ac96779344954a7951808da56c834f74abd17e",
+      "merged_pr": 324
+    },
+    {
+      "branch": "control/u8-public-egress-rotation-proof",
+      "expected_sha": "512a601513013ff3a041c46fc1a39b904b6c1ef3",
+      "merged_pr": 320
+    },
+    {
+      "branch": "control/u8-reboot-install-durability",
+      "expected_sha": "bb039a1bf4b38603316e7b53318877ea54aaea48",
+      "merged_pr": 317
+    },
+    {
+      "branch": "control/u8-reboot-unlock-convergence-v2",
+      "expected_sha": "24620c15a6c298b7a09ce88874b4dccb659ec3e6",
+      "merged_pr": 318
+    },
+    {
+      "branch": "control/u8-worker-deploy-bootstrap",
+      "expected_sha": "fad1b3b869b6ebd04a22699b689bce129c71f53e",
+      "merged_pr": 323
+    },
+    {
+      "branch": "control/u8e-final-summary-guard",
+      "expected_sha": "bf8517a72db98b56d509dee689817d62689d597f",
+      "merged_pr": 329
+    },
+    {
+      "branch": "control/u8f-durability-soak",
+      "expected_sha": "6af052e11dfe88e6be4ac2d348b81ddd4d41763c",
+      "merged_pr": 332
+    },
+    {
+      "branch": "control/u8g-camoufox-materialization",
+      "expected_sha": "9d5615d44b5b2db89fa68c21fb132297cf28c343",
+      "merged_pr": 338
+    },
+    {
+      "branch": "control/u8g-camoufox-toolchain-resolution",
+      "expected_sha": "e9a998c22bb8a9bd28b5e48817146fd3be8afa3f",
+      "merged_pr": 337
+    },
+    {
+      "branch": "control/u8g-clean-client-preflight",
+      "expected_sha": "ed1e50664b8babfa1513d039ee90abf05f740bcd",
+      "merged_pr": 334
+    },
+    {
+      "branch": "control/u8g-preflight-boundary-fix",
+      "expected_sha": "75f44afd8f534ac8560b8a191a3ba9a79c0eb90e",
+      "merged_pr": 335
+    },
+    {
+      "branch": "control/u8g-python-runner-preflight",
+      "expected_sha": "414a7ea883748da05c8fd8ed026350ded8b553d3",
+      "merged_pr": 336
+    },
+    {
+      "branch": "control/verify-installed-identity-readonly-20261024",
+      "expected_sha": "872d3b8115eceb752f88752aa63f3a6763e2b349",
+      "merged_pr": 461
+    },
+    {
+      "branch": "diag/437-warp-state",
+      "expected_sha": "f71ca5a178b64ed903f3b8f77fadab0dc5028b47",
+      "merged_pr": 438
+    },
+    {
+      "branch": "diag/439-cloudflare-live-route",
+      "expected_sha": "b9e408105c8c721dfff9e4339e204f6ff662c758",
+      "merged_pr": 440
+    },
+    {
+      "branch": "diag/441-cloudflare-profile-drift",
+      "expected_sha": "81edfaeb1425ffc991dc2b268146824aec8ebd70",
+      "merged_pr": 442
+    },
+    {
+      "branch": "diag/443-cloudflare-aggregate",
+      "expected_sha": "e646cfe6747b9f7cabbb191b0b62258d49f3a0f2",
+      "merged_pr": 444
+    },
+    {
+      "branch": "diag/u8-radio-detach-research-final",
+      "expected_sha": "1bebad8a18e6dad9a79920c8068d008dc9fee200",
+      "merged_pr": 401
+    },
+    {
+      "branch": "diagnostics/cellular-recovery-attribution-390",
+      "expected_sha": "db73825ed3649e4b2be9e2712da6014ee8c4ad6f",
+      "merged_pr": 395
+    },
+    {
+      "branch": "diagnostics/control-terminal-reconnect-attribution-390",
+      "expected_sha": "58936480296125ab40e04d8997a511ddbd9b26f8",
+      "merged_pr": 397
+    },
+    {
+      "branch": "diagnostics/read-only-control-snapshot-390",
+      "expected_sha": "8521a28e730af92c0d820bc5e4f25092232fd76d",
+      "merged_pr": 398
+    },
+    {
+      "branch": "diagnostics/remote-rotation-timeline",
+      "expected_sha": "ac0c0965fa3bda79a776b6a341265e6755442f4c",
+      "merged_pr": 384
+    },
+    {
+      "branch": "diagnostics/root-policy-phase-attribution-388",
+      "expected_sha": "79b9fedc7ab1957d97d3e7055e26ffa31b565948",
+      "merged_pr": 392
+    },
+    {
+      "branch": "docs-413-manager-host-migration",
+      "expected_sha": "04db32700482c372538b9f8ad91981ddb9a9efde",
+      "merged_pr": 415
+    },
+    {
+      "branch": "docs-413-unified-control-host",
+      "expected_sha": "a9a3d6ceb5069e297964503d0ee4cf9d69c3aa7d",
+      "merged_pr": 418
+    },
+    {
+      "branch": "docs-422-final-rotation-research",
+      "expected_sha": "bd31507d7d64b93f3d6c9cabd998ac6406674cae",
+      "merged_pr": 424
+    },
+    {
+      "branch": "docs-422-rotation-research-order",
+      "expected_sha": "b10a915d09ca1e6ecc97dfba7fa9df2dd05852c3",
+      "merged_pr": 423
+    },
+    {
+      "branch": "docs-control-419-recovery-acceptance",
+      "expected_sha": "3beed80b3258b635fdf6709010fe6084644ff04e",
+      "merged_pr": 421
+    },
+    {
+      "branch": "docs-post-u8-consumer-sdk",
+      "expected_sha": "41925f437416b90cae882491a6082118bbea85d5",
+      "merged_pr": 412
+    },
+    {
+      "branch": "docs/candidate-a-authority-alignment",
+      "expected_sha": "77c49b53a77f971475c1747d2668e9b23aea84c9",
+      "merged_pr": 455
+    },
+    {
+      "branch": "docs/control-366-final-closure",
+      "expected_sha": "7c9ae66db4ff76c1343e51e6be9bcc828a5cc634",
+      "merged_pr": 369
+    },
+    {
+      "branch": "docs/control-370-final-closure",
+      "expected_sha": "abf0916ca852c18120e7fbc355a593baac9ab590",
+      "merged_pr": 372
+    },
+    {
+      "branch": "docs/control-373-final-closure",
+      "expected_sha": "0a9f43edc4c36ecbde7415cc5b7695fcd20ab982",
+      "merged_pr": 375
+    },
+    {
+      "branch": "docs/control-376-final-closure",
+      "expected_sha": "337cfa19f508bdc20334e1770eed604c92dc1516",
+      "merged_pr": 378
+    },
+    {
+      "branch": "docs/control-379-final-closure",
+      "expected_sha": "211d93d3a4f4be2081f8615a5e8ff25bd82c80cd",
+      "merged_pr": 382
+    },
+    {
+      "branch": "docs/industrial-ops-baseline-20261024",
+      "expected_sha": "6328df509c60aad9e1a2c63041de5414dc2b0e9f",
+      "merged_pr": 456
+    },
+    {
+      "branch": "docs/root-policy-architecture-sync",
+      "expected_sha": "113dbfa3b08065d5da5cb163dfe48db509bd31ad",
+      "merged_pr": 74
+    },
+    {
+      "branch": "docs/u2-mesh-tokio-convergence",
+      "expected_sha": "bde6c2e0fe7f5e08948e38acaca42caa6e9e970d",
+      "merged_pr": 210
+    },
+    {
+      "branch": "docs/u2-one-tokio-architecture-invariant",
+      "expected_sha": "e7a951a6a295676aae662cf7be08bd76ae8ab437",
+      "merged_pr": 211
+    },
+    {
+      "branch": "docs/u3-formal-closure",
+      "expected_sha": "5e25d1c7405c9d6d5c732a9db8dd852e644c2693",
+      "merged_pr": 263
+    },
+    {
+      "branch": "docs/u4-formal-closure",
+      "expected_sha": "baefa98c7bff8f82c80ae93fc4be314d7389223e",
+      "merged_pr": 265
+    },
+    {
+      "branch": "docs/u6-final-acceptance",
+      "expected_sha": "5c64512f85195a96301eb7c8725ee297d1ede19e",
+      "merged_pr": 302
+    },
+    {
+      "branch": "docs/u7-capacity-acceptance",
+      "expected_sha": "f2789bd58a0b80d63cea43560845eba9f95bfa4e",
+      "merged_pr": 221
+    },
+    {
+      "branch": "docs/u7-post-tokio-capacity-envelope",
+      "expected_sha": "2e00a82d74c222a229c7df2569604882ca835530",
+      "merged_pr": 212
+    },
+    {
+      "branch": "docs/u8-d-accepted",
+      "expected_sha": "2b9fdce83e089ee16da633c675f53718c23a555a",
+      "merged_pr": 321
+    },
+    {
+      "branch": "docs/u8-rotation-remote-control-roadmap",
+      "expected_sha": "95cb7ba42862de8fafb4df564fbbd81db4c708e7",
+      "merged_pr": 316
+    },
+    {
+      "branch": "docs/u8e-closure-u8f-next",
+      "expected_sha": "66839600e79de45250a36bda1f93c62a41ddbcc4",
+      "merged_pr": 330
+    },
+    {
+      "branch": "docs/u8f-closure-u8g-next",
+      "expected_sha": "e997a358f0cdd2d6b97ff0d7e4eac2519fffe23f",
+      "merged_pr": 333
+    },
+    {
+      "branch": "feat/device-cycle-orchestrator",
+      "expected_sha": "31e39f9179e2464b9a5c09d6d29b3354c24276b8",
+      "merged_pr": 170
+    },
+    {
+      "branch": "feat/diagnostics-foundation-v1",
+      "expected_sha": "0732c15c60b397579108560e85d1c6925ad9eaa9",
+      "merged_pr": 164
+    },
+    {
+      "branch": "feat/u2-owner-backed-capacity-observability",
+      "expected_sha": "9c1af678a6a3ffb312d07a786a731d82c4d1a12d",
+      "merged_pr": 208
+    },
+    {
+      "branch": "fix/128-release-hardening",
+      "expected_sha": "db634ae4d67701502fbd073040f7d43be19f8fec",
+      "merged_pr": 129
+    },
+    {
+      "branch": "fix/435-control-cold-adb",
+      "expected_sha": "a478e272a2e91f46d30d77fd1a39daf10ea110c5",
+      "merged_pr": 436
+    },
+    {
+      "branch": "fix/capacity-probe-concurrent-live",
+      "expected_sha": "e4f6aba32dd17c5dca0acb62ca5680b1d12cf4a4",
+      "merged_pr": 215
+    },
+    {
+      "branch": "fix/capacity-probe-empty-monotonic-set",
+      "expected_sha": "c93376b1425204050138b4f79c0ccf969b41a3d9",
+      "merged_pr": 217
+    },
+    {
+      "branch": "fix/capacity-probe-fast-linear",
+      "expected_sha": "3d7fc5a349d5bf7b77581f70655e6ce4227b46e0",
+      "merged_pr": 216
+    },
+    {
+      "branch": "fix/capacity-probe-held-tls",
+      "expected_sha": "cd7896091f1e021c3adf3072e79514cfa75d151b",
+      "merged_pr": 214
+    },
+    {
+      "branch": "fix/cellular-reconcile-cleanup",
+      "expected_sha": "9dc52b29ec846be107f288fa79b666379cc0decf",
+      "merged_pr": 78
+    },
+    {
+      "branch": "fix/device-candidate-download-layout",
+      "expected_sha": "5aa3f394a87d64b05e6b8d9b26af3065e119e00c",
+      "merged_pr": 156
+    },
+    {
+      "branch": "fix/device-cycle-evidence-provenance",
+      "expected_sha": "ddbf2a64caa1daa30a78ee924f74329762e7b445",
+      "merged_pr": 173
+    },
+    {
+      "branch": "fix/device-cycle-launch-contract",
+      "expected_sha": "87e4c9719cc055436cc9396f9bb437b9dd32f85b",
+      "merged_pr": 171
+    },
+    {
+      "branch": "fix/device-cycle-native-check-fail-closed",
+      "expected_sha": "2120226ff8283d95e162c360f8a15a4045dc3b79",
+      "merged_pr": 231
+    },
+    {
+      "branch": "fix/device-cycle-pid-contract",
+      "expected_sha": "6d5c6c6ff23e1c69e0117e5a2ba12d835512317b",
+      "merged_pr": 172
+    },
+    {
+      "branch": "fix/device-cycle-pwsh7",
+      "expected_sha": "ed020e1a6d9615cfac0fb350eae504043a275656",
+      "merged_pr": 175
+    },
+    {
+      "branch": "fix/device-cycle-pwsh7-scriptblock",
+      "expected_sha": "7c838b67bdf61ee5baf341b5d459e1f406d6e603",
+      "merged_pr": 178
+    },
+    {
+      "branch": "fix/device-cycle-pwsh7-shell-command",
+      "expected_sha": "8feeae055b4c98ec0771e2145eb44ba0d0ecfd3b",
+      "merged_pr": 177
+    },
+    {
+      "branch": "fix/device-evidence-control-hardening",
+      "expected_sha": "a6261a29fc61f1059396252d31fe2926b0259b90",
+      "merged_pr": 181
+    },
+    {
+      "branch": "fix/device-install-timeout-truth",
+      "expected_sha": "26ac1028247093a7813e68a7d3a802b784a3c473",
+      "merged_pr": 236
+    },
+    {
+      "branch": "fix/diagnostic-ephemeral-credential-lease",
+      "expected_sha": "4e9de8f3a65dbcbfc0d3ac0caa7b9f77d31e8680",
+      "merged_pr": 166
+    },
+    {
+      "branch": "fix/diagnostic-provisioning-component",
+      "expected_sha": "f148901bf8c9b5112b0643bd79d708bb7fa3626a",
+      "merged_pr": 167
+    },
+    {
+      "branch": "fix/integration-rust-quality-gate",
+      "expected_sha": "7156d8a465a63efe8b841fa88328a3cced45c0c9",
+      "merged_pr": 180
+    },
+    {
+      "branch": "fix/lab-canonical-adb-postcondition",
+      "expected_sha": "4feef996ed10c03619dd9e4dd3659775b0878764",
+      "merged_pr": 155
+    },
+    {
+      "branch": "fix/lab-install-simplification",
+      "expected_sha": "929b80b3b50acb6db77ff1cce6cf9f5b3a475b26",
+      "merged_pr": 158
+    },
+    {
+      "branch": "fix/lab-java-version-probe",
+      "expected_sha": "a2aae1b3dd27cc481a9a397fd1114413f535fef3",
+      "merged_pr": 154
+    },
+    {
+      "branch": "fix/manual-device-cycle-only",
+      "expected_sha": "7c397c64bcdfe348f49fa58860ab59a6acf2af5e",
+      "merged_pr": 174
+    },
+    {
+      "branch": "fix/mish-lab-diagnostic-runner-context",
+      "expected_sha": "b8b22158fe2f89d999c3b50482edd1bcf5e18d0c",
+      "merged_pr": 183
+    },
+    {
+      "branch": "fix/p0-loopback-connect-attribution",
+      "expected_sha": "84d671783fa7111b00c9553a357d0a17db164c4e",
+      "merged_pr": 168
+    },
+    {
+      "branch": "fix/root-policy-reconciliation",
+      "expected_sha": "a29d76f783e9a0798a755f98a32730320234873c",
+      "merged_pr": 204
+    },
+    {
+      "branch": "fix/runtime-identity-pid-evidence",
+      "expected_sha": "14d37c5894f55c9b6eae0c5c2b434daada6dc968",
+      "merged_pr": 179
+    },
+    {
+      "branch": "fix/u2-current-l8-device-diagnostics",
+      "expected_sha": "f701a8b0c14bba319e5a80bd44d3e95f41db3918",
+      "merged_pr": 198
+    },
+    {
+      "branch": "fix/u2-device-cycle-l8-control",
+      "expected_sha": "900e00db9a4b813a20c2a20989d445ce7313f723",
+      "merged_pr": 194
+    },
+    {
+      "branch": "fix/u2-device-diagnostics-l8-causality",
+      "expected_sha": "91739311ecbf67a5e8331690a3e7265a9637635f",
+      "merged_pr": 196
+    },
+    {
+      "branch": "fix/u2-e3-evidence-debug-policy",
+      "expected_sha": "fe24c8d566b5448ed19f179d81753313ff49552e",
+      "merged_pr": 237
+    },
+    {
+      "branch": "fix/u2-root-policy-cleanup",
+      "expected_sha": "6c5391957882ad2d16614a2ee4a66289a0cc4b7d",
+      "merged_pr": 235
+    },
+    {
+      "branch": "fix/u8g-camoufox-release-identity",
+      "expected_sha": "2e73a1ddcbd28627b03faa5e3735ca91357ffcba",
+      "merged_pr": 339
+    },
+    {
+      "branch": "hardening/cellular-flow-policy",
+      "expected_sha": "0d311a08f7af6cc90a0cf3747a9bc3824c7a6822",
+      "merged_pr": 79
+    },
+    {
+      "branch": "hardening/reproducible-ci-device-contract",
+      "expected_sha": "4e3f8d88a48b129bee4688a1bc80e0bcc1b11239",
+      "merged_pr": 153
+    },
+    {
+      "branch": "hardening/runtime-bounded-concurrency",
+      "expected_sha": "e05c43733c49c7f11e5ec732a7a5dddfed5857f0",
+      "merged_pr": 80
+    },
+    {
+      "branch": "hardening/unattended-appliance-h1-h2",
+      "expected_sha": "0e7250cebef3e6d30b2789e0b36f5f94303d434e",
+      "merged_pr": 131
+    },
+    {
+      "branch": "integration-128-working-candidate",
+      "expected_sha": "6df7519509388c5e40972336e4cf4e9236757b87",
+      "merged_pr": 133
+    },
+    {
+      "branch": "issue-75/root-policy-integration",
+      "expected_sha": "62596803652243668ac7b7344829a50dd1222ca4",
+      "merged_pr": 76
+    },
+    {
+      "branch": "lab/api30-manifest-floor",
+      "expected_sha": "74090488be318f013e6ed8736f90e3dd37d6f10e",
+      "merged_pr": 152
+    },
+    {
+      "branch": "lab/lab0-managed-physical-lab-contract",
+      "expected_sha": "7bf09fcdf2684b32554c412716c99d7beed522e4",
+      "merged_pr": 30
+    },
+    {
+      "branch": "lab/lab1-android37-platform-pin",
+      "expected_sha": "fe02ba1b657115044dc61fab49214ee9e6f06c04",
+      "merged_pr": 42
+    },
+    {
+      "branch": "lab/lab1-autonomous-token-source",
+      "expected_sha": "9d32c57667ffe0e2ed447b686ac7000a9613446e",
+      "merged_pr": 40
+    },
+    {
+      "branch": "lab/lab1-explicit-rust-toolchain",
+      "expected_sha": "4f512a3bb241edfa95ffba31834aa2d538709e37",
+      "merged_pr": 46
+    },
+    {
+      "branch": "lab/lab1-powershell-home-collision",
+      "expected_sha": "74c72a5505f6826313761e6bf1292a79b0574c44",
+      "merged_pr": 44
+    },
+    {
+      "branch": "lab/lab1-preflight-execution-policy-launcher",
+      "expected_sha": "4ae10a910863b4a9b3de3bca9308b1c63214f293",
+      "merged_pr": 45
+    },
+    {
+      "branch": "lab/lab1-service-powershell-capability",
+      "expected_sha": "adf6780e811fa8a08f4d4bc47ffe055737f42427",
+      "merged_pr": 43
+    },
+    {
+      "branch": "lab/lab1-windows-host",
+      "expected_sha": "b52290a0b55be19ad8a3f1b5c536b08cce722bb6",
+      "merged_pr": 39
+    },
+    {
+      "branch": "lab/lab1-winget-idempotency",
+      "expected_sha": "482a480d7955b5cdd17c8bb94759b65f3449c149",
+      "merged_pr": 41
+    },
+    {
+      "branch": "lab/lab2-release-consumer",
+      "expected_sha": "7095d9d65ecb7d560ed447bfbee3aaeee7979258",
+      "merged_pr": 51
+    },
+    {
+      "branch": "lab/lab3-e3-windows-cutover",
+      "expected_sha": "2761f5f201eddf14391eb535d50351fc64d573c3",
+      "merged_pr": 54
+    },
+    {
+      "branch": "lab/lab3-rc-failed-reservation-recovery",
+      "expected_sha": "8d6d7d2c884e60a446accd214c4e107f48f9bb82",
+      "merged_pr": 57
+    },
+    {
+      "branch": "lab/lab3-zero-input-rc-activation",
+      "expected_sha": "1252c02daf219935b4281d056c997b11e67c4ee0",
+      "merged_pr": 55
+    },
+    {
+      "branch": "lab/lab3-zero-input-rc-tag-bridge",
+      "expected_sha": "349d43b7483548d09926bd73f5f5d8ecd6da1d2a",
+      "merged_pr": 56
+    },
+    {
+      "branch": "lab/lab3b-harness-download-layout-fix",
+      "expected_sha": "0594eb341ae676f1e8f6314e3487f6f08ff729cd",
+      "merged_pr": 59
+    },
+    {
+      "branch": "lab/lab3b-pin-test-digest-in-verifier",
+      "expected_sha": "39f09e39b3d3259ccf471cf81df942d68cccb8d2",
+      "merged_pr": 60
+    },
+    {
+      "branch": "lab/lab3b-windows-exact-e3-cutover",
+      "expected_sha": "e68da684fde8962baca708b1f5495015d7484870",
+      "merged_pr": 58
+    },
+    {
+      "branch": "lab/protocol-parity-current-device",
+      "expected_sha": "00a82d07fb1a9c51357ec9a02b25011c4e0e8df7",
+      "merged_pr": 240
+    },
+    {
+      "branch": "lab/radio-poweroff-characterization",
+      "expected_sha": "f97514c0fbdcd74934eabe2a364e119d7d8a7f91",
+      "merged_pr": 403
+    },
+    {
+      "branch": "lab/radio-poweroff-public-egress",
+      "expected_sha": "cacfbe36795d01272aa68f5a2285301ddab46aa0",
+      "merged_pr": 406
+    },
+    {
+      "branch": "lab/radio-poweroff-reporting",
+      "expected_sha": "cbbdaf67f0e08dfa5d0725928706412cb8a5a5fe",
+      "merged_pr": 404
+    },
+    {
+      "branch": "lab/u2-protocol-parity",
+      "expected_sha": "0c226f663bf09d36fbb2782527e6cf013ef4010e",
+      "merged_pr": 239
+    },
+    {
+      "branch": "lab3/e3-harness-stage-markers",
+      "expected_sha": "9ed28046e954005893975d376e6b7039e1ca3d5d",
+      "merged_pr": 72
+    },
+    {
+      "branch": "lab3/e3-probe-substage-diagnostics",
+      "expected_sha": "065c3a15cf55c6a21d2ef5a9306c7decce947af8",
+      "merged_pr": 71
+    },
+    {
+      "branch": "lab3/e3-typed-failure-classification",
+      "expected_sha": "f51f6e2b3f785b0fe9df98bf5b9c47a0892c1a7d",
+      "merged_pr": 70
+    },
+    {
+      "branch": "lab3/native-immutable-release-gate",
+      "expected_sha": "0b222ae7c9b54ecd5bdeb88ef48d724b86f752b6",
+      "merged_pr": 67
+    },
+    {
+      "branch": "lab3/normalize-e3-rc-tag-input",
+      "expected_sha": "ee2d1779b9db0f6f2a4e91bfdd574a2e1f8eef4a",
+      "merged_pr": 69
+    },
+    {
+      "branch": "maint/445-warp-session-recovery",
+      "expected_sha": "c32e0659de0023d1998252efde00987cb07012c9",
+      "merged_pr": 446
+    },
+    {
+      "branch": "optimize/integration-android-ci",
+      "expected_sha": "862b57d6d9fc493fa9bcfe952bd3bded4af42c11",
+      "merged_pr": 144
+    },
+    {
+      "branch": "perf/root-stale-safe-abort-main-388",
+      "expected_sha": "868c740ce6638bd2976f197ac1ab5031811c3894",
+      "merged_pr": 393
+    },
+    {
+      "branch": "performance/root-prepare-snapshot-fast-path-388",
+      "expected_sha": "47d505b7898f53e7a47625e2a1c07290e7c871b9",
+      "merged_pr": 394
+    },
+    {
+      "branch": "performance/root-reconcile-attribution",
+      "expected_sha": "8bcbd7c7ec6ade7af9054b2d9c608968ed349fc8",
+      "merged_pr": 389
+    },
+    {
+      "branch": "post-m1/cloudflare-live-preflight",
+      "expected_sha": "97e9854be99361747966bb7f29c7f850813d43a0",
+      "merged_pr": 127
+    },
+    {
+      "branch": "post-m1/cloudflare-plan-drift-diagnostics",
+      "expected_sha": "996f5d39782c63cddb8668aa48d54e653b6b6781",
+      "merged_pr": 123
+    },
+    {
+      "branch": "post-u8/control-direct-https",
+      "expected_sha": "9fb1c48ba9cc6cb6770111fedd7b7b98325cdc5c",
+      "merged_pr": 433
+    },
+    {
+      "branch": "post-u8/unified-proxy-connection",
+      "expected_sha": "eaca8ed21fdf303e2e2371dc7e7d8da8a01b8311",
+      "merged_pr": 429
+    },
+    {
+      "branch": "product/rotation-radio-poweroff-gate",
+      "expected_sha": "dcbef7bb30425f659b8d0bdbb79933cb2039adc8",
+      "merged_pr": 408
+    },
+    {
+      "branch": "qa/81-physical-successor",
+      "expected_sha": "4c46d9ec6b4f21030480343e36d5349f47700888",
+      "merged_pr": 83
+    },
+    {
+      "branch": "qa/81-remediation",
+      "expected_sha": "22b5dca46bf261e00f9b96dce67243c92222ef61",
+      "merged_pr": 82
+    },
+    {
+      "branch": "refactor/u2-mesh-existing-tokio",
+      "expected_sha": "c1649cab5ff25559e9ed93895c71a8453ff821b8",
+      "merged_pr": 213
+    },
+    {
+      "branch": "rel/one-build-native-release",
+      "expected_sha": "9f986d5dbbe6dfa2864b80f0690788554c3e9a15",
+      "merged_pr": 68
+    },
+    {
+      "branch": "rel/rel1-readback-verifier",
+      "expected_sha": "70ac966cdaf288ebcebf6da08e5891520cb092c3",
+      "merged_pr": 50
+    },
+    {
+      "branch": "rel/rel1-versioned-android-rc",
+      "expected_sha": "fda744230de9865ea11915c1cc0c5aceb6fa1777",
+      "merged_pr": 49
+    },
+    {
+      "branch": "reliability/control-terminal-reconnect-wake",
+      "expected_sha": "b26d5f39f25859cada7c345b7998f5c863741e28",
+      "merged_pr": 387
+    },
+    {
+      "branch": "research/425-candidate-a-pilot",
+      "expected_sha": "20ef8e69cf2da166e5cd73224fb9c9f11fea9467",
+      "merged_pr": 447
+    },
+    {
+      "branch": "research/425-cellular-capability-audit-v2",
+      "expected_sha": "aeda52dd04fe78d27b5289bb430bbc4a83c0ef5c",
+      "merged_pr": 427
+    },
+    {
+      "branch": "research/425-cellular-primitive-capability",
+      "expected_sha": "beff9cb440f0c6b8aa62a99566f5aca8a2fe01ae",
+      "merged_pr": 426
+    },
+    {
+      "branch": "research/448-candidate-a-timing",
+      "expected_sha": "5d57e9ff94db828463691544938e0e53584b014f",
+      "merged_pr": 449
+    },
+    {
+      "branch": "sdk-410-typed-rotate-client",
+      "expected_sha": "c1a712d376d7cdf6b5b2f0bf4adb75f614ae9cb9",
+      "merged_pr": 411
+    },
+    {
+      "branch": "test/control-terminal-attribution-contract-390",
+      "expected_sha": "7a4ef6ca9fa003ebbedb283d2d3b22695a0089cd",
+      "merged_pr": 399
+    },
+    {
+      "branch": "test/u2-capacity-resource-acceptance",
+      "expected_sha": "22e53cf6e4dc3897766bad2532ffcadfd134b591",
+      "merged_pr": 209
+    },
+    {
+      "branch": "test/u2-physical-protocol-evidence",
+      "expected_sha": "f0759d9df8cdf964e6bf2a7e02cf146b72dce5f0",
+      "merged_pr": 207
+    },
+    {
+      "branch": "test/u2-recovery-lifecycle-exact-candidate",
+      "expected_sha": "0765163416a8bf91f0d144c4685de8b667604f96",
+      "merged_pr": 218
+    },
+    {
+      "branch": "u4/generation-bound-public-ip",
+      "expected_sha": "7ba2f35233c418920ad97885eee9372f7e9117b9",
+      "merged_pr": 264
+    },
+    {
+      "branch": "u5/control-allow-empty-rotation-timeline",
+      "expected_sha": "30539e554f511cb01cd3743ec18bccfdbe5ef56c",
+      "merged_pr": 279
+    },
+    {
+      "branch": "u5/control-bounded-adb-rotation-probe",
+      "expected_sha": "df0861f647717cbdca55beeb0d01bc118dbc06c2",
+      "merged_pr": 277
+    },
+    {
+      "branch": "u5/control-fast-airplane-observer-invocation",
+      "expected_sha": "4959d9953871a1a18bc1d2abc47796582e7b6c3a",
+      "merged_pr": 282
+    },
+    {
+      "branch": "u5/control-fast-airplane-observer-v2",
+      "expected_sha": "3e19a805202588633ccc959db60b1f61b7ce06f1",
+      "merged_pr": 281
+    },
+    {
+      "branch": "u5/control-fast-airplane-stdin-v2",
+      "expected_sha": "32ca705a5adb9373f4c8e2e937b07c6955d22723",
+      "merged_pr": 283
+    },
+    {
+      "branch": "u5/control-fire-and-observe-activity-trigger",
+      "expected_sha": "4ef9c640dc430058a0fd8d1d954f07f4643c1419",
+      "merged_pr": 278
+    },
+    {
+      "branch": "u5/control-proc-thread-comm",
+      "expected_sha": "6d4125dd3a27de70c49e28d8069f348f67caae53",
+      "merged_pr": 273
+    },
+    {
+      "branch": "u5/control-restore-observer-replace",
+      "expected_sha": "7451f39d6b93af4af571104527a1c74343edb759",
+      "merged_pr": 284
+    },
+    {
+      "branch": "u5/control-restore-timeout-state",
+      "expected_sha": "175eb3ea24f32614e8c8ae8b1616c9e6acc44f3a",
+      "merged_pr": 286
+    },
+    {
+      "branch": "u5/control-rotation-device-probe",
+      "expected_sha": "6d67e97face813d3077a7429e13c99184f323db5",
+      "merged_pr": 270
+    },
+    {
+      "branch": "u5/control-stop-credential-projection",
+      "expected_sha": "97a1a123daab8ed7db2076434757321b2af52d12",
+      "merged_pr": 285
+    },
+    {
+      "branch": "u5/control-system-ps-thread-topology",
+      "expected_sha": "c7d857b3bf0c935284887d029926dd2e620f6064",
+      "merged_pr": 274
+    },
+    {
+      "branch": "u5/control-thread-command-name",
+      "expected_sha": "538ad8223334020577a473afa95ad22a88ac39f4",
+      "merged_pr": 272
+    },
+    {
+      "branch": "u5/control-thread-topology-probe",
+      "expected_sha": "39afaac573d5beb1dc3608187e11087eb4018baf",
+      "merged_pr": 271
+    },
+    {
+      "branch": "u5/control-topology-observation-boundary",
+      "expected_sha": "88a82ac8f678aa7d4053238228c1870181cae8f4",
+      "merged_pr": 276
+    },
+    {
+      "branch": "u5/rust-tokio-convergence-rotation",
+      "expected_sha": "429ba59d01d9db2e1fc84ed64cd5daf5e54198d8",
+      "merged_pr": 269
+    },
+    {
+      "branch": "u6/backend-driven-product-ui",
+      "expected_sha": "e74f5e982dfe9db4ac0edb3bc3fa5241823a3bdc",
+      "merged_pr": 294
+    },
+    {
+      "branch": "u6/runtime-controller-init-order-v2",
+      "expected_sha": "a8710e001569d67939bca0c3dac75c834ffef107",
+      "merged_pr": 301
+    },
+    {
+      "branch": "u7/baseline-measurement",
+      "expected_sha": "b85ee0ab39282cd10ee474609bbd468de6330418",
+      "merged_pr": 304
+    },
+    {
+      "branch": "u7/capacity-512",
+      "expected_sha": "74050e585d6616919fbad161f3a6d02167aed3a7",
+      "merged_pr": 308
+    },
+    {
+      "branch": "u7/closure-512-accepted",
+      "expected_sha": "783984717220bed6952f03afdf8a38b14e42aeb9",
+      "merged_pr": 313
+    },
+    {
+      "branch": "u7/combined-stability-timeout",
+      "expected_sha": "650bb72701cee7d5d132b17454036163b1b85e70",
+      "merged_pr": 312
+    },
+    {
+      "branch": "u7/product-capacity-512",
+      "expected_sha": "2323d6fad678213805d0dc589c150a835016573f",
+      "merged_pr": 309
+    },
+    {
+      "branch": "u7/repeated-512-stop-on-restart",
+      "expected_sha": "1fed6c99c07c566a7685d54e6a87e2342355ec1f",
+      "merged_pr": 310
+    },
+    {
+      "branch": "u7/repeated-lifecycle-resources",
+      "expected_sha": "a7dc8a224c1cd0aca56ba641ee8b98afc7e5fd67",
+      "merged_pr": 305
+    },
+    {
+      "branch": "u7/restore-candidate-producer-after-stability",
+      "expected_sha": "4209d7aba3cf27268647991282c2a4ac36b7b92a",
+      "merged_pr": 311
+    },
+    {
+      "branch": "u7/runtime-restart-producer-boundary-fix",
+      "expected_sha": "3963a5680233d04d02c7c06b633fc36fbb3ef05b",
+      "merged_pr": 307
+    },
+    {
+      "branch": "u7/runtime-restart-resources",
+      "expected_sha": "83fae4e4193fae4b548af9ec5a2d5a987f70561e",
+      "merged_pr": 306
+    },
+    {
+      "branch": "u8/control-remote-acceptance",
+      "expected_sha": "22d5df4851dbfb1e416e12118282f9cf7e50c8e2",
+      "merged_pr": 327
+    },
+    {
+      "branch": "u8/durability-soak-observability",
+      "expected_sha": "94a9f4993b524b0388f0e2216e9e78183c8a3a4f",
+      "merged_pr": 331
+    },
+    {
+      "branch": "u8/final-support-provenance-closure",
+      "expected_sha": "f17f5788328db9eacdfb01fca4d966eeb12d39d6",
+      "merged_pr": 363
+    },
+    {
+      "branch": "u8/remote-rotation-control",
+      "expected_sha": "76f768b32e9acbef38a3b5f7f4dc96952ca61c29",
+      "merged_pr": 322
+    },
+    {
+      "branch": "u8/root-session-death-proof",
+      "expected_sha": "aea2fc7ad90adf5b68680aefd60e71b3e82bcb9e",
+      "merged_pr": 319
+    },
+    {
+      "branch": "u8g/camoufox-error-code-on-main",
+      "expected_sha": "bca217302695efd67ed92ab996a5c8a2f1d94c95",
+      "merged_pr": 348
+    },
+    {
+      "branch": "u8g/camoufox-typed-failure",
+      "expected_sha": "63c814369943a5631ef42238aa76543780593c18",
+      "merged_pr": 345
+    },
+    {
+      "branch": "u8g/capture-camoufox-request-failure-code",
+      "expected_sha": "291308769323db8af9ecc34bca8a40c96473775c",
+      "merged_pr": 351
+    },
+    {
+      "branch": "u8g/classify-camoufox-navigation-error",
+      "expected_sha": "3cdcacaa4bbe282a670790bc03dc7b1469bb789a",
+      "merged_pr": 346
+    },
+    {
+      "branch": "u8g/converge-into-device-cycle",
+      "expected_sha": "56ca5c8e839cf8f2e76eb227bb97a76c1458904b",
+      "merged_pr": 352
+    },
+    {
+      "branch": "u8g/device-cycle-headful-camoufox",
+      "expected_sha": "ae482a8dc4bb65bed615a6e3e06359dfffbef036",
+      "merged_pr": 354
+    },
+    {
+      "branch": "u8g/final-auth-owner",
+      "expected_sha": "2fa17cf4307a8275b49d40b8bbaa1ad26d423fda",
+      "merged_pr": 343
+    },
+    {
+      "branch": "u8g/final-dns-cache-observer",
+      "expected_sha": "0e3b92993025ae35205562da4c6ac90b462fae80",
+      "merged_pr": 344
+    },
+    {
+      "branch": "u8g/final-dns-no-bypass",
+      "expected_sha": "18117cd1521d43c467503662dc18b224e6507311",
+      "merged_pr": 342
+    },
+    {
+      "branch": "u8g/fix-single-url-json-array",
+      "expected_sha": "64af7099213a90a97b19c00a7d775b6ef66e7cfd",
+      "merged_pr": 361
+    },
+    {
+      "branch": "u8g/headful-interactive-client-fixture",
+      "expected_sha": "1099aa96640a885c5d7123b447d9ff3976d72933",
+      "merged_pr": 353
+    },
+    {
+      "branch": "u8g/navigation-failure-evidence-v2",
+      "expected_sha": "a46b4da00dd182cd6b9b52766a1796c68fe7c3b3",
+      "merged_pr": 359
+    },
+    {
+      "branch": "u8g/prove-canonical-https-connect",
+      "expected_sha": "0ab4ccf96db0c24e9dfec13e2eb47acb5f7f2101",
+      "merged_pr": 350
+    },
+    {
+      "branch": "u8g/restore-headless-camoufox",
+      "expected_sha": "0a1074e764d3b18b514e7a49a2388f85ebac5ad0",
+      "merged_pr": 356
+    },
+    {
+      "branch": "u8g/split-host-static-boundary",
+      "expected_sha": "313efa0d67ba34d93ccb5c0435dee48334fc15cf",
+      "merged_pr": 355
+    },
+    {
+      "branch": "u8h/provenance-doc-consistency",
+      "expected_sha": "0b9101df9a8531f0522631edd70740797e589e64",
+      "merged_pr": 365
+    }
+  ]
+}
