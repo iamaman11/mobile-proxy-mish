@@ -13,10 +13,10 @@
     "branches": 398,
     "prs_examined": 381,
     "KEEP": 3,
-    "REVIEW": 77,
-    "DELETE_CANDIDATE": 318
+    "REVIEW": 123,
+    "DELETE_CANDIDATE": 272
   },
-  "safety": "No deletion for ambiguous/unmerged/no-PR tips. DELETE_CANDIDATE requires fresh expected SHA, merged PR recheck, workflow/deployment dependency check before any mutation. No PRODUCT changes.",
+  "safety": "No deletion for ambiguous/unmerged/no-PR tips. DELETE_CANDIDATE requires fresh expected SHA, merged PR recheck, workflow/deployment dependency check before any mutation. No PRODUCT changes. Only PRs merged directly into main can be deletion candidates; non-main base histories default REVIEW.",
   "rows": [
     {
       "branch": "acceptance/e4-stateless-runner",
@@ -508,8 +508,8 @@
       "branch": "ci/device-candidate-artifact",
       "head_sha": "622e000e6cb3ada32e448094532b286331362069",
       "last_commit_utc": "2026-09-14T16:16:30Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base fix/root-policy-reconciliation; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 146,
@@ -576,8 +576,8 @@
       "branch": "ci/integration-android-preflight",
       "head_sha": "f41bb3e1a7ae61e2e73a41c2fb6de090fdad643a",
       "last_commit_utc": "2026-09-14T14:58:35Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base fix/root-policy-reconciliation; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 141,
@@ -2066,8 +2066,8 @@
       "branch": "docs/135-current-checkpoint-policy",
       "head_sha": "d02aacab8deae3a6879d3539071f97e2b3bfec77",
       "last_commit_utc": "2026-09-14T06:48:36Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base fix/root-policy-reconciliation; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 136,
@@ -2083,8 +2083,8 @@
       "branch": "docs/135-product-engineering-rule",
       "head_sha": "f67bbbe223219d3054d9dcdee9db06b3ebf50a76",
       "last_commit_utc": "2026-09-14T06:58:47Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base fix/root-policy-reconciliation; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 137,
@@ -2545,8 +2545,8 @@
       "branch": "feat/rust-proxy-serving",
       "head_sha": "d7998e7035372c1306d45de57a7c9566a483088d",
       "last_commit_utc": "2026-09-15T20:10:27Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base fix/root-policy-reconciliation; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 184,
@@ -2562,8 +2562,8 @@
       "branch": "feat/rust-proxy-serving-l2",
       "head_sha": "df6640f87c5758179fb8c6dbd420d85d9d1cafaa",
       "last_commit_utc": "2026-09-15T20:32:44Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base fix/root-policy-reconciliation; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 185,
@@ -2579,8 +2579,8 @@
       "branch": "feat/rust-proxy-serving-l3",
       "head_sha": "c1b062714d53a6b10f5d39fcb83970cb1c72ce56",
       "last_commit_utc": "2026-09-15T21:10:24Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base fix/root-policy-reconciliation; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 186,
@@ -2596,8 +2596,8 @@
       "branch": "feat/rust-proxy-serving-l4",
       "head_sha": "0bc85cfb982bef0f9d311c46b9bf6ca51a273328",
       "last_commit_utc": "2026-09-15T21:36:05Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base fix/root-policy-reconciliation; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 187,
@@ -2622,8 +2622,8 @@
       "branch": "feat/rust-proxy-serving-l5",
       "head_sha": "8f081be8296859ab2091e3a5a89ba31fc2461f85",
       "last_commit_utc": "2026-09-15T22:03:11Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base fix/root-policy-reconciliation; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 188,
@@ -2639,8 +2639,8 @@
       "branch": "feat/rust-proxy-serving-l6",
       "head_sha": "9027e16c6809cb4a7f64a2e1852059a3b47fb771",
       "last_commit_utc": "2026-09-15T22:36:31Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base fix/root-policy-reconciliation; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 189,
@@ -2656,8 +2656,8 @@
       "branch": "feat/rust-proxy-serving-l7",
       "head_sha": "6b42621d9763788741a65da642421202a35d7325",
       "last_commit_utc": "2026-09-15T23:18:58Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base fix/root-policy-reconciliation; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 190,
@@ -2751,8 +2751,8 @@
       "branch": "fix/android-api30-floor",
       "head_sha": "611c3ad74957c0886a3f6e5d1cb37bb50e129d96",
       "last_commit_utc": "2026-09-14T15:10:41Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base fix/root-policy-reconciliation; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 140,
@@ -3279,8 +3279,8 @@
       "branch": "fix/p0-root-session-simplification",
       "head_sha": "ce102c0727f39324b628edb66bc6bd8a744bd17e",
       "last_commit_utc": "2026-09-14T21:00:23Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base fix/root-policy-reconciliation; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 157,
@@ -3438,8 +3438,8 @@
       "branch": "fix/u2-remove-pre-l8-product-runtime",
       "head_sha": "5f7ca6366050e0b2b2f74f0e5acea2964fedda57",
       "last_commit_utc": "2026-09-16T07:43:36Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base fix/root-policy-reconciliation; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 197,
@@ -4205,8 +4205,8 @@
       "branch": "m1/arch-ci-dispatch-bridge",
       "head_sha": "cc1f5964c18d288e5e4d83e3127535852a193ca2",
       "last_commit_utc": "2026-09-12T18:57:58Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base integration/m1; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 105,
@@ -4222,8 +4222,8 @@
       "branch": "m1/arch-ci-enforcement",
       "head_sha": "b48bda80045fb614de460ffced5a448d7e791d8d",
       "last_commit_utc": "2026-09-12T18:55:13Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base integration/m1; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 103,
@@ -4239,8 +4239,8 @@
       "branch": "m1/arch-clippy-test-resolver",
       "head_sha": "7da25164f2760f41173b4e64909e310dfba2eb26",
       "last_commit_utc": "2026-09-12T19:12:55Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base integration/m1; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 108,
@@ -4256,8 +4256,8 @@
       "branch": "m1/arch-credential-protobuf",
       "head_sha": "663a9b2ac94af42141be22e02e0fb24e714683d2",
       "last_commit_utc": "2026-09-12T18:39:39Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base integration/m1; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 100,
@@ -4273,8 +4273,8 @@
       "branch": "m1/arch-dns-inversion",
       "head_sha": "e2da49940dfaf6f8454ce4197c710f038dbc865f",
       "last_commit_utc": "2026-09-12T18:23:35Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base integration/m1; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 99,
@@ -4290,8 +4290,8 @@
       "branch": "m1/arch-final-corrections",
       "head_sha": "55caa64e14957e2ab85cc793cd69e75f88ec79d9",
       "last_commit_utc": "2026-09-12T19:06:27Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base integration/m1; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 107,
@@ -4307,8 +4307,8 @@
       "branch": "m1/arch-mesh-config-source",
       "head_sha": "caca7dbf211df207381f14f6761c8adcf1117d99",
       "last_commit_utc": "2026-09-12T18:51:42Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base integration/m1; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 102,
@@ -4324,8 +4324,8 @@
       "branch": "m1/arch-proxy-port-source",
       "head_sha": "b936dbf6b9cf1609c9faee0b5522970005f91f1e",
       "last_commit_utc": "2026-09-12T18:46:03Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base integration/m1; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 101,
@@ -4341,8 +4341,8 @@
       "branch": "m1/arch-runtime-android-adapter",
       "head_sha": "27e67ec07dcdc79c1df705538baa0a92a4194efb",
       "last_commit_utc": "2026-09-12T18:09:51Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base integration/m1; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 98,
@@ -4358,8 +4358,8 @@
       "branch": "m1/arch-runtime-lifecycle",
       "head_sha": "4b0bbd113586f8884ebc292f4368d7b123cd8163",
       "last_commit_utc": "2026-09-12T18:06:59Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base integration/m1; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 97,
@@ -4384,8 +4384,8 @@
       "branch": "m1/arch-rustfmt-cleanup",
       "head_sha": "c2dcbaeb5a0a72a01143852496e06c5f606ff076",
       "last_commit_utc": "2026-09-12T19:03:48Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base integration/m1; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 106,
@@ -4401,8 +4401,8 @@
       "branch": "m1/arch-transport-runtime-owner",
       "head_sha": "cb6c737ef652425345c67356892dc206e0eb6ba3",
       "last_commit_utc": "2026-09-12T18:59:09Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base integration/m1; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 104,
@@ -4445,8 +4445,8 @@
       "branch": "m1/credential-provisioning-hosted-fix",
       "head_sha": "5bdf1ec4df88b8ad767297b53beaac488a465ddf",
       "last_commit_utc": "2026-09-12T20:06:23Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base integration/m1; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 109,
@@ -4462,8 +4462,8 @@
       "branch": "m1/credentials",
       "head_sha": "b3380aceb7fb729e06a97500e4ef20434197ebe2",
       "last_commit_utc": "2026-09-12T15:26:30Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base integration/m1; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 90,
@@ -4479,8 +4479,8 @@
       "branch": "m1/credentials-provisioning",
       "head_sha": "8345a3c36b8ecf343a54e946c4465a330a6dd021",
       "last_commit_utc": "2026-09-12T15:56:11Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base integration/m1; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 93,
@@ -4496,8 +4496,8 @@
       "branch": "m1/d1-ci-test-race-correction",
       "head_sha": "94940dcdbadc30a1100ad5183388dfdaf433feb7",
       "last_commit_utc": "2026-09-12T20:59:40Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base integration/m1; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 116,
@@ -4513,8 +4513,8 @@
       "branch": "m1/d2-ci-correction-2",
       "head_sha": "3cbb4764041f8369a16452a2d08ed7132fc5bdb4",
       "last_commit_utc": "2026-09-13T11:18:37Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base integration/m1; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 120,
@@ -4530,8 +4530,8 @@
       "branch": "m1/d2-ci-guard-correction",
       "head_sha": "1eb290b493f21020cc772654a446c788e39e7441",
       "last_commit_utc": "2026-09-13T11:21:27Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base integration/m1; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 121,
@@ -4547,8 +4547,8 @@
       "branch": "m1/d2-product-readiness-wiring",
       "head_sha": "0d365cf9efea99e0a4efd4d720aed033e083d462",
       "last_commit_utc": "2026-09-13T10:58:06Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base integration/m1; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 119,
@@ -4564,8 +4564,8 @@
       "branch": "m1/d2-rustfmt-correction",
       "head_sha": "eb79c6b01c4b4245ea369fac789f5c7b46b480d9",
       "last_commit_utc": "2026-09-12T21:19:29Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base integration/m1; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 118,
@@ -4581,8 +4581,8 @@
       "branch": "m1/d3-tcp-only-external-client-fixture",
       "head_sha": "bd4afa8421f9b1185722b744c17d5b08f035d8b7",
       "last_commit_utc": "2026-09-13T11:37:05Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base integration/m1; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 122,
@@ -4598,8 +4598,8 @@
       "branch": "m1/dns-code-contract",
       "head_sha": "a4212011c0411dbe5fa42ed29b6c39ffff3b9e48",
       "last_commit_utc": "2026-09-12T20:55:01Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base integration/m1; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 115,
@@ -4624,8 +4624,8 @@
       "branch": "m1/mesh-ingress",
       "head_sha": "b44a68ebdbe353f3d847d61f33dc03ac7874fe89",
       "last_commit_utc": "2026-09-12T17:26:24Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base integration/m1; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 94,
@@ -4641,8 +4641,8 @@
       "branch": "m1/mesh-vpn-observation-provenance",
       "head_sha": "0c46555ce81c3abc3d0fb0d129b9221c7a652cb7",
       "last_commit_utc": "2026-09-12T20:38:02Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base integration/m1; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 112,
@@ -4658,8 +4658,8 @@
       "branch": "m1/r2-rustfmt-correction",
       "head_sha": "7cc29ea164d1179f431769f4cea98480d4e543a2",
       "last_commit_utc": "2026-09-12T20:41:15Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base integration/m1; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 113,
@@ -4675,8 +4675,8 @@
       "branch": "m1/readiness-generation-bound-probe",
       "head_sha": "61a2217eda726aefd78354ec177bb3060eab0448",
       "last_commit_utc": "2026-09-12T21:13:30Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base integration/m1; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 117,
@@ -4692,8 +4692,8 @@
       "branch": "m1/root-policy-output-reachability",
       "head_sha": "9686e017915eda99d6174358de5108d5e87e8296",
       "last_commit_utc": "2026-09-12T20:18:19Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base integration/m1; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 111,
@@ -4787,8 +4787,8 @@
       "branch": "optimize/android-build-pipeline",
       "head_sha": "ca0a6476ac27999ff6edd8157b5087744d21abaa",
       "last_commit_utc": "2026-09-14T15:52:30Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base fix/root-policy-reconciliation; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 143,
@@ -4821,8 +4821,8 @@
       "branch": "optimize/integration-android-ci-lineage",
       "head_sha": "907582d3199c4a7866bc858935ee664965b7843e",
       "last_commit_utc": "2026-09-14T16:02:59Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base fix/root-policy-reconciliation; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 145,
@@ -5052,8 +5052,8 @@
       "branch": "refactor/l8-tokio-runtime-architecture",
       "head_sha": "d15037983db0212da55e47888be7c71e0e30bd74",
       "last_commit_utc": "2026-09-16T02:47:47Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base fix/root-policy-reconciliation; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 192,
@@ -5283,8 +5283,8 @@
       "branch": "sync/diagnostics-foundation-integration",
       "head_sha": "528ecbfc3f10ec4c146433df5e4bdfad191356ca",
       "last_commit_utc": "2026-09-14T22:49:00Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base fix/root-policy-reconciliation; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 165,
@@ -5300,8 +5300,8 @@
       "branch": "sync/p0-telemetry-root-session",
       "head_sha": "7de5f8834ae91e28481da1f086896fe2643e6bdc",
       "last_commit_utc": "2026-09-14T21:16:09Z",
-      "classification": "DELETE_CANDIDATE",
-      "reason": "Tip SHA exactly matches merged PR head; PR is merged and retains historical diff/commits",
+      "classification": "REVIEW",
+      "reason": "Merged into non-main base fix/p0-cellular-recovery-telemetry; no complete merge-to-main or unique-work proof",
       "related_prs": [
         {
           "number": 161,
