@@ -100,6 +100,323 @@ jobs:
           retention-days: 30
 
 
+  installed-identity:
+    name: Read-only installed APK identity proof
+    if: >-
+      github.event.issue.number == 163 &&
+      github.event.comment.user.login == 'iamaman11' &&
+      startsWith(github.event.comment.body, '/mish-diag installed-identity ')
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 10
+    env:
+      ADB_EXE: C:\\mish-lab\\tools\\android-sdk\\platform-tools\\adb.exe
+      ANDROID_SDK_ROOT: C:\\mish-lab\\tools\\android-sdk
+      CANDIDATE_STORE_ROOT: C:\\mish-lab\\runner\\.state\\device-candidate\\versions
+      OPERATOR_COMMENT: ${{ github.event.comment.body }}
+    steps:
+      - name: Checkout protected-main verification authority
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+          clean: true
+
+      - name: Verify PowerShell and physical LAB identity
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($PSVersionTable.PSEdition -cne 'Core' -or $PSVersionTable.PSVersion.ToString() -cne $env:DIAGNOSTIC_PWSH_VERSION) {
+            throw 'MISH_INSTALLED_IDENTITY_FAILURE|POWERSHELL_RUNTIME_MISMATCH|Pinned PowerShell version is required.'
+          }
+          .\lab\windows\labctl.ps1 host inspect -PhysicalLab
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify installed bytes and signer against exact durable LAB receipt
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Only an exact owner-authored source SHA + artifact ID is permitted.
+          $pattern = '^/mish-diag installed-identity (?<source>[0-9a-f]{40}) (?<artifact>[1-9][0-9]{0,18})    name: Read-only CONTROL snapshot
+    if: >-
+      github.event.issue.number == 163 &&
+      github.event.comment.user.login == 'iamaman11' &&
+      github.event.comment.body == '/mish-diag control-snapshot'
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 5
+    env:
+      ADB_EXE: C:\\mish-lab\\tools\\android-sdk\\platform-tools\\adb.exe
+    steps:
+      - name: Checkout protected main diagnostics bridge
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+          clean: true
+
+      - name: Verify pinned PowerShell 7 runtime
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($PSVersionTable.PSEdition -cne 'Core' -or $PSVersionTable.PSVersion.ToString() -cne $env:DIAGNOSTIC_PWSH_VERSION) {
+            throw "MISH_CONTROL_DIAGNOSTIC_FAILURE|POWERSHELL_RUNTIME_MISMATCH|Expected PowerShell $env:DIAGNOSTIC_PWSH_VERSION; observed $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)"
+          }
+
+      - name: Verify physical LAB identity
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\labctl.ps1 host inspect -PhysicalLab
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Collect one read-only CONTROL snapshot
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\collect-control-diagnostic.ps1 `
+            -AdbPath "$env:ADB_EXE" `
+            -PackageName 'com.mobileproxymish.app.debug' `
+            -EvidencePath "$env:RUNNER_TEMP\mish-control-diagnostic-v1.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Publish CONTROL timing summary
+        if: ${{ always() }}
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $path = Join-Path $env:RUNNER_TEMP 'mish-control-diagnostic-v1.json'
+          if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            "### Read-only CONTROL snapshot`n`nEvidence was not produced." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            exit 0
+          }
+          $evidence = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json
+          $timing = $evidence.control.operation_timing
+          @(
+            '### Read-only CONTROL snapshot',
+            '',
+            "- PID stable: **$($evidence.pid_stable)**",
+            "- CONTROL state: **$($evidence.control.state)**",
+            "- Operation id: **$($timing.operation_id)**",
+            "- Rotation terminal CONTROL state: **$($timing.rotation_terminal_control_state)**",
+            "- Rotation terminal: **$($timing.rotation_terminal_ms) ms**",
+            "- Post-terminal connect start: **$($timing.post_terminal_connect_started_ms) ms** / attempts=$($timing.post_terminal_connect_attempts)",
+            "- Post-terminal transport connected: **$($timing.post_terminal_transport_connected_ms) ms** / connections=$($timing.post_terminal_transport_connections)",
+            "- Reconnect READY: **$($timing.reconnect_ready_ms) ms**",
+            "- RESULT sent: **$($timing.result_sent_ms) ms**",
+            "- RESULT ACK: **$($timing.result_ack_ms) ms**",
+            '',
+            'Read-only DUMP only: no Rotation, network, root-policy, install, restart or Cloudflare mutation.'
+          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Upload CONTROL diagnostic evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mish-control-diagnostic-v1-${{ github.run_id }}
+          path: ${{ runner.temp }}\mish-control-diagnostic-v1.json
+          if-no-files-found: warn
+          retention-days: 30
+
+
+  mesh-route:
+    name: Read-only Windows Mesh route attribution
+    if: >-
+      github.event.issue.number == 163 &&
+      github.event.comment.user.login == 'iamaman11' &&
+      github.event.comment.body == '/mish-diag mesh-route'
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 5
+    env:
+      ADB_EXE: C:\\mish-lab\\tools\\android-sdk\\platform-tools\\adb.exe
+    steps:
+      - name: Verify pinned PowerShell 7 runtime
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($PSVersionTable.PSEdition -cne 'Core' -or $PSVersionTable.PSVersion.ToString() -cne $env:DIAGNOSTIC_PWSH_VERSION) {
+            throw "MISH_DIAGNOSTIC_FAILURE|POWERSHELL_RUNTIME_MISMATCH|Expected PowerShell $env:DIAGNOSTIC_PWSH_VERSION; observed $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)"
+          }
+
+      - name: Attribute Windows route to current DEVICE Mesh endpoint
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Test-MishMeshAddress {
+            param([Parameter(Mandatory)][string] $Address)
+            try {
+              $bytes = [Net.IPAddress]::Parse($Address).GetAddressBytes()
+            }
+            catch { return $false }
+            if ($bytes.Length -ne 4 -or $bytes[0] -ne 100) { return $false }
+            return ([int]$bytes[1] -ge 96 -and [int]$bytes[1] -le 111)
+          }
+
+          $rows = @(& $env:ADB_EXE shell ip -o -4 addr show 2>$null | ForEach-Object { [string]$_ })
+          if ($LASTEXITCODE -ne 0) {
+            throw 'MISH_DIAGNOSTIC_FAILURE|ADB_FAILED|Could not read DEVICE IPv4 addresses.'
+          }
+          $meshAddresses = @(
+            [regex]::Matches(($rows -join "`n"), '\binet\s+(?<ip>\d{1,3}(?:\.\d{1,3}){3})/\d+') |
+              ForEach-Object { $_.Groups['ip'].Value } |
+              Where-Object { Test-MishMeshAddress $_ } |
+              Sort-Object -Unique
+          )
+          if ($meshAddresses.Count -ne 1) {
+            throw "MISH_DIAGNOSTIC_FAILURE|MESH_ENDPOINT_COUNT|Expected one DEVICE Mesh IPv4 endpoint; observed $($meshAddresses.Count)."
+          }
+
+          $meshAddress = [string]$meshAddresses[0]
+          $route = @(Find-NetRoute -RemoteIPAddress $meshAddress -ErrorAction Stop) | Select-Object -First 1
+          if ($null -eq $route) {
+            throw 'MISH_DIAGNOSTIC_FAILURE|WINDOWS_MESH_ROUTE_MISSING|No Windows route resolves the DEVICE Mesh endpoint.'
+          }
+
+          $tcp = Test-NetConnection -ComputerName $meshAddress -Port 3128 -InformationLevel Detailed -WarningAction SilentlyContinue
+          $cloudflareAdapters = @(
+            Get-NetAdapter -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match 'Cloudflare|WARP' -or $_.InterfaceDescription -match 'Cloudflare|WARP' } |
+              ForEach-Object {
+                [ordered]@{
+                  name = [string]$_.Name
+                  description = [string]$_.InterfaceDescription
+                  status = [string]$_.Status
+                  interface_index = [int]$_.ifIndex
+                }
+              }
+          )
+          $cloudflareServices = @(
+            Get-Service -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match 'Cloudflare|WARP' -or $_.DisplayName -match 'Cloudflare|WARP' } |
+              ForEach-Object {
+                [ordered]@{
+                  name = [string]$_.Name
+                  display_name = [string]$_.DisplayName
+                  status = [string]$_.Status
+                  start_type = [string]$_.StartType
+                }
+              }
+          )
+
+          $evidence = [ordered]@{
+            schema = 'mish.lab.windows-mesh-route/v1'
+            collected_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
+            mesh_endpoint_count = 1
+            route = [ordered]@{
+              present = $true
+              interface_alias = [string]$route.InterfaceAlias
+              interface_index = [int]$route.InterfaceIndex
+              route_metric = [int]$route.RouteMetric
+            }
+            tcp_3128 = [ordered]@{
+              succeeded = [bool]$tcp.TcpTestSucceeded
+              interface_alias = [string]$tcp.InterfaceAlias
+            }
+            cloudflare_adapters = $cloudflareAdapters
+            cloudflare_services = $cloudflareServices
+          }
+          $path = Join-Path $env:RUNNER_TEMP 'mish-windows-mesh-route-v1.json'
+          [IO.File]::WriteAllText(
+            $path,
+            (($evidence | ConvertTo-Json -Depth 8) + [Environment]::NewLine),
+            [Text.UTF8Encoding]::new($false)
+          )
+
+          Write-Host "MISH_WINDOWS_MESH_ROUTE_INTERFACE=$($evidence.route.interface_alias)"
+          Write-Host "MISH_WINDOWS_MESH_ROUTE_INDEX=$($evidence.route.interface_index)"
+          Write-Host "MISH_WINDOWS_MESH_TCP_3128=$($evidence.tcp_3128.succeeded)"
+          Write-Host "MISH_WINDOWS_MESH_TCP_INTERFACE=$($evidence.tcp_3128.interface_alias)"
+          Write-Host "MISH_WINDOWS_CLOUDFLARE_ADAPTERS=$($cloudflareAdapters.Count)"
+          Write-Host "MISH_WINDOWS_CLOUDFLARE_SERVICES=$($cloudflareServices.Count)"
+
+      - name: Upload Windows Mesh route evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mish-windows-mesh-route-v1-${{ github.run_id }}
+          path: ${{ runner.temp }}\mish-windows-mesh-route-v1.json
+          if-no-files-found: error
+          retention-days: 7
+
+          $match = [regex]::Match([string]$env:OPERATOR_COMMENT, $pattern)
+          if (-not $match.Success) {
+            throw 'MISH_INSTALLED_IDENTITY_FAILURE|INPUT_INVALID|Expected exact source SHA and artifact ID.'
+          }
+          $source = [string]$match.Groups['source'].Value
+          $artifact = [string]$match.Groups['artifact'].Value
+          $versionRoot = Join-Path (Join-Path $env:CANDIDATE_STORE_ROOT $source) $artifact
+          $provenancePath = Join-Path $versionRoot 'provenance.json'
+          $installPath = Join-Path $versionRoot 'receipts\install-v2.json'
+          $signedApkPath = Join-Path $versionRoot 'signed\mobile-proxy-mish-debug-lab-signed.apk'
+          foreach ($path in @($provenancePath, $installPath, $signedApkPath)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw 'MISH_INSTALLED_IDENTITY_FAILURE|LOCAL_RECEIPT_MISSING|Exact previously installed candidate is not in the canonical store.'
+            }
+          }
+          $provenance = Get-Content -Raw -LiteralPath $provenancePath | ConvertFrom-Json
+          $install = Get-Content -Raw -LiteralPath $installPath | ConvertFrom-Json
+          if ([string]$provenance.schema -cne 'mish.device-candidate-local/v1' -or
+              [string]$provenance.source_sha -cne $source -or
+              [string]$provenance.artifact_id -cne $artifact -or
+              [string]$provenance.artifact_name -cne "device-candidate-pr-$($provenance.pr_number)-$source" -or
+              [string]$install.schema -cne 'mish.device-candidate-install/v2' -or
+              [string]$install.result -cne 'PASS' -or -not [bool]$install.installed -or
+              [string]$install.application_id -cne 'com.mobileproxymish.app.debug' -or
+              [string]$install.source_sha -cne $source -or
+              [string]$install.pr_number -cne [string]$provenance.pr_number -or
+              [string]$install.hosted_product_apk_sha256 -cne [string]$provenance.hosted_product_apk_sha256) {
+            throw 'MISH_INSTALLED_IDENTITY_FAILURE|LOCAL_RECEIPT_INVALID|Canonical candidate provenance and install receipt disagree.'
+          }
+          $signedSha = (Get-FileHash -LiteralPath $signedApkPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($signedSha -cne [string]$install.lab_signed_product_apk_sha256) {
+            throw 'MISH_INSTALLED_IDENTITY_FAILURE|LOCAL_SIGNED_APK_MISMATCH|Cached LAB-signed bytes do not match installation receipt.'
+          }
+          $receipt = Join-Path $env:RUNNER_TEMP 'mish-installed-identity-v1.json'
+          .\lab\windows\verify-installed-candidate.ps1 `
+            -InstallReceiptPath $installPath `
+            -AdbPath $env:ADB_EXE `
+            -AndroidSdkRoot $env:ANDROID_SDK_ROOT `
+            -ReceiptPath $receipt | Out-Null
+          $proof = Get-Content -Raw -LiteralPath $receipt | ConvertFrom-Json
+          if ([string]$proof.result -cne 'PASS' -or
+              [string]$proof.source_sha -cne $source -or
+              -not [bool]$proof.exact_installed_bytes_verified -or
+              -not [bool]$proof.installed_matches_lab_signed_candidate) {
+            throw 'MISH_INSTALLED_IDENTITY_FAILURE|DEVICE_MISMATCH|Installed device proof failed.'
+          }
+          Write-Host 'MISH_INSTALLED_IDENTITY_RESULT=PASS'
+          Write-Host "MISH_INSTALLED_IDENTITY_SOURCE_SHA=$source"
+          Write-Host "MISH_INSTALLED_IDENTITY_ARTIFACT_ID=$artifact"
+          Write-Host 'MISH_INSTALLED_IDENTITY_MUTATION=NONE'
+
+      - name: Publish bounded installed-identity summary
+        if: ${{ always() }}
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $path = Join-Path $env:RUNNER_TEMP 'mish-installed-identity-v1.json'
+          if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            '### Installed-identity check: no valid proof' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            exit 0
+          }
+          $proof = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json
+          @(
+            '### Installed-identity proof (no installation)',
+            '',
+            "- Result: **$($proof.result)**",
+            "- Source SHA: `$($proof.source_sha)`",
+            "- Installed matches LAB-signed exact candidate: **$($proof.installed_matches_lab_signed_candidate)**",
+            "- Installed bytes/signature verified: **$($proof.exact_installed_bytes_verified)**",
+            '',
+            'This proves current installed bytes and signer against the explicitly selected historical LAB install receipt; it does not perform a new candidate acceptance.'
+          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Upload sanitized installed-identity proof
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mish-installed-identity-v1-${{ github.run_id }}
+          path: ${{ runner.temp }}\mish-installed-identity-v1.json
+          if-no-files-found: warn
+          retention-days: 30
+
+
   control-snapshot:
     name: Read-only CONTROL snapshot
     if: >-
