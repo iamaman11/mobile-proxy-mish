@@ -2,8 +2,8 @@ $ErrorActionPreference = 'Stop'
 # Guard the operator-only, fail-closed installed-identity readback contract.
 $workflowPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\.github\workflows\mish-lab-diagnostic.yml'))
 $workflow = Get-Content -Raw -LiteralPath $workflowPath
-$start = $workflow.IndexOf("  installed-identity:`n", [StringComparison]::Ordinal)
-$end = $workflow.IndexOf("  control-snapshot:`n", [StringComparison]::Ordinal)
+$start = $workflow.IndexOf("  installed-identity:", [StringComparison]::Ordinal)
+$end = $workflow.IndexOf("  control-snapshot:", [StringComparison]::Ordinal)
 if ($start -lt 0 -or $end -le $start) {
     throw 'Installed identity diagnostic must remain a separate operator-only job.'
 }
