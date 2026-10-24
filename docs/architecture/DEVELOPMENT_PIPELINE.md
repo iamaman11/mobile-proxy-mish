@@ -17,6 +17,8 @@ Canonical build authority remains the Android/Rust build graph. Android 23 and A
 
 `.github/workflows/integration-android-preflight.yml` is the single protected-main PR validation workflow and the exact-head hosted candidate producer for PRODUCT-changing PRs. The obsolete separate `.github/workflows/ci.yml` workflow does not exist: cheap CONTROL guards, Rust quality and Android candidate production form one ordered pipeline.
 
+The former `integration-full-ci.yml` trigger on `integration/m1` was retired because its `ci.yml` dispatch target had already been removed. The supported hosted PRODUCT quality gate is the protected-main PR validation workflow above; this does **not** authorize deleting historical `integration/m1` branch evidence or running DEVICE-1 automatically.
+
 Current contract:
 
 ```text
