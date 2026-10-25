@@ -4,12 +4,14 @@
 //! Mesh endpoint discovery, credential persistence, cellular selection, DNS effects and child
 //! process lifecycle remain outside this capability.
 
+mod auth;
 mod http_connect;
 mod mixed;
 mod session;
 mod socks5;
 mod target;
 
+pub use auth::{ProxyAuthenticator, ProxyCredentialAdmission};
 pub use http_connect::{HttpConnectError, parse_http_connect_request};
 pub use mixed::{
     HttpConnectStreamError, MixedConnectError, accept_http_connect_stream, accept_mixed_connect,
@@ -138,6 +140,8 @@ pub enum ProxyPolicyError {
     WildcardListenAddress,
     EmptyUsername,
     EmptyPassword,
+    DuplicateCredentialUsername,
+    InvalidTemporarySocks5Credential,
 }
 
 impl fmt::Display for ProxyPolicyError {
@@ -146,6 +150,8 @@ impl fmt::Display for ProxyPolicyError {
             Self::WildcardListenAddress => "wildcard proxy exposure is forbidden",
             Self::EmptyUsername => "public proxy username must be non-empty",
             Self::EmptyPassword => "public proxy password must be non-empty",
+            Self::DuplicateCredentialUsername => "temporary username must differ from primary username",
+            Self::InvalidTemporarySocks5Credential => "temporary SOCKS5 credentials must have 1..=255 bytes",
         })
     }
 }

@@ -2,7 +2,9 @@ use std::fmt;
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-use crate::{ProxyConnectTarget, ProxyCredentialMaterial, ProxyTargetError};
+use crate::{ProxyAuthenticator, ProxyConnectTarget, ProxyTargetError};
+#[cfg(test)]
+use crate::ProxyCredentialMaterial;
 
 const SOCKS_VERSION: u8 = 0x05;
 const USERNAME_PASSWORD_METHOD: u8 = 0x02;
@@ -122,7 +124,7 @@ impl From<Socks5ProtocolError> for Socks5SessionError {
 /// network selection, socket connection, listener ownership or relay work.
 pub fn accept_socks5_connect<S: Read + Write>(
     stream: &mut S,
-    credentials: &ProxyCredentialMaterial,
+    credentials: &dyn ProxyAuthenticator,
 ) -> Result<ProxyConnectTarget, Socks5SessionError> {
     validate_credentials(credentials)?;
     negotiate_username_password(stream)?;
@@ -151,28 +153,14 @@ pub fn write_socks5_reply<W: Write>(
     stream.write_all(&frame)
 }
 
-fn validate_credentials(credentials: &ProxyCredentialMaterial) -> Result<(), Socks5ProtocolError> {
-    if credentials.username().is_empty()
-        || credentials.username().len() > MAX_AUTH_FIELD_LEN
-        || credentials.password().is_empty()
-        || credentials.password().len() > MAX_AUTH_FIELD_LEN
-    {
-        Err(Socks5ProtocolError::InvalidCredentialLength)
-    } else {
+fn validate_credentials(credentials: &dyn ProxyAuthenticator) -> Result<(), Socks5ProtocolError> {
+    if credentials.socks_compatible() {
         Ok(())
+    } else {
+        Err(Socks5ProtocolError::InvalidCredentialLength)
     }
 }
 
-fn constant_time_eq(expected: &[u8], supplied: &[u8]) -> bool {
-    let mut difference = expected.len() ^ supplied.len();
-    let max_len = expected.len().max(supplied.len());
-    for index in 0..max_len {
-        let left = expected.get(index).copied().unwrap_or(0);
-        let right = supplied.get(index).copied().unwrap_or(0);
-        difference |= usize::from(left ^ right);
-    }
-    difference == 0
-}
 
 fn negotiate_username_password<S: Read + Write>(stream: &mut S) -> Result<(), Socks5SessionError> {
     let mut header = [0_u8; 2];
@@ -200,7 +188,7 @@ fn negotiate_username_password<S: Read + Write>(stream: &mut S) -> Result<(), So
 
 fn authenticate<S: Read + Write>(
     stream: &mut S,
-    credentials: &ProxyCredentialMaterial,
+    credentials: &dyn ProxyAuthenticator,
 ) -> Result<(), Socks5SessionError> {
     let mut header = [0_u8; 2];
     stream.read_exact(&mut header)?;
@@ -222,9 +210,7 @@ fn authenticate<S: Read + Write>(
     let mut password = vec![0_u8; usize::from(password_len[0])];
     stream.read_exact(&mut password)?;
 
-    if !(constant_time_eq(credentials.username().as_bytes(), &username)
-        & constant_time_eq(credentials.password().as_bytes(), &password))
-    {
+    if !credentials.matches_username_password(&username, &password) {
         stream.write_all(&[USERNAME_PASSWORD_VERSION, 0x01])?;
         return Err(Socks5ProtocolError::AuthenticationFailed.into());
     }
