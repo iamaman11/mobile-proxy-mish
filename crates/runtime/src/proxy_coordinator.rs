@@ -746,10 +746,8 @@ mod tests {
             state.state = ProxyServingState::Running;
             state.serving_generation = Some(9);
             state.credential_version = Some(12);
-            state.credentials = Some(
-                ProxyCredentialMaterial::new("owner", "primary-only")
-                    .expect("primary"),
-            );
+            state.credentials =
+                Some(ProxyCredentialMaterial::new("owner", "primary-only").expect("primary"));
         }
         assert!(!proxy.restore_temporary_credential_for_serving_generation(
             8,
