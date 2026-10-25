@@ -112,7 +112,12 @@ internal class TemporaryProxyCredentialStore(context: Context) {
             runCatching { keystore().deleteEntry(KEY_ALIAS) }
         }
         committed
-    }.getOrDefault(false)
+    }.getOrElse {
+        // Any corruption, write or decryption failure must not leave a previously valid
+        // secondary ciphertext restorable after a process restart.
+        runCatching { keystore().deleteEntry(KEY_ALIAS) }
+        false
+    }
 
     /** If the issuance transaction failed, destroy the isolated secondary key, never primary. */
     @Synchronized
