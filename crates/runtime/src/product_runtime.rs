@@ -291,7 +291,19 @@ impl ProductRuntimeCoordinator {
             {
                 return;
             }
-            let _ = owner.install_temporary_proxy_credential(username, password, available);
+            // Install into the previously captured PRODUCT generation, never resolve a fresh
+            // generation after the validation. Proxy itself checks serving epoch while holding
+            // its state lock, so even a concurrent recovery cannot accept a stale restoration.
+            if let Some(expected_serving_generation) = expected_serving_generation {
+                let _ = current
+                    .proxy()
+                    .restore_temporary_credential_for_serving_generation(
+                        expected_serving_generation,
+                        username,
+                        password,
+                        available,
+                    );
+            }
         })?;
         Ok(())
     }

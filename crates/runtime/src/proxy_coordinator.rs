@@ -200,13 +200,45 @@ impl ProxyRuntimeCoordinator {
         password: String,
         available: TemporaryAuthorizationCheck,
     ) -> bool {
+        self.set_temporary_credential_if_generation(None, username, password, available)
+    }
+
+    /// Restores only into the exact RUNNING listener generation that issued the callback.
+    /// Rechecking under the Proxy state mutex closes the race where a delayed Keystore read
+    /// could reintroduce an old grant into a newly recovered Proxy serving generation.
+    pub fn restore_temporary_credential_for_serving_generation(
+        &self,
+        expected_serving_generation: u64,
+        username: String,
+        password: String,
+        available: TemporaryAuthorizationCheck,
+    ) -> bool {
+        self.set_temporary_credential_if_generation(
+            Some(expected_serving_generation),
+            username,
+            password,
+            available,
+        )
+    }
+
+    fn set_temporary_credential_if_generation(
+        &self,
+        expected_serving_generation: Option<u64>,
+        username: String,
+        password: String,
+        available: TemporaryAuthorizationCheck,
+    ) -> bool {
         let Ok(material) = ProxyCredentialMaterial::new(username, password) else {
             return false;
         };
         let Ok(mut state) = self.state.lock() else {
             return false;
         };
-        if state.closed || state.state != ProxyServingState::Running {
+        if state.closed
+            || state.state != ProxyServingState::Running
+            || expected_serving_generation
+                .is_some_and(|expected| state.serving_generation != Some(expected))
+        {
             return false;
         }
         let Some(runtime) = &state.current else {
