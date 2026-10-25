@@ -314,7 +314,7 @@ impl ProxyRuntimeCoordinator {
         runtime: Arc<ProxyServingRuntime>,
         credential_version: u64,
     ) -> ProxyRuntimePublication {
-        let (generation, temporary) = {
+        let generation = {
             let Ok(mut state) = self.state.lock() else {
                 let _ = runtime.stop();
                 return self.unavailable_publication();
@@ -337,22 +337,20 @@ impl ProxyRuntimeCoordinator {
             state.state = ProxyServingState::Starting;
             state.failure = None;
             state.recovery_pending = false;
-            (generation, state.temporary.clone())
-        };
-
-        if let Some(temporary) = temporary {
-            // A failed optional secondary restoration may not stop the healthy primary proxy.
-            // Fail closed only the optional principal, while leaving primary authority intact.
-            if runtime
-                .set_temporary_credential(temporary.material, temporary.available)
-                .is_err()
-            {
-                let _ = runtime.clear_temporary_credential();
-                if let Ok(mut state) = self.state.lock() {
+            // Reapply the latest optional grant under the same state lock that serializes
+            // revoke/replace. Otherwise a concurrent revoke could race with a stale snapshot
+            // and accidentally re-enable the prior temporary principal during recovery.
+            if let Some(temporary) = state.temporary.clone() {
+                if runtime
+                    .set_temporary_credential(temporary.material, temporary.available)
+                    .is_err()
+                {
+                    let _ = runtime.clear_temporary_credential();
                     state.temporary = None;
                 }
             }
-        }
+            generation
+        };
 
         let weak = Arc::downgrade(self);
         runtime.set_terminal_observer(Arc::new(move |failure| {
