@@ -31,6 +31,14 @@ pub struct ProxyRuntimePublication {
     pub recovery_next_delay_ms: u64,
 }
 
+type TemporaryAuthorizationCheck = Arc<dyn Fn() -> bool + Send + Sync>;
+
+#[derive(Clone)]
+struct TemporaryCredentialSnapshot {
+    material: ProxyCredentialMaterial,
+    available: TemporaryAuthorizationCheck,
+}
+
 struct ProxyCoordinatorState {
     current: Option<Arc<ProxyServingRuntime>>,
     state: ProxyServingState,
@@ -39,6 +47,7 @@ struct ProxyCoordinatorState {
     next_serving_generation: u64,
     credential_version: Option<u64>,
     credentials: Option<ProxyCredentialMaterial>,
+    temporary: Option<TemporaryCredentialSnapshot>,
     recovery_pending: bool,
     recovery_attempts: u32,
     recovery_epoch: u64,
@@ -100,6 +109,7 @@ impl ProxyRuntimeCoordinator {
                 next_serving_generation: 1,
                 credential_version: None,
                 credentials: None,
+                temporary: None,
                 recovery_pending: false,
                 recovery_attempts: 0,
                 recovery_epoch: 0,
@@ -182,6 +192,50 @@ impl ProxyRuntimeCoordinator {
         })
     }
 
+    /// Explicit temporary grant. The primary credential/version is never changed.
+    /// Caller is responsible for passing a Credentials-owner, persisted-before-auth verdict.
+    pub fn set_temporary_credential(
+        &self,
+        username: String,
+        password: String,
+        available: TemporaryAuthorizationCheck,
+    ) -> bool {
+        let Ok(material) = ProxyCredentialMaterial::new(username, password) else {
+            return false;
+        };
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        if state.closed || state.state != ProxyServingState::Running {
+            return false;
+        }
+        let Some(runtime) = &state.current else {
+            return false;
+        };
+        if runtime
+            .set_temporary_credential(material.clone(), Arc::clone(&available))
+            .is_err()
+        {
+            return false;
+        }
+        state.temporary = Some(TemporaryCredentialSnapshot { material, available });
+        true
+    }
+
+    /// Independent temporary revocation. Primary material and session generation stay intact.
+    pub fn clear_temporary_credential(&self) -> bool {
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        if let Some(runtime) = &state.current {
+            if runtime.clear_temporary_credential().is_err() {
+                return false;
+            }
+        }
+        state.temporary = None;
+        true
+    }
+
     pub fn start(
         self: &Arc<Self>,
         credential_version: Option<u64>,
@@ -228,6 +282,7 @@ impl ProxyRuntimeCoordinator {
             state.recovery_epoch = state.recovery_epoch.wrapping_add(1);
             state.recovery_pending = false;
             state.credentials = Some(credentials.clone());
+            state.temporary = None;
             state.credential_version = Some(credential_version);
             state.state = ProxyServingState::Starting;
             state.failure = None;
@@ -259,7 +314,7 @@ impl ProxyRuntimeCoordinator {
         runtime: Arc<ProxyServingRuntime>,
         credential_version: u64,
     ) -> ProxyRuntimePublication {
-        let generation = {
+        let (generation, temporary) = {
             let Ok(mut state) = self.state.lock() else {
                 let _ = runtime.stop();
                 return self.unavailable_publication();
@@ -282,8 +337,22 @@ impl ProxyRuntimeCoordinator {
             state.state = ProxyServingState::Starting;
             state.failure = None;
             state.recovery_pending = false;
-            generation
+            (generation, state.temporary.clone())
         };
+
+        if let Some(temporary) = temporary {
+            // A failed optional secondary restoration may not stop the healthy primary proxy.
+            // Fail closed only the optional principal, while leaving primary authority intact.
+            if runtime
+                .set_temporary_credential(temporary.material, temporary.available)
+                .is_err()
+            {
+                let _ = runtime.clear_temporary_credential();
+                if let Ok(mut state) = self.state.lock() {
+                    state.temporary = None;
+                }
+            }
+        }
 
         let weak = Arc::downgrade(self);
         runtime.set_terminal_observer(Arc::new(move |failure| {
@@ -478,6 +547,7 @@ impl ProxyRuntimeCoordinator {
             state.state = ProxyServingState::Stopped;
             state.failure = None;
             state.credentials = None;
+            state.temporary = None;
             state.credential_version = None;
             state.recovery_attempts = 0;
             if close {
