@@ -141,11 +141,19 @@ def summarize(routes, nodes, profiles):
     ]
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Prevent bearer tokens being forwarded to a redirected host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise InventoryFailure("REDIRECT_REJECTED")
+
+
 class CloudflareAPI:
     def __init__(self, token):
         if not token:
             raise InventoryFailure("TOKEN_UNAVAILABLE")
         self.token = token
+        self.opener = urllib.request.build_opener(NoRedirect)
 
     def __call__(self, path, params):
         if not path.startswith("/accounts") or not isinstance(params, dict):
@@ -158,7 +166,7 @@ class CloudflareAPI:
             headers={"Authorization": "Bearer " + self.token, "Accept": "application/json"},
         )
         try:
-            with urllib.request.urlopen(request, timeout=20) as response:
+            with self.opener.open(request, timeout=20) as response:
                 content = response.read(4_000_001)
                 if len(content) > 4_000_000:
                     raise InventoryFailure("RESPONSE_OVERSIZE")
