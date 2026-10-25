@@ -4,6 +4,7 @@
 //! must provide a trusted clock and atomically persist its updated state before authorizing a
 //! temporary connection. Neither secrets nor storage/clock effects belong in this pure module.
 
+use crate::proto::{ProtoReader, WIRE_VARINT, write_varint_field};
 use std::{error::Error, fmt};
 
 pub const TEMPORARY_CREDENTIAL_TTL_SECONDS: u64 = 24 * 60 * 60;
@@ -21,6 +22,8 @@ pub enum TemporaryCredentialError {
     InvalidActivationTime,
     InvalidGeneration,
     DeadlineOverflow,
+    MalformedState,
+    NonCanonicalState,
 }
 
 impl fmt::Display for TemporaryCredentialError {
@@ -30,6 +33,8 @@ impl fmt::Display for TemporaryCredentialError {
             Self::InvalidActivationTime => "invalid temporary credential activation time",
             Self::InvalidGeneration => "invalid temporary credential generation",
             Self::DeadlineOverflow => "temporary credential deadline overflow",
+            Self::MalformedState => "temporary credential lease state malformed",
+            Self::NonCanonicalState => "temporary credential lease state non-canonical",
         })
     }
 }
@@ -134,6 +139,76 @@ impl TemporaryCredentialLease {
     }
 }
 
+/// Canonical non-secret lease metadata encoding. Credential secrets are never written here.
+/// A platform adapter must commit this state atomically with its separately protected secret.
+pub fn encode_temporary_lease(lease: TemporaryCredentialLease) -> Vec<u8> {
+    let mut output = Vec::with_capacity(48);
+    write_varint_field(&mut output, 1, lease.generation);
+    write_varint_field(&mut output, 2, lease.activated_at_unix_seconds);
+    write_varint_field(&mut output, 3, lease.expires_at_unix_seconds);
+    write_varint_field(&mut output, 4, lease.last_observed_unix_seconds);
+    let status = match lease.status {
+        TemporaryCredentialStatus::Active => 1,
+        TemporaryCredentialStatus::Expired => 2,
+        TemporaryCredentialStatus::Revoked => 3,
+    };
+    write_varint_field(&mut output, 5, status);
+    output
+}
+
+/// Rejects missing/duplicate/unknown or non-minimal fields and impossible lifetime values.
+/// A restored Active lease is NOT authorized until the caller performs a fresh trusted-clock
+/// observation and durably persists the resulting state.
+pub fn decode_temporary_lease(
+    input: &[u8],
+) -> Result<TemporaryCredentialLease, TemporaryCredentialError> {
+    let mut reader = ProtoReader::new(input);
+    let mut fields: [Option<u64>; 5] = [None; 5];
+    while !reader.exhausted() {
+        let tag = reader
+            .read_tag()
+            .map_err(|_| TemporaryCredentialError::MalformedState)?;
+        if !(1..=5).contains(&tag.field_number) || tag.wire_type != WIRE_VARINT {
+            return Err(TemporaryCredentialError::MalformedState);
+        }
+        let slot = &mut fields[(tag.field_number - 1) as usize];
+        if slot.is_some() {
+            return Err(TemporaryCredentialError::MalformedState);
+        }
+        *slot = Some(
+            reader
+                .read_varint()
+                .map_err(|_| TemporaryCredentialError::MalformedState)?,
+        );
+    }
+    let [Some(generation), Some(start), Some(end), Some(last), Some(status)] = fields else {
+        return Err(TemporaryCredentialError::MalformedState);
+    };
+    if generation == 0 || start == 0
+        || start.checked_add(TEMPORARY_CREDENTIAL_TTL_SECONDS) != Some(end)
+        || last < start
+    {
+        return Err(TemporaryCredentialError::MalformedState);
+    }
+    let status = match status {
+        1 if last < end => TemporaryCredentialStatus::Active,
+        2 if last >= end => TemporaryCredentialStatus::Expired,
+        3 => TemporaryCredentialStatus::Revoked,
+        _ => return Err(TemporaryCredentialError::MalformedState),
+    };
+    let state = TemporaryCredentialLease {
+        generation,
+        activated_at_unix_seconds: start,
+        expires_at_unix_seconds: end,
+        last_observed_unix_seconds: last,
+        status,
+    };
+    if encode_temporary_lease(state) != input {
+        return Err(TemporaryCredentialError::NonCanonicalState);
+    }
+    Ok(state)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,6 +293,64 @@ mod tests {
                 )
                 .expect("materialize unchanged primary"),
             stable,
+        );
+    }
+
+    #[test]
+    fn durable_lease_round_trip_never_resets_activation_or_expiry() {
+        let grant = TemporaryCredentialLease::activate(11, Some(AT)).expect("activate");
+        let (grant, accepted) = grant.observe(Some(AT + 50_000));
+        assert!(accepted);
+        let bytes = encode_temporary_lease(grant);
+        let restored = decode_temporary_lease(&bytes).expect("canonical decode");
+        assert_eq!(restored, grant);
+        assert_eq!(restored.expires_at_unix_seconds(), AT + 86_400);
+
+        let (expired, accepted) = restored.observe(Some(AT + 86_400));
+        assert!(!accepted);
+        let expired_bytes = encode_temporary_lease(expired);
+        assert_eq!(decode_temporary_lease(&expired_bytes), Ok(expired));
+
+        let revoked = grant.revoke();
+        assert_eq!(
+            decode_temporary_lease(&encode_temporary_lease(revoked)),
+            Ok(revoked)
+        );
+    }
+
+    #[test]
+    fn corrupted_noncanonical_and_cross_generation_state_fail_closed() {
+        let grant = TemporaryCredentialLease::activate(3, Some(AT)).expect("activate");
+        let good = encode_temporary_lease(grant);
+        assert_eq!(decode_temporary_lease(&good), Ok(grant));
+
+        let mut duplicate = good.clone();
+        duplicate.extend_from_slice(&[0x08, 0x03]);
+        assert_eq!(
+            decode_temporary_lease(&duplicate),
+            Err(TemporaryCredentialError::MalformedState)
+        );
+        let mut unknown = good.clone();
+        unknown.extend_from_slice(&[0x30, 0x01]);
+        assert_eq!(
+            decode_temporary_lease(&unknown),
+            Err(TemporaryCredentialError::MalformedState)
+        );
+        let mut bad_deadline = good.clone();
+        let deadline_position = bad_deadline
+            .iter()
+            .position(|value| *value == 0x18)
+            .expect("field 3 tag");
+        bad_deadline[deadline_position + 1] ^= 0x01;
+        assert_eq!(
+            decode_temporary_lease(&bad_deadline),
+            Err(TemporaryCredentialError::MalformedState)
+        );
+        let mut nonminimal = good.clone();
+        nonminimal.splice(0..2, [0x08, 0x83, 0x00]);
+        assert_eq!(
+            decode_temporary_lease(&nonminimal),
+            Err(TemporaryCredentialError::NonCanonicalState)
         );
     }
 
