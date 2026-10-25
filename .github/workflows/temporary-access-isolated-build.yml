@@ -17,14 +17,13 @@ permissions:
   actions: read
   pull-requests: read
 
-concurrency:
-  group: temporary-isolated-fixture-${{ github.event.pull_request.number }}
-  # A newer PR event must not kill on-device cleanup/final integrity checks.
-  cancel-in-progress: false
-
 jobs:
   fixture:
     name: Build isolated on-device test APKs (NO install)
+    # Supersede outdated hosted builds, never the separately locked physical cleanup job.
+    concurrency:
+      group: temporary-isolated-hosted-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     if: >-
       ${{ github.event.pull_request.number == 464 &&
           github.event.pull_request.head.repo.full_name == github.repository &&
