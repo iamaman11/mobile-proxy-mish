@@ -40,6 +40,31 @@ class TemporaryProxyAccessDialogInstrumentedTest {
         compose.onNodeWithText("test-not-production").assertDoesNotExist()
     }
 
+    @Test fun weakPasswordRequiresExplicitConsentAndInputChangeInvalidatesConsent() {
+        var accepted = false
+        compose.setContent {
+            MishTheme {
+                TemporaryProxyAccessDialog(
+                    hasBeenIssued = false,
+                    action = TemporaryAccessActionUi.IDLE,
+                    onIssue = { _, _ -> accepted = true },
+                    onRevoke = {},
+                    onDismiss = {},
+                )
+            }
+        }
+        compose.onNodeWithTag("temporary-username").performTextInput("sample-user")
+        compose.onNodeWithTag("temporary-password").performTextInput("short7")
+        compose.onNodeWithText("Enable for 24h").assertIsNotEnabled()
+        compose.onNodeWithTag("temporary-weak-ack").performClick()
+        compose.onNodeWithText("Enable for 24h").assertIsEnabled()
+        compose.onNodeWithTag("temporary-password").performTextInput("8")
+        compose.onNodeWithText("Enable for 24h").assertIsNotEnabled()
+        compose.onNodeWithTag("temporary-weak-ack").performClick()
+        compose.onNodeWithText("Enable for 24h").performClick()
+        assertEquals(true, accepted)
+    }
+
     @Test fun existingGrantCannotBeReissuedAndHasSeparateRevokeButton() {
         var revokeCalls = 0
         compose.setContent {

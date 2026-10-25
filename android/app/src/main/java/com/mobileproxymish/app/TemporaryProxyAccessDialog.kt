@@ -2,7 +2,9 @@ package com.mobileproxymish.app
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -35,6 +37,10 @@ internal fun TemporaryProxyAccessDialog(
 ) {
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var acknowledgedWeakPassword by remember { mutableStateOf(false) }
+    val weakPassword = password.isNotBlank() &&
+        (password.length < 12 ||
+            (username.isNotBlank() && password.contains(username, ignoreCase = true)))
     val busy = action == TemporaryAccessActionUi.BUSY
     AlertDialog(
         onDismissRequest = {
@@ -58,7 +64,7 @@ internal fun TemporaryProxyAccessDialog(
                     OutlinedTextField(
                         value = username,
                         modifier = Modifier.testTag("temporary-username"),
-                        onValueChange = { username = it },
+                        onValueChange = { username = it; acknowledgedWeakPassword = false },
                         label = { Text("Temporary username") },
                         enabled = !busy,
                         singleLine = true,
@@ -66,13 +72,33 @@ internal fun TemporaryProxyAccessDialog(
                     OutlinedTextField(
                         value = password,
                         modifier = Modifier.testTag("temporary-password"),
-                        onValueChange = { password = it },
+                        onValueChange = { password = it; acknowledgedWeakPassword = false },
                         label = { Text("Temporary password") },
                         enabled = !busy,
                         singleLine = true,
                         visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                     )
+                    if (weakPassword) {
+                        Text(
+                            "Warning: this password is easy to guess. Prefer at least 12 " +
+                                "unrelated characters. If you keep it, explicitly accept the risk.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                        Row {
+                            Checkbox(
+                                checked = acknowledgedWeakPassword,
+                                onCheckedChange = { acknowledgedWeakPassword = it },
+                                modifier = Modifier.testTag("temporary-weak-ack"),
+                                enabled = !busy,
+                            )
+                            Text(
+                                "I understand the risk and want to use this password.",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
                 }
                 when (action) {
                     TemporaryAccessActionUi.BUSY -> Text("Updating protected local record…")
@@ -95,7 +121,8 @@ internal fun TemporaryProxyAccessDialog(
                         password = ""
                         onIssue(user, secret)
                     },
-                    enabled = !busy && username.isNotBlank() && password.isNotBlank(),
+                    enabled = !busy && username.isNotBlank() && password.isNotBlank() &&
+                        (!weakPassword || acknowledgedWeakPassword),
                 ) {
                     Text("Enable for 24h")
                 }
