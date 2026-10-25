@@ -204,7 +204,10 @@ mod tests {
         let temporary = TemporaryCredentialLease::activate(7, Some(AT)).expect("activate");
         let (temporary, admitted) = temporary.observe(Some(AT + 1));
         assert!(admitted);
-        assert_eq!(temporary.revoke().status(), TemporaryCredentialStatus::Revoked);
+        assert_eq!(
+            temporary.revoke().status(),
+            TemporaryCredentialStatus::Revoked
+        );
 
         assert_eq!(primary, ExternalCredentialState::initial());
         assert_eq!(
