@@ -218,7 +218,10 @@ impl ProxyRuntimeCoordinator {
         {
             return false;
         }
-        state.temporary = Some(TemporaryCredentialSnapshot { material, available });
+        state.temporary = Some(TemporaryCredentialSnapshot {
+            material,
+            available,
+        });
         true
     }
 

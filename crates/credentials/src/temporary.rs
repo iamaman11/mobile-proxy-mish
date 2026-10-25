@@ -316,23 +316,39 @@ pub fn decode_temporary_record(
             .map_err(|_| TemporaryCredentialError::MalformedState)?;
         match (tag.field_number, tag.wire_type) {
             (1, WIRE_VARINT) if schema.is_none() => {
-                schema = Some(reader.read_varint().map_err(|_| TemporaryCredentialError::MalformedState)?);
+                schema = Some(
+                    reader
+                        .read_varint()
+                        .map_err(|_| TemporaryCredentialError::MalformedState)?,
+                );
             }
             (2, WIRE_LENGTH_DELIMITED) if lease.is_none() => {
                 lease = Some(decode_temporary_lease(
-                    reader.read_bytes().map_err(|_| TemporaryCredentialError::MalformedState)?,
+                    reader
+                        .read_bytes()
+                        .map_err(|_| TemporaryCredentialError::MalformedState)?,
                 )?);
             }
             (3, WIRE_LENGTH_DELIMITED) if username.is_none() => {
                 username = Some(
-                    std::str::from_utf8(reader.read_bytes().map_err(|_| TemporaryCredentialError::MalformedState)?)
-                        .map_err(|_| TemporaryCredentialError::InvalidCredentialMaterial)?.to_owned()
+                    std::str::from_utf8(
+                        reader
+                            .read_bytes()
+                            .map_err(|_| TemporaryCredentialError::MalformedState)?,
+                    )
+                    .map_err(|_| TemporaryCredentialError::InvalidCredentialMaterial)?
+                    .to_owned(),
                 );
             }
             (4, WIRE_LENGTH_DELIMITED) if password.is_none() => {
                 password = Some(
-                    std::str::from_utf8(reader.read_bytes().map_err(|_| TemporaryCredentialError::MalformedState)?)
-                        .map_err(|_| TemporaryCredentialError::InvalidCredentialMaterial)?.to_owned()
+                    std::str::from_utf8(
+                        reader
+                            .read_bytes()
+                            .map_err(|_| TemporaryCredentialError::MalformedState)?,
+                    )
+                    .map_err(|_| TemporaryCredentialError::InvalidCredentialMaterial)?
+                    .to_owned(),
                 );
             }
             _ => return Err(TemporaryCredentialError::MalformedState),
@@ -345,13 +361,20 @@ pub fn decode_temporary_record(
     let username = username.ok_or(TemporaryCredentialError::MalformedState)?;
     let password = password.ok_or(TemporaryCredentialError::MalformedState)?;
     // Validate secret shape without ever renewing/restoring the deadline through issue().
-    if username.trim().is_empty() || password.trim().is_empty()
-        || username.len() > 255 || password.len() > 255
-        || username.as_bytes().contains(&0) || password.as_bytes().contains(&0)
+    if username.trim().is_empty()
+        || password.trim().is_empty()
+        || username.len() > 255
+        || password.len() > 255
+        || username.as_bytes().contains(&0)
+        || password.as_bytes().contains(&0)
     {
         return Err(TemporaryCredentialError::InvalidCredentialMaterial);
     }
-    let record = TemporaryCredentialRecord { lease, username, password };
+    let record = TemporaryCredentialRecord {
+        lease,
+        username,
+        password,
+    };
     if encode_temporary_record(&record) != bytes {
         return Err(TemporaryCredentialError::NonCanonicalState);
     }
@@ -520,7 +543,10 @@ mod tests {
         assert!(!format!("{restored:?}").contains("caseSensitiveGuest"));
         let (after_restart, admitted) = restored.observe(Some(AT + 86_400));
         assert!(!admitted);
-        assert_eq!(after_restart.lease().status(), TemporaryCredentialStatus::Expired);
+        assert_eq!(
+            after_restart.lease().status(),
+            TemporaryCredentialStatus::Expired
+        );
         assert_eq!(after_restart.password(), "a-local-secret");
     }
 
@@ -534,13 +560,9 @@ mod tests {
             TemporaryCredentialRecord::issue(1, Some(AT), "guest".into(), "x".repeat(256)),
             Err(TemporaryCredentialError::InvalidCredentialMaterial)
         );
-        let material = TemporaryCredentialRecord::issue(
-            2,
-            Some(AT),
-            "guest".into(),
-            "secret".into(),
-        )
-        .expect("issue");
+        let material =
+            TemporaryCredentialRecord::issue(2, Some(AT), "guest".into(), "secret".into())
+                .expect("issue");
         let mut bytes = encode_temporary_record(&material);
         bytes.extend_from_slice(&[0x08, 0x01]);
         assert_eq!(

@@ -3,10 +3,10 @@ use mish_credentials::{
     ExternalCredentialPersistenceAction as OwnerPersistenceAction,
     ExternalCredentialPurpose as OwnerCredentialPurpose,
     ExternalCredentialState as OwnerCredentialState,
-    ExternalCredentialStatus as OwnerCredentialStatus, encode_provisioning_envelope, encode_state,
-    resolve_persistence, TemporaryCredentialError as OwnerTemporaryError,
+    ExternalCredentialStatus as OwnerCredentialStatus,
+    TemporaryCredentialError as OwnerTemporaryError,
     TemporaryCredentialRecord as OwnerTemporaryRecord, decode_temporary_record,
-    encode_temporary_record,
+    encode_provisioning_envelope, encode_state, encode_temporary_record, resolve_persistence,
 };
 use std::fmt;
 
@@ -210,13 +210,8 @@ pub fn external_temporary_credential_issue(
     username: String,
     password: String,
 ) -> Result<Vec<u8>, ExternalCredentialBoundaryError> {
-    let record = OwnerTemporaryRecord::issue(
-        generation,
-        trusted_unix_seconds,
-        username,
-        password,
-    )
-    .map_err(map_temporary_error)?;
+    let record = OwnerTemporaryRecord::issue(generation, trusted_unix_seconds, username, password)
+        .map_err(map_temporary_error)?;
     Ok(encode_temporary_record(&record))
 }
 
@@ -310,11 +305,8 @@ mod tests {
             "example-password".into(),
         )
         .expect("owner issue");
-        let current = external_temporary_credential_observe(
-            encoded,
-            Some(1_800_000_010),
-        )
-        .expect("owner observe");
+        let current = external_temporary_credential_observe(encoded, Some(1_800_000_010))
+            .expect("owner observe");
         assert!(current.admitted);
         assert_eq!(current.username, "example-secondary");
         assert_eq!(current.password, "example-password");
@@ -322,11 +314,8 @@ mod tests {
         assert!(!format!("{current:?}").contains("example-password"));
         assert!(!format!("{current:?}").contains("example-secondary"));
         let revoked = external_temporary_credential_revoke(current.next_state).expect("revoke");
-        let after = external_temporary_credential_observe(
-            revoked,
-            Some(1_800_000_020),
-        )
-        .expect("observe revoked");
+        let after = external_temporary_credential_observe(revoked, Some(1_800_000_020))
+            .expect("observe revoked");
         assert!(!after.admitted);
     }
 
