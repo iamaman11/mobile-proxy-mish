@@ -119,13 +119,6 @@ internal class TemporaryProxyCredentialStore(context: Context) {
         false
     }
 
-    /** If the issuance transaction failed, destroy the isolated secondary key, never primary. */
-    @Synchronized
-    fun invalidateUncommittedIssue(): Boolean = runCatching {
-        if (keystore().containsAlias(KEY_ALIAS)) keystore().deleteEntry(KEY_ALIAS)
-        preferences.edit().remove(KEY_ENCRYPTED_RECORD).commit()
-    }.getOrDefault(false)
-
     private fun bootCount(): Int? = runCatching {
         Settings.Global.getInt(resolver, Settings.Global.BOOT_COUNT)
     }.getOrNull()
