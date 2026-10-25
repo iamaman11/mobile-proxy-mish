@@ -43,12 +43,35 @@ if (-not (Test-Path -LiteralPath $AdbPath -PathType Leaf)) {
     throw 'TEMP_ISOLATED|ADB_MISSING'
 }
 function Run-Adb {
-    param([Parameter(Mandatory)][string[]]$Arguments)
-    $lines = @(& $AdbPath @Arguments 2>&1)
-    if ($LASTEXITCODE -ne 0) {
-        throw "TEMP_ISOLATED|ADB_FAILED|$($Arguments[0])"
+    param(
+        [Parameter(Mandatory)][string[]]$Arguments,
+        [ValidateRange(1, 300)][int]$TimeoutSeconds = 45
+    )
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $AdbPath
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    foreach ($argument in $Arguments) { [void]$start.ArgumentList.Add($argument) }
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $start
+    try {
+        if (-not $process.Start()) { throw 'TEMP_ISOLATED|ADB_START_FAILED' }
+        $outTask = $process.StandardOutput.ReadToEndAsync()
+        $errTask = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            try { $process.Kill($true) } catch { }
+            throw "TEMP_ISOLATED|ADB_TIMEOUT|$($Arguments[0])"
+        }
+        $stdout = $outTask.GetAwaiter().GetResult()
+        [void]$errTask.GetAwaiter().GetResult()
+        if ($process.ExitCode -ne 0) {
+            throw "TEMP_ISOLATED|ADB_FAILED|$($Arguments[0])"
+        }
+        return @($stdout -split '\r?\n' | Where-Object { $_.Trim() -ne '' })
     }
-    return $lines
+    finally { $process.Dispose() }
 }
 $devices = @(Run-Adb @('devices') | Where-Object { $_ -match '^\S+\s+device\s*$' })
 if ($devices.Count -ne 1) { throw 'TEMP_ISOLATED|DEVICE_IDENTITY_MISMATCH' }
@@ -72,7 +95,7 @@ function Read-Stable-Hash {
     if (-not $path) { throw 'TEMP_ISOLATED|PRIMARY_PRODUCT_MISSING' }
     $tmp = Join-Path $env:RUNNER_TEMP 'mish-stable-installed-base.apk'
     try {
-        [void](Run-Adb @('pull', $path, $tmp))
+        [void](Run-Adb -Arguments @('pull', $path, $tmp) -TimeoutSeconds 90)
         return (Get-FileHash -Algorithm SHA256 -LiteralPath $tmp).Hash.ToLowerInvariant()
     }
     finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
@@ -101,10 +124,10 @@ $testPassed = $false
 $operationError = $null
 try {
     $touchApp = $true
-    $appResult = @(Run-Adb @('install','-t',$app))
+    $appResult = @(Run-Adb -Arguments @('install','-t',$app) -TimeoutSeconds 90)
     if (-not (($appResult -join ' ') -match 'Success')) { throw 'TEMP_ISOLATED|APP_INSTALL_NOT_SUCCESS' }
     $touchTest = $true
-    $testResult = @(Run-Adb @('install','-t',$test))
+    $testResult = @(Run-Adb -Arguments @('install','-t',$test) -TimeoutSeconds 90)
     if (-not (($testResult -join ' ') -match 'Success')) { throw 'TEMP_ISOLATED|TEST_INSTALL_NOT_SUCCESS' }
     if (-not (Installed-Path $isolated) -or -not (Installed-Path $testPackage)) {
         throw 'TEMP_ISOLATED|INSTALLED_TEST_UID_MISSING'
@@ -115,7 +138,7 @@ try {
         'com.mobileproxymish.app.TemporaryProxyCredentialDurabilityInstrumentedTest',
         'com.mobileproxymish.app.TemporaryProxyAccessDialogInstrumentedTest'
     ) -join ','
-    $output = @(Run-Adb @('shell','am','instrument','-w','-r','-e','class',$classes,$runner))
+    $output = @(Run-Adb -Arguments @('shell','am','instrument','-w','-r','-e','class',$classes,$runner) -TimeoutSeconds 240)
     $joined = $output -join [Environment]::NewLine
     if ($joined -notmatch 'INSTRUMENTATION_CODE:\s*-1' -or
         $joined -notmatch 'OK \([1-9][0-9]* tests?\)' -or
@@ -127,11 +150,11 @@ try {
 catch { $operationError = $_.Exception.Message }
 finally {
     if ($touchTest) {
-        try { [void](Run-Adb @('uninstall', $testPackage)) }
+        try { [void](Run-Adb -Arguments @('uninstall', $testPackage) -TimeoutSeconds 90) }
         catch { if (-not $operationError) { $operationError = 'TEMP_ISOLATED|TEST_CLEANUP_FAILED' } }
     }
     if ($touchApp) {
-        try { [void](Run-Adb @('uninstall', $isolated)) }
+        try { [void](Run-Adb -Arguments @('uninstall', $isolated) -TimeoutSeconds 90) }
         catch { if (-not $operationError) { $operationError = 'TEMP_ISOLATED|APP_CLEANUP_FAILED' } }
     }
     if ((Installed-Path $isolated) -or (Installed-Path $testPackage)) {
