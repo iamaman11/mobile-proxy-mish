@@ -526,6 +526,14 @@ pub trait NativeCellularPolicyObserver: Send + Sync {
     fn on_cellular_policy_publication(&self, publication: CellularPolicyPublicationView);
 }
 
+/// The only platform effect consulted for a matching optional secondary proxy principal.
+    /// Kotlin implements this with a fresh Keystore-backed Rust Credentials lease observation
+    /// and an atomic durable checkpoint. Callback failure/panic denies secondary only.
+#[uniffi::export(foreign)]
+pub trait NativeTemporaryCredentialAvailability: Send + Sync {
+    fn temporary_available_now(&self) -> bool;
+}
+
 #[uniffi::export(foreign)]
 pub trait NativeControlAuthSigner: Send + Sync {
     /// Returns Android Keystore SHA256withECDSA DER bytes. Empty means signing failed closed.
@@ -600,6 +608,32 @@ impl NativeProductRuntime {
         self.runtime
             .request_start(credential_version, username, password)
             .map(|_| ())
+            .map_err(Into::into)
+    }
+
+    /// One optional secondary in the same native PRODUCT runtime and existing listeners.
+    /// Never materializes or rotates the primary credential. No caller-secret logging.
+    pub fn install_temporary_proxy_credential(
+        &self,
+        username: String,
+        password: String,
+        check: Arc<dyn NativeTemporaryCredentialAvailability>,
+    ) -> Result<(), NativeProductRuntimeError> {
+        let available: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                check.temporary_available_now()
+            }))
+            .unwrap_or(false)
+        });
+        self.runtime
+            .install_temporary_proxy_credential(username, password, available)
+            .map_err(Into::into)
+    }
+
+    /// Revokes only the optional secondary principal, without touching primary or listeners.
+    pub fn clear_temporary_proxy_credential(&self) -> Result<(), NativeProductRuntimeError> {
+        self.runtime
+            .clear_temporary_proxy_credential()
             .map_err(Into::into)
     }
 
