@@ -27,6 +27,8 @@ const ACCEPT_POLL_TIMEOUT: Duration = Duration::from_millis(200);
 const SESSION_SETUP_TIMEOUT: Duration = Duration::from_secs(15);
 /// The maximum interval before a revoked or expired secondary relay is closed.
 const TEMPORARY_RELAY_RECHECK: Duration = Duration::from_secs(1);
+/// A stuck Android Keystore/FFI check may not pin a Tokio reactor or retain an expired relay.
+const TEMPORARY_RELAY_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
 const START_TIMEOUT: Duration = Duration::from_secs(2);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -581,12 +583,20 @@ impl ProxyAuthenticator for SessionPrincipalRecorder<'_> {
 
 /// Monotonic recheck cadence bounds a temporary grant's relay lifetime even while the TCP stream
 /// is idle. A replacement/revoke gate or Credentials-owner expiry terminates only this relay.
-async fn wait_for_temporary_revocation(verifier: &dyn ProxyAuthenticator) {
+async fn wait_for_temporary_revocation(verifier: Arc<dyn ProxyAuthenticator>) {
     let mut ticker = tokio::time::interval(TEMPORARY_RELAY_RECHECK);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
     loop {
         ticker.tick().await;
-        if !verifier.temporary_session_available() {
+        // Credential checks may use Android Keystore and durability barriers. Never perform
+        // platform blocking effects on a Tokio I/O worker, and fail closed if they stall.
+        let current = Arc::clone(&verifier);
+        let check = tokio::task::spawn_blocking(move || current.temporary_session_available());
+        let allowed = matches!(
+            timeout(TEMPORARY_RELAY_CHECK_TIMEOUT, check).await,
+            Ok(Ok(true))
+        );
+        if !allowed {
             return;
         }
     }
@@ -628,7 +638,7 @@ async fn serve_session(
     if principal == ProxyPrincipal::Temporary {
         tokio::select! {
             _ = copy_bidirectional(&mut client, &mut upstream) => {},
-            _ = wait_for_temporary_revocation(verifier.as_ref()) => {},
+            _ = wait_for_temporary_revocation(verifier) => {},
         }
     } else {
         // No secondary callback, generation gate or timer is consulted for primary sessions.
@@ -758,7 +768,7 @@ mod tests {
                 shared.load(Ordering::Acquire)
             })
             .expect("admission");
-        let wait = wait_for_temporary_revocation(&admission);
+        let wait = wait_for_temporary_revocation(Arc::new(admission.clone()));
         tokio::pin!(wait);
         assert!(
             tokio::time::timeout(Duration::from_millis(15), &mut wait)
