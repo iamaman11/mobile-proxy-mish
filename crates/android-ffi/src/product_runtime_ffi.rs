@@ -756,9 +756,7 @@ impl NativeProductRuntime {
                     .read()
                     .ok()
                     .and_then(|current| current.as_ref().cloned());
-                if let (Some(provider), Ok(generation)) =
-                    (provider, owner.active_generation())
-                {
+                if let (Some(provider), Ok(generation)) = (provider, owner.active_generation()) {
                     let expected_generation = generation.generation();
                     let expected_serving_generation = publication.serving_generation;
                     let check = Arc::clone(&provider);
