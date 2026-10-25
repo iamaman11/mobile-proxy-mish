@@ -727,6 +727,50 @@ mod tests {
     }
 
     #[test]
+    fn delayed_temporary_restore_rejects_stale_serving_generation_without_primary_mutation() {
+        let executor = RuntimeExecutor::new().expect("executor");
+        let cellular = CellularRuntimeCoordinator::new(Arc::new(EmptyResolver));
+        let mesh = MeshCompositionCoordinator::new().expect("mesh");
+        let readiness =
+            ReadinessRuntimeCoordinator::new(Arc::clone(&executor), Arc::clone(&mesh), 1)
+                .expect("readiness");
+        let proxy = ProxyRuntimeCoordinator::new(
+            Arc::clone(&executor),
+            cellular,
+            mesh,
+            readiness,
+            Duration::from_secs(1),
+        );
+        {
+            let mut state = proxy.state.lock().expect("state");
+            state.state = ProxyServingState::Running;
+            state.serving_generation = Some(9);
+            state.credential_version = Some(12);
+            state.credentials = Some(
+                ProxyCredentialMaterial::new("owner", "primary-only")
+                    .expect("primary"),
+            );
+        }
+        assert!(!proxy.restore_temporary_credential_for_serving_generation(
+            8,
+            "guest".into(),
+            "synthetic-secret".into(),
+            Arc::new(|| true),
+        ));
+        let state = proxy.state.lock().expect("state");
+        assert!(state.temporary.is_none());
+        assert_eq!(state.serving_generation, Some(9));
+        assert_eq!(state.credential_version, Some(12));
+        assert_eq!(
+            state.credentials.as_ref().expect("primary").username(),
+            "owner"
+        );
+        drop(state);
+        let _ = proxy.shutdown();
+        executor.shutdown().expect("shutdown");
+    }
+
+    #[test]
     fn zero_credential_version_fails_before_network_effect() {
         let executor = RuntimeExecutor::new().expect("executor");
         let cellular = CellularRuntimeCoordinator::new(Arc::new(EmptyResolver));
