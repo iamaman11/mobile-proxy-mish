@@ -40,7 +40,13 @@ class TemporaryProxyCredentialDurabilityInstrumentedTest {
             assertEquals(first.password, resumed.password)
 
             assertTrue(restored.revoke())
+            val terminalCiphertext = preferences.getString("encrypted-owner-record-v1", null)
+            assertNotNull(terminalCiphertext)
             assertNull(restored.currentForRuntime())
+            assertNull(restored.currentForRuntime())
+            // Repeated negative checks must not rewrite a durable terminal record.
+            assertEquals(terminalCiphertext,
+                preferences.getString("encrypted-owner-record-v1", null))
             assertFalse(restored.issueOnce("replacement", "replacement-secret"))
             assertNull(TemporaryProxyCredentialStore(
                 context, preferencesName, keyAlias
@@ -85,4 +91,32 @@ class TemporaryProxyCredentialDurabilityInstrumentedTest {
         }
     }
 
+
+    @Test
+    fun corruptProtectedSecondaryFailsClosedAndCannotBeReissued() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val suffix = System.nanoTime().toString()
+        val prefsName = "temporary-proxy-corrupt-$suffix"
+        val alias = "mish-temporary-corrupt-$suffix"
+        val preferences = context.getSharedPreferences(prefsName, 0)
+        val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        try {
+            assertTrue(preferences.edit().clear().commit())
+            val store = TemporaryProxyCredentialStore(context, prefsName, alias)
+            assertTrue(store.issueOnce("synthetic-corrupt", "synthetic-secret"))
+            assertNotNull(store.currentForRuntime())
+            assertTrue(keyStore.containsAlias(alias))
+            // Simulate tampered preferences in a disposable test-only record.
+            assertTrue(preferences.edit()
+                .putString("encrypted-owner-record-v1", "invalid-ciphertext")
+                .commit())
+            assertNull(store.currentForRuntime())
+            assertFalse(keyStore.containsAlias(alias))
+            assertFalse(store.issueOnce("second", "second-secret"))
+            assertNull(TemporaryProxyCredentialStore(context, prefsName, alias).currentForRuntime())
+        } finally {
+            preferences.edit().clear().commit()
+            runCatching { keyStore.deleteEntry(alias) }
+        }
+    }
 }
