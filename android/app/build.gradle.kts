@@ -152,7 +152,9 @@ android {
     testBuildType = if (releaseSigningRequested) "release" else "debug"
 
     defaultConfig {
-        applicationId = "com.mobileproxymish.app"
+        applicationId =
+            if (isolatedInstrumentation) "com.mobileproxymish.app.isolated"
+            else "com.mobileproxymish.app"
         minSdk = androidMinSdk
         targetSdk = 36
         versionCode = releaseVersionCode ?: 1
@@ -184,8 +186,7 @@ android {
             // Diagnostic/development bytes must never be package-compatible with the production
             // appliance. This keeps the release UID and its device/root authorization boundary
             // stable across local debug installs.
-            applicationIdSuffix =
-                if (isolatedInstrumentation) ".isolated.debug" else ".debug"
+            applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
         }
         getByName("release") {
