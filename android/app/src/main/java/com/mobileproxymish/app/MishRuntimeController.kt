@@ -9,7 +9,6 @@ import com.mobileproxymish.ffi.MeshAdmissionView
 import com.mobileproxymish.ffi.NativeControlAuthSigner
 import com.mobileproxymish.ffi.NativeMeshRuntimeObserver
 import com.mobileproxymish.ffi.NativeProductRuntime
-import com.mobileproxymish.ffi.NativeTemporaryCredentialAvailability
 import com.mobileproxymish.ffi.ProductDiagnosticSnapshotView
 import com.mobileproxymish.ffi.NativeReadinessObserver
 import com.mobileproxymish.ffi.NativeRotationObserver
@@ -17,11 +16,6 @@ import com.mobileproxymish.ffi.ProductReadinessState
 import com.mobileproxymish.ffi.ProxyListenerView
 import com.mobileproxymish.ffi.RotationSnapshotView
 import com.mobileproxymish.ffi.RuntimeLifecycleState
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -38,8 +32,6 @@ class MishRuntimeController internal constructor(
 ) {
     private val appContext = context
     private val externalCredentialStore = ExternalProxyCredentialStore(appContext)
-    private val temporaryCredentialStore = TemporaryProxyCredentialStore(appContext)
-    private val temporaryReconcileScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val platformEffectsLock = Any()
     private val debugIsolation = appContext.packageName.endsWith(".debug") &&
         (appContext.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
@@ -49,15 +41,7 @@ class MishRuntimeController internal constructor(
         debugIsolation,
     )
     private val cellularRuntime = CellularRuntimeBridge(appContext, productRuntime)
-    private val temporaryCredentialAvailability = object : NativeTemporaryCredentialAvailability {
-        override fun temporaryAvailableNow(): Boolean =
-            runCatching { temporaryCredentialStore.temporaryAvailableNow() }.getOrDefault(false)
-    }
-    private val proxyRuntime = ProxyRuntimeSupervisor(productRuntime) {
-        // A native callback must never synchronously reenter the Rust runtime or Android Keystore.
-        // This is a bounded reaction to the native RUNNING publication, not a retry owner.
-        temporaryReconcileScope.launch { restoreExistingTemporaryCredentialBestEffort() }
-    }
+    private val proxyRuntime = ProxyRuntimeSupervisor(productRuntime)
     private val meshRuntime = MeshIngressRuntimeBridge(appContext, productRuntime)
     private val controlIdentity = AndroidControlIdentity()
     private val controlAuthSigner = object : NativeControlAuthSigner {
@@ -177,24 +161,6 @@ class MishRuntimeController internal constructor(
         }
     }
 
-    /** Optional grant restoration after a native restart or bounded Proxy recovery.
-     * The sole encrypted Rust Credentials record decides availability; no local timestamp,
-     * retry loop, new listener or replacement primary credential is introduced here.
-     * No issuance path is exported until the trusted-clock and operator gates are accepted.
-     */
-    private fun restoreExistingTemporaryCredentialBestEffort() {
-        synchronized(platformEffectsLock) {
-            val record = temporaryCredentialStore.currentForRuntime() ?: return
-            runCatching {
-                productRuntime.installTemporaryProxyCredential(
-                    username = record.username,
-                    password = record.password,
-                    check = temporaryCredentialAvailability,
-                )
-            }
-        }
-    }
-
     private fun startRemoteControlBestEffort() {
         val spki = runCatching { controlIdentity.publicKeySpki() }.getOrNull() ?: return
         val deviceId = runCatching {
@@ -236,7 +202,6 @@ class MishRuntimeController internal constructor(
 
     /** Final process cleanup seam retained for instrumentation; Service stop uses stop(), not this. */
     internal fun shutdownProcessExact(): Boolean = synchronized(platformEffectsLock) {
-        temporaryReconcileScope.cancel()
         var clean = true
         if (runCatching(meshRuntime::close).isFailure) clean = false
         if (runCatching(cellularRuntime::close).isFailure) clean = false
