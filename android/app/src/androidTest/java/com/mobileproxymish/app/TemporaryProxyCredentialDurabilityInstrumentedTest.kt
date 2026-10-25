@@ -50,4 +50,39 @@ class TemporaryProxyCredentialDurabilityInstrumentedTest {
             runCatching { keyStore.deleteEntry(keyAlias) }
         }
     }
+
+    @Test
+    fun independentTestAliasesRemainIsolatedAcrossReconstructionAndRevoke() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val suffix = System.nanoTime().toString()
+        val prefsA = "temporary-proxy-alias-a-$suffix"
+        val prefsB = "temporary-proxy-alias-b-$suffix"
+        val aliasA = "mish-temporary-alias-a-$suffix"
+        val aliasB = "mish-temporary-alias-b-$suffix"
+        val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        try {
+            assertTrue(context.getSharedPreferences(prefsA, 0).edit().clear().commit())
+            assertTrue(context.getSharedPreferences(prefsB, 0).edit().clear().commit())
+            val first = TemporaryProxyCredentialStore(context, prefsA, aliasA)
+            val second = TemporaryProxyCredentialStore(context, prefsB, aliasB)
+            assertTrue(first.issueOnce("synthetic-alias-a", "synthetic-password-a"))
+            assertTrue(second.issueOnce("synthetic-alias-b", "synthetic-password-b"))
+
+            assertEquals("synthetic-alias-a",
+                TemporaryProxyCredentialStore(context, prefsA, aliasA).currentForRuntime()?.username)
+            assertEquals("synthetic-alias-b",
+                TemporaryProxyCredentialStore(context, prefsB, aliasB).currentForRuntime()?.username)
+
+            assertTrue(first.revoke())
+            assertNull(TemporaryProxyCredentialStore(context, prefsA, aliasA).currentForRuntime())
+            assertEquals("synthetic-alias-b",
+                TemporaryProxyCredentialStore(context, prefsB, aliasB).currentForRuntime()?.username)
+        } finally {
+            context.getSharedPreferences(prefsA, 0).edit().clear().commit()
+            context.getSharedPreferences(prefsB, 0).edit().clear().commit()
+            runCatching { keyStore.deleteEntry(aliasA) }
+            runCatching { keyStore.deleteEntry(aliasB) }
+        }
+    }
+
 }
