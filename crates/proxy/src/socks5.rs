@@ -16,7 +16,6 @@ const UDP_ASSOCIATE_COMMAND: u8 = 0x03;
 const IPV4_ADDRESS_TYPE: u8 = 0x01;
 const DOMAIN_ADDRESS_TYPE: u8 = 0x03;
 const IPV6_ADDRESS_TYPE: u8 = 0x04;
-const MAX_AUTH_FIELD_LEN: usize = u8::MAX as usize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Socks5Reply {
