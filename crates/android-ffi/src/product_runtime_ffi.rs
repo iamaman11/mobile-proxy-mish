@@ -527,8 +527,8 @@ pub trait NativeCellularPolicyObserver: Send + Sync {
 }
 
 /// The only platform effect consulted for a matching optional secondary proxy principal.
-    /// Kotlin implements this with a fresh Keystore-backed Rust Credentials lease observation
-    /// and an atomic durable checkpoint. Callback failure/panic denies secondary only.
+/// Kotlin implements this with a fresh Keystore-backed Rust Credentials lease observation
+/// and an atomic durable checkpoint. Callback failure/panic denies secondary only.
 #[uniffi::export(foreign)]
 pub trait NativeTemporaryCredentialAvailability: Send + Sync {
     fn temporary_available_now(&self) -> bool;
