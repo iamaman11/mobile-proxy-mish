@@ -24,6 +24,7 @@
 
         <service
             android:name=".ProxyRuntimeService"
+            android:enabled="${mishAutomaticRuntimeEnabled}"
             android:exported="false"
             android:foregroundServiceType="specialUse"
             android:stopWithTask="false">
@@ -64,7 +65,7 @@
 
         <receiver
             android:name=".ProxyRuntimeStartReceiver"
-            android:enabled="true"
+            android:enabled="${mishAutomaticRuntimeEnabled}"
             android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
