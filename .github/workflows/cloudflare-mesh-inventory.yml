@@ -1,6 +1,11 @@
 name: Cloudflare Mesh Route Inventory
 
 on:
+  pull_request:
+    paths:
+      - '.github/workflows/cloudflare-mesh-inventory.yml'
+      - 'lab/cloudflare/mesh_inventory.py'
+      - 'lab/cloudflare/test_mesh_inventory.py'
   issue_comment:
     types: [created]
 
@@ -12,9 +17,23 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  offline-tests:
+    name: Offline inventory contract tests
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate schema, fail-closed pagination, redaction
+        run: python3 -m unittest discover -s lab/cloudflare -p 'test_mesh_inventory.py' -v
+
   inspect:
     name: Read-only Mesh route and profile inventory
     if: >-
+      github.event_name == 'issue_comment' &&
       github.event.issue.number == 163 &&
       github.event.comment.user.login == 'iamaman11' &&
       github.event.comment.body == '/mish-diag mesh-inventory'
