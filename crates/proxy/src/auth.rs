@@ -6,11 +6,35 @@ use crate::{ProxyCredentialMaterial, ProxyPolicyError};
 use std::fmt;
 use std::sync::Arc;
 
+/// Identity is private to the authenticated relay. It never changes the original primary grant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProxyPrincipal {
+    Primary,
+    Temporary,
+}
+
 /// Proxy-owned wire authentication policy. Called once for every newly admitted connection.
 /// Implemented directly by the existing primary material to preserve the shipping path.
 pub trait ProxyAuthenticator: Send + Sync {
     fn matches_http_basic(&self, supplied: &str) -> bool;
     fn matches_username_password(&self, username: &[u8], password: &[u8]) -> bool;
+
+    /// Default is legacy primary-only; dual-auth policy overrides it without changing the wire
+    /// protocol parser. A runtime session-local adapter records the result once per handshake.
+    fn classify_http_basic(&self, supplied: &str) -> Option<ProxyPrincipal> {
+        self.matches_http_basic(supplied).then_some(ProxyPrincipal::Primary)
+    }
+
+    fn classify_username_password(&self, username: &[u8], password: &[u8]) -> Option<ProxyPrincipal> {
+        self.matches_username_password(username, password)
+            .then_some(ProxyPrincipal::Primary)
+    }
+
+    /// Per-relay liveness decision called only for authenticated temporary sessions.
+    fn temporary_session_available(&self) -> bool {
+        false
+    }
+
     fn socks_compatible(&self) -> bool;
 }
 
@@ -103,6 +127,45 @@ impl ProxyAuthenticator for ProxyCredentialAdmission {
                 .as_ref()
                 .is_some_and(|available| available());
         primary_ok | temporary_ok
+    }
+
+
+    fn classify_http_basic(&self, supplied: &str) -> Option<ProxyPrincipal> {
+        if self.primary.matches_http_basic(supplied) {
+            return Some(ProxyPrincipal::Primary);
+        }
+        let secondary_matches = self
+            .temporary
+            .as_ref()
+            .is_some_and(|temp| temp.matches_http_basic(supplied));
+        if secondary_matches && self.temporary_session_available() {
+            Some(ProxyPrincipal::Temporary)
+        } else {
+            None
+        }
+    }
+
+    fn classify_username_password(&self, username: &[u8], password: &[u8]) -> Option<ProxyPrincipal> {
+        if self.primary.matches_username_password(username, password) {
+            return Some(ProxyPrincipal::Primary);
+        }
+        let secondary_matches = self
+            .temporary
+            .as_ref()
+            .is_some_and(|temp| temp.matches_username_password(username, password));
+        if secondary_matches && self.temporary_session_available() {
+            Some(ProxyPrincipal::Temporary)
+        } else {
+            None
+        }
+    }
+
+    fn temporary_session_available(&self) -> bool {
+        self.temporary.is_some()
+            && self
+                .temporary_available
+                .as_ref()
+                .is_some_and(|available| available())
     }
 
     fn socks_compatible(&self) -> bool {
@@ -199,6 +262,44 @@ mod tests {
         request.extend_from_slice(b"example.invalid");
         request.extend_from_slice(&443_u16.to_be_bytes());
         request
+    }
+
+
+    #[test]
+    fn authenticated_principals_have_independent_liveness() {
+        let primary = pair("owner", "owner-secret");
+        let temporary = pair("guest", "guest-secret");
+        let active = Arc::new(AtomicBool::new(true));
+        let flag = Arc::clone(&active);
+        let admission = ProxyCredentialAdmission::with_temporary(
+            primary.clone(),
+            temporary.clone(),
+            move || flag.load(Ordering::SeqCst),
+        )
+        .expect("distinct principals");
+
+        assert_eq!(
+            admission.classify_http_basic(&primary.basic_authorization_value()),
+            Some(ProxyPrincipal::Primary)
+        );
+        assert_eq!(
+            admission.classify_http_basic(&temporary.basic_authorization_value()),
+            Some(ProxyPrincipal::Temporary)
+        );
+        assert_eq!(
+            admission.classify_username_password(b"guest", b"guest-secret"),
+            Some(ProxyPrincipal::Temporary)
+        );
+        active.store(false, Ordering::SeqCst);
+        assert!(!admission.temporary_session_available());
+        assert_eq!(
+            admission.classify_username_password(b"guest", b"guest-secret"),
+            None
+        );
+        assert_eq!(
+            admission.classify_username_password(b"owner", b"owner-secret"),
+            Some(ProxyPrincipal::Primary)
+        );
     }
 
     #[test]

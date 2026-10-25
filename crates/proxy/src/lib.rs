@@ -11,7 +11,7 @@ mod session;
 mod socks5;
 mod target;
 
-pub use auth::{ProxyAuthenticator, ProxyCredentialAdmission};
+pub use auth::{ProxyAuthenticator, ProxyCredentialAdmission, ProxyPrincipal};
 pub use http_connect::{HttpConnectError, parse_http_connect_request};
 pub use mixed::{
     HttpConnectStreamError, MixedConnectError, accept_http_connect_stream, accept_mixed_connect,
