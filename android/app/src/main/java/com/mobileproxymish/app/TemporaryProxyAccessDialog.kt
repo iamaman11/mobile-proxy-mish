@@ -15,6 +15,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.SecureFlagPolicy
@@ -55,6 +57,7 @@ internal fun TemporaryProxyAccessDialog(
                 } else {
                     OutlinedTextField(
                         value = username,
+                        modifier = Modifier.testTag("temporary-username"),
                         onValueChange = { username = it },
                         label = { Text("Temporary username") },
                         enabled = !busy,
@@ -62,6 +65,7 @@ internal fun TemporaryProxyAccessDialog(
                     )
                     OutlinedTextField(
                         value = password,
+                        modifier = Modifier.testTag("temporary-password"),
                         onValueChange = { password = it },
                         label = { Text("Temporary password") },
                         enabled = !busy,
