@@ -35,9 +35,13 @@ internal class TemporaryProxyCredentialSnapshot(
  * and each updated Rust decision is durably committed before it can authorize secondary access.
  * This never reads or modifies the primary credential preferences or primary Keystore alias.
  */
-internal class TemporaryProxyCredentialStore(context: Context) {
+internal class TemporaryProxyCredentialStore(
+    context: Context,
+    preferencesName: String = PREFERENCES_NAME,
+    private val keyAlias: String = KEY_ALIAS,
+) {
     private val resolver = context.contentResolver
-    private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+    private val preferences = context.getSharedPreferences(preferencesName, Context.MODE_PRIVATE)
 
     /** A one-time grant cannot be recreated after expiration or revocation. */
     @Synchronized
@@ -109,13 +113,13 @@ internal class TemporaryProxyCredentialStore(context: Context) {
             .putString(KEY_ENCRYPTED_RECORD, seal(encodeEnvelope(anchor, revoked)))
             .commit()
         if (!committed) {
-            runCatching { keystore().deleteEntry(KEY_ALIAS) }
+            runCatching { keystore().deleteEntry(keyAlias) }
         }
         committed
     }.getOrElse {
         // Any corruption, write or decryption failure must not leave a previously valid
         // secondary ciphertext restorable after a process restart.
-        runCatching { keystore().deleteEntry(KEY_ALIAS) }
+        runCatching { keystore().deleteEntry(keyAlias) }
         false
     }
 
@@ -171,7 +175,7 @@ internal class TemporaryProxyCredentialStore(context: Context) {
         require(Base64.encodeToString(packed, Base64.NO_WRAP) == encoded)
         require(packed.size > 1 + NONCE_LENGTH + 16)
         require(packed[0] == FORMAT_VERSION)
-        val key = keystore().getKey(KEY_ALIAS, null) as? SecretKey
+        val key = keystore().getKey(keyAlias, null) as? SecretKey
             ?: error("temporary proxy key unavailable")
         check(key.encoded == null)
         val iv = packed.copyOfRange(1, 1 + NONCE_LENGTH)
@@ -191,7 +195,7 @@ internal class TemporaryProxyCredentialStore(context: Context) {
         val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
         generator.init(
             KeyGenParameterSpec.Builder(
-                KEY_ALIAS,
+                keyAlias,
                 KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
             )
                 .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
