@@ -181,10 +181,18 @@ pub fn decode_temporary_lease(
                 .map_err(|_| TemporaryCredentialError::MalformedState)?,
         );
     }
-    let [Some(generation), Some(start), Some(end), Some(last), Some(status)] = fields else {
+    let [
+        Some(generation),
+        Some(start),
+        Some(end),
+        Some(last),
+        Some(status),
+    ] = fields
+    else {
         return Err(TemporaryCredentialError::MalformedState);
     };
-    if generation == 0 || start == 0
+    if generation == 0
+        || start == 0
         || start.checked_add(TEMPORARY_CREDENTIAL_TTL_SECONDS) != Some(end)
         || last < start
     {

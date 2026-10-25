@@ -681,11 +681,13 @@ mod tests {
         }
         assert!(!previously_cloned.matches_username_password(b"guest", b"guest-pass"));
         assert!(previously_cloned.matches_username_password(b"owner", b"owner-pass"));
-        assert!(shared
-            .read()
-            .expect("read")
-            .verifier
-            .matches_username_password(b"owner", b"owner-pass"));
+        assert!(
+            shared
+                .read()
+                .expect("read")
+                .verifier
+                .matches_username_password(b"owner", b"owner-pass")
+        );
     }
 
     #[test]
