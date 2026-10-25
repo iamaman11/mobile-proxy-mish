@@ -535,7 +535,6 @@ async fn accept_loop(
     while sessions.join_next().await.is_some() {}
 }
 
-
 const PRINCIPAL_UNSET: u8 = 0;
 const PRINCIPAL_PRIMARY: u8 = 1;
 const PRINCIPAL_TEMPORARY: u8 = 2;
@@ -608,7 +607,8 @@ async fn serve_session(
             let state = authorization.read().map_err(|_| ())?;
             Arc::clone(&state.verifier)
         };
-        let streams = prepare_blocking_session(protocol, client, verifier.as_ref(), connector.as_ref())?;
+        let streams =
+            prepare_blocking_session(protocol, client, verifier.as_ref(), connector.as_ref())?;
         Ok::<_, ()>((streams.0, streams.1, streams.2, verifier))
     })
     .await;
@@ -654,8 +654,7 @@ fn prepare_blocking_session(
         source: credentials,
         admitted: AtomicU8::new(PRINCIPAL_UNSET),
     };
-    let prepared =
-        prepare_proxy_session(protocol, client, &recorder, connector).map_err(|_| ())?;
+    let prepared = prepare_proxy_session(protocol, client, &recorder, connector).map_err(|_| ())?;
     let principal = recorder.principal().ok_or(())?;
     let (client, upstream) = prepared.into_streams();
     client.set_read_timeout(None).map_err(|_| ())?;
@@ -722,7 +721,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn relay_principal_recorder_is_per_session_and_does_not_leak_primary() {
         let primary = ProxyCredentialMaterial::new("owner", "owner-secret").expect("primary");
@@ -755,15 +753,18 @@ mod tests {
         let secondary = ProxyCredentialMaterial::new("guest", "guest-secret").expect("secondary");
         let gate = Arc::new(AtomicBool::new(true));
         let shared = Arc::clone(&gate);
-        let admission = ProxyCredentialAdmission::with_temporary(
-            primary.clone(),
-            secondary,
-            move || shared.load(Ordering::Acquire),
-        )
-        .expect("admission");
+        let admission =
+            ProxyCredentialAdmission::with_temporary(primary.clone(), secondary, move || {
+                shared.load(Ordering::Acquire)
+            })
+            .expect("admission");
         let wait = wait_for_temporary_revocation(&admission);
         tokio::pin!(wait);
-        assert!(tokio::time::timeout(Duration::from_millis(15), &mut wait).await.is_err());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(15), &mut wait)
+                .await
+                .is_err()
+        );
         gate.store(false, Ordering::Release);
         tokio::time::timeout(Duration::from_secs(2), &mut wait)
             .await

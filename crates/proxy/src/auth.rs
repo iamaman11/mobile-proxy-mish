@@ -22,10 +22,15 @@ pub trait ProxyAuthenticator: Send + Sync {
     /// Default is legacy primary-only; dual-auth policy overrides it without changing the wire
     /// protocol parser. A runtime session-local adapter records the result once per handshake.
     fn classify_http_basic(&self, supplied: &str) -> Option<ProxyPrincipal> {
-        self.matches_http_basic(supplied).then_some(ProxyPrincipal::Primary)
+        self.matches_http_basic(supplied)
+            .then_some(ProxyPrincipal::Primary)
     }
 
-    fn classify_username_password(&self, username: &[u8], password: &[u8]) -> Option<ProxyPrincipal> {
+    fn classify_username_password(
+        &self,
+        username: &[u8],
+        password: &[u8],
+    ) -> Option<ProxyPrincipal> {
         self.matches_username_password(username, password)
             .then_some(ProxyPrincipal::Primary)
     }
@@ -129,7 +134,6 @@ impl ProxyAuthenticator for ProxyCredentialAdmission {
         primary_ok | temporary_ok
     }
 
-
     fn classify_http_basic(&self, supplied: &str) -> Option<ProxyPrincipal> {
         if self.primary.matches_http_basic(supplied) {
             return Some(ProxyPrincipal::Primary);
@@ -145,7 +149,11 @@ impl ProxyAuthenticator for ProxyCredentialAdmission {
         }
     }
 
-    fn classify_username_password(&self, username: &[u8], password: &[u8]) -> Option<ProxyPrincipal> {
+    fn classify_username_password(
+        &self,
+        username: &[u8],
+        password: &[u8],
+    ) -> Option<ProxyPrincipal> {
         if self.primary.matches_username_password(username, password) {
             return Some(ProxyPrincipal::Primary);
         }
@@ -263,7 +271,6 @@ mod tests {
         request.extend_from_slice(&443_u16.to_be_bytes());
         request
     }
-
 
     #[test]
     fn authenticated_principals_have_independent_liveness() {
