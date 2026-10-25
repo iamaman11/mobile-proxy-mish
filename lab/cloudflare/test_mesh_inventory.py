@@ -1,7 +1,7 @@
 """Pure offline tests for the GET-only redacted Cloudflare inventory."""
 import unittest
 
-from mesh_inventory import InventoryFailure, collect, read_paginated, read_profiles, summarize
+from mesh_inventory import InventoryFailure, NoRedirect, collect, read_paginated, read_profiles, summarize
 
 
 ACCOUNT = "0123456789abcdef0123456789abcdef"
@@ -83,6 +83,13 @@ class InventoryTests(unittest.TestCase):
     def test_bad_network_fail_closed(self):
         with self.assertRaises(InventoryFailure):
             summarize([{"id": "r1", "network": "not-an-ip-range"}], [], [])
+
+    def test_redirect_refused_before_auth_header_forward(self):
+        with self.assertRaises(InventoryFailure) as failure:
+            NoRedirect().redirect_request(
+                None, None, 302, "redirect", {}, "https://untrusted.invalid/"
+            )
+        self.assertEqual(str(failure.exception), "REDIRECT_REJECTED")
 
     def test_ambiguous_node_rejected(self):
         with self.assertRaises(InventoryFailure):
