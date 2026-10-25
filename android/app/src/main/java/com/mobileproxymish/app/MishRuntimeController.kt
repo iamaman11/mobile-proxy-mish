@@ -9,6 +9,8 @@ import com.mobileproxymish.ffi.MeshAdmissionView
 import com.mobileproxymish.ffi.NativeControlAuthSigner
 import com.mobileproxymish.ffi.NativeMeshRuntimeObserver
 import com.mobileproxymish.ffi.NativeProductRuntime
+import com.mobileproxymish.ffi.NativeTemporaryCredentialAvailability
+import com.mobileproxymish.ffi.NativeTemporaryCredentialMaterialView
 import com.mobileproxymish.ffi.ProductDiagnosticSnapshotView
 import com.mobileproxymish.ffi.NativeReadinessObserver
 import com.mobileproxymish.ffi.NativeRotationObserver
@@ -32,6 +34,7 @@ class MishRuntimeController internal constructor(
 ) {
     private val appContext = context
     private val externalCredentialStore = ExternalProxyCredentialStore(appContext)
+    private val temporaryCredentialStore = TemporaryProxyCredentialStore(appContext)
     private val platformEffectsLock = Any()
     private val debugIsolation = appContext.packageName.endsWith(".debug") &&
         (appContext.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
@@ -41,6 +44,18 @@ class MishRuntimeController internal constructor(
         debugIsolation,
     )
     private val cellularRuntime = CellularRuntimeBridge(appContext, productRuntime)
+    private val temporaryCredentialProvider = object : NativeTemporaryCredentialAvailability {
+        override fun currentTemporaryCredential(): NativeTemporaryCredentialMaterialView? {
+            val snapshot = temporaryCredentialStore.currentForRuntime() ?: return null
+            return NativeTemporaryCredentialMaterialView(
+                username = snapshot.username,
+                password = snapshot.password,
+            )
+        }
+
+        override fun temporaryAvailableNow(): Boolean =
+            temporaryCredentialStore.temporaryAvailableNow()
+    }
     private val proxyRuntime = ProxyRuntimeSupervisor(productRuntime)
     private val meshRuntime = MeshIngressRuntimeBridge(appContext, productRuntime)
     private val controlIdentity = AndroidControlIdentity()
@@ -58,6 +73,9 @@ class MishRuntimeController internal constructor(
     private val mutableRotation = MutableStateFlow(productRuntime.rotationSnapshot())
 
     init {
+        // Registers only Android Keystore effects. Rust PRODUCT schedules restoration after
+        // its own Proxy RUNNING publication and owns all future relay lifetime/recovery.
+        productRuntime.registerTemporaryCredentialProvider(temporaryCredentialProvider)
         productRuntime.observeReadiness(
             object : NativeReadinessObserver {
                 override fun onReadiness(readiness: ProductReadinessState) {
