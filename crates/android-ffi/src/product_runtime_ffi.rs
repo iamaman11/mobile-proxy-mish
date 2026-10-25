@@ -33,7 +33,7 @@ use mish_runtime::{
 use mish_transport::MeshVpnObservation;
 use std::fmt;
 use std::net::Ipv4Addr;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Error)]
@@ -529,8 +529,26 @@ pub trait NativeCellularPolicyObserver: Send + Sync {
 /// The only platform effect consulted for a matching optional secondary proxy principal.
 /// Kotlin implements this with a fresh Keystore-backed Rust Credentials lease observation
 /// and an atomic durable checkpoint. Callback failure/panic denies secondary only.
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
+pub struct NativeTemporaryCredentialMaterialView {
+    pub username: String,
+    pub password: String,
+}
+
+impl fmt::Debug for NativeTemporaryCredentialMaterialView {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NativeTemporaryCredentialMaterialView")
+            .field("username", &"<redacted>")
+            .field("password", &"<redacted>")
+            .finish()
+    }
+}
+
+/// Kotlin only supplies an already-durable Credentials verdict and secret material. Rust PRODUCT
+/// owns the asynchronous restoration trigger, process generation and listener admission.
 #[uniffi::export(foreign)]
 pub trait NativeTemporaryCredentialAvailability: Send + Sync {
+    fn current_temporary_credential(&self) -> Option<NativeTemporaryCredentialMaterialView>;
     fn temporary_available_now(&self) -> bool;
 }
 
@@ -562,6 +580,7 @@ impl ControlAuthSigner for ForeignControlAuthSigner {
 #[derive(uniffi::Object)]
 pub struct NativeProductRuntime {
     runtime: Arc<ProductRuntimeCoordinator>,
+    temporary_provider: Arc<RwLock<Option<Arc<dyn NativeTemporaryCredentialAvailability>>>>,
 }
 
 #[uniffi::export]
@@ -583,7 +602,10 @@ impl NativeProductRuntime {
         let runtime =
             ProductRuntimeCoordinator::new(Arc::new(AndroidDnsResolver), product_uid, namespace)?;
 
-        Ok(Arc::new(Self { runtime }))
+        Ok(Arc::new(Self {
+            runtime,
+            temporary_provider: Arc::new(RwLock::new(None)),
+        }))
     }
 
     pub fn runtime_lifecycle_snapshot(&self) -> RuntimeLifecycleSnapshotView {
@@ -712,8 +734,69 @@ impl NativeProductRuntime {
             .unwrap_or(ProductReadinessState::Unknown)
     }
 
+    /// The Android effect provider supplies only one encrypted Credentials record and liveness.
+    /// It never schedules restoration or owns a PRODUCT generation.
+    pub fn register_temporary_credential_provider(
+        &self,
+        provider: Arc<dyn NativeTemporaryCredentialAvailability>,
+    ) {
+        if let Ok(mut current) = self.temporary_provider.write() {
+            *current = Some(provider);
+        }
+    }
+
     pub fn observe_proxy_runtime(&self, observer: Arc<dyn NativeProxyRuntimeObserver>) {
+        let owner = Arc::clone(&self.runtime);
+        let provider_slot = Arc::clone(&self.temporary_provider);
         let callback: ProxyRuntimeObserver = Arc::new(move |publication| {
+            if publication.state == OwnerProxyServingState::Running {
+                // Rust PRODUCT, not Kotlin, schedules the one reconciliation when Proxy becomes
+                // RUNNING. Reading Android Keystore is a blocking platform effect.
+                let provider = provider_slot
+                    .read()
+                    .ok()
+                    .and_then(|current| current.as_ref().cloned());
+                let current_generation = owner.active_generation().ok();
+                let handle = owner.executor().handle();
+                if let (Some(provider), Some(generation), Ok(handle)) =
+                    (provider, current_generation, handle)
+                {
+                    let expected_generation = generation.generation();
+                    let expected_serving_generation = publication.serving_generation;
+                    let runtime = Arc::clone(&owner);
+                    handle.spawn_blocking(move || {
+                        let record = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            provider.current_temporary_credential()
+                        }))
+                        .ok()
+                        .flatten();
+                        let Some(record) = record else {
+                            return;
+                        };
+                        let Ok(current) = runtime.active_generation() else {
+                            return;
+                        };
+                        if current.generation() != expected_generation
+                            || current.proxy().snapshot().serving_generation
+                                != expected_serving_generation
+                        {
+                            return;
+                        }
+                        let check = Arc::clone(&provider);
+                        let available: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                check.temporary_available_now()
+                            }))
+                            .unwrap_or(false)
+                        });
+                        let _ = runtime.install_temporary_proxy_credential(
+                            record.username,
+                            record.password,
+                            available,
+                        );
+                    });
+                }
+            }
             observer.on_proxy_runtime(map_proxy_publication(publication));
         });
         self.runtime.set_proxy_observer(callback);
