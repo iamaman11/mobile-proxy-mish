@@ -2,9 +2,12 @@ use std::fmt;
 use std::io::{self, Read, Write};
 
 use crate::{
-    HttpConnectError, ProxyConnectTarget, ProxyCredentialMaterial, ProxyProtocol,
-    Socks5SessionError, accept_socks5_connect, parse_http_connect_request,
+    HttpConnectError, ProxyAuthenticator, ProxyConnectTarget, ProxyProtocol, Socks5SessionError,
+    accept_socks5_connect, parse_http_connect_request,
 };
+
+#[cfg(test)]
+use crate::ProxyCredentialMaterial;
 
 const SOCKS5_DISCRIMINATOR: u8 = 0x05;
 const HTTP_CONNECT_DISCRIMINATOR: u8 = b'C';
@@ -18,7 +21,7 @@ const HTTP_CONNECT_DISCRIMINATOR: u8 = b'C';
 /// the complete bounded header, which prevents consuming tunnel payload beyond `\r\n\r\n`.
 pub fn accept_mixed_connect<S: Read + Write>(
     stream: &mut S,
-    credentials: &ProxyCredentialMaterial,
+    credentials: &dyn ProxyAuthenticator,
 ) -> Result<(ProxyProtocol, ProxyConnectTarget), MixedConnectError> {
     let first = read_discriminator(stream)?;
     let mut replay = ReplayIo::new(first, stream);
@@ -52,7 +55,7 @@ fn read_discriminator<R: Read>(stream: &mut R) -> Result<u8, MixedConnectError> 
 /// Reads exactly one bounded HTTP CONNECT header from a stream and leaves tunnel bytes unread.
 pub fn accept_http_connect_stream<R: Read>(
     stream: &mut R,
-    credentials: &ProxyCredentialMaterial,
+    credentials: &dyn ProxyAuthenticator,
 ) -> Result<ProxyConnectTarget, HttpConnectStreamError> {
     let mut request = Vec::new();
 

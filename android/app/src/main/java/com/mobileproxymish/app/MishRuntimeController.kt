@@ -9,6 +9,8 @@ import com.mobileproxymish.ffi.MeshAdmissionView
 import com.mobileproxymish.ffi.NativeControlAuthSigner
 import com.mobileproxymish.ffi.NativeMeshRuntimeObserver
 import com.mobileproxymish.ffi.NativeProductRuntime
+import com.mobileproxymish.ffi.NativeTemporaryCredentialAvailability
+import com.mobileproxymish.ffi.NativeTemporaryCredentialMaterialView
 import com.mobileproxymish.ffi.ProductDiagnosticSnapshotView
 import com.mobileproxymish.ffi.NativeReadinessObserver
 import com.mobileproxymish.ffi.NativeRotationObserver
@@ -32,6 +34,7 @@ class MishRuntimeController internal constructor(
 ) {
     private val appContext = context
     private val externalCredentialStore = ExternalProxyCredentialStore(appContext)
+    private val temporaryCredentialStore = TemporaryProxyCredentialStore(appContext)
     private val platformEffectsLock = Any()
     private val debugIsolation = appContext.packageName.endsWith(".debug") &&
         (appContext.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
@@ -41,6 +44,18 @@ class MishRuntimeController internal constructor(
         debugIsolation,
     )
     private val cellularRuntime = CellularRuntimeBridge(appContext, productRuntime)
+    private val temporaryCredentialProvider = object : NativeTemporaryCredentialAvailability {
+        override fun currentTemporaryCredential(): NativeTemporaryCredentialMaterialView? {
+            val snapshot = temporaryCredentialStore.currentForRuntime() ?: return null
+            return NativeTemporaryCredentialMaterialView(
+                username = snapshot.username,
+                password = snapshot.password,
+            )
+        }
+
+        override fun temporaryAvailableNow(): Boolean =
+            temporaryCredentialStore.temporaryAvailableNow()
+    }
     private val proxyRuntime = ProxyRuntimeSupervisor(productRuntime)
     private val meshRuntime = MeshIngressRuntimeBridge(appContext, productRuntime)
     private val controlIdentity = AndroidControlIdentity()
@@ -58,6 +73,9 @@ class MishRuntimeController internal constructor(
     private val mutableRotation = MutableStateFlow(productRuntime.rotationSnapshot())
 
     init {
+        // Registers only Android Keystore effects. Rust PRODUCT schedules restoration after
+        // its own Proxy RUNNING publication and owns all future relay lifetime/recovery.
+        productRuntime.registerTemporaryCredentialProvider(temporaryCredentialProvider)
         productRuntime.observeReadiness(
             object : NativeReadinessObserver {
                 override fun onReadiness(readiness: ProductReadinessState) {
@@ -122,6 +140,42 @@ class MishRuntimeController internal constructor(
     /** Explicit sensitive user read. It never rotates, provisions or restarts the runtime. */
     internal fun revealCurrentExternalCredential(): ExternalProxyCredentialSnapshot? =
         externalCredentialStore.revealCurrentCredential()
+
+    /** UI-only explicit temporary credential management. No generated passwords or secret logs. */
+    internal fun temporaryCredentialHasBeenIssued(): Boolean =
+        temporaryCredentialStore.hasBeenIssued()
+
+    internal fun issueTemporaryCredentialOnDevice(username: String, password: String): Boolean =
+        synchronized(platformEffectsLock) {
+            if (proxyRuntime.snapshot.value != ProxyRuntimeSnapshot.Running) return@synchronized false
+            if (temporaryCredentialStore.hasBeenIssued()) return@synchronized false
+            if (!temporaryCredentialStore.issueOnce(username, password)) return@synchronized false
+            val snapshot = temporaryCredentialStore.currentForRuntime()
+            if (snapshot == null) {
+                temporaryCredentialStore.revoke()
+                return@synchronized false
+            }
+            val accepted = runCatching {
+                productRuntime.installTemporaryProxyCredential(
+                    username = snapshot.username,
+                    password = snapshot.password,
+                    check = temporaryCredentialProvider,
+                )
+            }.isSuccess
+            if (!accepted) {
+                temporaryCredentialStore.revoke()
+                runCatching { productRuntime.clearTemporaryProxyCredential() }
+            }
+            accepted
+        }
+
+    internal fun revokeTemporaryCredentialOnDevice(): Boolean = synchronized(platformEffectsLock) {
+        // The protected Rust lease is durably revoked first. Existing secondary sessions then
+        // observe false even if native generation invalidation fails mid-operation.
+        val persisted = temporaryCredentialStore.revoke()
+        val cleared = runCatching { productRuntime.clearTemporaryProxyCredential() }.isSuccess
+        persisted && cleared
+    }
 
     /** One immutable Rust-composed PRODUCT diagnostic snapshot. */
     internal fun diagnosticSnapshot(): ProductDiagnosticSnapshotView =

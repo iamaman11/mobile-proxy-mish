@@ -4,10 +4,13 @@ use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpStream};
 use std::thread;
 
 use crate::{
-    HttpConnectError, HttpConnectStreamError, MixedConnectError, ProxyConnectTarget,
-    ProxyCredentialMaterial, ProxyProtocol, Socks5Reply, Socks5SessionError,
-    accept_http_connect_stream, accept_mixed_connect, accept_socks5_connect, write_socks5_reply,
+    HttpConnectError, HttpConnectStreamError, MixedConnectError, ProxyAuthenticator,
+    ProxyConnectTarget, ProxyProtocol, Socks5Reply, Socks5SessionError, accept_http_connect_stream,
+    accept_mixed_connect, accept_socks5_connect, write_socks5_reply,
 };
+
+#[cfg(test)]
+use crate::ProxyCredentialMaterial;
 
 /// Consumer-owned outbound effect port. Proxy Serving supplies one authenticated unresolved
 /// target; the implementation owns network admission, DNS, socket creation and routing effects.
@@ -101,7 +104,7 @@ impl PreparedProxySession {
 pub fn prepare_proxy_session<C: ProxyOutboundConnector + ?Sized>(
     protocol: ProxyProtocol,
     mut client: TcpStream,
-    credentials: &ProxyCredentialMaterial,
+    credentials: &dyn ProxyAuthenticator,
     connector: &C,
 ) -> Result<PreparedProxySession, ProxySessionError> {
     match prepare_proxy_session_inner(protocol, &mut client, credentials, connector) {
@@ -118,7 +121,7 @@ pub fn prepare_proxy_session<C: ProxyOutboundConnector + ?Sized>(
 pub fn serve_proxy_session<C: ProxyOutboundConnector + ?Sized>(
     protocol: ProxyProtocol,
     client: TcpStream,
-    credentials: &ProxyCredentialMaterial,
+    credentials: &dyn ProxyAuthenticator,
     connector: &C,
 ) -> Result<ProxyRelayStats, ProxySessionError> {
     let prepared = prepare_proxy_session(protocol, client, credentials, connector)?;
@@ -129,7 +132,7 @@ pub fn serve_proxy_session<C: ProxyOutboundConnector + ?Sized>(
 fn prepare_proxy_session_inner<C: ProxyOutboundConnector + ?Sized>(
     protocol: ProxyProtocol,
     client: &mut TcpStream,
-    credentials: &ProxyCredentialMaterial,
+    credentials: &dyn ProxyAuthenticator,
     connector: &C,
 ) -> Result<TcpStream, ProxySessionError> {
     let (wire_protocol, target) = accept_target(protocol, client, credentials)?;
@@ -148,7 +151,7 @@ fn prepare_proxy_session_inner<C: ProxyOutboundConnector + ?Sized>(
 fn accept_target(
     protocol: ProxyProtocol,
     client: &mut TcpStream,
-    credentials: &ProxyCredentialMaterial,
+    credentials: &dyn ProxyAuthenticator,
 ) -> Result<(ProxyProtocol, ProxyConnectTarget), ProxySessionError> {
     match protocol {
         ProxyProtocol::Mixed => match accept_mixed_connect(client, credentials) {

@@ -1,7 +1,7 @@
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use crate::{ProxyConnectTarget, ProxyCredentialMaterial, ProxyTargetError};
+use crate::{ProxyAuthenticator, ProxyConnectTarget, ProxyCredentialMaterial, ProxyTargetError};
 
 const MAX_HTTP_CONNECT_HEADER_BYTES: usize = 16 * 1024;
 const BASIC_PREFIX: &str = "Basic ";
@@ -14,7 +14,7 @@ const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz
 /// until Cellular Egress acquires an owner-issued cellular network authority.
 pub fn parse_http_connect_request(
     request: &[u8],
-    credentials: &ProxyCredentialMaterial,
+    credentials: &dyn ProxyAuthenticator,
 ) -> Result<ProxyConnectTarget, HttpConnectError> {
     if request.len() > MAX_HTTP_CONNECT_HEADER_BYTES {
         return Err(HttpConnectError::HeaderTooLarge);
@@ -61,8 +61,7 @@ pub fn parse_http_connect_request(
     }
 
     let supplied = proxy_authorization.ok_or(HttpConnectError::ProxyAuthenticationRequired)?;
-    let expected = expected_basic_authorization(credentials);
-    if !constant_time_eq(expected.as_bytes(), supplied.as_bytes()) {
+    if !credentials.matches_http_basic(supplied) {
         return Err(HttpConnectError::ProxyAuthenticationFailed);
     }
 
@@ -152,17 +151,6 @@ fn encode_base64(input: &[u8]) -> String {
         }
     }
     output
-}
-
-fn constant_time_eq(expected: &[u8], supplied: &[u8]) -> bool {
-    let mut difference = expected.len() ^ supplied.len();
-    let max_len = expected.len().max(supplied.len());
-    for index in 0..max_len {
-        let left = expected.get(index).copied().unwrap_or(0);
-        let right = supplied.get(index).copied().unwrap_or(0);
-        difference |= usize::from(left ^ right);
-    }
-    difference == 0
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

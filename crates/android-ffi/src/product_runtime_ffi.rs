@@ -33,7 +33,7 @@ use mish_runtime::{
 use mish_transport::MeshVpnObservation;
 use std::fmt;
 use std::net::Ipv4Addr;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Error)]
@@ -526,6 +526,32 @@ pub trait NativeCellularPolicyObserver: Send + Sync {
     fn on_cellular_policy_publication(&self, publication: CellularPolicyPublicationView);
 }
 
+/// The only platform effect consulted for a matching optional secondary proxy principal.
+/// Kotlin implements this with a fresh Keystore-backed Rust Credentials lease observation
+/// and an atomic durable checkpoint. Callback failure/panic denies secondary only.
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
+pub struct NativeTemporaryCredentialMaterialView {
+    pub username: String,
+    pub password: String,
+}
+
+impl fmt::Debug for NativeTemporaryCredentialMaterialView {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NativeTemporaryCredentialMaterialView")
+            .field("username", &"<redacted>")
+            .field("password", &"<redacted>")
+            .finish()
+    }
+}
+
+/// Kotlin only supplies an already-durable Credentials verdict and secret material. Rust PRODUCT
+/// owns the asynchronous restoration trigger, process generation and listener admission.
+#[uniffi::export(foreign)]
+pub trait NativeTemporaryCredentialAvailability: Send + Sync {
+    fn current_temporary_credential(&self) -> Option<NativeTemporaryCredentialMaterialView>;
+    fn temporary_available_now(&self) -> bool;
+}
+
 #[uniffi::export(foreign)]
 pub trait NativeControlAuthSigner: Send + Sync {
     /// Returns Android Keystore SHA256withECDSA DER bytes. Empty means signing failed closed.
@@ -554,6 +580,7 @@ impl ControlAuthSigner for ForeignControlAuthSigner {
 #[derive(uniffi::Object)]
 pub struct NativeProductRuntime {
     runtime: Arc<ProductRuntimeCoordinator>,
+    temporary_provider: Arc<RwLock<Option<Arc<dyn NativeTemporaryCredentialAvailability>>>>,
 }
 
 #[uniffi::export]
@@ -575,7 +602,10 @@ impl NativeProductRuntime {
         let runtime =
             ProductRuntimeCoordinator::new(Arc::new(AndroidDnsResolver), product_uid, namespace)?;
 
-        Ok(Arc::new(Self { runtime }))
+        Ok(Arc::new(Self {
+            runtime,
+            temporary_provider: Arc::new(RwLock::new(None)),
+        }))
     }
 
     pub fn runtime_lifecycle_snapshot(&self) -> RuntimeLifecycleSnapshotView {
@@ -600,6 +630,32 @@ impl NativeProductRuntime {
         self.runtime
             .request_start(credential_version, username, password)
             .map(|_| ())
+            .map_err(Into::into)
+    }
+
+    /// One optional secondary in the same native PRODUCT runtime and existing listeners.
+    /// Never materializes or rotates the primary credential. No caller-secret logging.
+    pub fn install_temporary_proxy_credential(
+        &self,
+        username: String,
+        password: String,
+        check: Arc<dyn NativeTemporaryCredentialAvailability>,
+    ) -> Result<(), NativeProductRuntimeError> {
+        let available: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                check.temporary_available_now()
+            }))
+            .unwrap_or(false)
+        });
+        self.runtime
+            .install_temporary_proxy_credential(username, password, available)
+            .map_err(Into::into)
+    }
+
+    /// Revokes only the optional secondary principal, without touching primary or listeners.
+    pub fn clear_temporary_proxy_credential(&self) -> Result<(), NativeProductRuntimeError> {
+        self.runtime
+            .clear_temporary_proxy_credential()
             .map_err(Into::into)
     }
 
@@ -678,8 +734,54 @@ impl NativeProductRuntime {
             .unwrap_or(ProductReadinessState::Unknown)
     }
 
+    /// The Android effect provider supplies only one encrypted Credentials record and liveness.
+    /// It never schedules restoration or owns a PRODUCT generation.
+    pub fn register_temporary_credential_provider(
+        &self,
+        provider: Arc<dyn NativeTemporaryCredentialAvailability>,
+    ) {
+        if let Ok(mut current) = self.temporary_provider.write() {
+            *current = Some(provider);
+        }
+    }
+
     pub fn observe_proxy_runtime(&self, observer: Arc<dyn NativeProxyRuntimeObserver>) {
+        let owner = Arc::clone(&self.runtime);
+        let provider_slot = Arc::clone(&self.temporary_provider);
         let callback: ProxyRuntimeObserver = Arc::new(move |publication| {
+            if publication.state == OwnerProxyServingState::Running {
+                // Rust PRODUCT, not Kotlin, schedules the one reconciliation when Proxy becomes
+                // RUNNING. Reading Android Keystore is a blocking platform effect.
+                let provider = provider_slot
+                    .read()
+                    .ok()
+                    .and_then(|current| current.as_ref().cloned());
+                if let (Some(provider), Ok(generation)) = (provider, owner.active_generation()) {
+                    let expected_generation = generation.generation();
+                    let expected_serving_generation = publication.serving_generation;
+                    let check = Arc::clone(&provider);
+                    let available: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            check.temporary_available_now()
+                        }))
+                        .unwrap_or(false)
+                    });
+                    let load = move || {
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            provider.current_temporary_credential()
+                        }))
+                        .ok()
+                        .flatten()
+                        .map(|record| (record.username, record.password))
+                    };
+                    let _ = owner.restore_temporary_proxy_credential_after_running(
+                        expected_generation,
+                        expected_serving_generation,
+                        load,
+                        available,
+                    );
+                }
+            }
             observer.on_proxy_runtime(map_proxy_publication(publication));
         });
         self.runtime.set_proxy_observer(callback);

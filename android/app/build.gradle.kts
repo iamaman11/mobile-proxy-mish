@@ -31,6 +31,16 @@ val generatedAndroidUniFfiFile = "$generatedJniLibsPath/$targetAbi/libmish_andro
 // Keep the Android package floor and Rust/NDK platform floor on one authority.
 val androidMinSdk = 30
 
+// Opt-in disposable package for on-device instrumentation. Never replace DEVICE-1's
+// installed com.mobileproxymish.app.debug, and never auto-start a second proxy service.
+val isolatedInstrumentation = providers.gradleProperty("mishIsolatedInstrumentedTest")
+    .orNull?.let {
+        require(it == "true" || it == "false") {
+            "mishIsolatedInstrumentedTest must be true or false."
+        }
+        it == "true"
+    } ?: false
+
 val releaseVersionName = providers.environmentVariable("MISH_RELEASE_VERSION_NAME").orNull
 val releaseVersionCode = providers.environmentVariable("MISH_RELEASE_VERSION_CODE").orNull?.let { raw ->
     raw.toIntOrNull()?.takeIf { it in 1..2_100_000_000 }
@@ -142,12 +152,18 @@ android {
     testBuildType = if (releaseSigningRequested) "release" else "debug"
 
     defaultConfig {
-        applicationId = "com.mobileproxymish.app"
+        applicationId =
+            if (isolatedInstrumentation) "com.mobileproxymish.app.isolated"
+            else "com.mobileproxymish.app"
         minSdk = androidMinSdk
         targetSdk = 36
         versionCode = releaseVersionCode ?: 1
         versionName = releaseVersionName ?: "0.1.0-dev"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        manifestPlaceholders["mishAutomaticRuntimeEnabled"] =
+            (!isolatedInstrumentation).toString()
+        buildConfigField("boolean", "MISH_INSTRUMENTATION_ONLY",
+            isolatedInstrumentation.toString())
 
         ndk {
             abiFilters += targetAbi

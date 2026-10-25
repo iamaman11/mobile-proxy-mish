@@ -5,26 +5,30 @@ use crate::{
 };
 use mish_configuration::EXTERNAL_TCP_SESSION_BUDGET;
 use mish_proxy::{
-    ProxyCredentialMaterial, ProxyOutboundConnector, ProxyProtocol, ProxyServingPlan,
-    prepare_proxy_session,
+    ProxyAuthenticator, ProxyCredentialAdmission, ProxyCredentialMaterial, ProxyOutboundConnector,
+    ProxyPrincipal, ProxyProtocol, ProxyServingPlan, prepare_proxy_session,
 };
 use mish_transport::{MeshIngressError, MeshIngressExecutor, MeshPortForward, MeshSessionOwner};
 use std::fmt;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener, TcpStream as StdTcpStream};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tokio::io::copy_bidirectional;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Semaphore, watch};
 use tokio::task::{JoinHandle, JoinSet};
-use tokio::time::timeout;
+use tokio::time::{MissedTickBehavior, timeout};
 
 const CONTROL_SESSION_RESERVE: usize = 1;
 const MAX_NATIVE_PROXY_SESSIONS: usize = EXTERNAL_TCP_SESSION_BUDGET + CONTROL_SESSION_RESERVE;
 const ACCEPT_POLL_TIMEOUT: Duration = Duration::from_millis(200);
 const SESSION_SETUP_TIMEOUT: Duration = Duration::from_secs(15);
+/// The maximum interval before a revoked or expired secondary relay is closed.
+const TEMPORARY_RELAY_RECHECK: Duration = Duration::from_secs(1);
+/// A stuck Android Keystore/FFI check may not pin a Tokio reactor or retain an expired relay.
+const TEMPORARY_RELAY_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
 const START_TIMEOUT: Duration = Duration::from_secs(2);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -218,8 +222,17 @@ fn notify_terminal_observer(
 /// runtime generation. The process-generation RuntimeExecutor owns the only Tokio runtime; this
 /// component owns only its serving tasks. Shutdown therefore drains Mesh and Proxy tasks without
 /// destroying the process executor.
+/// Listener-shared protocol-auth snapshot: only the Credentials owner may grant a valid temporary
+/// lease. A generation gate revokes even snapshots cloned before a concurrent reset.
+struct LiveProxyAuthorization {
+    verifier: Arc<dyn ProxyAuthenticator>,
+    temporary_generation_gate: Option<Arc<AtomicBool>>,
+}
+
 pub struct ProxyServingRuntime {
     listener_count: usize,
+    primary_credentials: ProxyCredentialMaterial,
+    authorization: Arc<RwLock<LiveProxyAuthorization>>,
     shutdown: watch::Sender<bool>,
     executor: Arc<RuntimeExecutor>,
     accept_tasks: Mutex<Vec<JoinHandle<()>>>,
@@ -259,7 +272,11 @@ impl ProxyServingRuntime {
         let live_acceptors = Arc::new(AtomicUsize::new(0));
         let active_sessions = Arc::new(AtomicUsize::new(0));
         let session_budget = Arc::new(Semaphore::new(MAX_NATIVE_PROXY_SESSIONS));
-        let credentials = Arc::new(plan.credentials().clone());
+        let primary_credentials = plan.credentials().clone();
+        let authorization = Arc::new(RwLock::new(LiveProxyAuthorization {
+            verifier: Arc::new(primary_credentials.clone()),
+            temporary_generation_gate: None,
+        }));
         let listener_count = bound.len();
         let mut accept_tasks = Vec::with_capacity(listener_count);
 
@@ -271,7 +288,7 @@ impl ProxyServingRuntime {
                 accept_tasks.push(handle.spawn(accept_loop(
                     protocol,
                     listener,
-                    Arc::clone(&credentials),
+                    Arc::clone(&authorization),
                     Arc::clone(&connector),
                     Arc::clone(&session_budget),
                     shutdown_rx.clone(),
@@ -285,6 +302,8 @@ impl ProxyServingRuntime {
 
         let owner = Arc::new(Self {
             listener_count,
+            primary_credentials,
+            authorization,
             shutdown,
             executor,
             accept_tasks: Mutex::new(accept_tasks),
@@ -310,6 +329,46 @@ impl ProxyServingRuntime {
             return Err(ProxyServingRuntimeError::StateUnavailable);
         }
         Ok(owner)
+    }
+
+    /// Optional second principal becomes effective without rebuilding listeners or changing
+    /// the primary. Callback must be a fresh Credentials-owner persist-before-admit verdict.
+    pub fn set_temporary_credential(
+        &self,
+        temporary: ProxyCredentialMaterial,
+        available: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Result<(), ProxyServingRuntimeError> {
+        let gate = Arc::new(AtomicBool::new(true));
+        let current_gate = Arc::clone(&gate);
+        let next = ProxyCredentialAdmission::with_temporary(
+            self.primary_credentials.clone(),
+            temporary,
+            move || current_gate.load(Ordering::Acquire) && available(),
+        )
+        .map_err(|_| ProxyServingRuntimeError::StateUnavailable)?;
+        let mut state = self
+            .authorization
+            .write()
+            .map_err(|_| ProxyServingRuntimeError::StateUnavailable)?;
+        if let Some(old) = state.temporary_generation_gate.take() {
+            old.store(false, Ordering::Release);
+        }
+        state.verifier = Arc::new(next);
+        state.temporary_generation_gate = Some(gate);
+        Ok(())
+    }
+
+    /// Revokes only secondary login; previously cloned authorizers see disabled generation.
+    pub fn clear_temporary_credential(&self) -> Result<(), ProxyServingRuntimeError> {
+        let mut state = self
+            .authorization
+            .write()
+            .map_err(|_| ProxyServingRuntimeError::StateUnavailable)?;
+        if let Some(old) = state.temporary_generation_gate.take() {
+            old.store(false, Ordering::Release);
+        }
+        state.verifier = Arc::new(self.primary_credentials.clone());
+        Ok(())
     }
 
     pub fn set_terminal_observer(&self, observer: ProxyServingTerminalObserver) {
@@ -418,7 +477,7 @@ impl Drop for ProxyServingRuntime {
 async fn accept_loop(
     protocol: ProxyProtocol,
     listener: TcpListener,
-    credentials: Arc<ProxyCredentialMaterial>,
+    authorization: Arc<RwLock<LiveProxyAuthorization>>,
     connector: Arc<dyn ProxyOutboundConnector>,
     session_budget: Arc<Semaphore>,
     shutdown: watch::Receiver<bool>,
@@ -464,13 +523,13 @@ async fn accept_loop(
         };
 
         active_sessions.fetch_add(1, Ordering::AcqRel);
-        let credentials = Arc::clone(&credentials);
+        let authorization = Arc::clone(&authorization);
         let connector = Arc::clone(&connector);
         let session_active = Arc::clone(&active_sessions);
         sessions.spawn(async move {
             let _permit = permit;
             let _count = SessionCountGuard(session_active);
-            serve_session(protocol, client, credentials, connector).await;
+            serve_session(protocol, client, authorization, connector).await;
         });
     }
 
@@ -478,10 +537,75 @@ async fn accept_loop(
     while sessions.join_next().await.is_some() {}
 }
 
+const PRINCIPAL_UNSET: u8 = 0;
+const PRINCIPAL_PRIMARY: u8 = 1;
+const PRINCIPAL_TEMPORARY: u8 = 2;
+
+/// Records which wire principal was admitted, without changing the HTTP/SOCKS framing API.
+struct SessionPrincipalRecorder<'a> {
+    source: &'a dyn ProxyAuthenticator,
+    admitted: AtomicU8,
+}
+
+impl SessionPrincipalRecorder<'_> {
+    fn principal(&self) -> Option<ProxyPrincipal> {
+        match self.admitted.load(Ordering::Acquire) {
+            PRINCIPAL_PRIMARY => Some(ProxyPrincipal::Primary),
+            PRINCIPAL_TEMPORARY => Some(ProxyPrincipal::Temporary),
+            _ => None,
+        }
+    }
+
+    fn record(&self, principal: Option<ProxyPrincipal>) -> bool {
+        let kind = match principal {
+            Some(ProxyPrincipal::Primary) => PRINCIPAL_PRIMARY,
+            Some(ProxyPrincipal::Temporary) => PRINCIPAL_TEMPORARY,
+            None => PRINCIPAL_UNSET,
+        };
+        self.admitted.store(kind, Ordering::Release);
+        principal.is_some()
+    }
+}
+
+impl ProxyAuthenticator for SessionPrincipalRecorder<'_> {
+    fn matches_http_basic(&self, supplied: &str) -> bool {
+        self.record(self.source.classify_http_basic(supplied))
+    }
+
+    fn matches_username_password(&self, username: &[u8], password: &[u8]) -> bool {
+        self.record(self.source.classify_username_password(username, password))
+    }
+
+    fn socks_compatible(&self) -> bool {
+        self.source.socks_compatible()
+    }
+}
+
+/// Monotonic recheck cadence bounds a temporary grant's relay lifetime even while the TCP stream
+/// is idle. A replacement/revoke gate or Credentials-owner expiry terminates only this relay.
+async fn wait_for_temporary_revocation(verifier: Arc<dyn ProxyAuthenticator>) {
+    let mut ticker = tokio::time::interval(TEMPORARY_RELAY_RECHECK);
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    loop {
+        ticker.tick().await;
+        // Credential checks may use Android Keystore and durability barriers. Never perform
+        // platform blocking effects on a Tokio I/O worker, and fail closed if they stall.
+        let current = Arc::clone(&verifier);
+        let check = tokio::task::spawn_blocking(move || current.temporary_session_available());
+        let allowed = matches!(
+            timeout(TEMPORARY_RELAY_CHECK_TIMEOUT, check).await,
+            Ok(Ok(true))
+        );
+        if !allowed {
+            return;
+        }
+    }
+}
+
 async fn serve_session(
     protocol: ProxyProtocol,
     client: TcpStream,
-    credentials: Arc<ProxyCredentialMaterial>,
+    authorization: Arc<RwLock<LiveProxyAuthorization>>,
     connector: Arc<dyn ProxyOutboundConnector>,
 ) {
     let client = match client.into_std() {
@@ -489,10 +613,16 @@ async fn serve_session(
         Err(_) => return,
     };
     let prepared = tokio::task::spawn_blocking(move || {
-        prepare_blocking_session(protocol, client, credentials.as_ref(), connector.as_ref())
+        let verifier = {
+            let state = authorization.read().map_err(|_| ())?;
+            Arc::clone(&state.verifier)
+        };
+        let streams =
+            prepare_blocking_session(protocol, client, verifier.as_ref(), connector.as_ref())?;
+        Ok::<_, ()>((streams.0, streams.1, streams.2, verifier))
     })
     .await;
-    let (client, upstream) = match prepared {
+    let (client, upstream, principal, verifier) = match prepared {
         Ok(Ok(streams)) => streams,
         Ok(Err(())) | Err(_) => return,
     };
@@ -505,15 +635,23 @@ async fn serve_session(
         Ok(stream) => stream,
         Err(_) => return,
     };
-    let _ = copy_bidirectional(&mut client, &mut upstream).await;
+    if principal == ProxyPrincipal::Temporary {
+        tokio::select! {
+            _ = copy_bidirectional(&mut client, &mut upstream) => {},
+            _ = wait_for_temporary_revocation(verifier) => {},
+        }
+    } else {
+        // No secondary callback, generation gate or timer is consulted for primary sessions.
+        let _ = copy_bidirectional(&mut client, &mut upstream).await;
+    }
 }
 
 fn prepare_blocking_session(
     protocol: ProxyProtocol,
     client: StdTcpStream,
-    credentials: &ProxyCredentialMaterial,
+    credentials: &dyn ProxyAuthenticator,
     connector: &dyn ProxyOutboundConnector,
-) -> Result<(StdTcpStream, StdTcpStream), ()> {
+) -> Result<(StdTcpStream, StdTcpStream, ProxyPrincipal), ()> {
     client.set_nonblocking(false).map_err(|_| ())?;
     client
         .set_read_timeout(Some(SESSION_SETUP_TIMEOUT))
@@ -522,8 +660,12 @@ fn prepare_blocking_session(
         .set_write_timeout(Some(SESSION_SETUP_TIMEOUT))
         .map_err(|_| ())?;
 
-    let prepared =
-        prepare_proxy_session(protocol, client, credentials, connector).map_err(|_| ())?;
+    let recorder = SessionPrincipalRecorder {
+        source: credentials,
+        admitted: AtomicU8::new(PRINCIPAL_UNSET),
+    };
+    let prepared = prepare_proxy_session(protocol, client, &recorder, connector).map_err(|_| ())?;
+    let principal = recorder.principal().ok_or(())?;
     let (client, upstream) = prepared.into_streams();
     client.set_read_timeout(None).map_err(|_| ())?;
     client.set_write_timeout(None).map_err(|_| ())?;
@@ -531,7 +673,7 @@ fn prepare_blocking_session(
     upstream.set_write_timeout(None).map_err(|_| ())?;
     client.set_nonblocking(true).map_err(|_| ())?;
     upstream.set_nonblocking(true).map_err(|_| ())?;
-    Ok((client, upstream))
+    Ok((client, upstream, principal))
 }
 
 struct AcceptorGuard {
@@ -587,6 +729,286 @@ mod tests {
         ) -> Result<StdTcpStream, ProxyOutboundConnectError> {
             Err(ProxyOutboundConnectError::Unavailable)
         }
+    }
+
+    #[test]
+    fn relay_principal_recorder_is_per_session_and_does_not_leak_primary() {
+        let primary = ProxyCredentialMaterial::new("owner", "owner-secret").expect("primary");
+        let temporary = ProxyCredentialMaterial::new("guest", "guest-secret").expect("temporary");
+        let permitted = Arc::new(AtomicBool::new(true));
+        let gate = Arc::clone(&permitted);
+        let both = ProxyCredentialAdmission::with_temporary(
+            primary.clone(),
+            temporary.clone(),
+            move || gate.load(Ordering::Acquire),
+        )
+        .expect("admission");
+
+        let recorder = SessionPrincipalRecorder {
+            source: &both,
+            admitted: AtomicU8::new(PRINCIPAL_UNSET),
+        };
+        assert_eq!(recorder.principal(), None);
+        assert!(recorder.matches_http_basic(&temporary.basic_authorization_value()));
+        assert_eq!(recorder.principal(), Some(ProxyPrincipal::Temporary));
+        permitted.store(false, Ordering::Release);
+        assert!(!both.temporary_session_available());
+        assert!(recorder.matches_username_password(b"owner", b"owner-secret"));
+        assert_eq!(recorder.principal(), Some(ProxyPrincipal::Primary));
+    }
+
+    #[tokio::test]
+    async fn secondary_relay_waiter_ends_after_revoke_and_primary_has_no_waiter() {
+        let primary = ProxyCredentialMaterial::new("owner", "owner-secret").expect("primary");
+        let secondary = ProxyCredentialMaterial::new("guest", "guest-secret").expect("secondary");
+        let gate = Arc::new(AtomicBool::new(true));
+        let shared = Arc::clone(&gate);
+        let admission =
+            ProxyCredentialAdmission::with_temporary(primary.clone(), secondary, move || {
+                shared.load(Ordering::Acquire)
+            })
+            .expect("admission");
+        let wait = wait_for_temporary_revocation(Arc::new(admission.clone()));
+        tokio::pin!(wait);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(15), &mut wait)
+                .await
+                .is_err()
+        );
+        gate.store(false, Ordering::Release);
+        tokio::time::timeout(Duration::from_secs(2), &mut wait)
+            .await
+            .expect("temporary relay is closed within bounded expiry interval");
+        assert_eq!(
+            admission.classify_username_password(b"owner", b"owner-secret"),
+            Some(ProxyPrincipal::Primary)
+        );
+    }
+
+    struct LoopbackEchoConnector(std::net::SocketAddr);
+
+    impl ProxyOutboundConnector for LoopbackEchoConnector {
+        fn connect(
+            &self,
+            _target: &ProxyConnectTarget,
+        ) -> Result<StdTcpStream, ProxyOutboundConnectError> {
+            StdTcpStream::connect(self.0).map_err(|_| ProxyOutboundConnectError::Failed)
+        }
+    }
+
+    async fn authenticate_local_test_client(
+        client: &mut TcpStream,
+        protocol: ProxyProtocol,
+        credential: &ProxyCredentialMaterial,
+    ) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        match protocol {
+            ProxyProtocol::Http => {
+                let request = format!(
+                    "CONNECT example.invalid:443 HTTP/1.1\r\nHost: example.invalid:443\r\nProxy-Authorization: {}\r\n\r\n",
+                    credential.basic_authorization_value()
+                );
+                client
+                    .write_all(request.as_bytes())
+                    .await
+                    .expect("HTTP CONNECT");
+                let mut response = [0_u8; 39];
+                client
+                    .read_exact(&mut response)
+                    .await
+                    .expect("HTTP response");
+                assert_eq!(&response, b"HTTP/1.1 200 Connection Established\r\n\r\n");
+            }
+            ProxyProtocol::Socks5 | ProxyProtocol::Mixed => {
+                client.write_all(&[5, 1, 2]).await.expect("SOCKS greeting");
+                let mut method = [0_u8; 2];
+                client.read_exact(&mut method).await.expect("SOCKS method");
+                assert_eq!(method, [5, 2]);
+                let username = credential.username().as_bytes();
+                let password = credential.password().as_bytes();
+                let mut login = vec![1, u8::try_from(username.len()).expect("test username")];
+                login.extend_from_slice(username);
+                login.push(u8::try_from(password.len()).expect("test password"));
+                login.extend_from_slice(password);
+                client.write_all(&login).await.expect("SOCKS auth");
+                let mut auth = [0_u8; 2];
+                client
+                    .read_exact(&mut auth)
+                    .await
+                    .expect("SOCKS auth reply");
+                assert_eq!(auth, [1, 0]);
+                client
+                    .write_all(&[5, 1, 0, 1, 127, 0, 0, 1, 1, 187])
+                    .await
+                    .expect("SOCKS CONNECT");
+                let mut response = [0_u8; 10];
+                client
+                    .read_exact(&mut response)
+                    .await
+                    .expect("SOCKS CONNECT reply");
+                assert_eq!(&response[..4], &[5, 0, 0, 1]);
+            }
+        }
+    }
+
+    async fn assert_local_echo(client: &mut TcpStream, message: &[u8]) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        client.write_all(message).await.expect("proxy relay write");
+        let mut echo = vec![0_u8; message.len()];
+        tokio::time::timeout(Duration::from_secs(2), client.read_exact(&mut echo))
+            .await
+            .expect("proxy relay response deadline")
+            .expect("proxy relay read");
+        assert_eq!(echo, message);
+    }
+
+    /// Actual OS loopback sockets, not only an auth callback or standalone timer:
+    /// an already authenticated temporary TCP tunnel must close on revocation while the
+    /// simultaneously admitted primary tunnel continues to relay bytes.
+    #[tokio::test]
+    async fn live_http_socks_and_mixed_tunnels_revoke_only_temporary() {
+        use tokio::io::AsyncReadExt;
+
+        for protocol in [
+            ProxyProtocol::Http,
+            ProxyProtocol::Socks5,
+            ProxyProtocol::Mixed,
+        ] {
+            let inbound = TcpListener::bind("127.0.0.1:0").await.expect("inbound");
+            let outbound = TcpListener::bind("127.0.0.1:0").await.expect("echo");
+            let target = outbound.local_addr().expect("echo address");
+            let echo_server = tokio::spawn(async move {
+                for _ in 0..2 {
+                    let (echo, _) = outbound.accept().await.expect("outbound accepted");
+                    tokio::spawn(async move {
+                        let (mut reader, mut writer) = tokio::io::split(echo);
+                        let _ = tokio::io::copy(&mut reader, &mut writer).await;
+                    });
+                }
+            });
+
+            let primary =
+                ProxyCredentialMaterial::new("test-owner", "owner-secret").expect("owner");
+            let temporary =
+                ProxyCredentialMaterial::new("test-guest", "guest-secret").expect("guest");
+            let active = Arc::new(AtomicBool::new(true));
+            let current = Arc::clone(&active);
+            let admission = ProxyCredentialAdmission::with_temporary(
+                primary.clone(),
+                temporary.clone(),
+                move || current.load(Ordering::Acquire),
+            )
+            .expect("two distinct principals");
+            let authorization = Arc::new(RwLock::new(LiveProxyAuthorization {
+                verifier: Arc::new(admission),
+                temporary_generation_gate: None,
+            }));
+            let connector: Arc<dyn ProxyOutboundConnector> =
+                Arc::new(LoopbackEchoConnector(target));
+
+            let mut temp_client = TcpStream::connect(inbound.local_addr().expect("local"))
+                .await
+                .expect("temporary client");
+            let (temp_server, _) = inbound.accept().await.expect("temporary accepted");
+            let temporary_task = tokio::spawn(serve_session(
+                protocol,
+                temp_server,
+                Arc::clone(&authorization),
+                Arc::clone(&connector),
+            ));
+            tokio::time::timeout(
+                Duration::from_secs(3),
+                authenticate_local_test_client(&mut temp_client, protocol, &temporary),
+            )
+            .await
+            .expect("temporary authentication deadline");
+            assert_local_echo(&mut temp_client, b"temporary-before-revoke").await;
+
+            let mut owner_client = TcpStream::connect(inbound.local_addr().expect("local"))
+                .await
+                .expect("primary client");
+            let (owner_server, _) = inbound.accept().await.expect("primary accepted");
+            let primary_task = tokio::spawn(serve_session(
+                protocol,
+                owner_server,
+                Arc::clone(&authorization),
+                Arc::clone(&connector),
+            ));
+            tokio::time::timeout(
+                Duration::from_secs(3),
+                authenticate_local_test_client(&mut owner_client, protocol, &primary),
+            )
+            .await
+            .expect("primary authentication deadline");
+            assert_local_echo(&mut owner_client, b"primary-before-revoke").await;
+
+            active.store(false, Ordering::Release);
+            tokio::time::timeout(Duration::from_secs(4), async {
+                let mut byte = [0_u8; 1];
+                let n = temp_client.read(&mut byte).await.expect("temporary EOF");
+                assert_eq!(n, 0, "revocation must close established temporary TCP");
+            })
+            .await
+            .expect("temporary active tunnel teardown deadline");
+            assert_local_echo(&mut owner_client, b"primary-still-relays-after-revoke").await;
+
+            drop(owner_client);
+            tokio::time::timeout(Duration::from_secs(3), primary_task)
+                .await
+                .expect("primary task exits")
+                .expect("primary join");
+            tokio::time::timeout(Duration::from_secs(3), temporary_task)
+                .await
+                .expect("temporary task exits")
+                .expect("temporary join");
+            tokio::time::timeout(Duration::from_secs(3), echo_server)
+                .await
+                .expect("echo server accepted both")
+                .expect("echo join");
+        }
+    }
+
+    #[test]
+    fn secondary_generation_revocation_also_closes_racing_old_auth_snapshot() {
+        let primary = ProxyCredentialMaterial::new("owner", "owner-pass").expect("primary");
+        let temp = ProxyCredentialMaterial::new("guest", "guest-pass").expect("temporary");
+        let shared = RwLock::new(LiveProxyAuthorization {
+            verifier: Arc::new(primary.clone()),
+            temporary_generation_gate: None,
+        });
+        let gate = Arc::new(AtomicBool::new(true));
+        let current_gate = Arc::clone(&gate);
+        let temporary =
+            ProxyCredentialAdmission::with_temporary(primary.clone(), temp, move || {
+                current_gate.load(Ordering::Acquire)
+            })
+            .expect("secondary");
+        {
+            let mut state = shared.write().expect("write");
+            state.verifier = Arc::new(temporary);
+            state.temporary_generation_gate = Some(gate);
+        }
+        let previously_cloned = Arc::clone(&shared.read().expect("read").verifier);
+        assert!(previously_cloned.matches_username_password(b"guest", b"guest-pass"));
+        {
+            let mut state = shared.write().expect("write");
+            state
+                .temporary_generation_gate
+                .take()
+                .expect("old gate")
+                .store(false, Ordering::Release);
+            state.verifier = Arc::new(primary);
+        }
+        assert!(!previously_cloned.matches_username_password(b"guest", b"guest-pass"));
+        assert!(previously_cloned.matches_username_password(b"owner", b"owner-pass"));
+        assert!(
+            shared
+                .read()
+                .expect("read")
+                .verifier
+                .matches_username_password(b"owner", b"owner-pass")
+        );
     }
 
     #[test]

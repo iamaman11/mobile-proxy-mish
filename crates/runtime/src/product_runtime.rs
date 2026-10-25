@@ -241,6 +241,83 @@ impl ProductRuntimeCoordinator {
         Ok(Arc::clone(&state.generation))
     }
 
+    /// Only optional second-proxy authorization is changed. Primary Credentials material,
+    /// native PRODUCT generation and active listeners are not replaced by this operation.
+    /// Caller provides a persisted-before-admit Credentials verdict; absence denies secondary.
+    pub fn install_temporary_proxy_credential(
+        &self,
+        username: String,
+        password: String,
+        available: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Result<(), RuntimeExecutionError> {
+        let generation = self.active_generation()?;
+        if generation
+            .proxy()
+            .set_temporary_credential(username, password, available)
+        {
+            Ok(())
+        } else {
+            Err(RuntimeExecutionError::StateUnavailable)
+        }
+    }
+
+    /// Rust PRODUCT is the sole scheduler for a Keystore-backed secondary restoration. A late
+    /// platform read may not reintroduce an old grant into a replaced PRODUCT/Proxy generation.
+    /// The Android effect stays on the bounded Tokio blocking pool, not an I/O worker.
+    pub fn restore_temporary_proxy_credential_after_running<F>(
+        self: &Arc<Self>,
+        expected_generation: u64,
+        expected_serving_generation: Option<u64>,
+        load_protected_record: F,
+        available: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Result<(), RuntimeExecutionError>
+    where
+        F: FnOnce() -> Option<(String, String)> + Send + 'static,
+    {
+        let owner = Arc::clone(self);
+        self.executor.spawn(async move {
+            let record = tokio::task::spawn_blocking(load_protected_record)
+                .await
+                .ok()
+                .flatten();
+            let Some((username, password)) = record else {
+                return;
+            };
+            let Ok(current) = owner.active_generation() else {
+                return;
+            };
+            if current.generation() != expected_generation
+                || current.proxy().snapshot().serving_generation != expected_serving_generation
+            {
+                return;
+            }
+            // Install into the previously captured PRODUCT generation, never resolve a fresh
+            // generation after the validation. Proxy itself checks serving epoch while holding
+            // its state lock, so even a concurrent recovery cannot accept a stale restoration.
+            if let Some(expected_serving_generation) = expected_serving_generation {
+                let _ = current
+                    .proxy()
+                    .restore_temporary_credential_for_serving_generation(
+                        expected_serving_generation,
+                        username,
+                        password,
+                        available,
+                    );
+            }
+        })?;
+        Ok(())
+    }
+
+    /// Idempotent on an active PRODUCT generation. Never revokes primary credentials.
+    pub fn clear_temporary_proxy_credential(&self) -> Result<(), RuntimeExecutionError> {
+        let generation = self.active_generation()?;
+        if generation.proxy().clear_temporary_credential() {
+            Ok(())
+        } else {
+            Err(RuntimeExecutionError::StateUnavailable)
+        }
+    }
+
     pub fn start_public_ip_rotation(
         self: &Arc<Self>,
     ) -> Result<u64, crate::RotationRuntimeStartError> {
@@ -1095,6 +1172,31 @@ mod tests {
         assert_eq!(snapshot.state, RuntimeLifecycleState::Stopped);
         assert_eq!(snapshot.generation, 1);
         assert!(!snapshot.generation_requires_replacement);
+        runtime.executor.shutdown().expect("executor shutdown");
+    }
+
+    #[test]
+    fn stopped_product_does_not_admit_temporary_proxy_credential() {
+        let runtime = ProductRuntimeCoordinator::new(
+            Arc::new(EmptyResolver),
+            10_123,
+            RootPolicyNamespace::Debug,
+        )
+        .expect("PRODUCT runtime");
+        let before = runtime.snapshot();
+        assert!(matches!(
+            runtime.install_temporary_proxy_credential(
+                "candidate-guest".to_owned(),
+                "test-only-value".to_owned(),
+                Arc::new(|| true),
+            ),
+            Err(RuntimeExecutionError::StateUnavailable)
+        ));
+        assert!(matches!(
+            runtime.clear_temporary_proxy_credential(),
+            Err(RuntimeExecutionError::StateUnavailable)
+        ));
+        assert_eq!(runtime.snapshot(), before);
         runtime.executor.shutdown().expect("executor shutdown");
     }
 
