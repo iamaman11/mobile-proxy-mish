@@ -44,6 +44,7 @@ internal class ProxyRuntimeCredentialSnapshot(
  */
 class ProxyRuntimeSupervisor internal constructor(
     private val productRuntime: NativeProductRuntime,
+    private val onRunning: () -> Unit = {},
 ) {
     private val mutableSnapshot = MutableStateFlow(
         projectOwnerPublication(productRuntime.proxyRuntimeSnapshot()),
@@ -57,6 +58,7 @@ class ProxyRuntimeSupervisor internal constructor(
             object : NativeProxyRuntimeObserver {
                 override fun onProxyRuntime(publication: ProxyRuntimePublicationView) {
                     mutableSnapshot.value = projectOwnerPublication(publication)
+                    if (publication.state == ProxyServingState.RUNNING) onRunning()
                 }
             },
         )
