@@ -39,127 +39,15 @@ jobs:
           test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
           test -n "$CLOUDFLARE_API_TOKEN"
 
-      - name: Collect and classify Cloudflare inventory (GET only)
+      - name: Test offline pagination, redaction and route classification
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s lab/cloudflare -p 'test_mesh_inventory.py' -v
+
+      - name: Read authorized account inventory and publish redacted summary
         shell: bash
         run: |
           set -euo pipefail
           umask 077
-          tmp="$(mktemp -d)"
-          trap 'rm -rf -- "$tmp"' EXIT
-          api="https://api.cloudflare.com/client/v4"
-          fetch_json() {
-            local target="$1" outfile="$2"
-            curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
-              --max-time 25 --retry 0 \
-              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-              -H "Accept: application/json" -o "$outfile" "$target"
-            jq -e '.success == true and (.result | type == "array")' "$outfile" > /dev/null
-          }
-
-          fetch_json "$api/accounts?per_page=50&page=1" "$tmp/accounts.json"
-          count="$(jq -r '.result_info.total_count // (.result | length)' "$tmp/accounts.json")"
-          test "$count" = "1"
-          test "$(jq -r '.result | length' "$tmp/accounts.json")" = "1"
-          account_id="$(jq -r '.result[0].id // empty' "$tmp/accounts.json")"
-          [[ "$account_id" =~ ^[0-9A-Fa-f]{32}$ ]]
-          echo "::add-mask::$account_id"
-
-          fetch_all() {
-            local label="$1" endpoint="$2" page=1 total=0 observed=0
-            while (( page <= 50 )); do
-              local outfile="$tmp/$(printf '%s.%s.json' "$label" "$page")"
-              fetch_json "$api/accounts/$account_id/$endpoint?per_page=100&page=$page" "$outfile"
-              local size reported
-              size="$(jq -r '.result | length' "$outfile")"
-              reported="$(jq -r '.result_info.total_count // -1' "$outfile")"
-              [[ "$size" =~ ^[0-9]+$ && "$reported" =~ ^-?[0-9]+$ ]]
-              observed=$((observed + size))
-              if (( reported >= 0 )); then
-                total="$reported"
-                if (( observed > total )); then
-                  echo "INVENTORY_FAILURE|PAGINATION_INCONSISTENT|$label" >&2
-                  exit 1
-                fi
-                if (( observed == total )); then return 0; fi
-              elif (( size < 100 )); then
-                return 0
-              fi
-              if (( size == 0 )); then
-                echo "INVENTORY_FAILURE|PAGINATION_INCOMPLETE|$label" >&2
-                exit 1
-              fi
-              page=$((page + 1))
-            done
-            echo "INVENTORY_FAILURE|PAGINATION_LIMIT|$label" >&2
-            exit 1
-          }
-
-          fetch_all routes teamnet/routes
-          fetch_all nodes warp_connector
-          fetch_all profiles devices/policies
-
-          python3 - "$tmp" >> "$GITHUB_STEP_SUMMARY" <<'PY'
-          import ipaddress
-          import json
-          import pathlib
-          import sys
-
-          folder = pathlib.Path(sys.argv[1])
-
-          def get_items(label):
-              results = []
-              for path in sorted(folder.glob(f"{label}.*.json")):
-                  payload = json.loads(path.read_text())
-                  if payload.get("success") is not True or not isinstance(payload.get("result"), list):
-                      raise ValueError(f"Invalid {label} result")
-                  results.extend(payload["result"])
-              return results
-
-          routes = get_items("routes")
-          nodes = get_items("nodes")
-          profiles = get_items("profiles")
-          matches = [n for n in nodes if n.get("name") == "galaxy-iphone-mesh-node"]
-          if len(matches) > 1:
-              raise ValueError("Ambiguous Mesh node identity")
-          node_ids = {n.get("id") for n in matches}
-          live_routes = [r for r in routes if r.get("deleted_at") in (None, "")]
-          default_v4 = 0
-          non_rfc1918 = 0
-          node_routes = 0
-          ipv4_routes = 0
-          private_blocks = [ipaddress.ip_network(x) for x in
-                            ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")]
-          for route in live_routes:
-              cidr = route.get("network")
-              if not isinstance(cidr, str):
-                  raise ValueError("Route without canonical network")
-              network = ipaddress.ip_network(cidr, strict=True)
-              if route.get("tunnel_id") in node_ids:
-                  node_routes += 1
-              if network.version == 4:
-                  ipv4_routes += 1
-                  default_v4 += int(network.prefixlen == 0)
-                  non_rfc1918 += int(not any(network.subnet_of(block) for block in private_blocks))
-
-          enabled = [p for p in profiles if p.get("enabled") is True]
-          includes_default = sum(
-              1 for p in enabled
-              if any(x.get("address") == "0.0.0.0/0" for x in (p.get("include") or []))
-          )
-          print("### MISH read-only Cloudflare Mesh inventory")
-          print("")
-          print("- Provider calls: GET only; no changes to Cloudflare, devices or routes")
-          print(f"- Active CIDR routes: **{len(live_routes)}**")
-          print(f"- Active IPv4 routes: **{ipv4_routes}**")
-          print(f"- Active IPv4 default routes: **{default_v4}**")
-          print(f"- Non-RFC1918-contained IPv4 routes (includes reserved): **{non_rfc1918}**")
-          print(f"- Linux Mesh nodes returned: **{len(nodes)}**")
-          print(f"- Exact named node matches: **{len(matches)}**")
-          print(f"- Routes attributed to exact node: **{node_routes}**")
-          print(f"- Device profiles returned: **{len(profiles)}**")
-          print(f"- Enabled profiles: **{len(enabled)}**")
-          print(f"- Enabled profiles including IPv4 default: **{includes_default}**")
-          print("- Per-device route isolation: **UNKNOWN** (counts do not prove source routing)")
-          print("- iPhone origin, Linux forwarding and Galaxy UDP: **NOT_RUN**")
-          print("- Default-route modification: **NOT_AUTHORIZED**")
-          PY
+          python3 lab/cloudflare/mesh_inventory.py >> "$GITHUB_STEP_SUMMARY"
