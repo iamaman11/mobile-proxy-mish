@@ -27,7 +27,8 @@ pub use provisioning::{
 
 pub use temporary::{
     TEMPORARY_CREDENTIAL_TTL_SECONDS, TemporaryCredentialError, TemporaryCredentialLease,
-    TemporaryCredentialStatus, decode_temporary_lease, encode_temporary_lease,
+    TemporaryCredentialRecord, TemporaryCredentialStatus, decode_temporary_lease,
+    decode_temporary_record, encode_temporary_lease, encode_temporary_record,
 };
 
 pub const DERIVATION_OUTPUT_BYTES: usize = 32;

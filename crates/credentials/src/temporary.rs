@@ -4,7 +4,9 @@
 //! must provide a trusted clock and atomically persist its updated state before authorizing a
 //! temporary connection. Neither secrets nor storage/clock effects belong in this pure module.
 
-use crate::proto::{ProtoReader, WIRE_VARINT, write_varint_field};
+use crate::proto::{
+    ProtoReader, WIRE_LENGTH_DELIMITED, WIRE_VARINT, write_bytes_field, write_varint_field,
+};
 use std::{error::Error, fmt};
 
 pub const TEMPORARY_CREDENTIAL_TTL_SECONDS: u64 = 24 * 60 * 60;
@@ -24,6 +26,7 @@ pub enum TemporaryCredentialError {
     DeadlineOverflow,
     MalformedState,
     NonCanonicalState,
+    InvalidCredentialMaterial,
 }
 
 impl fmt::Display for TemporaryCredentialError {
@@ -35,6 +38,7 @@ impl fmt::Display for TemporaryCredentialError {
             Self::DeadlineOverflow => "temporary credential deadline overflow",
             Self::MalformedState => "temporary credential lease state malformed",
             Self::NonCanonicalState => "temporary credential lease state non-canonical",
+            Self::InvalidCredentialMaterial => "temporary credential material is invalid",
         })
     }
 }
@@ -217,6 +221,143 @@ pub fn decode_temporary_lease(
     Ok(state)
 }
 
+/// A sensitive in-memory owner record. Encode only for immediate encryption into a distinct
+/// Android Keystore-protected blob. Never write this envelope to plaintext preferences or logs.
+/// It cannot mutate the existing primary credential derivation/version.
+#[derive(Clone, PartialEq, Eq)]
+pub struct TemporaryCredentialRecord {
+    lease: TemporaryCredentialLease,
+    username: String,
+    password: String,
+}
+
+impl fmt::Debug for TemporaryCredentialRecord {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TemporaryCredentialRecord")
+            .field("generation", &self.lease.generation())
+            .field("username", &"<redacted>")
+            .field("password", &"<redacted>")
+            .finish()
+    }
+}
+
+impl TemporaryCredentialRecord {
+    pub fn issue(
+        generation: u64,
+        trusted_unix_seconds: Option<u64>,
+        username: String,
+        password: String,
+    ) -> Result<Self, TemporaryCredentialError> {
+        if username.trim().is_empty()
+            || password.trim().is_empty()
+            || username.len() > 255
+            || password.len() > 255
+            || username.as_bytes().contains(&0)
+            || password.as_bytes().contains(&0)
+        {
+            return Err(TemporaryCredentialError::InvalidCredentialMaterial);
+        }
+        let lease = TemporaryCredentialLease::activate(generation, trusted_unix_seconds)?;
+        Ok(Self {
+            lease,
+            username,
+            password,
+        })
+    }
+
+    pub fn lease(&self) -> TemporaryCredentialLease {
+        self.lease
+    }
+
+    pub fn username(&self) -> &str {
+        &self.username
+    }
+
+    pub fn password(&self) -> &str {
+        &self.password
+    }
+
+    #[must_use]
+    pub fn observe(mut self, trusted_unix_seconds: Option<u64>) -> (Self, bool) {
+        let (lease, admitted) = self.lease.observe(trusted_unix_seconds);
+        self.lease = lease;
+        (self, admitted)
+    }
+
+    #[must_use]
+    pub fn revoke(mut self) -> Self {
+        self.lease = self.lease.revoke();
+        self
+    }
+}
+
+/// Sensitive protobuf payload. The caller MUST encrypt/authenticate bytes with Android Keystore
+/// before persistence, and fail closed on any decryption, decoding or atomic-commit error.
+pub fn encode_temporary_record(record: &TemporaryCredentialRecord) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(80 + record.username.len() + record.password.len());
+    write_varint_field(&mut bytes, 1, 1); // record schema version
+    write_bytes_field(&mut bytes, 2, &encode_temporary_lease(record.lease));
+    write_bytes_field(&mut bytes, 3, record.username.as_bytes());
+    write_bytes_field(&mut bytes, 4, record.password.as_bytes());
+    bytes
+}
+
+pub fn decode_temporary_record(
+    bytes: &[u8],
+) -> Result<TemporaryCredentialRecord, TemporaryCredentialError> {
+    let mut reader = ProtoReader::new(bytes);
+    let mut schema = None;
+    let mut lease = None;
+    let mut username = None;
+    let mut password = None;
+    while !reader.exhausted() {
+        let tag = reader
+            .read_tag()
+            .map_err(|_| TemporaryCredentialError::MalformedState)?;
+        match (tag.field_number, tag.wire_type) {
+            (1, WIRE_VARINT) if schema.is_none() => {
+                schema = Some(reader.read_varint().map_err(|_| TemporaryCredentialError::MalformedState)?);
+            }
+            (2, WIRE_LENGTH_DELIMITED) if lease.is_none() => {
+                lease = Some(decode_temporary_lease(
+                    reader.read_bytes().map_err(|_| TemporaryCredentialError::MalformedState)?,
+                )?);
+            }
+            (3, WIRE_LENGTH_DELIMITED) if username.is_none() => {
+                username = Some(
+                    std::str::from_utf8(reader.read_bytes().map_err(|_| TemporaryCredentialError::MalformedState)?)
+                        .map_err(|_| TemporaryCredentialError::InvalidCredentialMaterial)?.to_owned()
+                );
+            }
+            (4, WIRE_LENGTH_DELIMITED) if password.is_none() => {
+                password = Some(
+                    std::str::from_utf8(reader.read_bytes().map_err(|_| TemporaryCredentialError::MalformedState)?)
+                        .map_err(|_| TemporaryCredentialError::InvalidCredentialMaterial)?.to_owned()
+                );
+            }
+            _ => return Err(TemporaryCredentialError::MalformedState),
+        }
+    }
+    if schema != Some(1) {
+        return Err(TemporaryCredentialError::MalformedState);
+    }
+    let lease = lease.ok_or(TemporaryCredentialError::MalformedState)?;
+    let username = username.ok_or(TemporaryCredentialError::MalformedState)?;
+    let password = password.ok_or(TemporaryCredentialError::MalformedState)?;
+    // Validate secret shape without ever renewing/restoring the deadline through issue().
+    if username.trim().is_empty() || password.trim().is_empty()
+        || username.len() > 255 || password.len() > 255
+        || username.as_bytes().contains(&0) || password.as_bytes().contains(&0)
+    {
+        return Err(TemporaryCredentialError::InvalidCredentialMaterial);
+    }
+    let record = TemporaryCredentialRecord { lease, username, password };
+    if encode_temporary_record(&record) != bytes {
+        return Err(TemporaryCredentialError::NonCanonicalState);
+    }
+    Ok(record)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,6 +500,52 @@ mod tests {
         assert_eq!(
             decode_temporary_lease(&nonminimal),
             Err(TemporaryCredentialError::NonCanonicalState)
+        );
+    }
+
+    #[test]
+    fn sensitive_record_round_trip_preserves_exact_secret_and_lease() {
+        let original = TemporaryCredentialRecord::issue(
+            4,
+            Some(AT),
+            "caseSensitiveGuest".to_owned(),
+            "a-local-secret".to_owned(),
+        )
+        .expect("issue");
+        assert_eq!(original.username(), "caseSensitiveGuest");
+        let buffer = encode_temporary_record(&original);
+        let restored = decode_temporary_record(&buffer).expect("owner read");
+        assert_eq!(restored, original);
+        assert!(!format!("{restored:?}").contains("a-local-secret"));
+        assert!(!format!("{restored:?}").contains("caseSensitiveGuest"));
+        let (after_restart, admitted) = restored.observe(Some(AT + 86_400));
+        assert!(!admitted);
+        assert_eq!(after_restart.lease().status(), TemporaryCredentialStatus::Expired);
+        assert_eq!(after_restart.password(), "a-local-secret");
+    }
+
+    #[test]
+    fn sensitive_record_rejects_duplicate_fields_noncanonical_and_invalid_secrets() {
+        assert_eq!(
+            TemporaryCredentialRecord::issue(1, Some(AT), "guest".into(), " ".into()),
+            Err(TemporaryCredentialError::InvalidCredentialMaterial)
+        );
+        assert_eq!(
+            TemporaryCredentialRecord::issue(1, Some(AT), "guest".into(), "x".repeat(256)),
+            Err(TemporaryCredentialError::InvalidCredentialMaterial)
+        );
+        let material = TemporaryCredentialRecord::issue(
+            2,
+            Some(AT),
+            "guest".into(),
+            "secret".into(),
+        )
+        .expect("issue");
+        let mut bytes = encode_temporary_record(&material);
+        bytes.extend_from_slice(&[0x08, 0x01]);
+        assert_eq!(
+            decode_temporary_record(&bytes),
+            Err(TemporaryCredentialError::MalformedState)
         );
     }
 
