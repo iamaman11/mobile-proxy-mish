@@ -187,7 +187,7 @@ internal class TemporaryProxyCredentialStore(
 
     private fun encryptionKey(): SecretKey {
         val store = keystore()
-        val existing = store.getKey(KEY_ALIAS, null) as? SecretKey
+        val existing = store.getKey(keyAlias, null) as? SecretKey
         if (existing != null) {
             check(existing.encoded == null)
             return existing
