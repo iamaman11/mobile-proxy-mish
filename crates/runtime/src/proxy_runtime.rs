@@ -785,6 +785,145 @@ mod tests {
         );
     }
 
+    struct LoopbackEchoConnector(std::net::SocketAddr);
+
+    impl ProxyOutboundConnector for LoopbackEchoConnector {
+        fn connect(
+            &self,
+            _target: &ProxyConnectTarget,
+        ) -> Result<StdTcpStream, ProxyOutboundConnectError> {
+            StdTcpStream::connect(self.0).map_err(|_| ProxyOutboundConnectError::Failed)
+        }
+    }
+
+    async fn authenticate_local_test_client(
+        client: &mut TcpStream,
+        protocol: ProxyProtocol,
+        credential: &ProxyCredentialMaterial,
+    ) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        match protocol {
+            ProxyProtocol::Http => {
+                let request = format!(
+                    "CONNECT example.invalid:443 HTTP/1.1\r\nHost: example.invalid:443\r\nProxy-Authorization: {}\r\n\r\n",
+                    credential.basic_authorization_value()
+                );
+                client.write_all(request.as_bytes()).await.expect("HTTP CONNECT");
+                let mut response = [0_u8; 39];
+                client.read_exact(&mut response).await.expect("HTTP response");
+                assert_eq!(&response, b"HTTP/1.1 200 Connection Established\r\n\r\n");
+            }
+            ProxyProtocol::Socks5 | ProxyProtocol::Mixed => {
+                client.write_all(&[5, 1, 2]).await.expect("SOCKS greeting");
+                let mut method = [0_u8; 2];
+                client.read_exact(&mut method).await.expect("SOCKS method");
+                assert_eq!(method, [5, 2]);
+                let username = credential.username().as_bytes();
+                let password = credential.password().as_bytes();
+                let mut login = vec![1, u8::try_from(username.len()).expect("test username")];
+                login.extend_from_slice(username);
+                login.push(u8::try_from(password.len()).expect("test password"));
+                login.extend_from_slice(password);
+                client.write_all(&login).await.expect("SOCKS auth");
+                let mut auth = [0_u8; 2];
+                client.read_exact(&mut auth).await.expect("SOCKS auth reply");
+                assert_eq!(auth, [1, 0]);
+                client.write_all(&[5, 1, 0, 1, 127, 0, 0, 1, 1, 187])
+                    .await.expect("SOCKS CONNECT");
+                let mut response = [0_u8; 10];
+                client.read_exact(&mut response).await.expect("SOCKS CONNECT reply");
+                assert_eq!(&response[..4], &[5, 0, 0, 1]);
+            }
+        }
+    }
+
+    async fn assert_local_echo(client: &mut TcpStream, message: &[u8]) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        client.write_all(message).await.expect("proxy relay write");
+        let mut echo = vec![0_u8; message.len()];
+        tokio::time::timeout(Duration::from_secs(2), client.read_exact(&mut echo))
+            .await.expect("proxy relay response deadline").expect("proxy relay read");
+        assert_eq!(echo, message);
+    }
+
+    /// Actual OS loopback sockets, not only an auth callback or standalone timer:
+    /// an already authenticated temporary TCP tunnel must close on revocation while the
+    /// simultaneously admitted primary tunnel continues to relay bytes.
+    #[tokio::test]
+    async fn live_http_socks_and_mixed_tunnels_revoke_only_temporary() {
+        use tokio::io::AsyncReadExt;
+
+        for protocol in [ProxyProtocol::Http, ProxyProtocol::Socks5, ProxyProtocol::Mixed] {
+            let inbound = TcpListener::bind("127.0.0.1:0").await.expect("inbound");
+            let outbound = TcpListener::bind("127.0.0.1:0").await.expect("echo");
+            let target = outbound.local_addr().expect("echo address");
+            let echo_server = tokio::spawn(async move {
+                for _ in 0..2 {
+                    let (echo, _) = outbound.accept().await.expect("outbound accepted");
+                    tokio::spawn(async move {
+                        let (mut reader, mut writer) = tokio::io::split(echo);
+                        let _ = tokio::io::copy(&mut reader, &mut writer).await;
+                    });
+                }
+            });
+
+            let primary = ProxyCredentialMaterial::new("test-owner", "owner-secret")
+                .expect("owner");
+            let temporary = ProxyCredentialMaterial::new("test-guest", "guest-secret")
+                .expect("guest");
+            let active = Arc::new(AtomicBool::new(true));
+            let current = Arc::clone(&active);
+            let admission = ProxyCredentialAdmission::with_temporary(
+                primary.clone(), temporary.clone(),
+                move || current.load(Ordering::Acquire),
+            ).expect("two distinct principals");
+            let authorization = Arc::new(RwLock::new(LiveProxyAuthorization {
+                verifier: Arc::new(admission),
+                temporary_generation_gate: None,
+            }));
+            let connector: Arc<dyn ProxyOutboundConnector> = Arc::new(LoopbackEchoConnector(target));
+
+            let mut temp_client = TcpStream::connect(inbound.local_addr().expect("local"))
+                .await.expect("temporary client");
+            let (temp_server, _) = inbound.accept().await.expect("temporary accepted");
+            let temporary_task = tokio::spawn(serve_session(
+                protocol, temp_server, Arc::clone(&authorization), Arc::clone(&connector),
+            ));
+            tokio::time::timeout(Duration::from_secs(3),
+                authenticate_local_test_client(&mut temp_client, protocol, &temporary)
+            ).await.expect("temporary authentication deadline");
+            assert_local_echo(&mut temp_client, b"temporary-before-revoke").await;
+
+            let mut owner_client = TcpStream::connect(inbound.local_addr().expect("local"))
+                .await.expect("primary client");
+            let (owner_server, _) = inbound.accept().await.expect("primary accepted");
+            let primary_task = tokio::spawn(serve_session(
+                protocol, owner_server, Arc::clone(&authorization), Arc::clone(&connector),
+            ));
+            tokio::time::timeout(Duration::from_secs(3),
+                authenticate_local_test_client(&mut owner_client, protocol, &primary)
+            ).await.expect("primary authentication deadline");
+            assert_local_echo(&mut owner_client, b"primary-before-revoke").await;
+
+            active.store(false, Ordering::Release);
+            tokio::time::timeout(Duration::from_secs(4), async {
+                let mut byte = [0_u8; 1];
+                let n = temp_client.read(&mut byte).await.expect("temporary EOF");
+                assert_eq!(n, 0, "revocation must close established temporary TCP");
+            }).await.expect("temporary active tunnel teardown deadline");
+            assert_local_echo(&mut owner_client, b"primary-still-relays-after-revoke").await;
+
+            drop(owner_client);
+            tokio::time::timeout(Duration::from_secs(3), primary_task)
+                .await.expect("primary task exits").expect("primary join");
+            tokio::time::timeout(Duration::from_secs(3), temporary_task)
+                .await.expect("temporary task exits").expect("temporary join");
+            tokio::time::timeout(Duration::from_secs(3), echo_server)
+                .await.expect("echo server accepted both").expect("echo join");
+        }
+    }
+
     #[test]
     fn secondary_generation_revocation_also_closes_racing_old_auth_snapshot() {
         let primary = ProxyCredentialMaterial::new("owner", "owner-pass").expect("primary");
