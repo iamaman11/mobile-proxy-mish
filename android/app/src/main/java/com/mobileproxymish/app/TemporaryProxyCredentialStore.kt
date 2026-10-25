@@ -87,17 +87,26 @@ internal class TemporaryProxyCredentialStore(
             protectedPlaintext = record,
             trustedUnixSeconds = trustedNow,
         )
-        // Even a rejected/missing-clock observation permanently records the terminal owner state.
-        check(preferences.edit()
-            .putString(KEY_ENCRYPTED_RECORD, seal(encodeEnvelope(anchor, decision.nextState)))
-            .commit())
+        // A fresh decision must be durable before admission. Unchanged canonical bytes
+        // are already durable; avoid one disk write per client/session liveness check.
+        if (!decision.nextState.contentEquals(record)) {
+            check(preferences.edit()
+                .putString(KEY_ENCRYPTED_RECORD, seal(encodeEnvelope(anchor, decision.nextState)))
+                .commit())
+        }
         if (!decision.admitted) return@runCatching null
         TemporaryProxyCredentialSnapshot(
             username = decision.username,
             password = decision.password,
             expiresAtUnixSeconds = decision.expiresAtUnixSeconds,
         )
-    }.getOrNull()
+    }.getOrElse {
+        // If decrypt/validation/persistence fails, do not resurrect a still-active copy
+        // on another relay check or after process restart. Revoke only this Keystore key;
+        // the encrypted tombstone stays in prefs so issueOnce cannot silently retry.
+        runCatching { keystore().deleteEntry(keyAlias) }
+        null
+    }
 
     @Synchronized
     fun temporaryAvailableNow(): Boolean = currentForRuntime() != null
