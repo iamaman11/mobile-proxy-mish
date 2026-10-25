@@ -756,45 +756,32 @@ impl NativeProductRuntime {
                     .read()
                     .ok()
                     .and_then(|current| current.as_ref().cloned());
-                let current_generation = owner.active_generation().ok();
-                let handle = owner.executor().handle();
-                if let (Some(provider), Some(generation), Ok(handle)) =
-                    (provider, current_generation, handle)
+                if let (Some(provider), Ok(generation)) =
+                    (provider, owner.active_generation())
                 {
                     let expected_generation = generation.generation();
                     let expected_serving_generation = publication.serving_generation;
-                    let runtime = Arc::clone(&owner);
-                    handle.spawn_blocking(move || {
-                        let record = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let check = Arc::clone(&provider);
+                    let available: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            check.temporary_available_now()
+                        }))
+                        .unwrap_or(false)
+                    });
+                    let load = move || {
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             provider.current_temporary_credential()
                         }))
                         .ok()
-                        .flatten();
-                        let Some(record) = record else {
-                            return;
-                        };
-                        let Ok(current) = runtime.active_generation() else {
-                            return;
-                        };
-                        if current.generation() != expected_generation
-                            || current.proxy().snapshot().serving_generation
-                                != expected_serving_generation
-                        {
-                            return;
-                        }
-                        let check = Arc::clone(&provider);
-                        let available: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
-                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                check.temporary_available_now()
-                            }))
-                            .unwrap_or(false)
-                        });
-                        let _ = runtime.install_temporary_proxy_credential(
-                            record.username,
-                            record.password,
-                            available,
-                        );
-                    });
+                        .flatten()
+                        .map(|record| (record.username, record.password))
+                    };
+                    let _ = owner.restore_temporary_proxy_credential_after_running(
+                        expected_generation,
+                        expected_serving_generation,
+                        load,
+                        available,
+                    );
                 }
             }
             observer.on_proxy_runtime(map_proxy_publication(publication));
