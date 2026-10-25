@@ -230,10 +230,10 @@ impl ProxyRuntimeCoordinator {
         let Ok(mut state) = self.state.lock() else {
             return false;
         };
-        if let Some(runtime) = &state.current {
-            if runtime.clear_temporary_credential().is_err() {
-                return false;
-            }
+        if let Some(runtime) = &state.current
+            && runtime.clear_temporary_credential().is_err()
+        {
+            return false;
         }
         state.temporary = None;
         true
@@ -343,14 +343,13 @@ impl ProxyRuntimeCoordinator {
             // Reapply the latest optional grant under the same state lock that serializes
             // revoke/replace. Otherwise a concurrent revoke could race with a stale snapshot
             // and accidentally re-enable the prior temporary principal during recovery.
-            if let Some(temporary) = state.temporary.clone() {
-                if runtime
+            if let Some(temporary) = state.temporary.clone()
+                && runtime
                     .set_temporary_credential(temporary.material, temporary.available)
                     .is_err()
-                {
-                    let _ = runtime.clear_temporary_credential();
-                    state.temporary = None;
-                }
+            {
+                let _ = runtime.clear_temporary_credential();
+                state.temporary = None;
             }
             generation
         };
