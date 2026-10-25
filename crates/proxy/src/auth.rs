@@ -16,7 +16,10 @@ pub trait ProxyAuthenticator: Send + Sync {
 
 impl ProxyAuthenticator for ProxyCredentialMaterial {
     fn matches_http_basic(&self, supplied: &str) -> bool {
-        constant_time_eq(self.basic_authorization_value().as_bytes(), supplied.as_bytes())
+        constant_time_eq(
+            self.basic_authorization_value().as_bytes(),
+            supplied.as_bytes(),
+        )
     }
 
     fn matches_username_password(&self, username: &[u8], password: &[u8]) -> bool {
@@ -81,7 +84,10 @@ impl ProxyAuthenticator for ProxyCredentialAdmission {
             .as_ref()
             .is_some_and(|temp| temp.matches_http_basic(supplied));
         let temporary_ok = temporary_matches
-            && self.temporary_available.as_ref().is_some_and(|available| available());
+            && self
+                .temporary_available
+                .as_ref()
+                .is_some_and(|available| available());
         primary_ok | temporary_ok
     }
 
@@ -92,13 +98,15 @@ impl ProxyAuthenticator for ProxyCredentialAdmission {
             .as_ref()
             .is_some_and(|temp| temp.matches_username_password(username, password));
         let temporary_ok = temporary_matches
-            && self.temporary_available.as_ref().is_some_and(|available| available());
+            && self
+                .temporary_available
+                .as_ref()
+                .is_some_and(|available| available());
         primary_ok | temporary_ok
     }
 
     fn socks_compatible(&self) -> bool {
-        self.primary.socks_compatible()
-            && self.temporary.as_ref().is_none_or(valid_socks_pair)
+        self.primary.socks_compatible() && self.temporary.as_ref().is_none_or(valid_socks_pair)
     }
 }
 
@@ -131,8 +139,9 @@ fn constant_time_eq(expected: &[u8], supplied: &[u8]) -> bool {
 mod tests {
     use super::*;
     use crate::{
-        HttpConnectError, MixedConnectError, ProxyProtocol, Socks5ProtocolError, Socks5SessionError,
-        accept_mixed_connect, accept_socks5_connect, parse_http_connect_request,
+        HttpConnectError, MixedConnectError, ProxyProtocol, Socks5ProtocolError,
+        Socks5SessionError, accept_mixed_connect, accept_socks5_connect,
+        parse_http_connect_request,
     };
     use std::io::{Cursor, Read, Write};
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -182,13 +191,7 @@ mod tests {
     }
 
     fn socks_request(pair: &ProxyCredentialMaterial) -> Vec<u8> {
-        let mut request = vec![
-            0x05,
-            0x01,
-            0x02,
-            0x01,
-            pair.username().len() as u8,
-        ];
+        let mut request = vec![0x05, 0x01, 0x02, 0x01, pair.username().len() as u8];
         request.extend_from_slice(pair.username().as_bytes());
         request.push(pair.password().len() as u8);
         request.extend_from_slice(pair.password().as_bytes());
@@ -202,12 +205,9 @@ mod tests {
     fn both_protocols_accept_primary_and_available_temporary() {
         let primary = pair("owner", "owner-secret");
         let temporary = pair("guest", "guest-secret");
-        let admission = ProxyCredentialAdmission::with_temporary(
-            primary.clone(),
-            temporary.clone(),
-            || true,
-        )
-        .expect("two distinct accounts");
+        let admission =
+            ProxyCredentialAdmission::with_temporary(primary.clone(), temporary.clone(), || true)
+                .expect("two distinct accounts");
 
         for credential in [&primary, &temporary] {
             let target = parse_http_connect_request(&http_request(credential), &admission)
@@ -219,12 +219,12 @@ mod tests {
             assert_eq!(&socks.output[..4], &[0x05, 0x02, 0x01, 0x00]);
 
             let mut mixed = MemoryIo::from_input(socks_request(credential));
-            let (protocol, _) = accept_mixed_connect(&mut mixed, &admission)
-                .expect("mixed socks allowed");
+            let (protocol, _) =
+                accept_mixed_connect(&mut mixed, &admission).expect("mixed socks allowed");
             assert_eq!(protocol, ProxyProtocol::Socks5);
             let mut mixed = MemoryIo::from_input(http_request(credential));
-            let (protocol, _) = accept_mixed_connect(&mut mixed, &admission)
-                .expect("mixed http allowed");
+            let (protocol, _) =
+                accept_mixed_connect(&mut mixed, &admission).expect("mixed http allowed");
             assert_eq!(protocol, ProxyProtocol::Http);
         }
     }
@@ -270,12 +270,9 @@ mod tests {
     fn wrong_password_and_duplicate_username_are_denied() {
         let primary = pair("owner", "owner-secret");
         let temporary = pair("guest", "guest-secret");
-        let admission = ProxyCredentialAdmission::with_temporary(
-            primary.clone(),
-            temporary,
-            || true,
-        )
-        .expect("two accounts");
+        let admission =
+            ProxyCredentialAdmission::with_temporary(primary.clone(), temporary, || true)
+                .expect("two accounts");
         let wrong = pair("guest", "wrong-secret");
         assert_eq!(
             parse_http_connect_request(&http_request(&wrong), &admission),
@@ -284,16 +281,22 @@ mod tests {
         let mut socks = MemoryIo::from_input(socks_request(&wrong));
         assert!(accept_socks5_connect(&mut socks, &admission).is_err());
         assert_eq!(
-            ProxyCredentialAdmission::with_temporary(primary.clone(), pair("owner", "guest"), || true)
-                .err(),
+            ProxyCredentialAdmission::with_temporary(
+                primary.clone(),
+                pair("owner", "guest"),
+                || true
+            )
+            .err(),
             Some(ProxyPolicyError::DuplicateCredentialUsername)
         );
-        assert!(ProxyCredentialAdmission::with_temporary(
-            primary,
-            pair("guest", &"x".repeat(256)),
-            || true
-        )
-        .is_err());
+        assert!(
+            ProxyCredentialAdmission::with_temporary(
+                primary,
+                pair("guest", &"x".repeat(256)),
+                || true
+            )
+            .is_err()
+        );
     }
 
     #[test]

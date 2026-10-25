@@ -153,7 +153,6 @@ fn encode_base64(input: &[u8]) -> String {
     output
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HttpConnectError {
     HeaderTooLarge,

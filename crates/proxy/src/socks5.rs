@@ -2,9 +2,9 @@ use std::fmt;
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-use crate::{ProxyAuthenticator, ProxyConnectTarget, ProxyTargetError};
 #[cfg(test)]
 use crate::ProxyCredentialMaterial;
+use crate::{ProxyAuthenticator, ProxyConnectTarget, ProxyTargetError};
 
 const SOCKS_VERSION: u8 = 0x05;
 const USERNAME_PASSWORD_METHOD: u8 = 0x02;
@@ -159,7 +159,6 @@ fn validate_credentials(credentials: &dyn ProxyAuthenticator) -> Result<(), Sock
         Err(Socks5ProtocolError::InvalidCredentialLength)
     }
 }
-
 
 fn negotiate_username_password<S: Read + Write>(stream: &mut S) -> Result<(), Socks5SessionError> {
     let mut header = [0_u8; 2];

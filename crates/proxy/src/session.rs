@@ -4,9 +4,9 @@ use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpStream};
 use std::thread;
 
 use crate::{
-    HttpConnectError, HttpConnectStreamError, MixedConnectError, ProxyConnectTarget,
-    ProxyAuthenticator, ProxyProtocol, Socks5Reply, Socks5SessionError,
-    accept_http_connect_stream, accept_mixed_connect, accept_socks5_connect, write_socks5_reply,
+    HttpConnectError, HttpConnectStreamError, MixedConnectError, ProxyAuthenticator,
+    ProxyConnectTarget, ProxyProtocol, Socks5Reply, Socks5SessionError, accept_http_connect_stream,
+    accept_mixed_connect, accept_socks5_connect, write_socks5_reply,
 };
 
 #[cfg(test)]

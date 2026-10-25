@@ -150,8 +150,12 @@ impl fmt::Display for ProxyPolicyError {
             Self::WildcardListenAddress => "wildcard proxy exposure is forbidden",
             Self::EmptyUsername => "public proxy username must be non-empty",
             Self::EmptyPassword => "public proxy password must be non-empty",
-            Self::DuplicateCredentialUsername => "temporary username must differ from primary username",
-            Self::InvalidTemporarySocks5Credential => "temporary SOCKS5 credentials must have 1..=255 bytes",
+            Self::DuplicateCredentialUsername => {
+                "temporary username must differ from primary username"
+            }
+            Self::InvalidTemporarySocks5Credential => {
+                "temporary SOCKS5 credentials must have 1..=255 bytes"
+            }
         })
     }
 }

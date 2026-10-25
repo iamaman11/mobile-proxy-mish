@@ -2,8 +2,8 @@ use std::fmt;
 use std::io::{self, Read, Write};
 
 use crate::{
-    HttpConnectError, ProxyAuthenticator, ProxyConnectTarget, ProxyProtocol,
-    Socks5SessionError, accept_socks5_connect, parse_http_connect_request,
+    HttpConnectError, ProxyAuthenticator, ProxyConnectTarget, ProxyProtocol, Socks5SessionError,
+    accept_socks5_connect, parse_http_connect_request,
 };
 
 #[cfg(test)]
