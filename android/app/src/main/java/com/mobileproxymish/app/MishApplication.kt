@@ -46,6 +46,11 @@ class MishApplication : Application() {
     override fun onCreate() {
         super.onCreate()
 
+        // Explicitly disposable instrumentation package: no service, listener, root policy,
+        // Mesh or Cellular admission is permitted. Only test-only Keystore/Compose runs.
+        // Normal DEVICE-1 and release builds compile this flag as false.
+        if (BuildConfig.MISH_INSTRUMENTATION_ONLY) return
+
         // Preserve the existing product expectation that an explicitly launched application
         // requests proxy availability. Modern Android may reject a background FGS start; that
         // failure is intentionally fail-closed and MainActivity requests it again from foreground.
