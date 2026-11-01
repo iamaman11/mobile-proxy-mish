@@ -242,8 +242,6 @@ if ($VerifyOnly) {
 $adb = Resolve-Executable $AdbPath
 $buildTools = Join-Path $AndroidSdkRoot 'build-tools\36.0.0'
 $apksigner = Resolve-Executable (Join-Path $buildTools 'apksigner.bat')
-$keytool = if ($env:JAVA_HOME) { Join-Path $env:JAVA_HOME 'bin\keytool.exe' } else { 'keytool.exe' }
-$keytool = Resolve-Executable $keytool
 
 $deviceResult = Invoke-NativeCapture -FilePath $adb -Arguments @('devices')
 if ($deviceResult.ExitCode -ne 0) {
@@ -288,19 +286,7 @@ else {
         Stop-Candidate 'SIGNING_IDENTITY_MISSING' 'Debug package is already installed but no known LAB signing identity exists; refusing to create an incompatible key.'
     }
 
-    Invoke-Native $keytool @(
-        '-genkeypair',
-        '-keystore', $keystore,
-        '-storetype', 'PKCS12',
-        '-storepass', $keystorePassword,
-        '-keypass', $keystorePassword,
-        '-alias', $keyAlias,
-        '-keyalg', 'RSA',
-        '-keysize', '3072',
-        '-validity', '36500',
-        '-dname', 'CN=MISH LAB Device Candidate,O=MISH LAB,C=ZZ',
-        '-noprompt'
-    ) 'SIGNING_FAILED' 'Persistent LAB device-candidate signing key could not be created.' | Out-Null
+    Stop-Candidate 'SIGNING_RECOVERY_NOT_ENROLLED' 'A new LAB signing identity must first be initialized with an encrypted OFF-HOST recovery vault. See lab/windows/portable-signing-recovery.ps1 -Action Initialize. Refusing an unprotected signing key.'
 }
 
 $signedRoot = if ([string]::IsNullOrWhiteSpace($SignedOutputDirectory)) {
