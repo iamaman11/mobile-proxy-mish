@@ -4,6 +4,7 @@ param(
     [string] $PackageName = 'com.mobileproxymish.app.debug',
     [string] $MeshCidr = '100.96.0.0/12',
     [string] $EvidenceRoot = (Join-Path $env:TEMP 'mish-full-diagnostic'),
+    [switch] $PhysicalLab,
     [switch] $SelfTest
 )
 
@@ -104,6 +105,9 @@ $specs = @(
     }
 )
 foreach ($spec in $specs) {
+    if ($spec.name -ceq 'warp' -and -not $PhysicalLab) {
+        $spec.args.Remove('PhysicalLab')
+    }
     $name = [string]$spec.name
     $stages[$name] = Invoke-MishFullStage -Name $name `
         -ScriptPath (Join-Path $PSScriptRoot $spec.script) `
