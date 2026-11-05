@@ -90,13 +90,12 @@ Acceptance: hosted Windows test of byte-perfect protect/verify/restore, invalid 
 ) { throw 'Invalid protected-main SHA' }
 $script = Join-Path $env:TEMP 'mish-bootstrap-windows.ps1'
 Invoke-WebRequest -Uri "https://raw.githubusercontent.com/iamaman11/mobile-proxy-mish/$sha/lab/windows/bootstrap-windows.ps1" -OutFile $script
-& $script -RepositoryCommit $sha -ToolsOnly
+& $script -RepositoryCommit $sha -ToolsOnly -AcceptAndroidSdkLicenses
 ~~~
 
 This provisions the manifest-pinned Git/Java/PowerShell/Gradle/Android
 SDK/ADB/NDK/Rust tools, but **does not register, delete or start a runner**, touch
-the APK, or access the signing key. Network availability and Android SDK license
-acceptance are required. The pinned LAB PowerShell may differ from the interactive
+the APK, or access the signing key. Network availability is required. Fresh Windows provisioning uses the **explicit** `-AcceptAndroidSdkLicenses` flag so that official SDK licenses are accepted without a hidden unattended prompt; omit this flag on already-enrolled hosts. Never accept third-party licenses implicitly. The pinned LAB PowerShell may differ from the interactive
 system PowerShell: use the manifest-pinned binary in Actions.
 
 Confirm canonical ADB and the authorized phone from the administrator console:
