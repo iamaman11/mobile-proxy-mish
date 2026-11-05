@@ -211,9 +211,19 @@ function Ensure-WingetPackage {
     }
 
     Write-Host "Materializing $CapabilityName through winget package $Id."
-    & $WingetPath install --id $Id --exact --silent --scope machine `
-        --accept-package-agreements --accept-source-agreements --disable-interactivity
-    $exitCode = [int]$LASTEXITCODE
+    # PowerShell 7.6+ can throw NativeCommandExitException for a nonzero winget
+    # result before we can evaluate the authoritative capability postcondition.
+    # Suppress only that automatic exception for this one invocation.
+    $nativeExitPref = $PSNativeCommandUseErrorActionPreference
+    try {
+        $PSNativeCommandUseErrorActionPreference = $false
+        & $WingetPath install --id $Id --exact --silent --scope machine `
+            --accept-package-agreements --accept-source-agreements --disable-interactivity
+        $exitCode = [int]$LASTEXITCODE
+    }
+    finally {
+        $PSNativeCommandUseErrorActionPreference = $nativeExitPref
+    }
 
     Refresh-ProcessPath
     if (& $ReadyScript) {
