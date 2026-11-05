@@ -5,6 +5,7 @@ import com.mobileproxymish.app.cellular.CellularRuntimeSnapshot
 import com.mobileproxymish.ffi.CellularAdmissionReason
 import com.mobileproxymish.ffi.CellularAdmissionState
 import com.mobileproxymish.ffi.MeshAdmissionReason
+import com.mobileproxymish.ffi.NativeRotationStartError
 import com.mobileproxymish.ffi.MeshAdmissionState
 import com.mobileproxymish.ffi.MeshAdmissionView
 import com.mobileproxymish.ffi.ProductReadinessState
@@ -46,6 +47,35 @@ enum class RotationStageUi {
 }
 
 enum class RotationResultUi { CHANGED, UNCHANGED, FAILED }
+
+/**
+ * Immediate command-admission outcome only. This is NOT a second Rotation state machine:
+ * Rust owns the operation, its lifecycle, recovery, and terminal result.
+ */
+enum class RotationSubmissionFailureUi {
+    RUNTIME_NOT_RUNNING,
+    ALREADY_IN_PROGRESS,
+    NO_CURRENT_CELLULAR,
+    ROOT_POLICY_UNAVAILABLE,
+    CREDENTIAL_UNAVAILABLE,
+    EXECUTOR_UNAVAILABLE,
+    STATE_UNAVAILABLE,
+    NATIVE_UNAVAILABLE,
+    UNKNOWN,
+}
+
+/** Only known, typed native errors are mapped; exception text is never rendered or persisted. */
+internal fun rotationSubmissionFailure(error: Throwable): RotationSubmissionFailureUi = when (error) {
+    is NativeRotationStartError.RuntimeNotRunning -> RotationSubmissionFailureUi.RUNTIME_NOT_RUNNING
+    is NativeRotationStartError.AlreadyInProgress -> RotationSubmissionFailureUi.ALREADY_IN_PROGRESS
+    is NativeRotationStartError.NoCurrentCellular -> RotationSubmissionFailureUi.NO_CURRENT_CELLULAR
+    is NativeRotationStartError.RootPolicyUnavailable -> RotationSubmissionFailureUi.ROOT_POLICY_UNAVAILABLE
+    is NativeRotationStartError.CredentialUnavailable -> RotationSubmissionFailureUi.CREDENTIAL_UNAVAILABLE
+    is NativeRotationStartError.ExecutorUnavailable -> RotationSubmissionFailureUi.EXECUTOR_UNAVAILABLE
+    is NativeRotationStartError.StateUnavailable -> RotationSubmissionFailureUi.STATE_UNAVAILABLE
+    is LinkageError -> RotationSubmissionFailureUi.NATIVE_UNAVAILABLE
+    else -> RotationSubmissionFailureUi.UNKNOWN
+}
 
 enum class RotationFailureUi {
     RUNTIME_NOT_RUNNING,
@@ -112,6 +142,7 @@ data class ProductUiState(
     val cause: ProductCauseUi = ProductCauseUi.CHECKING_CONNECTIVITY,
     val publicIp: PublicIpUiState = PublicIpUiState(),
     val rotation: RotationUiState = RotationUiState(),
+    val rotationSubmissionFailure: RotationSubmissionFailureUi? = null,
     val health: HealthSummaryUiState = HealthSummaryUiState(),
     val proxyEndpoint: ProxyEndpointUiState = ProxyEndpointUiState(),
     val advancedDiagnostics: AdvancedDiagnosticsUiState = AdvancedDiagnosticsUiState(),
@@ -450,6 +481,18 @@ fun rotationFailureText(failure: RotationFailureUi): String = when (failure) {
     RotationFailureUi.CREDENTIAL_CHANGED -> "Proxy credentials changed during the operation."
     RotationFailureUi.DEADLINE_EXCEEDED -> "The IP change timed out."
     RotationFailureUi.STATE_UNAVAILABLE -> "Rotation state is unavailable."
+}
+
+fun rotationSubmissionFailureText(failure: RotationSubmissionFailureUi): String = when (failure) {
+    RotationSubmissionFailureUi.RUNTIME_NOT_RUNNING -> "IP change was not started: runtime is not running."
+    RotationSubmissionFailureUi.ALREADY_IN_PROGRESS -> "IP change was not started: another change is in progress."
+    RotationSubmissionFailureUi.NO_CURRENT_CELLULAR -> "IP change was not started: no current cellular network."
+    RotationSubmissionFailureUi.ROOT_POLICY_UNAVAILABLE -> "IP change was not started: root policy is unavailable."
+    RotationSubmissionFailureUi.CREDENTIAL_UNAVAILABLE -> "IP change was not started: proxy credentials are unavailable."
+    RotationSubmissionFailureUi.EXECUTOR_UNAVAILABLE -> "IP change was not started: native executor is unavailable."
+    RotationSubmissionFailureUi.STATE_UNAVAILABLE -> "IP change was not started: runtime state is unavailable."
+    RotationSubmissionFailureUi.NATIVE_UNAVAILABLE -> "IP change was not started: native library is unavailable."
+    RotationSubmissionFailureUi.UNKNOWN -> "IP change was not started: command submission failed."
 }
 
 fun proxyProtocolText(protocol: ProxyProtocolUi): String = when (protocol) {
