@@ -27,7 +27,7 @@ foreach($required in @(
     'uses: ./.github/workflows/cloudflare-live-preflight.yml',
     'secrets: inherit',
     'needs: [device, cloudflare]',
-    "if: ${{ always() }}"
+    'if: ${{ always() }}'
 )) {
     if (-not $workflow.Contains($required)) { throw "Full diagnostic contract missing: $required" }
 }
