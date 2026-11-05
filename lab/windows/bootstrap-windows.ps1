@@ -8,6 +8,7 @@ param(
     [string]$RunnerTokenProviderExecutable = '',
     [string]$RunnerTokenProviderArgumentsJson = '',
     [switch]$ToolsOnly,
+    [switch]$AcceptAndroidSdkLicenses,
     [switch]$RepairOrphanedRunnerService,
     [switch]$SelfTest
 )
@@ -524,8 +525,19 @@ try {
     Add-MachinePath -PathEntry (Join-Path $sdkRoot 'platform-tools')
     Add-MachinePath -PathEntry (Join-Path $sdkRoot 'cmdline-tools\latest\bin')
 
-    Write-Host 'Android SDK licenses may require acceptance in this console.'
-    Invoke-NativeChecked -FilePath $sdkManager -Arguments @("--sdk_root=$sdkRoot", '--licenses')
+    if ($AcceptAndroidSdkLicenses) {
+        Write-Host 'Explicit operator option: accepting Android SDK package licenses.'
+        # sdkmanager --licenses is interactive even when launched noninteractively.
+        # A bounded stream of affirmative answers prevents a hidden prompt from
+        # hanging unattended recovery. Consent is opt-in via this switch.
+        1..32 | ForEach-Object { 'y' } | & $sdkManager "--sdk_root=$sdkRoot" '--licenses'
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Android SDK license acceptance failed.'
+        }
+    }
+    else {
+        Write-Host 'Using previously accepted Android SDK licenses; fresh hosts require -AcceptAndroidSdkLicenses.'
+    }
     $sdkPackages = @($manifest.android.packages | ForEach-Object { [string]$_ })
     Invoke-NativeChecked -FilePath $sdkManager -Arguments (@("--sdk_root=$sdkRoot") + $sdkPackages)
 
