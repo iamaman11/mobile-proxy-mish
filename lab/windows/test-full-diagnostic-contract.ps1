@@ -36,7 +36,7 @@ if (-not $cfWorkflow.Contains('workflow_call:') -or -not $cfWorkflow.Contains('i
 }
 if (-not $source.Contains("mish.lab.full-diagnostic/v1") -or
     -not $source.Contains("'COLLECTION_FAILED'") -or
-    -not $source.Contains("mutation_performed = $false")) {
+    -not $source.Contains('mutation_performed = $false')) {
     throw 'Full diagnostic typed failure evidence contract is absent.'
 }
 foreach ($path in @('collect-control-diagnostic.ps1','collect-device-diagnostic.ps1')) {
