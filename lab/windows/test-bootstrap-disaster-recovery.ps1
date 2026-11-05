@@ -8,7 +8,7 @@ $ast = [Management.Automation.Language.Parser]::ParseFile($bootstrap, [ref]$toke
 if ($parseErrors.Count -ne 0) { throw 'BOOTSTRAP_RECOVERY_TEST|PARSER_ERROR' }
 
 $parameters = @($ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
-foreach ($name in @('RepositoryCommit', 'ToolsOnly', 'RepairOrphanedRunnerService', 'SelfTest')) {
+foreach ($name in @('RepositoryCommit', 'ToolsOnly', 'AcceptAndroidSdkLicenses', 'RepairOrphanedRunnerService', 'SelfTest')) {
     if ($parameters -cnotcontains $name) { throw "BOOTSTRAP_RECOVERY_TEST|MISSING_PARAMETER|$name" }
 }
 
@@ -16,6 +16,8 @@ $text = Get-Content -Raw -LiteralPath $bootstrap
 foreach ($required in @(
     'if ($ToolsOnly -and $RepairOrphanedRunnerService)',
     'if ($ToolsOnly) {',
+    'if ($AcceptAndroidSdkLicenses) {',
+    '1..32 | ForEach-Object { ''y'' } | & $sdkManager',
     "Write-Host 'MISH_LAB_TOOLS=PASS'",
     'Repair-ExactOrphanedRunnerService -RunnerRoot $runnerRoot',
     'if ($RepairOrphanedRunnerService) {',
