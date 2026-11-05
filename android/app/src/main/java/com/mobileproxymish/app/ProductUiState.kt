@@ -115,6 +115,7 @@ data class ProductUiState(
     val health: HealthSummaryUiState = HealthSummaryUiState(),
     val proxyEndpoint: ProxyEndpointUiState = ProxyEndpointUiState(),
     val advancedDiagnostics: AdvancedDiagnosticsUiState = AdvancedDiagnosticsUiState(),
+    val commandRejection: String? = null,
 ) {
     val changeIpEnabled: Boolean
         get() = overall == ProductOverallUiState.READY && !rotation.inProgress
@@ -127,6 +128,7 @@ internal data class ProductPresentationInput(
     val mesh: MeshAdmissionView?,
     val rotation: RotationSnapshotView,
     val proxyListeners: List<ProxyListenerView>,
+    val commandRejection: String? = null,
 )
 
 internal fun projectProductUi(input: ProductPresentationInput): ProductUiState {
@@ -152,6 +154,7 @@ internal fun projectProductUi(input: ProductPresentationInput): ProductUiState {
             previous = input.rotation.beforeIp,
         ),
         rotation = rotation,
+        commandRejection = input.commandRejection,
         health = health,
         proxyEndpoint = ProxyEndpointUiState(
             endpoint = input.mesh
