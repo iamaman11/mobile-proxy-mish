@@ -5,7 +5,7 @@ import com.mobileproxymish.app.cellular.CellularRuntimeSnapshot
 import com.mobileproxymish.ffi.CellularAdmissionReason
 import com.mobileproxymish.ffi.CellularAdmissionState
 import com.mobileproxymish.ffi.MeshAdmissionReason
-import com.mobileproxymish.ffi.NativeRotationStartError
+import com.mobileproxymish.ffi.NativeRotationStartException
 import com.mobileproxymish.ffi.MeshAdmissionState
 import com.mobileproxymish.ffi.MeshAdmissionView
 import com.mobileproxymish.ffi.ProductReadinessState
@@ -66,13 +66,13 @@ enum class RotationSubmissionFailureUi {
 
 /** Only known, typed native errors are mapped; exception text is never rendered or persisted. */
 internal fun rotationSubmissionFailure(error: Throwable): RotationSubmissionFailureUi = when (error) {
-    is NativeRotationStartError.RuntimeNotRunning -> RotationSubmissionFailureUi.RUNTIME_NOT_RUNNING
-    is NativeRotationStartError.AlreadyInProgress -> RotationSubmissionFailureUi.ALREADY_IN_PROGRESS
-    is NativeRotationStartError.NoCurrentCellular -> RotationSubmissionFailureUi.NO_CURRENT_CELLULAR
-    is NativeRotationStartError.RootPolicyUnavailable -> RotationSubmissionFailureUi.ROOT_POLICY_UNAVAILABLE
-    is NativeRotationStartError.CredentialUnavailable -> RotationSubmissionFailureUi.CREDENTIAL_UNAVAILABLE
-    is NativeRotationStartError.ExecutorUnavailable -> RotationSubmissionFailureUi.EXECUTOR_UNAVAILABLE
-    is NativeRotationStartError.StateUnavailable -> RotationSubmissionFailureUi.STATE_UNAVAILABLE
+    is NativeRotationStartException.RuntimeNotRunning -> RotationSubmissionFailureUi.RUNTIME_NOT_RUNNING
+    is NativeRotationStartException.AlreadyInProgress -> RotationSubmissionFailureUi.ALREADY_IN_PROGRESS
+    is NativeRotationStartException.NoCurrentCellular -> RotationSubmissionFailureUi.NO_CURRENT_CELLULAR
+    is NativeRotationStartException.RootPolicyUnavailable -> RotationSubmissionFailureUi.ROOT_POLICY_UNAVAILABLE
+    is NativeRotationStartException.CredentialUnavailable -> RotationSubmissionFailureUi.CREDENTIAL_UNAVAILABLE
+    is NativeRotationStartException.ExecutorUnavailable -> RotationSubmissionFailureUi.EXECUTOR_UNAVAILABLE
+    is NativeRotationStartException.StateUnavailable -> RotationSubmissionFailureUi.STATE_UNAVAILABLE
     is LinkageError -> RotationSubmissionFailureUi.NATIVE_UNAVAILABLE
     else -> RotationSubmissionFailureUi.UNKNOWN
 }
