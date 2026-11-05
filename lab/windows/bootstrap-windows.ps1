@@ -580,9 +580,25 @@ try {
 
     $cargoNdkText = (& $cargo ('+' + [string]$manifest.rust.toolchain) ndk --version 2>$null | Out-String)
     if ($LASTEXITCODE -ne 0 -or $cargoNdkText -notmatch ([regex]::Escape([string]$manifest.rust.cargo_ndk))) {
-        Invoke-NativeChecked -FilePath $cargo -Arguments @(
-            ('+' + [string]$manifest.rust.toolchain), 'install', 'cargo-ndk', '--version', ([string]$manifest.rust.cargo_ndk), '--locked'
-        )
+        # Use upstream's pinned Windows executable: installing LAB tools must
+        # not require the Microsoft C++ compiler/linker or a local source build.
+        $cargoNdkArchive = Join-Path $tempRoot ([string]$manifest.rust.cargo_ndk_asset)
+        Get-RemoteFile -Uri ([string]$manifest.rust.cargo_ndk_url) -OutFile $cargoNdkArchive `
+            -Sha256 ([string]$manifest.rust.cargo_ndk_sha256)
+        $cargoNdkExtract = Join-Path $tempRoot 'cargo-ndk-release'
+        Expand-Archive -LiteralPath $cargoNdkArchive -DestinationPath $cargoNdkExtract -Force
+        $cargoNdkRelease = Join-Path $cargoNdkExtract ('cargo-ndk-x86_64-pc-windows-msvc-v' + [string]$manifest.rust.cargo_ndk)
+        foreach ($exe in @('cargo-ndk.exe', 'cargo-ndk-env.exe', 'cargo-ndk-runner.exe', 'cargo-ndk-test.exe')) {
+            $sourceExe = Join-Path $cargoNdkRelease $exe
+            if (-not (Test-Path -LiteralPath $sourceExe -PathType Leaf)) {
+                throw "Pinned cargo-ndk release archive does not contain $exe."
+            }
+            Copy-Item -LiteralPath $sourceExe -Destination (Join-Path $cargoHome ('bin\' + $exe)) -Force
+        }
+        $cargoNdkText = (& $cargo ('+' + [string]$manifest.rust.toolchain) ndk --version 2>&1 | Out-String)
+        if ($LASTEXITCODE -ne 0 -or $cargoNdkText -notmatch ([regex]::Escape([string]$manifest.rust.cargo_ndk))) {
+            throw 'Pinned cargo-ndk prebuilt executable failed the version postcondition.'
+        }
     }
 
     Refresh-ProcessPath
