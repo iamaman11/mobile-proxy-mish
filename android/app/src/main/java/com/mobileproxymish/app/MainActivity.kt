@@ -21,6 +21,7 @@ class MainActivity : ComponentActivity() {
                 onChangeIp = viewModel::changePublicIp,
                 onShowCredentials = viewModel::showCurrentCredentials,
                 onHideCredentials = viewModel::hideCurrentCredentials,
+                onDismissRotationSubmissionFailure = viewModel::dismissRotationSubmissionFailure,
             )
         }
     }
