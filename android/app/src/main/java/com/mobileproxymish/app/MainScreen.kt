@@ -52,6 +52,7 @@ fun MishApp(
     onChangeIp: () -> Unit,
     onShowCredentials: () -> Unit,
     onHideCredentials: () -> Unit,
+    onDismissRotationSubmissionFailure: () -> Unit = {},
 ) {
     var diagnosticsExpanded by rememberSaveable { mutableStateOf(false) }
     MishTheme {
@@ -63,6 +64,7 @@ fun MishApp(
             onChangeIp = onChangeIp,
             onShowCredentials = onShowCredentials,
             onHideCredentials = onHideCredentials,
+            onDismissRotationSubmissionFailure = onDismissRotationSubmissionFailure,
         )
     }
 }
@@ -76,6 +78,7 @@ fun MainScreen(
     onChangeIp: () -> Unit,
     onShowCredentials: () -> Unit,
     onHideCredentials: () -> Unit,
+    onDismissRotationSubmissionFailure: () -> Unit = {},
 ) {
     Surface(modifier = Modifier.fillMaxSize()) {
         LazyColumn(
@@ -93,7 +96,15 @@ fun MainScreen(
             }
             item { OverallStatusCard(state) }
             item { PublicIpCard(state.publicIp) }
-            item { RotationAction(state.rotation, state.changeIpEnabled, onChangeIp) }
+            item {
+                RotationAction(
+                    state.rotation,
+                    state.changeIpEnabled,
+                    onChangeIp,
+                    state.rotationSubmissionFailure,
+                    onDismissRotationSubmissionFailure,
+                )
+            }
             item { HealthSummary(state.health) }
             item { ProxyInfo(state.proxyEndpoint) }
             item {
@@ -136,8 +147,8 @@ private fun PublicIpCard(state: PublicIpUiState) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text("Public IP", style = MaterialTheme.typography.titleMedium)
-            LabelValue("Current IP", state.current ?: "Unknown")
-            LabelValue("Previous IP", state.previous ?: "Unknown")
+            LabelValue("Verified after last change (current cellular)", state.current ?: "Not verified for current cellular")
+            LabelValue("Before last change (historical)", state.previous ?: "Not recorded")
         }
     }
 }
@@ -147,6 +158,8 @@ private fun RotationAction(
     state: RotationUiState,
     enabled: Boolean,
     onChangeIp: () -> Unit,
+    submissionFailure: RotationSubmissionFailureUi?,
+    onDismissSubmissionFailure: () -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -173,6 +186,13 @@ private fun RotationAction(
                 )
             }
             state.failure?.let { Text(rotationFailureText(it)) }
+        }
+        submissionFailure?.let { reason ->
+            Text(
+                rotationSubmissionFailureText(reason),
+                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+            )
+            TextButton(onClick = onDismissSubmissionFailure) { Text("Dismiss command error") }
         }
         Button(
             onClick = onChangeIp,
