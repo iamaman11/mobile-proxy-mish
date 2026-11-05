@@ -1,0 +1,125 @@
+name: MISH Full Diagnostic
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mish-full-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  device:
+    name: Full read-only DEVICE, CONTROL and WARP observations
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      github.event.issue.number == 163 &&
+      github.event.comment.user.login == 'iamaman11' &&
+      github.event.comment.body == '/mish-diag full'
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    timeout-minutes: 15
+    env:
+      ADB_EXE: C:\\mish-lab\\tools\\android-sdk\\platform-tools\\adb.exe
+      DIAGNOSTIC_PWSH_VERSION: '7.6.6'
+    steps:
+      - name: Checkout protected main diagnostics
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+          clean: true
+
+      - name: Verify pinned PowerShell and physical LAB
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($PSVersionTable.PSVersion.ToString() -cne $env:DIAGNOSTIC_PWSH_VERSION -or $PSVersionTable.PSEdition -cne 'Core') {
+            throw 'MISH_FULL_FAILURE|POWERSHELL_RUNTIME_MISMATCH'
+          }
+          .\lab\windows\labctl.ps1 host inspect -PhysicalLab
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Collect existing DEVICE, CONTROL and WARP evidence
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\lab\windows\collect-full-diagnostic.ps1 `
+            -AdbPath "$env:ADB_EXE" `
+            -EvidenceRoot "$env:RUNNER_TEMP\mish-full"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Publish typed per-component summary
+        if: ${{ always() }}
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        run: |
+          $path = Join-Path $env:RUNNER_TEMP 'mish-full\full.json'
+          if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            '### Full diagnostic — no bounded report (LAB collection failure)' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            exit 0
+          }
+          $evidence = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json
+          @(
+            '### Full diagnostic — DEVICE / CONTROL / WARP',
+            '',
+            "- Overall: **$($evidence.classification)**",
+            "- DEVICE / authenticated loopback + Mesh E2E: **$($evidence.stages.device.result)** / $($evidence.stages.device.classification) / $($evidence.stages.device.reason)",
+            "- CONTROL: **$($evidence.stages.control.result)** / $($evidence.stages.control.classification) / $($evidence.stages.control.reason)",
+            "- Windows WARP / Mesh route: **$($evidence.stages.warp.result)** / $($evidence.stages.warp.classification) / $($evidence.stages.warp.reason)",
+            '',
+            'Read-only, no APK install, proxy/Cellular/CONTROL/root mutation, Cloudflare write, WARP reconnect or IP rotation.'
+          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Upload typed evidence even on component failure
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mish-full-windows-${{ github.run_id }}
+          path: ${{ runner.temp }}\mish-full\
+          if-no-files-found: warn
+          retention-days: 30
+
+  cloudflare:
+    name: Existing exact Cloudflare Live Preflight
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      github.event.issue.number == 163 &&
+      github.event.comment.user.login == 'iamaman11' &&
+      github.event.comment.body == '/mish-diag full'
+    uses: ./.github/workflows/cloudflare-live-preflight.yml
+    with:
+      full_diagnostic: true
+    secrets: inherit
+
+  verdict:
+    name: One fail-closed full diagnostic verdict
+    runs-on: ubuntu-latest
+    needs: [device, cloudflare]
+    if: >-
+      always() &&
+      github.ref == 'refs/heads/main' &&
+      github.event.issue.number == 163 &&
+      github.event.comment.user.login == 'iamaman11' &&
+      github.event.comment.body == '/mish-diag full'
+    steps:
+      - name: Require both independently proven observations
+        env:
+          DEVICE_RESULT: ${{ needs.device.result }}
+          CLOUDFLARE_RESULT: ${{ needs.cloudflare.result }}
+        run: |
+          set -euo pipefail
+          {
+            echo '### MISH Full Diagnostic — fail-closed verdict'
+            echo
+            echo "- Windows DEVICE / CONTROL / WARP: **${DEVICE_RESULT}**"
+            echo "- Independent Cloudflare Live Preflight: **${CLOUDFLARE_RESULT}**"
+            echo
+            echo 'Individual typed classifications and immutable evidence are in the job summaries and artifacts above.'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$DEVICE_RESULT" != 'success' || "$CLOUDFLARE_RESULT" != 'success' ]]; then
+            echo '::error::MISH_FULL_DIAGNOSTIC=FAIL; inspect bounded typed stage evidence.'
+            exit 1
+          fi
+          echo 'MISH_FULL_DIAGNOSTIC=PASS'
