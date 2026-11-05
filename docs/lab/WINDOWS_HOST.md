@@ -63,6 +63,8 @@ Before the versioned bootstrap runs, the machine must provide only:
 
 The bootstrap materializes the LAB-1 Git, JDK, PowerShell, Gradle, Android SDK/NDK, Rust, cargo-ndk and ADB prerequisites declared by `toolchain.json`.
 
+The Windows cargo-ndk binary is downloaded from the official tagged release and verified against its pinned SHA-256; the LAB installer never compiles cargo-ndk from source or depends on a preinstalled Microsoft C++ linker merely to provision diagnostics. On a new Windows installation, pass the explicit `-AcceptAndroidSdkLicenses` switch when provisioning Android SDK packages unattended. Runner registration and signing-key restoration are separate operations; use `-ToolsOnly` to restore toolchain without touching either.
+
 No browser/client package is added merely because a later stage may need one. The current LAB-1 host-only preflight has no concrete browser/client consumer; any such prerequisite remains with the first later stage that actually requires it.
 
 ## Security boundary
