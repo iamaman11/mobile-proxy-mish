@@ -149,143 +149,31 @@ try {
     if ($joined -notmatch 'INSTRUMENTATION_CODE:\s*-1' -or
         $joined -notmatch 'OK \([1-9][0-9]* tests?\)' -or
         $joined -match 'FAILURES!!!|INSTRUMENTATION_FAILED|Process crashed') {
-        # Strictly bounded/sanitized failure evidence: test identifiers only.
-        # NEVER print raw instrumentation streams, exception stacks, stored credentials or PII.
+        # Bounded redacted evidence: named test identifiers only. Never print stdout/stacks/secrets.
         $class = 'UNKNOWN'
         $method = 'UNKNOWN'
-        $failures = 0
+        $failedCount = 0
         foreach ($row in $output) {
-            if ($row -match '^INSTRUMENTATION_STATUS: class=(com\.mobileproxymish\.app\.[A-Za-z0-9_.]{1,150})\s*
-    $testPassed = $true
-}
-catch { $operationError = $_.Exception.Message }
-finally {
-    if ($touchTest) {
-        try { [void](Run-Adb -Arguments @('uninstall', $testPackage) -TimeoutSeconds 90) }
-        catch { if (-not $operationError) { $operationError = 'TEMP_ISOLATED|TEST_CLEANUP_FAILED' } }
-    }
-    if ($touchApp) {
-        try { [void](Run-Adb -Arguments @('uninstall', $isolated) -TimeoutSeconds 90) }
-        catch { if (-not $operationError) { $operationError = 'TEMP_ISOLATED|APP_CLEANUP_FAILED' } }
-    }
-    if ((Installed-Path $isolated) -or (Installed-Path $testPackage)) {
-        $operationError = 'TEMP_ISOLATED|CLEANUP_NOT_VERIFIED'
-    }
-    if ((Read-Stable-Hash) -cne $beforeHash) {
-        $operationError = 'TEMP_ISOLATED|PRIMARY_APK_CHANGED'
-    }
-    try {
-        Check-Primary -EvidencePath (Join-Path $env:RUNNER_TEMP 'primary-after-isolated.json')
-    }
-    catch { $operationError = 'TEMP_ISOLATED|PRIMARY_POSTCHECK_FAILED' }
-
-    if ($env:GITHUB_STEP_SUMMARY) {
-        @(
-            '### #463 isolated DEVICE-1 instrumentation'
-            "Exact source: $ExpectedSourceSha"
-            "Disposable package: $isolated (never replaces $stable)"
-            "Instrumented tests PASS: $testPassed"
-            "Result: $(if ($operationError) { 'FAILED' } else { 'PASS' })"
-        ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-    }
-}
-if ($operationError) { throw $operationError }
-if (-not $testPassed) { throw 'TEMP_ISOLATED|NOT_VERIFIED' }
-Write-Host 'TEMP_ISOLATED_PHYSICAL=PASS'
-) {
+            if ($row -match '^INSTRUMENTATION_STATUS: class=(com\.mobileproxymish\.app\.[A-Za-z0-9_.]{1,150})\s*$') {
                 $class = [string]$Matches[1]
             }
-            if ($row -match '^INSTRUMENTATION_STATUS: test=([A-Za-z][A-Za-z0-9_]{0,100})\s*
-    $testPassed = $true
-}
-catch { $operationError = $_.Exception.Message }
-finally {
-    if ($touchTest) {
-        try { [void](Run-Adb -Arguments @('uninstall', $testPackage) -TimeoutSeconds 90) }
-        catch { if (-not $operationError) { $operationError = 'TEMP_ISOLATED|TEST_CLEANUP_FAILED' } }
-    }
-    if ($touchApp) {
-        try { [void](Run-Adb -Arguments @('uninstall', $isolated) -TimeoutSeconds 90) }
-        catch { if (-not $operationError) { $operationError = 'TEMP_ISOLATED|APP_CLEANUP_FAILED' } }
-    }
-    if ((Installed-Path $isolated) -or (Installed-Path $testPackage)) {
-        $operationError = 'TEMP_ISOLATED|CLEANUP_NOT_VERIFIED'
-    }
-    if ((Read-Stable-Hash) -cne $beforeHash) {
-        $operationError = 'TEMP_ISOLATED|PRIMARY_APK_CHANGED'
-    }
-    try {
-        Check-Primary -EvidencePath (Join-Path $env:RUNNER_TEMP 'primary-after-isolated.json')
-    }
-    catch { $operationError = 'TEMP_ISOLATED|PRIMARY_POSTCHECK_FAILED' }
-
-    if ($env:GITHUB_STEP_SUMMARY) {
-        @(
-            '### #463 isolated DEVICE-1 instrumentation'
-            "Exact source: $ExpectedSourceSha"
-            "Disposable package: $isolated (never replaces $stable)"
-            "Instrumented tests PASS: $testPassed"
-            "Result: $(if ($operationError) { 'FAILED' } else { 'PASS' })"
-        ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-    }
-}
-if ($operationError) { throw $operationError }
-if (-not $testPassed) { throw 'TEMP_ISOLATED|NOT_VERIFIED' }
-Write-Host 'TEMP_ISOLATED_PHYSICAL=PASS'
-) {
+            if ($row -match '^INSTRUMENTATION_STATUS: test=([A-Za-z][A-Za-z0-9_]{0,100})\s*$') {
                 $method = [string]$Matches[1]
             }
-            if ($row -match '^INSTRUMENTATION_STATUS_CODE:\s*(-2|-1)\s*
-    $testPassed = $true
-}
-catch { $operationError = $_.Exception.Message }
-finally {
-    if ($touchTest) {
-        try { [void](Run-Adb -Arguments @('uninstall', $testPackage) -TimeoutSeconds 90) }
-        catch { if (-not $operationError) { $operationError = 'TEMP_ISOLATED|TEST_CLEANUP_FAILED' } }
-    }
-    if ($touchApp) {
-        try { [void](Run-Adb -Arguments @('uninstall', $isolated) -TimeoutSeconds 90) }
-        catch { if (-not $operationError) { $operationError = 'TEMP_ISOLATED|APP_CLEANUP_FAILED' } }
-    }
-    if ((Installed-Path $isolated) -or (Installed-Path $testPackage)) {
-        $operationError = 'TEMP_ISOLATED|CLEANUP_NOT_VERIFIED'
-    }
-    if ((Read-Stable-Hash) -cne $beforeHash) {
-        $operationError = 'TEMP_ISOLATED|PRIMARY_APK_CHANGED'
-    }
-    try {
-        Check-Primary -EvidencePath (Join-Path $env:RUNNER_TEMP 'primary-after-isolated.json')
-    }
-    catch { $operationError = 'TEMP_ISOLATED|PRIMARY_POSTCHECK_FAILED' }
-
-    if ($env:GITHUB_STEP_SUMMARY) {
-        @(
-            '### #463 isolated DEVICE-1 instrumentation'
-            "Exact source: $ExpectedSourceSha"
-            "Disposable package: $isolated (never replaces $stable)"
-            "Instrumented tests PASS: $testPassed"
-            "Result: $(if ($operationError) { 'FAILED' } else { 'PASS' })"
-        ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-    }
-}
-if ($operationError) { throw $operationError }
-if (-not $testPassed) { throw 'TEMP_ISOLATED|NOT_VERIFIED' }
-Write-Host 'TEMP_ISOLATED_PHYSICAL=PASS'
-) {
-                $failures++
-                if ($failures -le 8) { Write-Host "TEMP_ISOLATED_TEST_FAILURE=$class#$method" }
+            if ($row -match '^INSTRUMENTATION_STATUS_CODE:\s*(-2|-1)\s*$') {
+                $failedCount++
+                if ($failedCount -le 8) { Write-Host "TEMP_ISOLATED_TEST_FAILURE=$class#$method" }
             }
         }
         $failureClass = if ($joined -match 'Process crashed|INSTRUMENTATION_FAILED') {
             'RUNNER_CRASH'
-        } elseif ($failures -gt 0) {
+        } elseif ($failedCount -gt 0) {
             'TEST_FAILURE'
         } else {
             'TERMINAL_RESULT_NOT_PASS'
         }
         Write-Host "TEMP_ISOLATED_TEST_FAILURE_CLASS=$failureClass"
-        Write-Host "TEMP_ISOLATED_TEST_FAILED_COUNT=$failures"
+        Write-Host "TEMP_ISOLATED_TEST_FAILED_COUNT=$failedCount"
         throw 'TEMP_ISOLATED|INSTRUMENTATION_NOT_PASS'
     }
     $testPassed = $true
