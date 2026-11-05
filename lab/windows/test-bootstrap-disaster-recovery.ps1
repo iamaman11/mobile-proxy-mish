@@ -26,11 +26,18 @@ foreach ($required in @(
     'if ($service.State -ne ''Stopped''',
     'sc.exe delete $expectedName',
     'Orphan repair refuses to remove a service while either registration marker exists.',
-    'Windows service deletion is pending'
+    'Windows service deletion is pending',
+    '$manifest.rust.cargo_ndk_url',
+    '$manifest.rust.cargo_ndk_sha256',
+    "'cargo-ndk.exe'", 
+    'Pinned cargo-ndk prebuilt executable failed the version postcondition.'
 )) {
     if (-not $text.Contains($required)) { throw "BOOTSTRAP_RECOVERY_TEST|MISSING_GUARD|$required" }
 }
 
+if ($text -match 'cargo\s+install\s+cargo-ndk|''install'',\s*''cargo-ndk''') {
+    throw 'BOOTSTRAP_RECOVERY_TEST|LOCAL_COMPILATION_DEPENDENCY'
+}
 $toolsOnly = $text.IndexOf('if ($ToolsOnly) {')
 $repair = $text.IndexOf('if ($RepairOrphanedRunnerService) {', $toolsOnly)
 $token = $text.IndexOf('Get-RunnerRegistrationSecureToken `', $toolsOnly)
