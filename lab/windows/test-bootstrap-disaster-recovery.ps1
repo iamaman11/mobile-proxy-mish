@@ -21,7 +21,7 @@ foreach ($required in @(
     'if ($RepairOrphanedRunnerService) {',
     'Get-CimInstance Win32_Process -Filter',
     'Get-CimInstance Win32_Service',
-    "if ($service.State -ne 'Stopped'",
+    'if ($service.State -ne ''Stopped''',
     'sc.exe delete $expectedName',
     'Orphan repair refuses to remove a service while either registration marker exists.',
     'Windows service deletion is pending'
@@ -29,8 +29,8 @@ foreach ($required in @(
     if (-not $text.Contains($required)) { throw "BOOTSTRAP_RECOVERY_TEST|MISSING_GUARD|$required" }
 }
 
-$toolsOnly = $text.IndexOf("if ($" + "ToolsOnly) {")
-$repair = $text.IndexOf("if ($" + "RepairOrphanedRunnerService) {", $toolsOnly)
+$toolsOnly = $text.IndexOf('if ($ToolsOnly) {')
+$repair = $text.IndexOf('if ($RepairOrphanedRunnerService) {', $toolsOnly)
 $token = $text.IndexOf('Get-RunnerRegistrationSecureToken `', $toolsOnly)
 if ($toolsOnly -lt 0 -or $repair -le $toolsOnly -or $token -le $repair) {
     throw 'BOOTSTRAP_RECOVERY_TEST|TOOLS_MUST_BE_RECOVERABLE_WITHOUT_RUNNER_TOKEN'
