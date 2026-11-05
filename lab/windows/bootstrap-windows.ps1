@@ -7,6 +7,8 @@ param(
     [string]$RunnerName = '',
     [string]$RunnerTokenProviderExecutable = '',
     [string]$RunnerTokenProviderArgumentsJson = '',
+    [switch]$ToolsOnly,
+    [switch]$RepairOrphanedRunnerService,
     [switch]$SelfTest
 )
 
@@ -367,6 +369,56 @@ function Get-RunnerRegistrationSecureToken {
     }
 }
 
+# An old Windows service is not a valid runner registration when its .runner/.service
+# files are missing. This repair is explicit and restricted to this one LAB service.
+function Repair-ExactOrphanedRunnerService {
+    param([Parameter(Mandatory)][string]$RunnerRoot)
+
+    $runnerMarker = Join-Path $RunnerRoot '.runner'
+    $serviceMarker = Join-Path $RunnerRoot '.service'
+    if ((Test-Path -LiteralPath $runnerMarker) -or (Test-Path -LiteralPath $serviceMarker)) {
+        throw 'Orphan repair refuses to remove a service while either registration marker exists.'
+    }
+
+    $expectedName = 'actions.runner.iamaman11-mobile-proxy-mish.mish-lab-' + $env:COMPUTERNAME.ToLowerInvariant()
+    $expectedBinary = [IO.Path]::GetFullPath((Join-Path $RunnerRoot 'bin\RunnerService.exe'))
+    $matches = @(Get-CimInstance Win32_Service | Where-Object {
+        $_.Name -like 'actions.runner.iamaman11-mobile-proxy-mish.*'
+    })
+    if ($matches.Count -eq 0) {
+        Write-Host 'No orphaned MISH runner service exists; no cleanup needed.'
+        return
+    }
+    if ($matches.Count -ne 1 -or $matches[0].Name -cne $expectedName) {
+        throw 'Runner service inventory is ambiguous; no service was changed.'
+    }
+    $service = $matches[0]
+    $binary = ([string]$service.PathName).Trim().Trim('"')
+    if ($service.State -ne 'Stopped' -or
+        $service.StartName -ine 'NT AUTHORITY\NETWORK SERVICE' -or
+        -not [IO.Path]::IsPathFullyQualified($binary) -or
+        [IO.Path]::GetFullPath($binary) -ine $expectedBinary) {
+        throw 'Runner service is active or does not match the exact MISH LAB binary/identity; refusing repair.'
+    }
+    $active = @(Get-CimInstance Win32_Process -Filter "Name='RunnerService.exe'" |
+        Where-Object {
+            $_.ExecutablePath -and
+            [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $expectedBinary
+        })
+    if ($active.Count -ne 0) {
+        throw 'A MISH runner service executable is still running; refusing removal.'
+    }
+
+    Write-Host "Explicit repair: unregistering the verified stopped orphan MISH LAB service $expectedName"
+    & sc.exe delete $expectedName | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Windows refused to unregister the exact orphan MISH LAB service.'
+    }
+    if (Get-CimInstance Win32_Service -Filter ("Name='" + $expectedName + "'")) {
+        throw 'Windows service deletion is pending; retry bootstrap only after it is fully removed.'
+    }
+}
+
 function Get-ConfiguredRunnerService {
     param([Parameter(Mandatory)][string]$RunnerRoot)
 
@@ -397,6 +449,9 @@ if ($SelfTest) {
 }
 
 Assert-Administrator
+if ($ToolsOnly -and $RepairOrphanedRunnerService) {
+    throw 'ToolsOnly cannot unregister Windows services. Run a separate explicitly approved runner repair.'
+}
 if (-not [Environment]::Is64BitOperatingSystem) {
     throw 'LAB-1 requires 64-bit Windows.'
 }
@@ -522,6 +577,17 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Failed to grant NetworkService read/execute access to tools root.' }
     & icacls.exe $cargoHome /grant '*S-1-5-20:(OI)(CI)M' /T /C | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Failed to grant NetworkService modify access to Cargo home.' }
+
+    if ($ToolsOnly) {
+        Write-Host 'MISH_LAB_TOOLS=PASS'
+        Write-Host "Canonical ADB: $canonicalAdb"
+        Write-Host 'Tools installed; runner service and Android signing identity were not changed.'
+        return
+    }
+
+    if ($RepairOrphanedRunnerService) {
+        Repair-ExactOrphanedRunnerService -RunnerRoot $runnerRoot
+    }
 
     $service = Get-ConfiguredRunnerService -RunnerRoot $runnerRoot
     if ($service) {
