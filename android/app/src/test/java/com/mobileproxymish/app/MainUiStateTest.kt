@@ -25,6 +25,58 @@ import org.junit.Test
 
 class MainUiStateTest {
     @Test
+    fun commandSubmissionFailureIsBoundedAndDoesNotChangeOwnerReadiness() {
+        val ready = projectProductUi(input(readiness = ProductReadinessState.READY))
+        val rejected = ready.copy(rotationSubmissionFailure = RotationSubmissionFailureUi.NO_CURRENT_CELLULAR)
+        assertEquals(ProductOverallUiState.READY, rejected.overall)
+        assertEquals(ready.rotation, rejected.rotation)
+        assertTrue(rejected.changeIpEnabled)
+        assertEquals(
+            "IP change was not started: no current cellular network.",
+            rotationSubmissionFailureText(rejected.rotationSubmissionFailure!!),
+        )
+        assertEquals(
+            RotationSubmissionFailureUi.UNKNOWN,
+            rotationSubmissionFailure(IllegalArgumentException("must-not-display-secret")),
+        )
+        assertEquals(
+            RotationSubmissionFailureUi.NATIVE_UNAVAILABLE,
+            rotationSubmissionFailure(UnsatisfiedLinkError("must-not-display-secret")),
+        )
+        assertFalse(rotationSubmissionFailureText(RotationSubmissionFailureUi.UNKNOWN).contains("must-not-display-secret"))
+    }
+
+    @Test
+    fun ipLabelsDoNotClaimAnyFreshProbeOutsideRustRotation() {
+        val fresh = projectProductUi(
+            input(
+                cellular = cellular(sequence = 8uL),
+                rotation = rotation(
+                    phase = RotationPhaseView.CHANGED,
+                    terminal = RotationTerminalResultView.CHANGED,
+                    beforeIp = "198.51.100.10",
+                    afterIp = "198.51.100.11",
+                ),
+            ),
+        )
+        assertEquals("198.51.100.11", fresh.publicIp.current)
+        assertEquals("198.51.100.10", fresh.publicIp.previous)
+        val stale = projectProductUi(
+            input(
+                cellular = cellular(sequence = 9uL),
+                rotation = rotation(
+                    phase = RotationPhaseView.CHANGED,
+                    terminal = RotationTerminalResultView.CHANGED,
+                    beforeIp = "198.51.100.10",
+                    afterIp = "198.51.100.11",
+                ),
+            ),
+        )
+        assertNull(stale.publicIp.current)
+        assertEquals("198.51.100.10", stale.publicIp.previous)
+    }
+
+    @Test
     fun overallReadinessIsExactlyTheRustProjection() {
         val expected = mapOf(
             ProductReadinessState.READY to ProductOverallUiState.READY,
