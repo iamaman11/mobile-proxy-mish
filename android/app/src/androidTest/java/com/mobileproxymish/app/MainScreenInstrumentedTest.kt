@@ -19,6 +19,54 @@ class MainScreenInstrumentedTest {
     val compose = createComposeRule()
 
     @Test
+    fun rejectedNativeCommandIsVisibleDismissibleAndNotRotationFailure() {
+        var dismissCount = 0
+        compose.setContent {
+            MishTheme {
+                MainScreen(
+                    state = readyState().copy(
+                        rotationSubmissionFailure = RotationSubmissionFailureUi.ROOT_POLICY_UNAVAILABLE,
+                    ),
+                    credentialReveal = CredentialRevealUiState.Hidden,
+                    diagnosticsExpanded = false,
+                    onDiagnosticsExpandedChange = {},
+                    onChangeIp = {},
+                    onShowCredentials = {},
+                    onHideCredentials = {},
+                    onDismissRotationSubmissionFailure = { dismissCount++ },
+                )
+            }
+        }
+        compose.onNodeWithText("IP change was not started: root policy is unavailable.").assertExists()
+        compose.onNodeWithText("IP change failed").assertDoesNotExist()
+        compose.onNodeWithText("Dismiss command error").performClick()
+        assertEquals(1, dismissCount)
+    }
+
+    @Test
+    fun unverifiedIpIsNotMisrepresentedAsCurrent() {
+        compose.setContent {
+            MishTheme {
+                MainScreen(
+                    state = readyState().copy(publicIp = PublicIpUiState(
+                        current = null,
+                        previous = "198.51.100.10",
+                    )),
+                    credentialReveal = CredentialRevealUiState.Hidden,
+                    diagnosticsExpanded = false,
+                    onDiagnosticsExpandedChange = {},
+                    onChangeIp = {},
+                    onShowCredentials = {},
+                    onHideCredentials = {},
+                )
+            }
+        }
+        compose.onNodeWithText("Verified after last change (current cellular)").assertExists()
+        compose.onNodeWithText("Not verified for current cellular").assertExists()
+        compose.onNodeWithText("Before last change (historical)").assertExists()
+    }
+
+    @Test
     fun readyDashboardShowsStatusHealthProxyAndEnabledAction() {
         var changeRequests = 0
         compose.setContent {
