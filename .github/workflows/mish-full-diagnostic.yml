@@ -48,7 +48,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           .\lab\windows\collect-full-diagnostic.ps1 `
             -AdbPath "$env:ADB_EXE" `
-            -EvidenceRoot "$env:RUNNER_TEMP\mish-full"
+            -EvidenceRoot "$env:RUNNER_TEMP\mish-full" `
+            -PhysicalLab
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Publish typed per-component summary
