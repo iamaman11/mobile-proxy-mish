@@ -274,6 +274,52 @@ class MainUiStateTest {
         assertFalse(fieldNames.any { "password" in it || "username" in it || "credential" in it })
     }
 
+    @Test
+    fun rejectedCommandIsPresentationOnlyAndNeverChangesBackendReadiness() {
+        val state = projectProductUi(input(commandRejection = "Proxy credentials are unavailable."))
+        assertEquals(ProductOverallUiState.READY, state.overall)
+        assertTrue(state.changeIpEnabled)
+        assertEquals("Proxy credentials are unavailable.", state.commandRejection)
+        assertEquals(ProductOverallUiState.READY, state.copy(commandRejection = null).overall)
+    }
+
+    @Test
+    fun nativeRotationCommandRejectionsAreTranslatedWithoutLeakingUnknownDetails() {
+        val cases = mapOf(
+            "PRODUCT runtime is not running" to "Runtime is not running.",
+            "an IP rotation is already in progress" to "An IP change is already in progress.",
+            "no current admitted Cellular generation" to "No current mobile network is available.",
+            "root policy is not authorized for current Cellular generation" to "Network policy is not authorized.",
+            "current proxy credential is unavailable" to "Proxy credentials are unavailable.",
+            "native PRODUCT executor is unavailable" to "Runtime execution is unavailable.",
+            "native rotation state is unavailable" to "Rotation state is unavailable.",
+        )
+        cases.forEach { (native, expected) ->
+            assertEquals(expected, rotationCommandRejectionText(IllegalStateException(native)))
+        }
+        val error = IllegalStateException("secret-password=must-not-appear")
+        val text = rotationCommandRejectionText(error)
+        assertFalse(text.contains("secret-password"))
+        assertEquals("IP change request was rejected. See advanced diagnostics.", text)
+    }
+
+    @Test
+    fun ipNeverBecomesCurrentBasedOnHistoricalRotationAlone() {
+        val stale = projectProductUi(
+            input(
+                cellular = cellular(sequence = 19uL),
+                rotation = rotation(
+                    phase = RotationPhaseView.UNCHANGED,
+                    terminal = RotationTerminalResultView.UNCHANGED,
+                    beforeIp = "198.51.100.10",
+                    afterIp = "198.51.100.10",
+                ),
+            ),
+        )
+        assertNull(stale.publicIp.current)
+        assertEquals("198.51.100.10", stale.publicIp.previous)
+    }
+
     private fun input(
         readiness: ProductReadinessState = ProductReadinessState.READY,
         cellular: CellularRuntimeSnapshot = cellular(),
@@ -281,6 +327,7 @@ class MainUiStateTest {
         mesh: MeshAdmissionView? = readyMesh(),
         rotation: RotationSnapshotView = rotation(),
         listeners: List<ProxyListenerView> = emptyList(),
+        commandRejection: String? = null,
     ): ProductPresentationInput = ProductPresentationInput(
         readiness = readiness,
         cellular = cellular,
@@ -288,6 +335,7 @@ class MainUiStateTest {
         mesh = mesh,
         rotation = rotation,
         proxyListeners = listeners,
+        commandRejection = commandRejection,
     )
 
     private fun cellular(
