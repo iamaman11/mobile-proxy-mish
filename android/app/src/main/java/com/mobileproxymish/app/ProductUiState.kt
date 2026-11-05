@@ -148,6 +148,8 @@ internal fun projectProductUi(input: ProductPresentationInput): ProductUiState {
         publicIp = PublicIpUiState(
             current = input.rotation.afterIp?.takeIf {
                 !rotation.inProgress &&
+                    (input.rotation.terminalResult == RotationTerminalResultView.CHANGED ||
+                        input.rotation.terminalResult == RotationTerminalResultView.UNCHANGED) &&
                     input.rotation.afterGeneration != null &&
                     input.rotation.afterGeneration == currentCellularGeneration
             },
