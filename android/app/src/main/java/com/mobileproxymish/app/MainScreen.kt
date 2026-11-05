@@ -93,7 +93,7 @@ fun MainScreen(
             }
             item { OverallStatusCard(state) }
             item { PublicIpCard(state.publicIp) }
-            item { RotationAction(state.rotation, state.changeIpEnabled, onChangeIp) }
+            item { RotationAction(state.rotation, state.changeIpEnabled, state.commandRejection, onChangeIp) }
             item { HealthSummary(state.health) }
             item { ProxyInfo(state.proxyEndpoint) }
             item {
@@ -136,8 +136,8 @@ private fun PublicIpCard(state: PublicIpUiState) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text("Public IP", style = MaterialTheme.typography.titleMedium)
-            LabelValue("Current IP", state.current ?: "Unknown")
-            LabelValue("Previous IP", state.previous ?: "Unknown")
+            LabelValue("Verified IP after last change (current cellular)", state.current ?: "Not verified for current cellular network")
+            LabelValue("IP before last change (historical)", state.previous ?: "Not recorded")
         }
     }
 }
@@ -146,6 +146,7 @@ private fun PublicIpCard(state: PublicIpUiState) {
 private fun RotationAction(
     state: RotationUiState,
     enabled: Boolean,
+    commandRejection: String?,
     onChangeIp: () -> Unit,
 ) {
     Column(
@@ -174,6 +175,7 @@ private fun RotationAction(
             }
             state.failure?.let { Text(rotationFailureText(it)) }
         }
+        commandRejection?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
         Button(
             onClick = onChangeIp,
             enabled = enabled,
