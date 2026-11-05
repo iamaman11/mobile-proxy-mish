@@ -14,17 +14,17 @@ foreach ($name in @('RepositoryCommit', 'ToolsOnly', 'RepairOrphanedRunnerServic
 
 $text = Get-Content -Raw -LiteralPath $bootstrap
 foreach ($required in @(
-    "if ($" + "ToolsOnly -and $" + "RepairOrphanedRunnerService)",
-    "if ($" + "ToolsOnly) {",
+    'if ($ToolsOnly -and $RepairOrphanedRunnerService)',
+    'if ($ToolsOnly) {',
     "Write-Host 'MISH_LAB_TOOLS=PASS'",
     'Repair-ExactOrphanedRunnerService -RunnerRoot $runnerRoot',
-    "if ($" + "RepairOrphanedRunnerService) {",
-    "Get-CimInstance Win32_Process -Filter",
-    "Get-CimInstance Win32_Service",
-    "if ($" + "service.State -ne 'Stopped'",
-    "sc.exe delete $" + "expectedName",
-    "Orphan repair refuses to remove a service while either registration marker exists.",
-    "Windows service deletion is pending"
+    'if ($RepairOrphanedRunnerService) {',
+    'Get-CimInstance Win32_Process -Filter',
+    'Get-CimInstance Win32_Service',
+    "if ($service.State -ne 'Stopped'",
+    'sc.exe delete $expectedName',
+    'Orphan repair refuses to remove a service while either registration marker exists.',
+    'Windows service deletion is pending'
 )) {
     if (-not $text.Contains($required)) { throw "BOOTSTRAP_RECOVERY_TEST|MISSING_GUARD|$required" }
 }
