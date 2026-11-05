@@ -40,6 +40,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     internal val credentialReveal: StateFlow<CredentialRevealUiState>
         get() = mutableCredentialReveal.asStateFlow()
 
+    // UI-only feedback for a synchronous rejected command. Native Rotation remains sole owner.
+    private val mutableRotationSubmissionFailure = MutableStateFlow<RotationSubmissionFailureUi?>(null)
+
     private fun projectCurrent(): ProductUiState = projectProductUi(
         ProductPresentationInput(
             readiness = runtimeController.readinessSnapshot.value,
@@ -51,7 +54,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         ),
     )
 
-    val state: StateFlow<ProductUiState> = combine(
+    private val nativeState = combine(
         runtimeController.cellularSnapshot,
         runtimeController.proxySnapshot,
         runtimeController.readinessSnapshot,
@@ -68,6 +71,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 proxyListeners = proxyListeners,
             ),
         )
+    }
+
+    val state: StateFlow<ProductUiState> = combine(
+        nativeState,
+        mutableRotationSubmissionFailure,
+    ) { product, rejected ->
+        product.copy(rotationSubmissionFailure = rejected)
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
@@ -75,8 +85,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
 
     fun changePublicIp() {
-        // UI disablement is presentation only. Rust still rejects repeated/concurrent starts.
-        runCatching(runtimeController::startPublicIpRotation)
+        // Button disablement is presentation only. Rust is the sole admission/operation owner.
+        mutableRotationSubmissionFailure.value = null
+        try {
+            runtimeController.startPublicIpRotation()
+        } catch (error: Exception) {
+            mutableRotationSubmissionFailure.value = rotationSubmissionFailure(error)
+        } catch (error: LinkageError) {
+            mutableRotationSubmissionFailure.value = rotationSubmissionFailure(error)
+        }
+    }
+
+    fun dismissRotationSubmissionFailure() {
+        mutableRotationSubmissionFailure.value = null
     }
 
     fun showCurrentCredentials() {
