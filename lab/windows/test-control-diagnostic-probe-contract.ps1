@@ -17,7 +17,8 @@ if ($errors.Count -ne 0) {
 $source = Get-Content -Raw -LiteralPath $scriptPath
 foreach ($required in @(
     '2>$null',
-    "Stop-MishControlDiagnostic 'ADB_FAILED'",
+    "Stop-MishControlDiagnostic 'ADB_COMMAND_FAILED'",
+    'Assert-MishAdbReady',
     "Stop-MishControlDiagnostic 'PRODUCT_PROCESS_NOT_RUNNING'",
     "Stop-MishControlDiagnostic 'PRODUCT_PID_CHANGED'",
     'control_snapshot_v1',
@@ -83,6 +84,10 @@ $payload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($native | C
 $fakeSource = @'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "$*" == "devices" ]]; then
+  printf 'List of devices attached\nsynthetic-device\tdevice\n'
+  exit 0
+fi
 if [[ "$*" == "shell pidof __PACKAGE__" ]]; then
   echo "* daemon not running; starting now at tcp:5037" >&2
   echo "* daemon started successfully" >&2

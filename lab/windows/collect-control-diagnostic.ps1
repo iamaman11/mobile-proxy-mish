@@ -26,14 +26,13 @@ function Invoke-MishAdbText {
     $rows = @(& $AdbPath @Arguments 2>$null | ForEach-Object { [string]$_ })
     $exitCode = $LASTEXITCODE
     if ($null -eq $exitCode -or $exitCode -ne 0) {
-        Stop-MishControlDiagnostic 'ADB_FAILED' "ADB command failed with exit code $exitCode."
+        Stop-MishControlDiagnostic 'ADB_COMMAND_FAILED' "ADB command failed with exit code $exitCode."
     }
     return ($rows -join [Environment]::NewLine).Trim()
 }
 
-if (-not (Test-Path -LiteralPath $AdbPath -PathType Leaf)) {
-    Stop-MishControlDiagnostic 'ADB_MISSING' 'Canonical ADB executable is missing.'
-}
+Import-Module (Join-Path $PSScriptRoot 'AdbDiagnostic.psm1') -Force
+Assert-MishAdbReady -AdbPath $AdbPath -FailurePrefix 'MISH_CONTROL_DIAGNOSTIC_FAILURE'
 
 $pidBefore = Invoke-MishAdbText -Arguments @('shell', 'pidof', $PackageName)
 if ([string]::IsNullOrWhiteSpace($pidBefore) -or $pidBefore -match '\s') {

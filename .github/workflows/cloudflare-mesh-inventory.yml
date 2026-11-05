@@ -1,0 +1,72 @@
+name: Cloudflare Mesh Route Inventory
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/cloudflare-mesh-inventory.yml'
+      - 'lab/cloudflare/mesh_inventory.py'
+      - 'lab/cloudflare/test_mesh_inventory.py'
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-mesh-route-inventory
+  cancel-in-progress: false
+
+jobs:
+  offline-tests:
+    name: Offline inventory contract tests
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate schema, fail-closed pagination, redaction
+        run: python3 -m unittest discover -s lab/cloudflare -p 'test_mesh_inventory.py' -v
+
+  inspect:
+    name: Read-only Mesh route and profile inventory
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.issue.number == 163 &&
+      github.event.comment.user.login == 'iamaman11' &&
+      github.event.comment.body == '/mish-diag mesh-inventory'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: cloudflare-plan
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - name: Checkout protected main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Verify accepted main and token prerequisite
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+          git fetch --no-tags origin main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+          test -n "$CLOUDFLARE_API_TOKEN"
+
+      - name: Test offline pagination, redaction and route classification
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s lab/cloudflare -p 'test_mesh_inventory.py' -v
+
+      - name: Read authorized account inventory and publish redacted summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 lab/cloudflare/mesh_inventory.py >> "$GITHUB_STEP_SUMMARY"

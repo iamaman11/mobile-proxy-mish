@@ -1,6 +1,12 @@
 name: Cloudflare Live Preflight
 
 on:
+  workflow_call:
+    inputs:
+      full_diagnostic:
+        description: 'Trusted full read-only diagnostics from protected-main workflow'
+        type: boolean
+        required: true
   workflow_dispatch:
   issue_comment:
     types: [created]
@@ -23,6 +29,7 @@ jobs:
     if: >-
       github.ref == 'refs/heads/main' &&
       (
+        inputs.full_diagnostic == true ||
         github.event_name != 'issue_comment' ||
         (
           github.event.issue.number == 163 &&
