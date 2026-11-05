@@ -141,7 +141,8 @@ try {
     $classes = @(
         'com.mobileproxymish.app.TemporaryAccessIsolatedPackageInstrumentedTest',
         'com.mobileproxymish.app.TemporaryProxyCredentialDurabilityInstrumentedTest',
-        'com.mobileproxymish.app.TemporaryProxyAccessDialogInstrumentedTest'
+        'com.mobileproxymish.app.TemporaryProxyAccessDialogInstrumentedTest',
+        'com.mobileproxymish.app.MainScreenInstrumentedTest'
     ) -join ','
     $output = @(Run-Adb -Arguments @('shell','am','instrument','-w','-r','-e','class',$classes,$runner) -TimeoutSeconds 240)
     $joined = $output -join [Environment]::NewLine
