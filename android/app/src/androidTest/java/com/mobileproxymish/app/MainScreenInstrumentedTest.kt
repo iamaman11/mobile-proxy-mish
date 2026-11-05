@@ -19,6 +19,34 @@ class MainScreenInstrumentedTest {
     val compose = createComposeRule()
 
     @Test
+    fun temporaryAccessAndTypedRotationFeedbackCoexistWithoutSideEffects() {
+        var temporaryOpenRequests = 0
+        var dismissRequests = 0
+        compose.setContent {
+            MishTheme {
+                MainScreen(
+                    state = readyState().copy(
+                        rotationSubmissionFailure = RotationSubmissionFailureUi.CREDENTIAL_UNAVAILABLE,
+                    ),
+                    credentialReveal = CredentialRevealUiState.Hidden,
+                    diagnosticsExpanded = false,
+                    onDiagnosticsExpandedChange = {},
+                    onChangeIp = {},
+                    onShowCredentials = {},
+                    onHideCredentials = {},
+                    onManageTemporary = { temporaryOpenRequests++ },
+                    onDismissRotationSubmissionFailure = { dismissRequests++ },
+                )
+            }
+        }
+        compose.onNodeWithText("IP change was not started: proxy credentials are unavailable.").assertExists()
+        compose.onNodeWithText("Temporary access (24h)").assertHasClickAction().performClick()
+        compose.onNodeWithText("Dismiss command error").assertHasClickAction().performClick()
+        assertEquals(1, temporaryOpenRequests)
+        assertEquals(1, dismissRequests)
+    }
+
+    @Test
     fun rejectedNativeCommandIsVisibleDismissibleAndNotRotationFailure() {
         var dismissCount = 0
         compose.setContent {
