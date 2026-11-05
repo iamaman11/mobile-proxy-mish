@@ -275,6 +275,25 @@ class MainUiStateTest {
     }
 
     @Test
+    fun failedRotationNeverClaimsAnObservedAfterIpIsCurrent() {
+        val state = projectProductUi(
+            input(
+                cellular = cellular(sequence = 8uL),
+                rotation = rotation(
+                    phase = RotationPhaseView.FAILED,
+                    terminal = RotationTerminalResultView.FAILED,
+                    failure = RotationFailureView.ROOT_POLICY_RECOVERY_FAILED,
+                    beforeIp = "198.51.100.20",
+                    afterIp = "198.51.100.21",
+                ),
+            ),
+        )
+        assertNull(state.publicIp.current)
+        assertEquals("198.51.100.20", state.publicIp.previous)
+        assertEquals(RotationResultUi.FAILED, state.rotation.result)
+    }
+
+    @Test
     fun rejectedCommandIsPresentationOnlyAndNeverChangesBackendReadiness() {
         val state = projectProductUi(input(commandRejection = "Proxy credentials are unavailable."))
         assertEquals(ProductOverallUiState.READY, state.overall)
