@@ -60,8 +60,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         runtimeController.readinessSnapshot,
         runtimeController.meshSnapshot,
         runtimeController.rotationSnapshot,
-        commandRejection,
-    ) { cellular, proxy, readiness, mesh, rotation, rejection ->
+    ) { cellular, proxy, readiness, mesh, rotation ->
         projectProductUi(
             ProductPresentationInput(
                 readiness = readiness,
@@ -70,9 +69,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 mesh = mesh,
                 rotation = rotation,
                 proxyListeners = proxyListeners,
-                commandRejection = rejection,
             ),
         )
+    }.combine(commandRejection) { projected, rejection ->
+        projected.copy(commandRejection = rejection)
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
