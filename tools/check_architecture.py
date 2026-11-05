@@ -235,7 +235,7 @@ def main() -> None:
     ui_projection = "android/app/src/main/java/com/mobileproxymish/app/ProductUiState.kt"
     ui_screen = "android/app/src/main/java/com/mobileproxymish/app/MainScreen.kt"
     require(ui_viewmodel, "rotationSubmissionFailure(error)", "native command rejection must reach UI")
-    require(ui_projection, "is NativeRotationStartError.RuntimeNotRunning", "use typed Rust command errors")
+    require(ui_projection, "is NativeRotationStartException.RuntimeNotRunning", "use typed Rust command errors")
     require(ui_projection, "input.rotation.afterGeneration == currentCellularGeneration",
             "last-rotation IP must remain generation-bound")
     require(ui_screen, "Not verified for current cellular",
