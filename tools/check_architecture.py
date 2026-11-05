@@ -2508,7 +2508,7 @@ def main() -> None:
     main_view_model = "android/app/src/main/java/com/mobileproxymish/app/MainViewModel.kt"
     require(
         main_view_model,
-        "runCatching(runtimeController::startPublicIpRotation)",
+        "runtimeController.startPublicIpRotation()",
         "Change IP must forward through the single accepted MishRuntimeController command seam",
     )
     for forbidden in (
