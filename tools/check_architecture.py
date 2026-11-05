@@ -2479,8 +2479,13 @@ def main() -> None:
     main_view_model = "android/app/src/main/java/com/mobileproxymish/app/MainViewModel.kt"
     require(
         main_view_model,
-        "runCatching(runtimeController::startPublicIpRotation)",
+        "runtimeController.startPublicIpRotation()",
         "Change IP must forward through the single accepted MishRuntimeController command seam",
+    )
+    require(
+        main_view_model,
+        "catch (rejected: NativeRotationStartError)",
+        "Immediate native Rotation rejection must remain a typed presentation event",
     )
     for forbidden in (
         "MutableStateFlow<Boolean>",

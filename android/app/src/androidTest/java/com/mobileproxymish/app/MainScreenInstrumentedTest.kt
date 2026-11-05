@@ -49,6 +49,52 @@ class MainScreenInstrumentedTest {
     }
 
     @Test
+    fun rejectedStartIsVisibleWithoutClaimingRotationFailed() {
+        compose.setContent {
+            MishTheme {
+                MainScreen(
+                    state = readyState().copy(
+                        rotation = RotationUiState(stage = RotationStageUi.IDLE),
+                        rotationStartRejection = RotationStartRejectionUi.NO_CURRENT_CELLULAR,
+                    ),
+                    credentialReveal = CredentialRevealUiState.Hidden,
+                    diagnosticsExpanded = false,
+                    onDiagnosticsExpandedChange = {},
+                    onChangeIp = {},
+                    onShowCredentials = {},
+                    onHideCredentials = {},
+                )
+            }
+        }
+        compose.onNodeWithText("IP change not started: no current Cellular network.").assertExists()
+        compose.onNodeWithText("IP change failed").assertDoesNotExist()
+        compose.onNodeWithText("Change IP").assertIsEnabled()
+    }
+
+    @Test
+    fun unknownIpIsNotLabeledAsCurrentVerifiedIp() {
+        compose.setContent {
+            MishTheme {
+                MainScreen(
+                    state = readyState().copy(
+                        publicIp = PublicIpUiState(current = null, previous = "198.51.100.10"),
+                        rotation = RotationUiState(stage = RotationStageUi.IDLE),
+                    ),
+                    credentialReveal = CredentialRevealUiState.Hidden,
+                    diagnosticsExpanded = false,
+                    onDiagnosticsExpandedChange = {},
+                    onChangeIp = {},
+                    onShowCredentials = {},
+                    onHideCredentials = {},
+                )
+            }
+        }
+        compose.onNodeWithText("Not verified for current Cellular generation").assertExists()
+        compose.onNodeWithText("IP before last rotation (historical)").assertExists()
+        compose.onNodeWithText("Verified IP after last rotation").assertExists()
+    }
+
+    @Test
     fun largeFontScalePreservesReadableStatusAndPrimaryActionSemantics() {
         compose.setContent {
             val baseDensity = LocalDensity.current

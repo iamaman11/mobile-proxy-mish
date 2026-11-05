@@ -11,6 +11,7 @@ import com.mobileproxymish.ffi.ProductReadinessState
 import com.mobileproxymish.ffi.ProxyListenerView
 import com.mobileproxymish.ffi.ProxyProtocolView
 import com.mobileproxymish.ffi.ProxyServingFailure
+import com.mobileproxymish.ffi.NativeRotationStartError
 import com.mobileproxymish.ffi.RotationFailureView
 import com.mobileproxymish.ffi.RotationPhaseView
 import com.mobileproxymish.ffi.RotationSnapshotView
@@ -46,6 +47,32 @@ enum class RotationStageUi {
 }
 
 enum class RotationResultUi { CHANGED, UNCHANGED, FAILED }
+
+/**
+ * Ephemeral presentation of an immediate Rust Rotation start rejection.
+ * This is NOT a Rotation terminal state or a second state machine.
+ */
+enum class RotationStartRejectionUi {
+    RUNTIME_NOT_RUNNING,
+    ALREADY_IN_PROGRESS,
+    NO_CURRENT_CELLULAR,
+    ROOT_POLICY_UNAVAILABLE,
+    CREDENTIAL_UNAVAILABLE,
+    EXECUTOR_UNAVAILABLE,
+    STATE_UNAVAILABLE,
+    UNEXPECTED_BRIDGE_FAILURE,
+}
+
+internal fun NativeRotationStartError.toUi(): RotationStartRejectionUi = when (this) {
+    is NativeRotationStartError.RuntimeNotRunning -> RotationStartRejectionUi.RUNTIME_NOT_RUNNING
+    is NativeRotationStartError.AlreadyInProgress -> RotationStartRejectionUi.ALREADY_IN_PROGRESS
+    is NativeRotationStartError.NoCurrentCellular -> RotationStartRejectionUi.NO_CURRENT_CELLULAR
+    is NativeRotationStartError.RootPolicyUnavailable -> RotationStartRejectionUi.ROOT_POLICY_UNAVAILABLE
+    is NativeRotationStartError.CredentialUnavailable -> RotationStartRejectionUi.CREDENTIAL_UNAVAILABLE
+    is NativeRotationStartError.ExecutorUnavailable -> RotationStartRejectionUi.EXECUTOR_UNAVAILABLE
+    is NativeRotationStartError.StateUnavailable -> RotationStartRejectionUi.STATE_UNAVAILABLE
+}
+
 
 enum class RotationFailureUi {
     RUNTIME_NOT_RUNNING,
@@ -112,6 +139,7 @@ data class ProductUiState(
     val cause: ProductCauseUi = ProductCauseUi.CHECKING_CONNECTIVITY,
     val publicIp: PublicIpUiState = PublicIpUiState(),
     val rotation: RotationUiState = RotationUiState(),
+    val rotationStartRejection: RotationStartRejectionUi? = null,
     val health: HealthSummaryUiState = HealthSummaryUiState(),
     val proxyEndpoint: ProxyEndpointUiState = ProxyEndpointUiState(),
     val advancedDiagnostics: AdvancedDiagnosticsUiState = AdvancedDiagnosticsUiState(),

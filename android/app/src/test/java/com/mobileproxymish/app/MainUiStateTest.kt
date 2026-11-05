@@ -52,10 +52,24 @@ class MainUiStateTest {
     }
 
     @Test
+    fun startRequestRejectionIsNotRotationsTerminalState() {
+        val state = projectProductUi(input()).copy(
+            rotationStartRejection = RotationStartRejectionUi.NO_CURRENT_CELLULAR,
+        )
+        assertEquals(ProductOverallUiState.READY, state.overall)
+        assertEquals(RotationStageUi.IDLE, state.rotation.stage)
+        assertNull(state.rotation.result)
+        assertEquals(RotationStartRejectionUi.NO_CURRENT_CELLULAR, state.rotationStartRejection)
+        assertTrue(rotationStartRejectionText(state.rotationStartRejection!!).contains("no current Cellular"))
+        assertFalse(rotationStartRejectionText(RotationStartRejectionUi.UNEXPECTED_BRIDGE_FAILURE).contains("Exception"))
+    }
+
+    @Test
     fun firstUseOrProcessRestartHasUnknownPublicIps() {
         val state = projectProductUi(input(rotation = rotation()))
         assertNull(state.publicIp.current)
         assertNull(state.publicIp.previous)
+        assertNull(state.rotationStartRejection)
     }
 
     @Test

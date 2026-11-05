@@ -3,6 +3,7 @@ package com.mobileproxymish.app
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.mobileproxymish.ffi.NativeRotationStartError
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -36,6 +37,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val proxyListeners = runtimeController.proxyListenerContract()
     private val mutableCredentialReveal =
         MutableStateFlow<CredentialRevealUiState>(CredentialRevealUiState.Hidden)
+    private val rotationStartRejection = MutableStateFlow<RotationStartRejectionUi?>(null)
 
     internal val credentialReveal: StateFlow<CredentialRevealUiState>
         get() = mutableCredentialReveal.asStateFlow()
@@ -52,22 +54,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
 
     val state: StateFlow<ProductUiState> = combine(
-        runtimeController.cellularSnapshot,
-        runtimeController.proxySnapshot,
-        runtimeController.readinessSnapshot,
-        runtimeController.meshSnapshot,
-        runtimeController.rotationSnapshot,
-    ) { cellular, proxy, readiness, mesh, rotation ->
-        projectProductUi(
-            ProductPresentationInput(
-                readiness = readiness,
-                cellular = cellular,
-                proxy = proxy,
-                mesh = mesh,
-                rotation = rotation,
-                proxyListeners = proxyListeners,
-            ),
-        )
+        combine(
+            runtimeController.cellularSnapshot,
+            runtimeController.proxySnapshot,
+            runtimeController.readinessSnapshot,
+            runtimeController.meshSnapshot,
+            runtimeController.rotationSnapshot,
+        ) { cellular, proxy, readiness, mesh, rotation ->
+            projectProductUi(
+                ProductPresentationInput(
+                    readiness = readiness,
+                    cellular = cellular,
+                    proxy = proxy,
+                    mesh = mesh,
+                    rotation = rotation,
+                    proxyListeners = proxyListeners,
+                ),
+            )
+        },
+        rotationStartRejection,
+    ) { nativeProjection, requestRejection ->
+        // Display-only acknowledgement; the backend Rotation snapshot stays authoritative.
+        nativeProjection.copy(rotationStartRejection = requestRejection)
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
@@ -75,8 +83,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
 
     fun changePublicIp() {
-        // UI disablement is presentation only. Rust still rejects repeated/concurrent starts.
-        runCatching(runtimeController::startPublicIpRotation)
+        // Never retry, infer, or complete Rotation in Kotlin. Only report immediate refusal.
+        rotationStartRejection.value = null
+        try {
+            runtimeController.startPublicIpRotation()
+        } catch (rejected: NativeRotationStartError) {
+            rotationStartRejection.value = rejected.toUi()
+        } catch (_: Exception) {
+            // Never display arbitrary exception text, which could contain private material.
+            rotationStartRejection.value = RotationStartRejectionUi.UNEXPECTED_BRIDGE_FAILURE
+        }
     }
 
     fun showCurrentCredentials() {
