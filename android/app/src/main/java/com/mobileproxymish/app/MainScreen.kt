@@ -93,7 +93,7 @@ fun MainScreen(
             }
             item { OverallStatusCard(state) }
             item { PublicIpCard(state.publicIp) }
-            item { RotationAction(state.rotation, state.changeIpEnabled, onChangeIp) }
+            item { RotationAction(state.rotation, state.changeIpEnabled, state.rotationStartRejection, onChangeIp) }
             item { HealthSummary(state.health) }
             item { ProxyInfo(state.proxyEndpoint) }
             item {
@@ -136,8 +136,8 @@ private fun PublicIpCard(state: PublicIpUiState) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text("Public IP", style = MaterialTheme.typography.titleMedium)
-            LabelValue("Current IP", state.current ?: "Unknown")
-            LabelValue("Previous IP", state.previous ?: "Unknown")
+            LabelValue("Verified IP after last rotation", state.current ?: "Not verified for current Cellular generation")
+            LabelValue("IP before last rotation (historical)", state.previous ?: "No previous observation")
         }
     }
 }
@@ -146,6 +146,7 @@ private fun PublicIpCard(state: PublicIpUiState) {
 private fun RotationAction(
     state: RotationUiState,
     enabled: Boolean,
+    requestRejection: RotationStartRejectionUi?,
     onChangeIp: () -> Unit,
 ) {
     Column(
@@ -173,6 +174,7 @@ private fun RotationAction(
                 )
             }
             state.failure?.let { Text(rotationFailureText(it)) }
+            requestRejection?.let { Text(rotationStartRejectionText(it)) }
         }
         Button(
             onClick = onChangeIp,
@@ -182,6 +184,18 @@ private fun RotationAction(
             Text(if (state.inProgress) "Changing…" else "Change IP")
         }
     }
+}
+
+/** Safe presentation strings for typed native start errors; no raw Throwable text. */
+internal fun rotationStartRejectionText(rejection: RotationStartRejectionUi): String = when (rejection) {
+    RotationStartRejectionUi.RUNTIME_NOT_RUNNING -> "IP change not started: proxy runtime is not running."
+    RotationStartRejectionUi.ALREADY_IN_PROGRESS -> "IP change not started: another change is in progress."
+    RotationStartRejectionUi.NO_CURRENT_CELLULAR -> "IP change not started: no current Cellular network."
+    RotationStartRejectionUi.ROOT_POLICY_UNAVAILABLE -> "IP change not started: root policy is not authorized."
+    RotationStartRejectionUi.CREDENTIAL_UNAVAILABLE -> "IP change not started: proxy credentials are unavailable."
+    RotationStartRejectionUi.EXECUTOR_UNAVAILABLE -> "IP change not started: native executor unavailable."
+    RotationStartRejectionUi.STATE_UNAVAILABLE -> "IP change not started: native Rotation state unavailable."
+    RotationStartRejectionUi.UNEXPECTED_BRIDGE_FAILURE -> "IP change request failed at the Android–Rust boundary."
 }
 
 @Composable
