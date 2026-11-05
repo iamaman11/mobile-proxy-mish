@@ -229,6 +229,35 @@ def main() -> None:
                 "D2 Kotlin adapters must remain platform effects/presentation only; PRODUCT scheduling and ownership stay in Rust/Tokio",
             )
 
+    # UI command-admission errors are a local presentation fact, never an alternative
+    # PRODUCT state machine or a second public-egress observation path.
+    ui_viewmodel = "android/app/src/main/java/com/mobileproxymish/app/MainViewModel.kt"
+    ui_projection = "android/app/src/main/java/com/mobileproxymish/app/ProductUiState.kt"
+    ui_screen = "android/app/src/main/java/com/mobileproxymish/app/MainScreen.kt"
+    require(ui_viewmodel, "rotationSubmissionFailure(error)", "native command rejection must reach UI")
+    require(ui_projection, "is NativeRotationStartError.RuntimeNotRunning", "use typed Rust command errors")
+    require(ui_projection, "input.rotation.afterGeneration == currentCellularGeneration",
+            "last-rotation IP must remain generation-bound")
+    require(ui_screen, "Not verified for current cellular",
+            "unobserved public IP must never masquerade as current")
+    for forbidden in (
+        "observePublicEgressIp(",
+        "HttpURLConnection",
+        "java.net.",
+        "kotlinx.coroutines.delay",
+        "repeat(",
+        "startRuntime(",
+        "Thread.sleep",
+    ):
+        forbid(ui_viewmodel, forbidden, "UI cannot perform network probes, retries, or native lifecycle changes")
+    for forbidden in (
+        "observePublicEgressIp(",
+        "HttpURLConnection",
+        "java.net.",
+        "Thread.sleep",
+    ):
+        forbid(ui_screen, forbidden, "Compose UI cannot become public-egress authority")
+
     vpn_observer = "android/app/src/main/java/com/mobileproxymish/app/AndroidVpnObserver.kt"
     for required in (
         'Thread(task, "mish-mesh-vpn-observer")',
