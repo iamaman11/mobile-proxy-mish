@@ -5,7 +5,7 @@ Set-StrictMode -Version Latest
 function Get-MishAdbAvailability {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][string[]] $Lines,
+        [string[]] $Lines = @(),
         [Parameter(Mandatory)][int] $ExitCode
     )
     if ($ExitCode -ne 0) { return 'ADB_ENUMERATION_FAILED' }
