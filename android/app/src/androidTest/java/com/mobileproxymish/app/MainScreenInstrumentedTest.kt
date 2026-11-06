@@ -4,10 +4,8 @@ import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
-import androidx.compose.ui.test.hasAnyDescendant
 import androidx.compose.ui.test.hasScrollAction
-import androidx.compose.ui.test.hasText
-import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalDensity
@@ -43,10 +41,11 @@ class MainScreenInstrumentedTest {
                 )
             }
         }
+        scrollToLazyItem(ROTATION_ITEM)
         compose.onNodeWithText("IP change was not started: proxy credentials are unavailable.").assertExists()
-        scrollToLazyItemContaining("Temporary access (24h)")
+        scrollToLazyItem(ACTIONS_ITEM)
         compose.onNodeWithText("Temporary access (24h)").assertHasClickAction().performClick()
-        scrollToLazyItemContaining("Dismiss command error")
+        scrollToLazyItem(ROTATION_ITEM)
         compose.onNodeWithText("Dismiss command error").assertHasClickAction().performClick()
         assertEquals(1, temporaryOpenRequests)
         assertEquals(1, dismissRequests)
@@ -254,9 +253,9 @@ class MainScreenInstrumentedTest {
             )
         }
         compose.onNodeWithText(technical).assertDoesNotExist()
-        scrollToLazyItemContaining("Advanced diagnostics")
+        scrollToLazyItem(DIAGNOSTICS_ITEM)
         compose.onNodeWithText("Advanced diagnostics").performClick()
-        scrollToLazyItemContaining(technical)
+        scrollToLazyItem(DIAGNOSTICS_ITEM)
         compose.onNodeWithText(technical).assertExists()
         compose.onNodeWithText("Cellular owner sequence").assertExists()
     }
@@ -278,7 +277,7 @@ class MainScreenInstrumentedTest {
             }
         }
         compose.onNodeWithText(secret).assertDoesNotExist()
-        scrollToLazyItemContaining("Proxy credentials")
+        scrollToLazyItem(ACTIONS_ITEM)
         compose.onNodeWithText("Proxy credentials").assertHasClickAction()
     }
 
@@ -327,13 +326,15 @@ class MainScreenInstrumentedTest {
         assertTrue(hideRequested)
     }
 
-    /**
-     * LazyColumn only composes visible items. On a real small Android screen the lower
-     * controls are not part of the semantics tree until their parent item is scrolled in.
-     * Test the real viewport instead of weakening PRODUCT UI or assuming a desktop height.
-     */
-    private fun scrollToLazyItemContaining(text: String) {
-        compose.onNode(hasScrollAction()).performScrollToNode(hasAnyDescendant(hasText(text)))
+    /** MainScreen LazyColumn row positions; no dependence on merged child semantics. */
+    private fun scrollToLazyItem(index: Int) {
+        compose.onNode(hasScrollAction()).performScrollToIndex(index)
+    }
+
+    private companion object {
+        const val ROTATION_ITEM = 3
+        const val DIAGNOSTICS_ITEM = 6
+        const val ACTIONS_ITEM = 7
     }
 
     private fun readyState(): ProductUiState = ProductUiState(
