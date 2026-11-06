@@ -330,3 +330,28 @@ jobs:
             echo '- Public manager command: **POST https://mish.alegria.by/v1/rotate, empty body only**'
             echo '- Device enrollment/physical rotation: **NOT performed by this deploy workflow**'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  rebind:
+    name: Explicit one-time CONTROL rebind from protected Windows LAB
+    if: >-
+      ${{ github.event_name == 'issue_comment' &&
+          github.event.issue.number == 135 &&
+          github.actor == 'iamaman11' &&
+          github.event.comment.user.login == 'iamaman11' &&
+          github.event.comment.body == '/mish-control-rebind 477 23bb97926ff4ebd0ab5171372c7fac7d0c19f73f' }}
+    runs-on: [self-hosted, windows, x64, mobile-proxy-mish-lab]
+    environment: cloudflare-control
+    timeout-minutes: 10
+    steps:
+      - name: Checkout protected main without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: One original-to-new identity replacement, no retries
+        shell: 'C:\mish-lab\tools\powershell-7.6.6\pwsh.exe -NoLogo -NoProfile -NonInteractive -Command "& ([ScriptBlock]::Create((Get-Content -Raw -LiteralPath ''{0}'')))"'
+        env:
+          MISH_MANAGER_TOKEN: ${{ secrets.MISH_MANAGER_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .\lab\windows\control-rebind-one-time-20261106.ps1
