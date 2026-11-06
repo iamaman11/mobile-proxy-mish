@@ -52,6 +52,7 @@ fun MishApp(
     onChangeIp: () -> Unit,
     onShowCredentials: () -> Unit,
     onHideCredentials: () -> Unit,
+    onManageTemporary: () -> Unit = {},
 ) {
     var diagnosticsExpanded by rememberSaveable { mutableStateOf(false) }
     MishTheme {
@@ -63,6 +64,7 @@ fun MishApp(
             onChangeIp = onChangeIp,
             onShowCredentials = onShowCredentials,
             onHideCredentials = onHideCredentials,
+            onManageTemporary = onManageTemporary,
         )
     }
 }
@@ -76,6 +78,7 @@ fun MainScreen(
     onChangeIp: () -> Unit,
     onShowCredentials: () -> Unit,
     onHideCredentials: () -> Unit,
+    onManageTemporary: () -> Unit = {},
 ) {
     Surface(modifier = Modifier.fillMaxSize()) {
         LazyColumn(
@@ -106,6 +109,9 @@ fun MainScreen(
             item {
                 TextButton(onClick = onShowCredentials) {
                     Text("Proxy credentials")
+                }
+                TextButton(onClick = onManageTemporary) {
+                    Text("Temporary access (24h)")
                 }
             }
         }

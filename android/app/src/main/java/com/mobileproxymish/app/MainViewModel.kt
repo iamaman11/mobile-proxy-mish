@@ -3,6 +3,8 @@ package com.mobileproxymish.app
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -24,6 +26,11 @@ sealed interface CredentialRevealUiState {
     }
 }
 
+/** Non-secret presentation of explicit on-device secondary provisioning only. */
+enum class TemporaryAccessActionUi {
+    IDLE, BUSY, ISSUED, REVOKED, FAILED,
+}
+
 /**
  * Presentation/application adapter over Rust-owned PRODUCT state.
  *
@@ -39,6 +46,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     internal val credentialReveal: StateFlow<CredentialRevealUiState>
         get() = mutableCredentialReveal.asStateFlow()
+
+    private val temporaryIssuedState = MutableStateFlow(runtimeController.temporaryCredentialHasBeenIssued())
+    private val temporaryActionState = MutableStateFlow(TemporaryAccessActionUi.IDLE)
+    val temporaryIssued: StateFlow<Boolean> get() = temporaryIssuedState.asStateFlow()
+    val temporaryAction: StateFlow<TemporaryAccessActionUi> get() = temporaryActionState.asStateFlow()
+
+    fun issueTemporaryCredential(username: String, password: String) {
+        if (temporaryActionState.value == TemporaryAccessActionUi.BUSY) return
+        temporaryActionState.value = TemporaryAccessActionUi.BUSY
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = runtimeController.issueTemporaryCredentialOnDevice(username, password)
+            temporaryIssuedState.value = runtimeController.temporaryCredentialHasBeenIssued()
+            temporaryActionState.value =
+                if (ok) TemporaryAccessActionUi.ISSUED else TemporaryAccessActionUi.FAILED
+        }
+    }
+
+    fun revokeTemporaryCredential() {
+        if (temporaryActionState.value == TemporaryAccessActionUi.BUSY) return
+        temporaryActionState.value = TemporaryAccessActionUi.BUSY
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = runtimeController.revokeTemporaryCredentialOnDevice()
+            temporaryIssuedState.value = runtimeController.temporaryCredentialHasBeenIssued()
+            temporaryActionState.value =
+                if (ok) TemporaryAccessActionUi.REVOKED else TemporaryAccessActionUi.FAILED
+        }
+    }
 
     private fun projectCurrent(): ProductUiState = projectProductUi(
         ProductPresentationInput(

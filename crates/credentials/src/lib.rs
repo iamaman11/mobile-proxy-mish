@@ -14,6 +14,7 @@ use std::{error::Error, fmt};
 mod persistence;
 mod proto;
 mod provisioning;
+mod temporary;
 
 pub use persistence::{
     ExternalCredentialPersistenceAction, ExternalCredentialPersistenceResolution, decode_state,
@@ -22,6 +23,12 @@ pub use persistence::{
 pub use provisioning::{
     ExternalProxyProvisioningEnvelope, PROVISIONING_CHALLENGE_BYTES, PROVISIONING_SCHEMA_VERSION,
     decode_provisioning_envelope, encode_provisioning_envelope,
+};
+
+pub use temporary::{
+    TEMPORARY_CREDENTIAL_TTL_SECONDS, TemporaryCredentialError, TemporaryCredentialLease,
+    TemporaryCredentialRecord, TemporaryCredentialStatus, decode_temporary_lease,
+    decode_temporary_record, encode_temporary_lease, encode_temporary_record,
 };
 
 pub const DERIVATION_OUTPUT_BYTES: usize = 32;
