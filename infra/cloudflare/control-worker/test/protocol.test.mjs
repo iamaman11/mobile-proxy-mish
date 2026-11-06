@@ -148,6 +148,20 @@ test("manager bodies and identities are strict", () => {
     { public_key_spki_b64: "A".repeat(100) },
   );
   assert.throws(() => parseEnrollmentBody({ public_key_spki_b64: "short" }));
+  const b64 = "A".repeat(100);
+  const expected = "a".repeat(64);
+  assert.deepEqual(parseEnrollmentBody({
+    public_key_spki_b64: b64, expected_device_id: expected,
+  }), { public_key_spki_b64: b64, expected_device_id: expected });
+  assert.throws(() => parseEnrollmentBody({
+    public_key_spki_b64: b64, expected_device_id: "short",
+  }));
+  assert.throws(() => parseEnrollmentBody({
+    public_key_spki_b64: b64, expected_device_id: expected.toUpperCase(),
+  }));
+  assert.throws(() => parseEnrollmentBody({
+    public_key_spki_b64: b64, expected_device_id: expected, force: true,
+  }));
 });
 
 test("auth payload exactly matches Rust domain format", () => {
@@ -433,6 +447,74 @@ test("primary enrollment is idempotent and fail-closed against identity replacem
   assert.equal(response.status, 409);
   assert.equal((await response.json()).error, "IDENTITY_ALREADY_BOUND");
   assert.equal((await storage.get("device_identity")).device_id, first.deviceId);
+});
+
+test("CONTROL identity replacement requires exact old ID and a quiescent device", async () => {
+  const oldIdentity = await generateIdentity();
+  const newIdentity = await generateIdentity();
+  const storage = new MemoryStorage();
+  await storage.put("device_identity", {
+    device_id: oldIdentity.deviceId,
+    public_key_spki_b64: oldIdentity.spkiB64,
+  });
+  const socket = new FakeSocket({
+    kind: "device", authenticated: true, device_id: oldIdentity.deviceId,
+  });
+  const ctx = new FakeContext(storage, [socket]);
+  const control = new DeviceControl(ctx, {});
+  const url = new URL(`https://control.internal/manager/enroll?device_id=${newIdentity.deviceId}`);
+  const request = () => enrollmentRequest(
+    newIdentity.deviceId, newIdentity.spkiB64, oldIdentity.deviceId,
+  );
+
+  let response = await control.enroll(request(), url);
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).error, "IDENTITY_REBIND_BUSY");
+  assert.equal((await storage.get("device_identity")).device_id, oldIdentity.deviceId);
+
+  // One active Durable Object operation also fences the rebind even if offline.
+  socket.serializeAttachment({ ...socket.attachment, authenticated: false });
+  await storage.put("active_operation", { status: "RECOVERING", request_id: "req_old" });
+  response = await control.enroll(request(), url);
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).error, "IDENTITY_REBIND_BUSY");
+  await storage.delete("active_operation");
+
+  response = await control.enroll(enrollmentRequest(
+    newIdentity.deviceId, newIdentity.spkiB64, "f".repeat(64),
+  ), url);
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).error, "IDENTITY_ALREADY_BOUND");
+
+  response = await control.enroll(request(), url);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { enrolled: true, replaced: true });
+  assert.deepEqual(await storage.get("device_identity"), {
+    device_id: newIdentity.deviceId,
+    public_key_spki_b64: newIdentity.spkiB64,
+  });
+
+  // The first replacement request cannot silently replace a second time.
+  response = await control.enroll(request(), url);
+  assert.equal(response.status, 409);
+  assert.equal((await storage.get("device_identity")).device_id, newIdentity.deviceId);
+  response = await control.enroll(enrollmentRequest(
+    oldIdentity.deviceId, oldIdentity.spkiB64,
+  ), new URL(`https://control.internal/manager/enroll?device_id=${oldIdentity.deviceId}`));
+  assert.equal(response.status, 409);
+});
+
+test("CONTROL cannot use an expected ID to initialize an unbound device", async () => {
+  const identity = await generateIdentity();
+  const storage = new MemoryStorage();
+  const control = new DeviceControl(new FakeContext(storage, []), {});
+  const response = await control.enroll(
+    enrollmentRequest(identity.deviceId, identity.spkiB64, "a".repeat(64)),
+    new URL(`https://control.internal/manager/enroll?device_id=${identity.deviceId}`),
+  );
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).error, "IDENTITY_NOT_BOUND");
+  assert.equal(await storage.get("device_identity"), undefined);
 });
 
 test("proxy read is live-only, typed and never persisted", async () => {
@@ -1142,6 +1224,10 @@ class FakeContext {
     return this.sockets;
   }
 
+  async blockConcurrencyWhile(callback) {
+    return callback();
+  }
+
   setWebSocketAutoResponse(pair) {
     this.autoResponsePair = pair;
   }
@@ -1199,10 +1285,12 @@ function rotateRequest(requestId) {
   });
 }
 
-function enrollmentRequest(deviceId, spkiB64) {
+function enrollmentRequest(deviceId, spkiB64, expectedDeviceId = null) {
   return new Request(`https://control.internal/manager/enroll?device_id=${deviceId}`, {
     method: "PUT",
-    body: JSON.stringify({ public_key_spki_b64: spkiB64 }),
+    body: JSON.stringify(expectedDeviceId === null
+      ? { public_key_spki_b64: spkiB64 }
+      : { public_key_spki_b64: spkiB64, expected_device_id: expectedDeviceId }),
   });
 }
 
