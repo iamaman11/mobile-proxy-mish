@@ -175,13 +175,21 @@ export function parseEnrollmentBody(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("invalid enrollment body");
   }
-  requireExactKeys(value, ["public_key_spki_b64"]);
+  const replacement = Object.hasOwn(value, "expected_device_id");
+  requireExactKeys(value, replacement
+    ? ["public_key_spki_b64", "expected_device_id"]
+    : ["public_key_spki_b64"]);
   if (typeof value.public_key_spki_b64 !== "string" ||
       value.public_key_spki_b64.length < 80 || value.public_key_spki_b64.length > 700 ||
       !/^[A-Za-z0-9+/]+={0,2}$/.test(value.public_key_spki_b64)) {
     throw new Error("invalid public key");
   }
-  return { public_key_spki_b64: value.public_key_spki_b64 };
+  if (replacement && !isDeviceId(value.expected_device_id)) {
+    throw new Error("invalid expected device id");
+  }
+  return replacement
+    ? { public_key_spki_b64: value.public_key_spki_b64, expected_device_id: value.expected_device_id }
+    : { public_key_spki_b64: value.public_key_spki_b64 };
 }
 
 export function randomNonce() {
