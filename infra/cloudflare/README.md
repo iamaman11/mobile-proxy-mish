@@ -12,6 +12,37 @@ The live Windows/Cloudflare Mesh prerequisites are verified through the official
 
 Cloudflare remains the live Mesh configuration authority. The actual device Mesh address is runtime state and is never hard-coded as a universal proxy endpoint.
 
+
+### Re-enrolling after an unavoidable Android app-data / Keystore reset
+
+An Android uninstall removes the app's non-exportable CONTROL private key. The
+new device SPKI hashes to a **different device ID**. The existing singleton
+CONTROL Durable Object must remain the authority; changing the Worker or DO
+name is not a migration.
+
+The existing manager-authorized `PUT /v1/devices/<new_device_id>` accepts
+`{"public_key_spki_b64":"<new-SPKI>","expected_device_id":"<old-device-id>"}`
+**only** for an explicit one-time replacement. The expected old ID is a
+compare-and-swap guard, not a new identity store or a secret. The Worker first
+validates the manager token, strict request shape and SHA-256(SPKI) identity.
+The DO rejects replacements with a wrong previous ID, an active authenticated
+old device, an outstanding manager wait or an in-flight operation. Quiescent
+replacement updates the same stored `device_identity` and fences old sockets.
+A second replacement using the now-stale old ID is rejected, never silently
+accepted. Existing enrollment without `expected_device_id` remains
+idempotent for the same identity and rejects any different identity.
+
+Operational prerequisite: stop the old Android runtime and preserve the
+existing proxy's E2E evidence before any app uninstall. The new signer does
+**not** preserve app data or Keystore secrets; after a separately authorized
+`com.mobileproxymish.app.debug` migration, obtain the new SPKI from the
+DUMP-gated receiver, enroll through the established manager-token channel,
+retrieve fresh proxy credentials via the existing confidential provisioning
+path, and verify primary HTTP/SOCKS + CONTROL + Mesh. Never put actual
+manager tokens, credential pairs or device identifiers into GitHub comments,
+Actions outputs or logs. No Cloudflare deployment, APK installation or
+credential issuance is implied by this code change.
+
 ## Unified CONTROL Worker
 
 The authenticated control plane lives under:
