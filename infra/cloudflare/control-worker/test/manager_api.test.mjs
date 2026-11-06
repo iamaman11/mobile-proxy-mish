@@ -357,6 +357,48 @@ test("old api hostname does not expose the device WebSocket endpoint", async () 
   assert.deepEqual(await response.json(), { error: "NOT_FOUND" });
 });
 
+test("manager-only enrollment passes exactly the old-identity CAS precondition", async () => {
+  const key = await crypto.subtle.generateKey(
+    { name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"],
+  );
+  const spki = new Uint8Array(await crypto.subtle.exportKey("spki", key.publicKey));
+  const id = Buffer.from(await crypto.subtle.digest("SHA-256", spki)).toString("hex");
+  const previous = "a".repeat(64);
+  const public_key_spki_b64 = Buffer.from(spki).toString("base64");
+  let forwarded = 0;
+  const env = managerEnv(async (request) => {
+    forwarded += 1;
+    assert.equal(new URL(request.url).pathname, "/manager/enroll");
+    assert.equal(new URL(request.url).searchParams.get("device_id"), id);
+    assert.deepEqual(await request.json(), {
+      public_key_spki_b64, expected_device_id: previous,
+    });
+    return managerJson({ enrolled: true, replaced: true });
+  });
+  const url = `https://mish.alegria.by/v1/devices/${id}`;
+  const input = { public_key_spki_b64, expected_device_id: previous };
+  let response = await worker.fetch(new Request(url, {
+    method: "PUT", body: JSON.stringify(input),
+  }), env);
+  assert.equal(response.status, 401);
+  assert.equal(forwarded, 0);
+  response = await worker.fetch(new Request(url, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${TOKEN}` },
+    body: JSON.stringify({ ...input, force: true }),
+  }), env);
+  assert.equal(response.status, 400);
+  assert.equal(forwarded, 0);
+  response = await worker.fetch(new Request(url, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${TOKEN}` },
+    body: JSON.stringify(input),
+  }), env);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { enrolled: true, replaced: true });
+  assert.equal(forwarded, 1);
+});
+
 function managerEnv(fetchImpl) {
   const namespace = new FakeNamespace(fetchImpl);
   return {
