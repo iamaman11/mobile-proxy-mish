@@ -3,8 +3,10 @@ use mish_credentials::{
     ExternalCredentialPersistenceAction as OwnerPersistenceAction,
     ExternalCredentialPurpose as OwnerCredentialPurpose,
     ExternalCredentialState as OwnerCredentialState,
-    ExternalCredentialStatus as OwnerCredentialStatus, encode_provisioning_envelope, encode_state,
-    resolve_persistence,
+    ExternalCredentialStatus as OwnerCredentialStatus,
+    TemporaryCredentialError as OwnerTemporaryError,
+    TemporaryCredentialRecord as OwnerTemporaryRecord, decode_temporary_record,
+    encode_provisioning_envelope, encode_state, encode_temporary_record, resolve_persistence,
 };
 use std::fmt;
 
@@ -59,6 +61,31 @@ impl fmt::Debug for ExternalProxyCredentialMaterial {
     }
 }
 
+/// Sensitive native-to-Android view. A positive decision is not effective until next_state has
+/// been persisted inside encrypted storage. Debug output is always fully redacted.
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
+pub struct TemporaryCredentialObservationView {
+    pub generation: u64,
+    pub expires_at_unix_seconds: u64,
+    pub admitted: bool,
+    pub username: String,
+    pub password: String,
+    pub next_state: Vec<u8>,
+}
+
+impl fmt::Debug for TemporaryCredentialObservationView {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TemporaryCredentialObservationView")
+            .field("generation", &self.generation)
+            .field("expires_at_unix_seconds", &self.expires_at_unix_seconds)
+            .field("admitted", &self.admitted)
+            .field("username", &"<redacted>")
+            .field("password", &"<redacted>")
+            .field("next_state", &"<redacted>")
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Error)]
 pub enum ExternalCredentialBoundaryError {
     InvalidState,
@@ -67,6 +94,7 @@ pub enum ExternalCredentialBoundaryError {
     Revoked,
     InvalidDerivationOutput,
     InvalidProvisioningEnvelope,
+    InvalidTemporaryCredential,
 }
 
 impl fmt::Display for ExternalCredentialBoundaryError {
@@ -80,6 +108,7 @@ impl fmt::Display for ExternalCredentialBoundaryError {
             Self::InvalidProvisioningEnvelope => {
                 "external credential provisioning envelope is invalid"
             }
+            Self::InvalidTemporaryCredential => "temporary credential record is invalid",
         })
     }
 }
@@ -173,6 +202,50 @@ pub fn external_credential_encode_provisioning_envelope(
     )?)
 }
 
+/// Creates a sensitive record. Callers MUST Keystore-encrypt its bytes before persistence.
+#[uniffi::export]
+pub fn external_temporary_credential_issue(
+    generation: u64,
+    trusted_unix_seconds: Option<u64>,
+    username: String,
+    password: String,
+) -> Result<Vec<u8>, ExternalCredentialBoundaryError> {
+    let record = OwnerTemporaryRecord::issue(generation, trusted_unix_seconds, username, password)
+        .map_err(map_temporary_error)?;
+    Ok(encode_temporary_record(&record))
+}
+
+/// The platform adapter MUST persist the newly encoded state before honoring admitted = true.
+/// All failures deny only secondary access, never modify the original primary credential.
+#[uniffi::export]
+pub fn external_temporary_credential_observe(
+    protected_plaintext: Vec<u8>,
+    trusted_unix_seconds: Option<u64>,
+) -> Result<TemporaryCredentialObservationView, ExternalCredentialBoundaryError> {
+    let record = decode_temporary_record(&protected_plaintext).map_err(map_temporary_error)?;
+    let (record, admitted) = record.observe(trusted_unix_seconds);
+    Ok(TemporaryCredentialObservationView {
+        generation: record.lease().generation(),
+        expires_at_unix_seconds: record.lease().expires_at_unix_seconds(),
+        admitted,
+        username: record.username().to_owned(),
+        password: record.password().to_owned(),
+        next_state: encode_temporary_record(&record),
+    })
+}
+
+#[uniffi::export]
+pub fn external_temporary_credential_revoke(
+    protected_plaintext: Vec<u8>,
+) -> Result<Vec<u8>, ExternalCredentialBoundaryError> {
+    let record = decode_temporary_record(&protected_plaintext).map_err(map_temporary_error)?;
+    Ok(encode_temporary_record(&record.revoke()))
+}
+
+fn map_temporary_error(_error: OwnerTemporaryError) -> ExternalCredentialBoundaryError {
+    ExternalCredentialBoundaryError::InvalidTemporaryCredential
+}
+
 fn owner_state(
     version: u64,
     revoked: bool,
@@ -222,6 +295,29 @@ impl From<OwnerCredentialError> for ExternalCredentialBoundaryError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn temporary_ffi_is_exact_redacted_and_requires_explicit_observation() {
+        let encoded = external_temporary_credential_issue(
+            3,
+            Some(1_800_000_000),
+            "example-secondary".into(),
+            "example-password".into(),
+        )
+        .expect("owner issue");
+        let current = external_temporary_credential_observe(encoded, Some(1_800_000_010))
+            .expect("owner observe");
+        assert!(current.admitted);
+        assert_eq!(current.username, "example-secondary");
+        assert_eq!(current.password, "example-password");
+        assert_eq!(current.generation, 3);
+        assert!(!format!("{current:?}").contains("example-password"));
+        assert!(!format!("{current:?}").contains("example-secondary"));
+        let revoked = external_temporary_credential_revoke(current.next_state).expect("revoke");
+        let after = external_temporary_credential_observe(revoked, Some(1_800_000_020))
+            .expect("observe revoked");
+        assert!(!after.admitted);
+    }
 
     #[test]
     fn ffi_persistence_resolution_delegates_to_owner() {
