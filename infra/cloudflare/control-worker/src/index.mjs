@@ -242,18 +242,54 @@ export class DeviceControl {
       return json({ error: "DEVICE_ID_PUBLIC_KEY_MISMATCH" }, 400);
     }
 
-    const current = await this.ctx.storage.get("device_identity");
-    if (current &&
-        (current.device_id !== deviceId ||
-         current.public_key_spki_b64 !== body.public_key_spki_b64)) {
-      return json({ error: "IDENTITY_ALREADY_BOUND" }, 409);
-    }
+    // A replacement is an explicit manager-only compare-and-swap, never a
+    // side effect of the normal idempotent enrollment request. Keep the
+    // singleton Durable Object as the only CONTROL identity owner.
+    return this.ctx.blockConcurrencyWhile(async () => {
+      const current = await this.ctx.storage.get("device_identity");
+      if (!current) {
+        if (body.expected_device_id !== undefined) {
+          return json({ error: "IDENTITY_NOT_BOUND" }, 409);
+        }
+        await this.ctx.storage.put("device_identity", {
+          device_id: deviceId,
+          public_key_spki_b64: body.public_key_spki_b64,
+        });
+        return json({ enrolled: true }, 200);
+      }
 
-    await this.ctx.storage.put("device_identity", {
-      device_id: deviceId,
-      public_key_spki_b64: body.public_key_spki_b64,
+      if (current.device_id === deviceId &&
+          current.public_key_spki_b64 === body.public_key_spki_b64) {
+        return body.expected_device_id === undefined
+          ? json({ enrolled: true }, 200)
+          : json({ error: "IDENTITY_ALREADY_BOUND" }, 409);
+      }
+      if (body.expected_device_id !== current.device_id ||
+          body.expected_device_id === deviceId) {
+        return json({ error: "IDENTITY_ALREADY_BOUND" }, 409);
+      }
+
+      // Never transfer authority while the old runtime or a manager
+      // operation is active. Stale sockets are closed using the existing
+      // heartbeat truth; no new timers, retries or CONTROL state.
+      this.closeStaleAuthenticatedSockets();
+      const oldSocketActive = this.ctx.getWebSockets().some((socket) => {
+        const attachment = socket.deserializeAttachment();
+        return attachment?.kind === "device" && attachment.authenticated === true;
+      });
+      if (oldSocketActive || this.waiters.size !== 0 ||
+          this.proxyWaiters.size !== 0 ||
+          (await this.ctx.storage.get("active_operation")) != null) {
+        return json({ error: "IDENTITY_REBIND_BUSY" }, 409);
+      }
+
+      await this.ctx.storage.put("device_identity", {
+        device_id: deviceId,
+        public_key_spki_b64: body.public_key_spki_b64,
+      });
+      this.fenceAuthenticatedSockets();
+      return json({ enrolled: true, replaced: true }, 200);
     });
-    return json({ enrolled: true }, 200);
   }
 
   async connectDevice(request) {
