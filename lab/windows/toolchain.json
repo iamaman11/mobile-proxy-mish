@@ -35,6 +35,9 @@
     "toolchain": "1.98.1",
     "target": "armv7-linux-androideabi",
     "cargo_ndk": "4.1.2",
+    "cargo_ndk_asset": "cargo-ndk-x86_64-pc-windows-msvc-v4.1.2.zip",
+    "cargo_ndk_url": "https://github.com/bbqsrc/cargo-ndk/releases/download/v4.1.2/cargo-ndk-x86_64-pc-windows-msvc-v4.1.2.zip",
+    "cargo_ndk_sha256": "e2687c647748a8fb1c06981a4fc39376a5b5f640474db3f73de7ae247b7c55e0",
     "rustup_init_url": "https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe",
     "rustup_init_sha_url": "https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe.sha256"
   },

@@ -6,6 +6,7 @@ on:
       - 'android/app/build.gradle.kts'
       - 'lab/windows/toolchain.json'
       - 'lab/windows/bootstrap-windows.ps1'
+      - 'lab/windows/test-bootstrap-disaster-recovery.ps1'
       - 'lab/windows/repair-android-platform-tools.ps1'
       - 'lab/windows/host-preflight.ps1'
       - 'lab/windows/CredentialProvisioning.psm1'
@@ -19,6 +20,7 @@ on:
       - 'android/app/build.gradle.kts'
       - 'lab/windows/toolchain.json'
       - 'lab/windows/bootstrap-windows.ps1'
+      - 'lab/windows/test-bootstrap-disaster-recovery.ps1'
       - 'lab/windows/repair-android-platform-tools.ps1'
       - 'lab/windows/host-preflight.ps1'
       - 'lab/windows/CredentialProvisioning.psm1'
@@ -55,6 +57,14 @@ jobs:
           }
           if ($manifest.host.runner_custom_label -ne 'mobile-proxy-mish-lab') {
             throw 'Runner custom label contract drifted.'
+          }
+          $expectedNdkAsset = 'cargo-ndk-x86_64-pc-windows-msvc-v' + [string]$manifest.rust.cargo_ndk + '.zip'
+          if ($manifest.rust.cargo_ndk_asset -ne $expectedNdkAsset) {
+            throw 'Pinned cargo-ndk Windows archive does not match the manifest version.'
+          }
+          $expectedNdkUrl = 'https://github.com/bbqsrc/cargo-ndk/releases/download/v' + [string]$manifest.rust.cargo_ndk + '/' + $expectedNdkAsset
+          if ($manifest.rust.cargo_ndk_url -ne $expectedNdkUrl -or $manifest.rust.cargo_ndk_sha256 -notmatch '^[0-9a-f]{64}$') {
+            throw 'Pinned cargo-ndk URL/digest is invalid.'
           }
           if ($manifest.runner.sha256 -notmatch '^[0-9a-f]{64}$') {
             throw 'Runner SHA-256 is invalid.'

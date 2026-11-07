@@ -7,6 +7,9 @@ param(
     [string]$RunnerName = '',
     [string]$RunnerTokenProviderExecutable = '',
     [string]$RunnerTokenProviderArgumentsJson = '',
+    [switch]$ToolsOnly,
+    [switch]$AcceptAndroidSdkLicenses,
+    [switch]$RepairOrphanedRunnerService,
     [switch]$SelfTest
 )
 
@@ -209,6 +212,13 @@ function Ensure-WingetPackage {
     }
 
     Write-Host "Materializing $CapabilityName through winget package $Id."
+    # PowerShell 7+ can throw NativeCommandExitException on nonzero winget
+    # before we evaluate the authoritative capability postcondition. Limit this
+    # override to the current function scope; Windows PowerShell 5.1 has no
+    # PSNativeCommandUseErrorActionPreference variable.
+    if ($PSVersionTable.PSVersion.Major -ge 7) {
+        $PSNativeCommandUseErrorActionPreference = $false
+    }
     & $WingetPath install --id $Id --exact --silent --scope machine `
         --accept-package-agreements --accept-source-agreements --disable-interactivity
     $exitCode = [int]$LASTEXITCODE
@@ -367,6 +377,56 @@ function Get-RunnerRegistrationSecureToken {
     }
 }
 
+# An old Windows service is not a valid runner registration when its .runner/.service
+# files are missing. This repair is explicit and restricted to this one LAB service.
+function Repair-ExactOrphanedRunnerService {
+    param([Parameter(Mandatory)][string]$RunnerRoot)
+
+    $runnerMarker = Join-Path $RunnerRoot '.runner'
+    $serviceMarker = Join-Path $RunnerRoot '.service'
+    if ((Test-Path -LiteralPath $runnerMarker) -or (Test-Path -LiteralPath $serviceMarker)) {
+        throw 'Orphan repair refuses to remove a service while either registration marker exists.'
+    }
+
+    $expectedName = 'actions.runner.iamaman11-mobile-proxy-mish.mish-lab-' + $env:COMPUTERNAME.ToLowerInvariant()
+    $expectedBinary = [IO.Path]::GetFullPath((Join-Path $RunnerRoot 'bin\RunnerService.exe'))
+    $matches = @(Get-CimInstance Win32_Service | Where-Object {
+        $_.Name -like 'actions.runner.iamaman11-mobile-proxy-mish.*'
+    })
+    if ($matches.Count -eq 0) {
+        Write-Host 'No orphaned MISH runner service exists; no cleanup needed.'
+        return
+    }
+    if ($matches.Count -ne 1 -or $matches[0].Name -cne $expectedName) {
+        throw 'Runner service inventory is ambiguous; no service was changed.'
+    }
+    $service = $matches[0]
+    $binary = ([string]$service.PathName).Trim().Trim('"')
+    if ($service.State -ne 'Stopped' -or
+        $service.StartName -ine 'NT AUTHORITY\NETWORK SERVICE' -or
+        -not [IO.Path]::IsPathFullyQualified($binary) -or
+        [IO.Path]::GetFullPath($binary) -ine $expectedBinary) {
+        throw 'Runner service is active or does not match the exact MISH LAB binary/identity; refusing repair.'
+    }
+    $active = @(Get-CimInstance Win32_Process -Filter "Name='RunnerService.exe'" |
+        Where-Object {
+            $_.ExecutablePath -and
+            [IO.Path]::GetFullPath([string]$_.ExecutablePath) -ieq $expectedBinary
+        })
+    if ($active.Count -ne 0) {
+        throw 'A MISH runner service executable is still running; refusing removal.'
+    }
+
+    Write-Host "Explicit repair: unregistering the verified stopped orphan MISH LAB service $expectedName"
+    & sc.exe delete $expectedName | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Windows refused to unregister the exact orphan MISH LAB service.'
+    }
+    if (Get-CimInstance Win32_Service -Filter ("Name='" + $expectedName + "'")) {
+        throw 'Windows service deletion is pending; retry bootstrap only after it is fully removed.'
+    }
+}
+
 function Get-ConfiguredRunnerService {
     param([Parameter(Mandatory)][string]$RunnerRoot)
 
@@ -397,6 +457,9 @@ if ($SelfTest) {
 }
 
 Assert-Administrator
+if ($ToolsOnly -and $RepairOrphanedRunnerService) {
+    throw 'ToolsOnly cannot unregister Windows services. Run a separate explicitly approved runner repair.'
+}
 if (-not [Environment]::Is64BitOperatingSystem) {
     throw 'LAB-1 requires 64-bit Windows.'
 }
@@ -462,8 +525,19 @@ try {
     Add-MachinePath -PathEntry (Join-Path $sdkRoot 'platform-tools')
     Add-MachinePath -PathEntry (Join-Path $sdkRoot 'cmdline-tools\latest\bin')
 
-    Write-Host 'Android SDK licenses may require acceptance in this console.'
-    Invoke-NativeChecked -FilePath $sdkManager -Arguments @("--sdk_root=$sdkRoot", '--licenses')
+    if ($AcceptAndroidSdkLicenses) {
+        Write-Host 'Explicit operator option: accepting Android SDK package licenses.'
+        # sdkmanager --licenses is interactive even when launched noninteractively.
+        # A bounded stream of affirmative answers prevents a hidden prompt from
+        # hanging unattended recovery. Consent is opt-in via this switch.
+        1..32 | ForEach-Object { 'y' } | & $sdkManager "--sdk_root=$sdkRoot" '--licenses'
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Android SDK license acceptance failed.'
+        }
+    }
+    else {
+        Write-Host 'Using previously accepted Android SDK licenses; fresh hosts require -AcceptAndroidSdkLicenses.'
+    }
     $sdkPackages = @($manifest.android.packages | ForEach-Object { [string]$_ })
     Invoke-NativeChecked -FilePath $sdkManager -Arguments (@("--sdk_root=$sdkRoot") + $sdkPackages)
 
@@ -506,9 +580,25 @@ try {
 
     $cargoNdkText = (& $cargo ('+' + [string]$manifest.rust.toolchain) ndk --version 2>$null | Out-String)
     if ($LASTEXITCODE -ne 0 -or $cargoNdkText -notmatch ([regex]::Escape([string]$manifest.rust.cargo_ndk))) {
-        Invoke-NativeChecked -FilePath $cargo -Arguments @(
-            ('+' + [string]$manifest.rust.toolchain), 'install', 'cargo-ndk', '--version', ([string]$manifest.rust.cargo_ndk), '--locked'
-        )
+        # Use upstream's pinned Windows executable: installing LAB tools must
+        # not require the Microsoft C++ compiler/linker or a local source build.
+        $cargoNdkArchive = Join-Path $tempRoot ([string]$manifest.rust.cargo_ndk_asset)
+        Get-RemoteFile -Uri ([string]$manifest.rust.cargo_ndk_url) -OutFile $cargoNdkArchive `
+            -Sha256 ([string]$manifest.rust.cargo_ndk_sha256)
+        $cargoNdkExtract = Join-Path $tempRoot 'cargo-ndk-release'
+        Expand-Archive -LiteralPath $cargoNdkArchive -DestinationPath $cargoNdkExtract -Force
+        $cargoNdkRelease = Join-Path $cargoNdkExtract ('cargo-ndk-x86_64-pc-windows-msvc-v' + [string]$manifest.rust.cargo_ndk)
+        foreach ($exe in @('cargo-ndk.exe', 'cargo-ndk-env.exe', 'cargo-ndk-runner.exe', 'cargo-ndk-test.exe')) {
+            $sourceExe = Join-Path $cargoNdkRelease $exe
+            if (-not (Test-Path -LiteralPath $sourceExe -PathType Leaf)) {
+                throw "Pinned cargo-ndk release archive does not contain $exe."
+            }
+            Copy-Item -LiteralPath $sourceExe -Destination (Join-Path $cargoHome ('bin\' + $exe)) -Force
+        }
+        $cargoNdkText = (& $cargo ('+' + [string]$manifest.rust.toolchain) ndk --version 2>&1 | Out-String)
+        if ($LASTEXITCODE -ne 0 -or $cargoNdkText -notmatch ([regex]::Escape([string]$manifest.rust.cargo_ndk))) {
+            throw 'Pinned cargo-ndk prebuilt executable failed the version postcondition.'
+        }
     }
 
     Refresh-ProcessPath
@@ -522,6 +612,17 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Failed to grant NetworkService read/execute access to tools root.' }
     & icacls.exe $cargoHome /grant '*S-1-5-20:(OI)(CI)M' /T /C | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Failed to grant NetworkService modify access to Cargo home.' }
+
+    if ($ToolsOnly) {
+        Write-Host 'MISH_LAB_TOOLS=PASS'
+        Write-Host "Canonical ADB: $canonicalAdb"
+        Write-Host 'Tools installed; runner service and Android signing identity were not changed.'
+        return
+    }
+
+    if ($RepairOrphanedRunnerService) {
+        Repair-ExactOrphanedRunnerService -RunnerRoot $runnerRoot
+    }
 
     $service = Get-ConfiguredRunnerService -RunnerRoot $runnerRoot
     if ($service) {

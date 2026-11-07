@@ -82,6 +82,7 @@ Prefer an existing natural owner plus one narrow adapter. Do not add a framework
 - [Readiness and acceptance](docs/architecture/ACCEPTANCE.md)
 - [Development artifact identity / release boundary](docs/architecture/RELEASE.md)
 - [Windows Mesh outage and WARP recovery runbook](docs/operations/WINDOWS_MESH_RUNBOOK.md)
+- [Windows LAB backup and full disk-loss recovery](docs/operations/WINDOWS_LAB_DISASTER_RECOVERY.md)
 - [Managed physical lab plan](docs/lab/PLAN.md)
 
 Issue #135 is the single live execution/checkpoint pointer. Issue #134 is historical research/rationale.

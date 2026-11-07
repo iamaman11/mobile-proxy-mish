@@ -101,6 +101,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           .\lab\windows\test-device-candidate-store.ps1
           .\lab\windows\test-device-candidate.ps1
+          .\lab\windows\test-portable-signing-recovery.ps1
+          .\lab\windows\test-bootstrap-disaster-recovery.ps1
           .\lab\windows\test-device-cycle.ps1
           .\lab\windows\test-full-diagnostic-contract.ps1
           .\lab\windows\test-recovery-lifecycle-probe-contract.ps1
